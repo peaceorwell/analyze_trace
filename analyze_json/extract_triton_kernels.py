@@ -1,3 +1,5 @@
+import argparse
+import csv
 import json
 from collections import defaultdict
 
@@ -73,13 +75,40 @@ def parse_trace(trace_file):
 
 
 if __name__ == "__main__":
-    result = parse_trace("trace.json")
+    parser = argparse.ArgumentParser(
+        description="Parse a PyTorch profiler trace JSON and extract Triton kernel info per ProfilerStep."
+    )
+    parser.add_argument(
+        "trace_file",
+        help="Path to the profiler trace JSON file (e.g. trace.json)",
+    )
+    parser.add_argument(
+        "-o", "--output-dir",
+        default=".",
+        help="Directory to write CSV files into (default: current directory)",
+    )
+    args = parser.parse_args()
 
-    dump_first_step = True
-    dump_to_file = True
-    for step, kernels in result.items():
-        for k in kernels:
-            print("  ", k["kernel_name"])
+    result = parse_trace(args.trace_file)
+
+    # 1. 统计每个 step 的 kernel 数量和 dur 总和
+    print(f"{'step':<10} {'kernel_count':<15} {'total_dur(us)':<20}")
+    print("-" * 45)
+    for step, kernels in sorted(result.items()):
+        count = len(kernels)
+        total_dur = sum(k["dur"] for k in kernels if k["dur"] is not None)
+        print(f"{step:<10} {count:<15} {total_dur:<20}")
+
+    # 2. 每个 step 生成一个 CSV 文件
+    fields = ["kernel_name", "ts", "dur", "triton_output_code",
+              "kernel num(GB)", "IO efficiency(GB/s)", "kernel kwargs"]
+    for step, kernels in sorted(result.items()):
+        csv_path = f"{args.output_dir}/step_{step}_kernels.csv"
+        with open(csv_path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(kernels)
+        print(f"Wrote {csv_path} ({len(kernels)} rows)")
 
 
 
