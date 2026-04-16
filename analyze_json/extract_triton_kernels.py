@@ -21,12 +21,14 @@ def classify_kernel(name, args, kernel_types):
     Triton kernels (identified via args) are always classified as "triton".
     Unmatched kernels return "other".
     """
-    if "triton output code" in args:
+    if name.startswith("triton_"):
         return "triton"
     nl = name.lower()
     for pattern in kernel_types:
         if pattern in nl:
             return pattern
+    if args.get("Collective name"):
+        return "collective"
     return "other"
 
 
@@ -68,7 +70,7 @@ def parse_trace(trace_file, kernel_types):
             all_kernel_events.append(e)
         elif name.startswith("aten::"):
             aten_events.append(e)
-        elif cat == "gpu_user_annotation" and name.startswith("cncl"):
+        elif cat == "gpu_user_annotation" and (name.startswith("cncl") or name.startswith("nccl")):
             cncl_events.append(e)
 
     def find_step(ts):
@@ -98,15 +100,22 @@ def parse_trace(trace_file, kernel_types):
         step_to_kernel_types[step][ktype]["count"]  += 1
         step_to_kernel_types[step][ktype]["dur_ms"] += dur_ms
 
-        if "triton output code" in args:
-            step_to_triton[step].append({
-                "kernel_name":         name,
-                "dur(ms)":             dur_ms if raw_dur is not None else None,
-                "total io(GB)":        float(args["kernel num(GB)"]),
-                "IO efficiency(GB/s)": float(args["IO efficiency(GB/s)"]),
-                "tiling config":       args["kernel kwargs"],
-                "triton_output_code":  args["triton output code"],
-            })
+        if name.startswith("triton_"):
+            if "triton output code" in args:
+                step_to_triton[step].append({
+                    "kernel_name":         name,
+                    "dur(ms)":             dur_ms if raw_dur is not None else None,
+                    "total io(GB)":        float(args["kernel num(GB)"]),
+                    "IO efficiency(GB/s)": float(args["IO efficiency(GB/s)"]),
+                    "tiling config":       args["kernel kwargs"],
+                    "triton_output_code":  args["triton output code"],
+                })
+            else:
+                step_to_triton[step].append({
+                    "kernel_name":         name,
+                    "dur(ms)":             dur_ms if raw_dur is not None else None,
+                })
+
 
     for e in aten_events:
         step = find_step(e.get("ts", 0))
@@ -160,7 +169,17 @@ if __name__ == "__main__":
         help="Directory to write output files (default: current directory)",
     )
     parser.add_argument(
-        "--kernel-types",
+        "-c", "--save-triton-code",
+        action="store_true",
+        help="Save triton output code for each kernel to individual .py files (default: off)",
+    )
+    parser.add_argument(
+        "-s", "--save-triton-csv",
+        action="store_true",
+        help="Save per-step triton kernel CSV files (default: off)",
+    )
+    parser.add_argument(
+        "-k", "--kernel-types",
         default="gemm,embedding,pool",
         metavar="PATTERN,...",
         help="Comma-separated list of name patterns for kernel classification (case-insensitive substring match). "
@@ -210,7 +229,7 @@ if __name__ == "__main__":
           f" {avg_ac:<10.1f} {avg_ad:<14.3f} {avg_cc:<8.1f} {avg_cd:<14.3f}")
 
     # ── Kernel type breakdown (averaged) ─────────────────────────────────────
-    KERNEL_TYPES = ["triton"] + kernel_types + ["other"]
+    KERNEL_TYPES = ["triton"] + kernel_types + ["collective", "other"]
     print(f"\n=== Kernel Type Breakdown (avg across {n_steps} steps) ===")
     hdr2 = f"{'type':<12} {'avg_count':<12} {'avg_dur_ms':<14}"
     print(hdr2)
@@ -223,31 +242,44 @@ if __name__ == "__main__":
     os.makedirs(args.output_dir, exist_ok=True)
 
     # ── Per-step triton kernel CSVs + triton source files ─────────────────────
-    triton_fields = ["kernel_name", "dur(ms)", "total io(GB)", "IO efficiency(GB/s)", "tiling config", "triton_code_file"]
-    for step in all_steps:
-        kernels = step_to_triton[step]
-        if not kernels:
-            continue
-        csv_path = os.path.join(args.output_dir, f"step_{step}_triton_kernels.csv")
-        code_dir = os.path.join(args.output_dir, f"step_{step}_triton_codes")
-        os.makedirs(code_dir, exist_ok=True)
-        with open(csv_path, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=triton_fields)
-            writer.writeheader()
-            for idx, kernel in enumerate(kernels):
-                safe_name     = kernel["kernel_name"].replace("/", "_").replace(" ", "_")
-                code_filename = f"kernel_{idx}_{safe_name}.py"
-                with open(os.path.join(code_dir, code_filename), "w") as cf:
-                    cf.write(kernel["triton_output_code"])
-                writer.writerow({
-                    "kernel_name":          kernel["kernel_name"],
-                    "dur(ms)":              fmt3(kernel["dur(ms)"]),
-                    "total io(GB)":         fmt3(kernel["total io(GB)"]),
-                    "IO efficiency(GB/s)":  fmt3(kernel["IO efficiency(GB/s)"]),
-                    "tiling config":        kernel["tiling config"].replace("\n", "\\n").replace("\r", ""),
-                    "triton_code_file":     os.path.join(f"step_{step}_triton_codes", code_filename),
-                })
-        print(f"Wrote {csv_path} ({len(kernels)} rows)")
+    if args.save_triton_csv or args.save_triton_code:
+        triton_fields = ["kernel_name", "dur(ms)", "total io(GB)", "IO efficiency(GB/s)", "tiling config", "triton_code_file"]
+        for step in all_steps:
+            kernels = step_to_triton[step]
+            if not kernels:
+                continue
+            code_dir = os.path.join(args.output_dir, f"step_{step}_triton_codes")
+            if args.save_triton_code:
+                os.makedirs(code_dir, exist_ok=True)
+            if args.save_triton_csv:
+                csv_path = os.path.join(args.output_dir, f"step_{step}_triton_kernels.csv")
+                with open(csv_path, "w", newline="") as f:
+                    writer = csv.DictWriter(f, fieldnames=triton_fields)
+                    writer.writeheader()
+                    for idx, kernel in enumerate(kernels):
+                        row = {
+                            "kernel_name":          kernel["kernel_name"],
+                            "dur(ms)":              fmt3(kernel["dur(ms)"]),
+                            "total io(GB)":         fmt3(kernel["total io(GB)"]),
+                            "IO efficiency(GB/s)":  fmt3(kernel["IO efficiency(GB/s)"]),
+                            "tiling config":        kernel["tiling config"].replace("\n", "\\n").replace("\r", ""),
+                            "triton_code_file":     "",
+                        }
+                        if args.save_triton_code:
+                            safe_name     = kernel["kernel_name"].replace("/", "_").replace(" ", "_")
+                            code_filename = f"kernel_{idx}_{safe_name}.py"
+                            with open(os.path.join(code_dir, code_filename), "w") as cf:
+                                cf.write(kernel["triton_output_code"])
+                            row["triton_code_file"] = os.path.join(f"step_{step}_triton_codes", code_filename)
+                        writer.writerow(row)
+                print(f"Wrote {csv_path} ({len(kernels)} rows)")
+            elif args.save_triton_code:
+                for idx, kernel in enumerate(kernels):
+                    safe_name     = kernel["kernel_name"].replace("/", "_").replace(" ", "_")
+                    code_filename = f"kernel_{idx}_{safe_name}.py"
+                    with open(os.path.join(code_dir, code_filename), "w") as cf:
+                        cf.write(kernel["triton_output_code"])
+                print(f"Wrote {code_dir}/ ({len(kernels)} files)")
 
     # ── Averaged all-kernel stats ─────────────────────────────────────────────
     avg_kernels = avg_stats(step_to_kernels, all_steps)
