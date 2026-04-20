@@ -172,7 +172,14 @@ def parse_trace(trace_file, kernel_types):
         step_to_cncl[step][name]["count"]  += 1
         step_to_cncl[step][name]["dur_ms"] += dur_ms
 
-    return step_to_triton, step_to_kernels, step_to_kernel_types, step_to_aten, step_to_cncl, step_durations
+    return {
+        "step_to_triton":       step_to_triton,
+        "step_to_kernels":      step_to_kernels,
+        "step_to_kernel_types": step_to_kernel_types,
+        "step_to_aten":         step_to_aten,
+        "step_to_cncl":         step_to_cncl,
+        "step_durations":       step_durations,
+    }
 
 
 def avg_stats(step_to_dict, steps):
@@ -199,7 +206,16 @@ def avg_stats(step_to_dict, steps):
 
 def compute_avgs(parsed, kernel_types):
     """Compute all average stats from a parsed trace. Returns a data dict."""
-    step_to_triton, step_to_kernels, step_to_kernel_types, step_to_aten, step_to_cncl, step_durations = parsed
+    # Support both dict (new API) and tuple (old API) for backward compatibility
+    if isinstance(parsed, dict):
+        step_to_triton       = parsed["step_to_triton"]
+        step_to_kernels      = parsed["step_to_kernels"]
+        step_to_kernel_types = parsed["step_to_kernel_types"]
+        step_to_aten         = parsed["step_to_aten"]
+        step_to_cncl         = parsed["step_to_cncl"]
+        step_durations       = parsed["step_durations"]
+    else:
+        step_to_triton, step_to_kernels, step_to_kernel_types, step_to_aten, step_to_cncl, step_durations = parsed
     all_steps = sorted(set(step_durations) | set(step_to_kernels) | set(step_to_aten) | set(step_to_cncl))
     n_steps   = len(all_steps)
     mean      = lambda vals: sum(vals) / n_steps if n_steps else 0.0

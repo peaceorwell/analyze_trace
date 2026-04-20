@@ -29,6 +29,7 @@ def sample_trace_data():
                 "args": {
                     "kernel num(GB)": "10.5",
                     "IO efficiency(GB/s)": "350.2",
+                    "kernel kwargs": "M=128,N=128,K=64",
                     "triton output code": "...",
                 },
             },

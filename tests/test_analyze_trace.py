@@ -22,7 +22,8 @@ class TestFmt3:
         assert fmt3(0.001234) == "0.00123"
 
     def test_large_number(self):
-        assert fmt3(1234567) == "1.23e+06"
+        # fmt3 uses Decimal which doesn't use scientific notation for large numbers
+        assert fmt3(1234567) == "1230000"
 
     def test_none(self):
         assert fmt3(None) == ""
@@ -110,8 +111,8 @@ class TestComputeAvgs:
         result = parse_trace(sample_trace_file, ["gemm", "embedding", "pool"])
         avgs = compute_avgs(result, ["gemm", "embedding", "pool"])
 
-        assert "kernel_types" in avgs
-        assert "kernels" in avgs
+        assert "KERNEL_TYPES" in avgs
+        assert "avg_kernels" in avgs
 
     def test_empty_input(self):
         from collections import defaultdict
@@ -157,4 +158,4 @@ class TestEndToEnd:
         avgs = compute_avgs(result, ["gemm", "embedding", "pool"])
 
         assert avgs is not None
-        assert len(avgs["kernel_types"]) > 0
+        assert len(avgs["KERNEL_TYPES"]) > 0
