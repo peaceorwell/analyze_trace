@@ -224,19 +224,28 @@
               </div>
               <div class="table-scroll">
                 <table class="data-table">
+                  <colgroup>
+                    <col v-for="f in currentTable.fields" :key="f"
+                         :style="colWidths[f] ? { width: colWidths[f] + 'px' } : {}" />
+                  </colgroup>
                   <thead>
                     <tr>
                       <th v-for="f in currentTable.fields" :key="f"
-                          @click="setSort(f)" class="th-sortable">
-                        {{ f }}
-                        <span v-if="sortCol===f">{{ sortAsc?'↑':'↓' }}</span>
+                          @click="setSort(f)" class="th-sortable"
+                          :style="colWidths[f] ? { width: colWidths[f] + 'px' } : {}">
+                        <span class="th-label">{{ f }}</span>
+                        <span v-if="sortCol===f" class="th-sort-icon">{{ sortAsc?'↑':'↓' }}</span>
+                        <div class="col-resize-handle"
+                             @mousedown.stop="startResize(f, $event)"
+                             @click.stop></div>
                       </th>
                     </tr>
                   </thead>
                   <tbody>
                     <tr v-for="(row,i) in filteredRows" :key="i">
                       <td v-for="f in currentTable.fields" :key="f"
-                          :class="deltaCellClass(f, row[f])">
+                          :class="deltaCellClass(f, row[f])"
+                          :title="row[f]">
                         {{ row[f] }}
                       </td>
                     </tr>

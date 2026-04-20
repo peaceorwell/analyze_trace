@@ -29,6 +29,7 @@ createApp({
     const tableSearch = ref("");
     const sortCol     = ref("");
     const sortAsc     = ref(true);
+    const colWidths   = ref({});
     const ktChartInst = ref(null);
     const ktChart     = ref(null);
 
@@ -218,7 +219,7 @@ createApp({
       });
     };
 
-    watch(resultTab, v => { if (v === "chart") buildChart(); });
+    watch(resultTab, v => { colWidths.value = {}; if (v === "chart") buildChart(); });
     watch(selectedJob, v => {
       if (v?.status === "done") nextTick(() => { if (resultTab.value === "chart") buildChart(); });
     });
@@ -329,6 +330,24 @@ createApp({
       else { sortCol.value = col; sortAsc.value = true; }
     };
 
+    const startResize = (field, e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const th = e.target.closest('th');
+      const startX = e.clientX;
+      const startWidth = th.offsetWidth;
+      const onMove = ev => {
+        const w = Math.max(60, startWidth + ev.clientX - startX);
+        colWidths.value = { ...colWidths.value, [field]: w };
+      };
+      const onUp = () => {
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+      };
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    };
+
     const downloadCsv = filename => {
       if (!selectedJobId.value) return;
       window.open(`/api/jobs/${selectedJobId.value}/results/${filename}`);
@@ -400,7 +419,7 @@ createApp({
       fmtDate, statusIcon, toggleGroup, deltaCellClass,
       onFileChange, onDrop, clearFile, submitJob,
       selectJob, deleteJob, deleteFile, editLabel, moveProject,
-      setSort, downloadCsv,
+      setSort, downloadCsv, colWidths, startResize,
       toggleCompareSelect, submitCompare, createProject,
     };
   },
