@@ -97,22 +97,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 .empty-tip { text-align: center; color: #94a3b8; padding: 24px 0; font-size: 12px; }
 
 /* ── Main ── */
-.main { flex: 1; overflow: hidden; display: flex; flex-direction: column; min-width: 0; }
-.main-top { flex-shrink: 0; overflow-y: auto; padding: 16px 16px 8px; }
-.main-bottom { flex: 1; overflow-y: auto; padding: 0 16px 16px; display: flex; flex-direction: column; }
-.split-handle {
-  height: 5px; flex-shrink: 0; cursor: row-resize;
-  background: #e2e8f0; position: relative;
-  transition: background .15s;
-}
-.split-handle:hover,
-.split-handle:active { background: #6366f1; opacity: .5; }
-.split-handle::after {
-  content: ''; position: absolute; left: 50%; top: 50%;
-  transform: translate(-50%, -50%);
-  width: 32px; height: 3px; border-radius: 2px;
-  background: #94a3b8; opacity: .6;
-}
+.main { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .empty-main { display: flex; align-items: center; justify-content: center;
               flex: 1; color: #94a3b8; font-size: 14px; }
 
@@ -181,7 +166,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 /* ── Result panel ── */
-.result-card { flex: 1; min-height: 0; }
+.result-card { flex: 1; }
 .result-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 .result-label { font-size: 14px; font-weight: 600; margin: 0 8px; }
 .result-actions { display: flex; gap: 6px; }

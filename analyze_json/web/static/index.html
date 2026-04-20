@@ -115,7 +115,6 @@
 
       <!-- ── Main ── -->
       <main class="main">
-        <div class="main-top" :style="{ height: splitTopHeight + 'px' }">
         <!-- Submit form -->
         <section class="card">
           <div class="card-title">提交分析</div>
@@ -169,9 +168,7 @@
             </div>
           </div>
         </section>
-        </div><!-- /main-top -->
-        <div class="split-handle" @mousedown.prevent="startSplitResize"></div>
-        <div class="main-bottom">
+
         <!-- Result panel -->
         <section v-if="selectedJob" class="card result-card">
           <div class="result-header">
@@ -307,7 +304,6 @@
         </section>
 
         <div v-else class="empty-main">选择左侧历史记录查看结果，或上传文件开始分析</div>
-        </div><!-- /main-bottom -->
       </main>
     </div>
 
