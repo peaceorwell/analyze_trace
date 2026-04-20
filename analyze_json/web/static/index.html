@@ -229,7 +229,7 @@
                 <input v-model="tableSearch" class="input input-sm" placeholder="全局搜索..." />
                 <span v-if="hasColFilters" class="filter-active-tip">
                   列筛选已启用
-                  <button class="btn-clear-filter" @click="colFilters={}">✕ 清除</button>
+                  <button class="btn-clear-filter" @click="clearColFilters()">✕ 清除</button>
                 </span>
                 <button class="btn btn-sm btn-outline" @click="downloadCsv(resultTab)">下载 CSV</button>
               </div>
@@ -254,12 +254,25 @@
                     <tr class="filter-row">
                       <th v-for="f in currentTable.fields" :key="f"
                           :style="colWidths[f] ? { width: colWidths[f] + 'px' } : {}">
-                        <input
-                          v-model="colFilters[f]"
-                          class="col-filter-input"
-                          :class="{ active: colFilters[f] }"
-                          placeholder="筛选..."
-                          @click.stop />
+                        <div class="col-filter-wrap">
+                          <select v-model="colFilterOps[f]" class="col-filter-op"
+                                  :class="{ 'op-active': colFilterOps[f] && colFilterOps[f] !== '~' }"
+                                  @click.stop>
+                            <option value="~">~</option>
+                            <option value=">=">&gt;=</option>
+                            <option value="<=">&lt;=</option>
+                            <option value=">">&gt;</option>
+                            <option value="<">&lt;</option>
+                            <option value="=">=</option>
+                          </select>
+                          <input
+                            v-model="colFilters[f]"
+                            class="col-filter-input"
+                            :class="{ active: colFilters[f] }"
+                            :type="(colFilterOps[f] && colFilterOps[f] !== '~') ? 'number' : 'text'"
+                            placeholder="筛选..."
+                            @click.stop />
+                        </div>
                       </th>
                     </tr>
                   </thead>

@@ -29,8 +29,9 @@ createApp({
     const tableSearch = ref("");
     const sortCol     = ref("");
     const sortAsc     = ref(true);
-    const colWidths   = ref({});
-    const colFilters  = ref({});
+    const colWidths     = ref({});
+    const colFilters    = ref({});
+    const colFilterOps  = ref({});
     const ktChartInst = ref(null);
     const ktChart     = ref(null);
 
@@ -106,6 +107,11 @@ createApp({
       Object.values(colFilters.value).some(v => v)
     );
 
+    const clearColFilters = () => {
+      colFilters.value = {};
+      colFilterOps.value = {};
+    };
+
     const filteredRows = computed(() => {
       let rows = currentTable.value.rows || [];
       if (tableSearch.value) {
@@ -114,8 +120,20 @@ createApp({
       }
       for (const [field, val] of Object.entries(colFilters.value)) {
         if (!val) continue;
-        const q = val.toLowerCase();
-        rows = rows.filter(r => String(r[field] ?? '').toLowerCase().includes(q));
+        const op = colFilterOps.value[field] || '~';
+        rows = rows.filter(r => {
+          const cell = r[field] ?? '';
+          if (op === '~') return String(cell).toLowerCase().includes(val.toLowerCase());
+          const num = parseFloat(val);
+          const cellNum = parseFloat(cell);
+          if (isNaN(num) || isNaN(cellNum)) return isNaN(num);
+          if (op === '>=') return cellNum >= num;
+          if (op === '<=') return cellNum <= num;
+          if (op === '>')  return cellNum >  num;
+          if (op === '<')  return cellNum <  num;
+          if (op === '=')  return cellNum === num;
+          return true;
+        });
       }
       if (sortCol.value) {
         rows = [...rows].sort((a, b) => {
@@ -237,7 +255,7 @@ createApp({
       });
     };
 
-    watch(resultTab, v => { colWidths.value = {}; colFilters.value = {}; if (v === "chart") buildChart(); });
+    watch(resultTab, v => { colWidths.value = {}; colFilters.value = {}; colFilterOps.value = {}; if (v === "chart") buildChart(); });
     watch(selectedJob, v => {
       if (v?.status === "done") nextTick(() => { if (resultTab.value === "chart") buildChart(); });
     });
@@ -444,7 +462,7 @@ createApp({
       onFileChange, onDrop, clearFile, submitJob,
       selectJob, deleteJob, deleteFile, editLabel, moveProject,
       setSort, downloadCsv, colWidths, startResize,
-      colFilters, hasColFilters,
+      colFilters, colFilterOps, hasColFilters, clearColFilters,
       allowFileDownload, downloadTraceFile,
       toggleCompareSelect, submitCompare, createProject,
     };
