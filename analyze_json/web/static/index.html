@@ -72,6 +72,9 @@
               <span class="job-label">{{ job.label || job.id.slice(0,8) }}</span>
             </div>
             <div class="job-item-meta">
+              <span v-if="job.project_id" class="tag-project">
+                {{ projects.find(p => p.id === job.project_id)?.name }}
+              </span>
               {{ fmtDate(job.created_at) }}
               <span v-if="!job.file_a_exists" class="tag-deleted">文件已删除</span>
             </div>
@@ -247,6 +250,21 @@
 
         <div v-else class="empty-main">选择左侧历史记录查看结果，或上传文件开始分析</div>
       </main>
+    </div>
+
+    <!-- ── Move project modal ── -->
+    <div v-if="showMoveProject" class="modal-mask" @click.self="showMoveProject=false">
+      <div class="modal">
+        <div class="modal-title">移动到项目</div>
+        <select v-model="moveProjectTarget" class="input w-full">
+          <option value="">未分组</option>
+          <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
+        </select>
+        <div class="modal-actions">
+          <button class="btn btn-outline" @click="showMoveProject=false">取消</button>
+          <button class="btn btn-primary" @click="confirmMoveProject">确认</button>
+        </div>
+      </div>
     </div>
 
     <!-- ── New project modal ── -->

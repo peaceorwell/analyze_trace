@@ -36,6 +36,9 @@ createApp({
     const newProjectName  = ref("");
     const newProjectDesc  = ref("");
 
+    const showMoveProject   = ref(false);
+    const moveProjectTarget = ref("");
+
     const compareSelection  = ref([]);
     const compareKernelTypes = ref("gemm,embedding,pool");
     const compareLabel      = ref("");
@@ -305,17 +308,18 @@ createApp({
       await loadJobs();
     };
 
-    const moveProject = async () => {
-      const opts = ["未分组", ...projects.value.map(p => p.name)];
-      const cur  = projects.value.find(p => p.id === selectedJob.value?.project_id)?.name || "未分组";
-      const choice = prompt(`移动到项目（当前：${cur}）\n选项：${opts.join(", ")}`);
-      if (choice === null) return;
-      const p = projects.value.find(p => p.name === choice);
+    const moveProject = () => {
+      moveProjectTarget.value = selectedJob.value?.project_id || "";
+      showMoveProject.value = true;
+    };
+
+    const confirmMoveProject = async () => {
       await fetch(`/api/jobs/${selectedJobId.value}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ project_id: p?.id || null }),
+        body: JSON.stringify({ project_id: moveProjectTarget.value || null }),
       });
+      showMoveProject.value = false;
       await loadJob(selectedJobId.value);
       await loadJobs();
     };
@@ -391,6 +395,7 @@ createApp({
       resultTab, tableSearch, sortCol, sortAsc, ktChart,
       availableTabs, currentTable, filteredRows,
       showNewProject, newProjectName, newProjectDesc,
+      showMoveProject, moveProjectTarget, confirmMoveProject,
       compareSelection, compareKernelTypes, compareLabel, compareProjectId,
       fmtDate, statusIcon, toggleGroup, deltaCellClass,
       onFileChange, onDrop, clearFile, submitJob,
