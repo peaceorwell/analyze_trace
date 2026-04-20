@@ -258,7 +258,8 @@
                           <select v-model="colFilterOps[f]" class="col-filter-op"
                                   :class="{ 'op-active': colFilterOps[f] && colFilterOps[f] !== '~' }"
                                   @click.stop>
-                            <option value="~">~</option>
+                            <option value="~">包含</option>
+                            <option value="!~">不包含</option>
                             <option value=">=">&gt;=</option>
                             <option value="<=">&lt;=</option>
                             <option value=">">&gt;</option>

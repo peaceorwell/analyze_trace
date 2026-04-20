@@ -237,7 +237,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 .filter-row th:first-child { background: #eaecfd; }
 .col-filter-wrap { display: flex; gap: 2px; align-items: center; }
 .col-filter-op {
-  flex-shrink: 0; width: 34px;
+  flex-shrink: 0; width: 46px;
   border: 1px solid #d1d5db; border-radius: 4px;
   padding: 2px 1px; font-size: 10px; outline: none;
   background: #fff; color: #374151; cursor: pointer;
