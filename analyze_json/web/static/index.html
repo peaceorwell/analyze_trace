@@ -182,12 +182,18 @@
             <span v-if="selectedJob.file_a_name">
               📄 {{ selectedJob.file_a_name }}
               <span v-if="!selectedJob.file_a_exists" class="tag-deleted">已删除</span>
-              <button v-else class="btn btn-xs btn-danger" @click="deleteFile('a')">删除文件</button>
+              <template v-else>
+                <button v-if="allowFileDownload" class="btn btn-xs btn-outline" @click="downloadTraceFile('a')">下载</button>
+                <button class="btn btn-xs btn-danger" @click="deleteFile('a')">删除文件</button>
+              </template>
             </span>
             <span v-if="selectedJob.file_b_name" class="ml-4">
               📄 {{ selectedJob.file_b_name }}
               <span v-if="!selectedJob.file_b_exists" class="tag-deleted">已删除</span>
-              <button v-else class="btn btn-xs btn-danger" @click="deleteFile('b')">删除文件</button>
+              <template v-else>
+                <button v-if="allowFileDownload" class="btn btn-xs btn-outline" @click="downloadTraceFile('b')">下载</button>
+                <button class="btn btn-xs btn-danger" @click="deleteFile('b')">删除文件</button>
+              </template>
             </span>
           </div>
 

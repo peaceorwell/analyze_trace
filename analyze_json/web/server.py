@@ -22,6 +22,9 @@ from db import get_db, init_db, row_to_dict  # noqa: E402
 
 STORAGE_DIR = os.path.join(os.path.dirname(__file__), "storage")
 
+# Configured at startup via CLI; read-only after that
+ALLOW_FILE_DOWNLOAD: bool = True
+
 
 # ── App lifecycle ─────────────────────────────────────────────────────────────
 
@@ -162,11 +165,16 @@ async def run_analysis(job_id: str):
         await db.close()
 
 
-# ── Routes: index ─────────────────────────────────────────────────────────────
+# ── Routes: index / config ────────────────────────────────────────────────────
 
 @app.get("/")
 async def index():
     return FileResponse(os.path.join(os.path.dirname(__file__), "static", "index.html"))
+
+
+@app.get("/api/config")
+async def get_config():
+    return {"allow_file_download": ALLOW_FILE_DOWNLOAD}
 
 
 # ── Routes: projects ──────────────────────────────────────────────────────────
@@ -395,6 +403,26 @@ async def delete_job_file(jid: str, which: str):
     await db.close()
 
 
+@app.get("/api/jobs/{jid}/files/{which}")
+async def download_job_file(jid: str, which: str):
+    if not ALLOW_FILE_DOWNLOAD:
+        raise HTTPException(403, "File download is disabled")
+    if which not in ("a", "b"):
+        raise HTTPException(400, "which must be 'a' or 'b'")
+    db = await get_db()
+    row = await row_to_dict(
+        await (await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))).fetchone()
+    )
+    await db.close()
+    if row is None:
+        raise HTTPException(404)
+    fpath = row.get(f"file_{which}_path")
+    fname = row.get(f"file_{which}_name") or f"trace_{which}.json"
+    if not fpath or not os.path.exists(fpath):
+        raise HTTPException(404, "File not found or already deleted")
+    return FileResponse(fpath, filename=fname, media_type="application/json")
+
+
 @app.get("/api/jobs/{jid}/results/{filename}")
 async def download_result(jid: str, filename: str):
     # Prevent path traversal
@@ -414,6 +442,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Trace Analyzer Web Server")
     parser.add_argument("--port", type=int, default=8181, help="Port to listen on (default: 8181)")
     parser.add_argument("--host", default="127.0.0.1", help="Host to bind (default: 127.0.0.1)")
+    parser.add_argument("--no-download", action="store_true",
+                        help="Disable downloading of uploaded trace files (default: download allowed)")
     cli_args = parser.parse_args()
+
+    global ALLOW_FILE_DOWNLOAD
+    ALLOW_FILE_DOWNLOAD = not cli_args.no_download
 
     uvicorn.run("server:app", host=cli_args.host, port=cli_args.port, reload=False)

@@ -33,6 +33,8 @@ createApp({
     const ktChartInst = ref(null);
     const ktChart     = ref(null);
 
+    const allowFileDownload = ref(true);
+
     const showNewProject  = ref(false);
     const newProjectName  = ref("");
     const newProjectDesc  = ref("");
@@ -134,6 +136,12 @@ createApp({
     };
 
     // ── Data fetching ──────────────────────────────────────────────────────
+    const loadConfig = async () => {
+      const r = await fetch("/api/config");
+      const cfg = await r.json();
+      allowFileDownload.value = cfg.allow_file_download ?? true;
+    };
+
     const loadProjects = async () => {
       const r = await fetch("/api/projects");
       projects.value = await r.json();
@@ -353,6 +361,11 @@ createApp({
       window.open(`/api/jobs/${selectedJobId.value}/results/${filename}`);
     };
 
+    const downloadTraceFile = slot => {
+      if (!selectedJobId.value) return;
+      window.open(`/api/jobs/${selectedJobId.value}/files/${slot}`);
+    };
+
     // ── Compare ────────────────────────────────────────────────────────────
     const toggleCompareSelect = job => {
       if (!job.file_a_exists) return;
@@ -403,6 +416,7 @@ createApp({
     watch(filterProject, loadJobs);
 
     onMounted(async () => {
+      await loadConfig();
       await loadProjects();
       await loadJobs();
     });
@@ -420,6 +434,7 @@ createApp({
       onFileChange, onDrop, clearFile, submitJob,
       selectJob, deleteJob, deleteFile, editLabel, moveProject,
       setSort, downloadCsv, colWidths, startResize,
+      allowFileDownload, downloadTraceFile,
       toggleCompareSelect, submitCompare, createProject,
     };
   },
