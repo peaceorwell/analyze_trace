@@ -15,10 +15,29 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 
 /* ── Sidebar ── */
 .sidebar {
-  width: 240px; min-width: 200px; background: #fff;
+  position: relative;
+  min-width: 32px; background: #fff;
   border-right: 1px solid #e2e8f0;
   display: flex; flex-direction: column; overflow: hidden;
+  flex-shrink: 0;
+  transition: width .15s ease;
 }
+.sidebar-toggle-btn {
+  position: absolute; top: 8px; right: 4px; z-index: 10;
+  width: 20px; height: 20px; border-radius: 4px;
+  border: 1px solid #e2e8f0; background: #fff;
+  font-size: 13px; line-height: 1; cursor: pointer; color: #64748b;
+  display: flex; align-items: center; justify-content: center;
+  padding: 0;
+}
+.sidebar-toggle-btn:hover { background: #ede9fe; color: #6366f1; border-color: #c7d0f8; }
+.sidebar-content { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
+.sidebar-resize-handle {
+  position: absolute; top: 0; right: 0; bottom: 0; width: 4px;
+  cursor: col-resize; z-index: 5;
+}
+.sidebar-resize-handle:hover,
+.sidebar-resize-handle:active { background: #6366f1; opacity: .35; }
 .sidebar-tabs { display: flex; border-bottom: 1px solid #e2e8f0; }
 .sidebar-tabs .tab {
   flex: 1; padding: 8px 0; border: none; background: none;
@@ -78,7 +97,22 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 .empty-tip { text-align: center; color: #94a3b8; padding: 24px 0; font-size: 12px; }
 
 /* ── Main ── */
-.main { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.main { flex: 1; overflow: hidden; display: flex; flex-direction: column; min-width: 0; }
+.main-top { flex-shrink: 0; overflow-y: auto; padding: 16px 16px 8px; }
+.main-bottom { flex: 1; overflow-y: auto; padding: 0 16px 16px; display: flex; flex-direction: column; }
+.split-handle {
+  height: 5px; flex-shrink: 0; cursor: row-resize;
+  background: #e2e8f0; position: relative;
+  transition: background .15s;
+}
+.split-handle:hover,
+.split-handle:active { background: #6366f1; opacity: .5; }
+.split-handle::after {
+  content: ''; position: absolute; left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  width: 32px; height: 3px; border-radius: 2px;
+  background: #94a3b8; opacity: .6;
+}
 .empty-main { display: flex; align-items: center; justify-content: center;
               flex: 1; color: #94a3b8; font-size: 14px; }
 
@@ -147,7 +181,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 /* ── Result panel ── */
-.result-card { flex: 1; }
+.result-card { flex: 1; min-height: 0; }
 .result-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 .result-label { font-size: 14px; font-weight: 600; margin: 0 8px; }
 .result-actions { display: flex; gap: 6px; }

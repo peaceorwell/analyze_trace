@@ -37,6 +37,50 @@ createApp({
 
     const allowFileDownload = ref(true);
 
+    // ── Layout ────────────────────────────────────────────────────────────────
+    const sidebarWidth     = ref(240);
+    const sidebarCollapsed = ref(false);
+    const splitTopHeight   = ref(260);
+
+    const toggleSidebar = () => { sidebarCollapsed.value = !sidebarCollapsed.value; };
+
+    const startSidebarResize = (e) => {
+      const startX = e.clientX;
+      const startW = sidebarWidth.value;
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+      const onMove = ev => {
+        sidebarWidth.value = Math.max(160, Math.min(520, startW + ev.clientX - startX));
+      };
+      const onUp = () => {
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+      };
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    };
+
+    const startSplitResize = (e) => {
+      const startY = e.clientY;
+      const startH = splitTopHeight.value;
+      document.body.style.cursor = 'row-resize';
+      document.body.style.userSelect = 'none';
+      const onMove = ev => {
+        const maxH = window.innerHeight - 48 - 120;
+        splitTopHeight.value = Math.max(100, Math.min(maxH, startH + ev.clientY - startY));
+      };
+      const onUp = () => {
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+      };
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    };
+
     const showNewProject  = ref(false);
     const newProjectName  = ref("");
     const newProjectDesc  = ref("");
@@ -464,6 +508,8 @@ createApp({
       selectJob, deleteJob, deleteFile, editLabel, moveProject,
       setSort, downloadCsv, colWidths, startResize,
       colFilters, colFilterOps, hasColFilters, clearColFilters,
+      sidebarWidth, sidebarCollapsed, splitTopHeight,
+      toggleSidebar, startSidebarResize, startSplitResize,
       allowFileDownload, downloadTraceFile,
       toggleCompareSelect, submitCompare, createProject,
     };
