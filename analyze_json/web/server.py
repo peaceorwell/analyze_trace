@@ -729,14 +729,13 @@ async def download_job_file(jid: str, which: str, user_token: Optional[str] = Co
     token = await get_or_create_user(user_token)
     db = await get_db()
 
-    row = await row_to_dict(
-        await db.execute("""
-            SELECT j.*, p.user_token as proj_owner, p.is_public, p.password_hash
-            FROM jobs j
-            LEFT JOIN projects p ON j.project_id = p.id
-            WHERE j.id=?
-        """, (jid,)).fetchone()
-    )
+    cursor = await db.execute("""
+        SELECT j.*, p.user_token as proj_owner, p.is_public, p.password_hash
+        FROM jobs j
+        LEFT JOIN projects p ON j.project_id = p.id
+        WHERE j.id=?
+    """, (jid,))
+    row = await row_to_dict(await cursor.fetchone())
     await db.close()
 
     if not row:
@@ -780,14 +779,13 @@ async def download_result(jid: str, filename: str, user_token: Optional[str] = C
 
     token = await get_or_create_user(user_token)
     db = await get_db()
-    row = await row_to_dict(
-        await db.execute("""
-            SELECT j.*, p.user_token as proj_owner, p.is_public, p.password_hash
-            FROM jobs j
-            LEFT JOIN projects p ON j.project_id = p.id
-            WHERE j.id=?
-        """, (jid,)).fetchone()
-    )
+    cursor = await db.execute("""
+        SELECT j.*, p.user_token as proj_owner, p.is_public, p.password_hash
+        FROM jobs j
+        LEFT JOIN projects p ON j.project_id = p.id
+        WHERE j.id=?
+    """, (jid,))
+    row = await row_to_dict(await cursor.fetchone())
     await db.close()
 
     if not row:
