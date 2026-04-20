@@ -14,16 +14,25 @@ async def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript("""
-            CREATE TABLE IF NOT EXISTS projects (
-                id          TEXT PRIMARY KEY,
-                name        TEXT NOT NULL,
-                description TEXT DEFAULT '',
+            CREATE TABLE IF NOT EXISTS users (
+                user_token  TEXT PRIMARY KEY,
                 created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS projects (
+                id           TEXT PRIMARY KEY,
+                user_token   TEXT REFERENCES users(user_token) ON DELETE CASCADE,
+                name         TEXT NOT NULL,
+                description  TEXT DEFAULT '',
+                password_hash TEXT DEFAULT NULL,
+                is_public    INTEGER DEFAULT 0,
+                created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
             );
 
             CREATE TABLE IF NOT EXISTS jobs (
                 id               TEXT PRIMARY KEY,
                 project_id       TEXT REFERENCES projects(id) ON DELETE SET NULL,
+                user_token       TEXT REFERENCES users(user_token) ON DELETE CASCADE,
                 created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
                 label            TEXT DEFAULT '',
                 mode             TEXT CHECK(mode IN ('single','compare')) NOT NULL,
@@ -51,12 +60,34 @@ async def init_db():
                 result_dir       TEXT DEFAULT ''
             );
         """)
-        # Add gzip_path columns if they don't exist (for existing databases)
-        for col in ["file_a_gzip_path", "file_b_gzip_path"]:
-            try:
-                await db.execute(f"ALTER TABLE jobs ADD COLUMN {col} TEXT")
-            except Exception:
-                pass  # Column already exists
+
+        # Migration for existing databases
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP")
+        except Exception:
+            pass
+        try:
+            await db.execute("ALTER TABLE projects ADD COLUMN user_token TEXT")
+            await db.execute("ALTER TABLE projects ADD COLUMN password_hash TEXT DEFAULT NULL")
+            await db.execute("ALTER TABLE projects ADD COLUMN is_public INTEGER DEFAULT 0")
+            await db.execute("ALTER TABLE projects ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP")
+        except Exception:
+            pass
+        try:
+            await db.execute("ALTER TABLE jobs ADD COLUMN user_token TEXT")
+        except Exception:
+            pass
+
+        # Create indexes for user_token lookups
+        try:
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_token)")
+        except Exception:
+            pass
+        try:
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_jobs_user ON jobs(user_token)")
+        except Exception:
+            pass
+
         await db.commit()
 
 

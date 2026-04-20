@@ -41,6 +41,15 @@ createApp({
 
     const allowFileDownload = ref(true);
 
+    // ── Auth ─────────────────────────────────────────────────────────────────
+    const userToken = ref(null);
+
+    const initAuth = async () => {
+      const r = await fetch("/api/auth/guest", { method: "POST" });
+      const data = await r.json();
+      userToken.value = data.user_token;
+    };
+
     // ── Layout ────────────────────────────────────────────────────────────────
     const sidebarWidth     = ref(240);
     const sidebarCollapsed = ref(false);
@@ -71,6 +80,17 @@ createApp({
 
     const showMoveProject   = ref(false);
     const moveProjectTarget = ref("");
+
+    // ── Project sharing ─────────────────────────────────────────────────────
+    const showShareProject = ref(false);
+    const shareProjectId = ref("");
+    const shareProjectPassword = ref("");
+    const shareProjectPublic = ref(false);
+    const shareUnlockPassword = ref("");
+    const showUnlockModal = ref(false);
+    const unlockProjectId = ref("");
+    const unlockProjectName = ref("");
+    const unlockedProjects = ref({});  // project_id -> true
 
     const compareSelection  = ref([]);
     const compareKernelTypes = ref("gemm,embedding,pool");
@@ -200,7 +220,7 @@ createApp({
     };
 
     const loadProjects = async () => {
-      const r = await fetch("/api/projects");
+      const r = await fetch("/api/projects", { credentials: "include" });
       projects.value = await r.json();
     };
 
@@ -208,12 +228,12 @@ createApp({
       const url = filterProject.value
         ? `/api/jobs?project_id=${filterProject.value}`
         : "/api/jobs";
-      const r = await fetch(url);
+      const r = await fetch(url, { credentials: "include" });
       jobs.value = await r.json();
     };
 
     const loadJob = async id => {
-      const r = await fetch(`/api/jobs/${id}`);
+      const r = await fetch(`/api/jobs/${id}`, { credentials: "include" });
       if (!r.ok) return;
       selectedJob.value = await r.json();
     };
@@ -402,6 +422,7 @@ createApp({
       };
       xhr.onerror = () => { submitting.value = false; uploadProgress.value = 0; };
       xhr.open("POST", "/api/jobs");
+      xhr.withCredentials = true;
       xhr.send(fd);
     };
 
@@ -409,7 +430,7 @@ createApp({
     const deleteJob = async () => {
       if (!selectedJobId.value) return;
       if (!confirm("确定删除该任务及所有关联文件？")) return;
-      await fetch(`/api/jobs/${selectedJobId.value}`, { method: "DELETE" });
+      await fetch(`/api/jobs/${selectedJobId.value}`, { method: "DELETE", credentials: "include" });
       selectedJobId.value = null;
       selectedJob.value = null;
       await loadJobs();
@@ -417,7 +438,7 @@ createApp({
 
     const deleteFile = async slot => {
       if (!confirm(`确定删除原始 trace 文件？删除后该文件无法参与历史对比。`)) return;
-      await fetch(`/api/jobs/${selectedJobId.value}/files/${slot}`, { method: "DELETE" });
+      await fetch(`/api/jobs/${selectedJobId.value}/files/${slot}`, { method: "DELETE", credentials: "include" });
       await loadJob(selectedJobId.value);
     };
 
@@ -427,6 +448,7 @@ createApp({
       await fetch(`/api/jobs/${selectedJobId.value}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ label: newLabel }),
       });
       await loadJob(selectedJobId.value);
@@ -442,11 +464,77 @@ createApp({
       await fetch(`/api/jobs/${selectedJobId.value}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ project_id: moveProjectTarget.value || null }),
       });
       showMoveProject.value = false;
       await loadJob(selectedJobId.value);
       await loadJobs();
+    };
+
+    // ── Project sharing ─────────────────────────────────────────────────────
+    const openShareModal = (project) => {
+      shareProjectId.value = project.id;
+      shareProjectPassword.value = "";
+      shareProjectPublic.value = !!project.is_public;
+      showShareProject.value = true;
+    };
+
+    const saveProjectSettings = async () => {
+      await fetch(`/api/projects/${shareProjectId.value}/password`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ password: shareProjectPassword.value }),
+      });
+      await fetch(`/api/projects/${shareProjectId.value}/public`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ is_public: shareProjectPublic.value }),
+      });
+      showShareProject.value = false;
+      await loadProjects();
+      await loadJobs();
+    };
+
+    const unlockProject = async (project) => {
+      unlockProjectId.value = project.id;
+      unlockProjectName.value = project.name;
+      shareUnlockPassword.value = "";
+      showUnlockModal.value = true;
+    };
+
+    const deleteProject = async (projectId) => {
+      if (!confirm("确定删除该项目？项目内的任务不会被删除，但会变为未分组状态。")) return;
+      await fetch(`/api/projects/${projectId}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      filterProject.value = "";
+      await loadProjects();
+      await loadJobs();
+    };
+
+    const confirmUnlock = async () => {
+      const r = await fetch("/api/auth/verify-project", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ project_id: unlockProjectId.value, password: shareUnlockPassword.value }),
+      });
+      const data = await r.json();
+      if (data.verified) {
+        unlockedProjects.value[unlockProjectId.value] = true;
+        showUnlockModal.value = false;
+        await loadJobs();
+      } else {
+        alert("密码错误");
+      }
+    };
+
+    const isProjectLocked = (project) => {
+      return project.password_hash && !unlockedProjects.value[project.id] && project.user_token !== userToken.value;
     };
 
     const setSort = col => {
@@ -493,7 +581,7 @@ createApp({
       if (!win) { alert('请允许浏览器弹出窗口后重试'); return; }
 
       // Fetch trace in background
-      const resp = await fetch(`/api/jobs/${selectedJobId.value}/files/${slot}`);
+      const resp = await fetch(`/api/jobs/${selectedJobId.value}/files/${slot}`, { credentials: "include" });
       if (!resp.ok) { win.close(); return; }
       const buffer = await resp.arrayBuffer();
 
@@ -531,6 +619,7 @@ createApp({
       const r = await fetch("/api/jobs/compare", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({
           job_id_a: a, job_id_b: b,
           kernel_types: compareKernelTypes.value,
@@ -552,6 +641,7 @@ createApp({
       await fetch("/api/projects", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ name: newProjectName.value, description: newProjectDesc.value }),
       });
       showNewProject.value = false;
@@ -563,6 +653,7 @@ createApp({
     watch(filterProject, loadJobs);
 
     onMounted(async () => {
+      await initAuth();
       await loadConfig();
       await loadProjects();
       await loadJobs();
@@ -576,6 +667,10 @@ createApp({
       availableTabs, currentTable, filteredRows,
       showNewProject, newProjectName, newProjectDesc,
       showMoveProject, moveProjectTarget, confirmMoveProject,
+      showShareProject, shareProjectId, shareProjectPassword, shareProjectPublic,
+      openShareModal, saveProjectSettings,
+      showUnlockModal, unlockProjectId, unlockProjectName, shareUnlockPassword,
+      unlockProject, confirmUnlock, isProjectLocked, unlockedProjects, deleteProject,
       compareSelection, compareKernelTypes, compareLabel, compareProjectId,
       fmtDate, statusIcon, toggleGroup, deltaCellClass,
       onFileChange, onDrop, clearFile, submitJob,

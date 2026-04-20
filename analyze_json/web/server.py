@@ -14,9 +14,11 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 import aiofiles
-from fastapi import BackgroundTasks, FastAPI, Form, HTTPException, UploadFile
+from fastapi import BackgroundTasks, Cookie, FastAPI, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.requests import Request
+from werkzeug.security import check_password_hash, generate_password_hash
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from analyze_trace import compute_avgs, parse_trace  # noqa: E402
@@ -40,7 +42,44 @@ app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── User token helpers ─────────────────────────────────────────────────────────
+
+async def get_or_create_user(user_token: Optional[str]) -> str:
+    """Get existing user or create new one. Returns user_token."""
+    if not user_token:
+        user_token = str(uuid.uuid4())
+    db = await get_db()
+    try:
+        await db.execute("INSERT OR IGNORE INTO users(user_token) VALUES(?)", (user_token,))
+        await db.commit()
+    finally:
+        await db.close()
+    return user_token
+
+
+async def verify_project_access(db, project_id: str, user_token: str, password: Optional[str] = None) -> bool:
+    """Verify user has access to project. Returns True if access granted."""
+    cursor = await db.execute("SELECT * FROM projects WHERE id=?", (project_id,))
+    row = await row_to_dict(await cursor.fetchone())
+    if not row:
+        return False
+
+    # Owner always has access
+    if row.get("user_token") == user_token:
+        return True
+
+    # Public projects are accessible to all
+    if row.get("is_public") and not row.get("password_hash"):
+        return True
+
+    # Password-protected projects require correct password
+    if row.get("password_hash"):
+        if not password:
+            return False
+        return check_password_hash(row["password_hash"], password)
+
+    return False
+
 
 def job_dir(job_id: str) -> str:
     return os.path.join(STORAGE_DIR, job_id)
@@ -168,9 +207,8 @@ async def run_analysis(job_id: str):
         await db.execute("UPDATE jobs SET status='running' WHERE id=?", (job_id,))
         await db.commit()
 
-        job = await row_to_dict(
-            await (await db.execute("SELECT * FROM jobs WHERE id=?", (job_id,))).fetchone()
-        )
+        cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (job_id,))
+        job = await row_to_dict(await cursor.fetchone())
 
         kernel_types = [p for p in (job["kernel_types"] or "").split(",") if p]
         rdir = result_dir(job_id)
@@ -178,12 +216,10 @@ async def run_analysis(job_id: str):
 
         # Resolve source paths for compare-from-history (needs DB, must happen before thread)
         if job["mode"] == "compare" and not job["file_a_path"]:
-            src_a = await row_to_dict(
-                await (await db.execute("SELECT * FROM jobs WHERE id=?", (job["source_job_a"],))).fetchone()
-            )
-            src_b = await row_to_dict(
-                await (await db.execute("SELECT * FROM jobs WHERE id=?", (job["source_job_b"],))).fetchone()
-            )
+            cursor_a = await db.execute("SELECT * FROM jobs WHERE id=?", (job["source_job_a"],))
+            src_a = await row_to_dict(await cursor_a.fetchone())
+            cursor_b = await db.execute("SELECT * FROM jobs WHERE id=?", (job["source_job_b"],))
+            src_b = await row_to_dict(await cursor_b.fetchone())
             path_a = src_a["file_a_path"]
             path_b = src_b["file_a_path"]
             name_a = src_a.get("file_a_name") or os.path.basename(path_a)
@@ -227,48 +263,184 @@ async def get_config():
     return {"allow_file_download": ALLOW_FILE_DOWNLOAD}
 
 
+# ── Routes: auth ──────────────────────────────────────────────────────────────
+
+@app.post("/api/auth/guest", response_model=dict)
+async def guest_login(response: JSONResponse, user_token: Optional[str] = Cookie(None)):
+    """Get existing user token or create new one. Sets HttpOnly cookie."""
+    token = await get_or_create_user(user_token)
+    response.set_cookie(
+        key="user_token",
+        value=token,
+        httponly=True,
+        samesite="lax",
+        secure=False,  # Set True in production with HTTPS
+        max_age=365 * 24 * 60 * 60,  # 1 year
+    )
+    return {"user_token": token}
+
+
+@app.post("/api/auth/verify-project", response_model=dict)
+async def verify_project(request: Request, body: dict):
+    """Verify password for accessing a project. Returns True if password is correct."""
+    project_id = body.get("project_id")
+    password = body.get("password", "")
+
+    if not project_id:
+        raise HTTPException(400, "project_id is required")
+
+    db = await get_db()
+    cursor = await db.execute("SELECT * FROM projects WHERE id=?", (project_id,))
+    row = await row_to_dict(await cursor.fetchone())
+    await db.close()
+
+    if not row:
+        raise HTTPException(404, "Project not found")
+
+    # No password required
+    if not row.get("password_hash"):
+        return {"verified": True}
+
+    # Verify password
+    if password and check_password_hash(row["password_hash"], password):
+        return {"verified": True}
+
+    return {"verified": False}
+
+
 # ── Routes: projects ──────────────────────────────────────────────────────────
 
 @app.get("/api/projects")
-async def list_projects():
+async def list_projects(user_token: Optional[str] = Cookie(None)):
     db = await get_db()
-    rows = await (await db.execute("SELECT * FROM projects ORDER BY created_at DESC")).fetchall()
+    token = await get_or_create_user(user_token)
+
+    # Get user's own projects + public projects without password
+    rows = await (await db.execute("""
+        SELECT * FROM projects
+        WHERE user_token = ? OR (is_public = 1 AND password_hash IS NULL)
+        ORDER BY created_at DESC
+    """, (token,))).fetchall()
     await db.close()
     return [dict(r) for r in rows]
 
 
 @app.post("/api/projects", status_code=201)
-async def create_project(body: dict):
+async def create_project(body: dict, user_token: Optional[str] = Cookie(None)):
     pid = str(uuid.uuid4())
+    token = await get_or_create_user(user_token)
     db = await get_db()
     await db.execute(
-        "INSERT INTO projects(id, name, description) VALUES(?,?,?)",
-        (pid, body.get("name", "新项目"), body.get("description", "")),
+        "INSERT INTO projects(id, user_token, name, description) VALUES(?,?,?,?)",
+        (pid, token, body.get("name", "新项目"), body.get("description", "")),
     )
     await db.commit()
-    row = await (await db.execute("SELECT * FROM projects WHERE id=?", (pid,))).fetchone()
+    cursor = await db.execute("SELECT * FROM projects WHERE id=?", (pid,))
+    row = await cursor.fetchone()
     await db.close()
     return dict(row)
 
 
 @app.put("/api/projects/{pid}")
-async def update_project(pid: str, body: dict):
+async def update_project(pid: str, body: dict, user_token: Optional[str] = Cookie(None)):
+    token = await get_or_create_user(user_token)
     db = await get_db()
+
+    # Verify ownership
+    cursor = await db.execute("SELECT * FROM projects WHERE id=?", (pid,))
+    row = await row_to_dict(await cursor.fetchone())
+    if not row:
+        await db.close()
+        raise HTTPException(404)
+    if row.get("user_token") != token:
+        await db.close()
+        raise HTTPException(403, "Not the project owner")
+
     await db.execute(
         "UPDATE projects SET name=?, description=? WHERE id=?",
         (body.get("name"), body.get("description", ""), pid),
     )
     await db.commit()
-    row = await (await db.execute("SELECT * FROM projects WHERE id=?", (pid,))).fetchone()
+    cursor = await db.execute("SELECT * FROM projects WHERE id=?", (pid,))
+    row = await cursor.fetchone()
     await db.close()
-    if row is None:
-        raise HTTPException(404)
     return dict(row)
 
 
-@app.delete("/api/projects/{pid}", status_code=204)
-async def delete_project(pid: str):
+@app.put("/api/projects/{pid}/password")
+async def set_project_password(
+    pid: str,
+    body: dict,
+    user_token: Optional[str] = Cookie(None)
+):
+    """Set or remove password protection on a project."""
+    token = await get_or_create_user(user_token)
+    password = body.get("password")  # None or empty = remove password
+
     db = await get_db()
+    cursor = await db.execute("SELECT * FROM projects WHERE id=?", (pid,))
+    row = await row_to_dict(await cursor.fetchone())
+    if not row:
+        await db.close()
+        raise HTTPException(404)
+    if row.get("user_token") != token:
+        await db.close()
+        raise HTTPException(403, "Not the project owner")
+
+    password_hash = generate_password_hash(password) if password else None
+    await db.execute(
+        "UPDATE projects SET password_hash=? WHERE id=?",
+        (password_hash, pid),
+    )
+    await db.commit()
+    await db.close()
+    return {"success": True}
+
+
+@app.put("/api/projects/{pid}/public")
+async def set_project_public(
+    pid: str,
+    body: dict,
+    user_token: Optional[str] = Cookie(None)
+):
+    """Toggle public status of a project."""
+    token = await get_or_create_user(user_token)
+    is_public = body.get("is_public", False)
+
+    db = await get_db()
+    cursor = await db.execute("SELECT * FROM projects WHERE id=?", (pid,))
+    row = await row_to_dict(await cursor.fetchone())
+    if not row:
+        await db.close()
+        raise HTTPException(404)
+    if row.get("user_token") != token:
+        await db.close()
+        raise HTTPException(403, "Not the project owner")
+
+    await db.execute(
+        "UPDATE projects SET is_public=? WHERE id=?",
+        (1 if is_public else 0, pid),
+    )
+    await db.commit()
+    await db.close()
+    return {"success": True}
+
+
+@app.delete("/api/projects/{pid}", status_code=204)
+async def delete_project(pid: str, user_token: Optional[str] = Cookie(None)):
+    token = await get_or_create_user(user_token)
+    db = await get_db()
+
+    cursor = await db.execute("SELECT * FROM projects WHERE id=?", (pid,))
+    row = await row_to_dict(await cursor.fetchone())
+    if not row:
+        await db.close()
+        raise HTTPException(404)
+    if row.get("user_token") != token:
+        await db.close()
+        raise HTTPException(403, "Not the project owner")
+
+    # Delete all jobs in the project
     await db.execute("UPDATE jobs SET project_id=NULL WHERE project_id=?", (pid,))
     await db.execute("DELETE FROM projects WHERE id=?", (pid,))
     await db.commit()
@@ -278,18 +450,39 @@ async def delete_project(pid: str):
 # ── Routes: jobs ──────────────────────────────────────────────────────────────
 
 @app.get("/api/jobs")
-async def list_jobs(project_id: Optional[str] = None):
+async def list_jobs(
+    project_id: Optional[str] = None,
+    user_token: Optional[str] = Cookie(None)
+):
+    token = await get_or_create_user(user_token)
     db = await get_db()
+
+    # Build query to filter by user's own jobs + jobs in accessible projects
     if project_id == "__none__":
+        # Jobs without project - only user's own
         rows = await (await db.execute(
-            "SELECT * FROM jobs WHERE project_id IS NULL ORDER BY created_at DESC"
+            "SELECT * FROM jobs WHERE user_token=? AND project_id IS NULL ORDER BY created_at DESC",
+            (token,)
         )).fetchall()
     elif project_id:
+        # Specific project - check access first
+        can_access = await verify_project_access(db, project_id, token)
+        if not can_access:
+            await db.close()
+            raise HTTPException(403, "No access to this project")
         rows = await (await db.execute(
             "SELECT * FROM jobs WHERE project_id=? ORDER BY created_at DESC", (project_id,)
         )).fetchall()
     else:
-        rows = await (await db.execute("SELECT * FROM jobs ORDER BY created_at DESC")).fetchall()
+        # All jobs - user's own + accessible projects
+        rows = await (await db.execute("""
+            SELECT j.* FROM jobs j
+            LEFT JOIN projects p ON j.project_id = p.id
+            WHERE j.user_token = ?
+               OR (p.is_public = 1 AND p.password_hash IS NULL)
+            ORDER BY j.created_at DESC
+        """, (token,))).fetchall()
+
     await db.close()
     return [dict(r) for r in rows]
 
@@ -304,7 +497,9 @@ async def create_job(
     save_triton_code: bool = Form(False),
     label: str = Form(""),
     project_id: Optional[str] = Form(None),
+    user_token: Optional[str] = Cookie(None),
 ):
+    token = await get_or_create_user(user_token)
     jid = str(uuid.uuid4())
     jdir = job_dir(jid)
 
@@ -326,16 +521,17 @@ async def create_job(
 
     db = await get_db()
     await db.execute(
-        """INSERT INTO jobs(id, project_id, label, mode,
+        """INSERT INTO jobs(id, project_id, user_token, label, mode,
                file_a_name, file_a_path, file_a_gzip_path, file_b_name, file_b_path, file_b_gzip_path,
                kernel_types, save_triton_csv, save_triton_code)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (jid, project_id or None, eff_label, mode,
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (jid, project_id or None, token, eff_label, mode,
          file_a.filename, path_a, gzip_path_a[0], name_b, path_b, gzip_path_b[0],
          kernel_types, int(save_triton_csv), int(save_triton_code)),
     )
     await db.commit()
-    row = await (await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))).fetchone()
+    cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
+    row = await cursor.fetchone()
     await db.close()
 
     background_tasks.add_task(run_analysis, jid)
@@ -343,22 +539,38 @@ async def create_job(
 
 
 @app.post("/api/jobs/compare", status_code=201)
-async def compare_jobs(body: dict, background_tasks: BackgroundTasks):
+async def compare_jobs(body: dict, background_tasks: BackgroundTasks, user_token: Optional[str] = Cookie(None)):
+    token = await get_or_create_user(user_token)
     job_id_a = body.get("job_id_a")
     job_id_b = body.get("job_id_b")
     if not job_id_a or not job_id_b:
         raise HTTPException(400, "job_id_a and job_id_b are required")
 
     db = await get_db()
-    src_a = await row_to_dict(
-        await (await db.execute("SELECT * FROM jobs WHERE id=?", (job_id_a,))).fetchone()
-    )
-    src_b = await row_to_dict(
-        await (await db.execute("SELECT * FROM jobs WHERE id=?", (job_id_b,))).fetchone()
-    )
+
+    # Check user has access to both source jobs
+    cursor_a = await db.execute("SELECT j.*, p.user_token as proj_owner, p.is_public, p.password_hash FROM jobs j LEFT JOIN projects p ON j.project_id = p.id WHERE j.id=?", (job_id_a,))
+    src_a = await row_to_dict(await cursor_a.fetchone())
+    cursor_b = await db.execute("SELECT j.*, p.user_token as proj_owner, p.is_public, p.password_hash FROM jobs j LEFT JOIN projects p ON j.project_id = p.id WHERE j.id=?", (job_id_b,))
+    src_b = await row_to_dict(await cursor_b.fetchone())
+
     if not src_a or not src_b:
         await db.close()
         raise HTTPException(404, "Source job not found")
+
+    # Verify access to source jobs
+    def can_access_job(job):
+        if job.get("user_token") == token:
+            return True
+        proj_owner = job.get("proj_owner")
+        is_public = job.get("is_public")
+        has_password = job.get("password_hash")
+        return bool(is_public) and not has_password
+
+    if not can_access_job(src_a) or not can_access_job(src_b):
+        await db.close()
+        raise HTTPException(403, "No access to source job")
+
     if not src_a.get("file_a_exists") or not src_b.get("file_a_exists"):
         await db.close()
         raise HTTPException(409, "Source file has been deleted")
@@ -368,18 +580,19 @@ async def compare_jobs(body: dict, background_tasks: BackgroundTasks):
     eff_label = body.get("label") or f"{src_a['label']} vs {src_b['label']}"
 
     await db.execute(
-        """INSERT INTO jobs(id, project_id, label, mode,
+        """INSERT INTO jobs(id, project_id, user_token, label, mode,
                file_a_name, file_b_name,
                source_job_a, source_job_b,
                kernel_types, save_triton_csv, save_triton_code)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-        (jid, body.get("project_id"), eff_label, "compare",
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (jid, body.get("project_id"), token, eff_label, "compare",
          src_a["file_a_name"], src_b["file_a_name"],
          job_id_a, job_id_b,
          kernel_types, 0, 0),
     )
     await db.commit()
-    row = await (await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))).fetchone()
+    cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
+    row = await cursor.fetchone()
     await db.close()
 
     background_tasks.add_task(run_analysis, jid)
@@ -387,12 +600,33 @@ async def compare_jobs(body: dict, background_tasks: BackgroundTasks):
 
 
 @app.get("/api/jobs/{jid}")
-async def get_job(jid: str):
+async def get_job(jid: str, user_token: Optional[str] = Cookie(None)):
+    token = await get_or_create_user(user_token)
     db = await get_db()
-    row = await (await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))).fetchone()
+    cursor = await db.execute("""
+        SELECT j.*, p.user_token as proj_owner, p.is_public, p.password_hash
+        FROM jobs j
+        LEFT JOIN projects p ON j.project_id = p.id
+        WHERE j.id=?
+    """, (jid,))
+    row = await row_to_dict(await cursor.fetchone())
     await db.close()
+
     if row is None:
         raise HTTPException(404)
+
+    # Check access
+    def can_access_job(job):
+        if job.get("user_token") == token:
+            return True
+        proj_owner = job.get("proj_owner")
+        is_public = job.get("is_public")
+        has_password = job.get("password_hash")
+        return bool(is_public) and not has_password
+
+    if not can_access_job(row):
+        raise HTTPException(403, "No access to this job")
+
     job = dict(row)
     if job["status"] == "done":
         job["results"] = collect_results(jid)
@@ -400,49 +634,76 @@ async def get_job(jid: str):
 
 
 @app.patch("/api/jobs/{jid}")
-async def patch_job(jid: str, body: dict):
+async def patch_job(jid: str, body: dict, user_token: Optional[str] = Cookie(None)):
+    token = await get_or_create_user(user_token)
     db = await get_db()
+
+    cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
+    row = await row_to_dict(await cursor.fetchone())
+    if not row:
+        await db.close()
+        raise HTTPException(404)
+
+    # Only owner can update
+    if row.get("user_token") != token:
+        await db.close()
+        raise HTTPException(403, "Not the job owner")
+
     if "label" in body:
         await db.execute("UPDATE jobs SET label=? WHERE id=?", (body["label"], jid))
     if "project_id" in body:
         await db.execute("UPDATE jobs SET project_id=? WHERE id=?",
                          (body["project_id"] or None, jid))
     await db.commit()
-    row = await (await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))).fetchone()
+    cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
+    row = await cursor.fetchone()
     await db.close()
-    if row is None:
-        raise HTTPException(404)
     return dict(row)
 
 
 @app.delete("/api/jobs/{jid}", status_code=204)
-async def delete_job(jid: str):
+async def delete_job(jid: str, user_token: Optional[str] = Cookie(None)):
+    token = await get_or_create_user(user_token)
     db = await get_db()
-    row = await (await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))).fetchone()
-    await db.close()
-    if row is None:
+
+    cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
+    row = await row_to_dict(await cursor.fetchone())
+    if not row:
+        await db.close()
         raise HTTPException(404)
+
+    # Only owner can delete
+    if row.get("user_token") != token:
+        await db.close()
+        raise HTTPException(403, "Not the job owner")
+
     # Remove all files on disk
     jdir = job_dir(jid)
     if os.path.exists(jdir):
         shutil.rmtree(jdir)
-    db = await get_db()
+
     await db.execute("DELETE FROM jobs WHERE id=?", (jid,))
     await db.commit()
     await db.close()
 
 
 @app.delete("/api/jobs/{jid}/files/{which}", status_code=204)
-async def delete_job_file(jid: str, which: str):
+async def delete_job_file(jid: str, which: str, user_token: Optional[str] = Cookie(None)):
+    token = await get_or_create_user(user_token)
     if which not in ("a", "b"):
         raise HTTPException(400, "which must be 'a' or 'b'")
+
     db = await get_db()
-    row = await row_to_dict(
-        await (await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))).fetchone()
-    )
-    if row is None:
+    cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
+    row = await row_to_dict(await cursor.fetchone())
+    if not row:
         await db.close()
         raise HTTPException(404)
+
+    # Only owner can delete files
+    if row.get("user_token") != token:
+        await db.close()
+        raise HTTPException(403, "Not the job owner")
 
     path_col = f"file_{which}_path"
     gzip_col = f"file_{which}_gzip_path"
@@ -459,18 +720,38 @@ async def delete_job_file(jid: str, which: str):
 
 
 @app.get("/api/jobs/{jid}/files/{which}")
-async def download_job_file(jid: str, which: str):
+async def download_job_file(jid: str, which: str, user_token: Optional[str] = Cookie(None)):
     if not ALLOW_FILE_DOWNLOAD:
         raise HTTPException(403, "File download is disabled")
     if which not in ("a", "b"):
         raise HTTPException(400, "which must be 'a' or 'b'")
+
+    token = await get_or_create_user(user_token)
     db = await get_db()
+
     row = await row_to_dict(
-        await (await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))).fetchone()
+        await db.execute("""
+            SELECT j.*, p.user_token as proj_owner, p.is_public, p.password_hash
+            FROM jobs j
+            LEFT JOIN projects p ON j.project_id = p.id
+            WHERE j.id=?
+        """, (jid,)).fetchone()
     )
     await db.close()
-    if row is None:
+
+    if not row:
         raise HTTPException(404)
+
+    # Check access
+    def can_access_job(job):
+        if job.get("user_token") == token:
+            return True
+        is_public = job.get("is_public")
+        has_password = job.get("password_hash")
+        return bool(is_public) and not has_password
+
+    if not can_access_job(row):
+        raise HTTPException(403, "No access to this file")
 
     gzip_path = row.get(f"file_{which}_gzip_path")
     json_path = row.get(f"file_{which}_path")
@@ -490,10 +771,39 @@ async def download_job_file(jid: str, which: str):
 
 
 @app.get("/api/jobs/{jid}/results/{filename}")
-async def download_result(jid: str, filename: str):
+async def download_result(jid: str, filename: str, user_token: Optional[str] = Cookie(None)):
+    if not ALLOW_FILE_DOWNLOAD:
+        raise HTTPException(403, "File download is disabled")
     # Prevent path traversal
     if "/" in filename or ".." in filename:
         raise HTTPException(400)
+
+    token = await get_or_create_user(user_token)
+    db = await get_db()
+    row = await row_to_dict(
+        await db.execute("""
+            SELECT j.*, p.user_token as proj_owner, p.is_public, p.password_hash
+            FROM jobs j
+            LEFT JOIN projects p ON j.project_id = p.id
+            WHERE j.id=?
+        """, (jid,)).fetchone()
+    )
+    await db.close()
+
+    if not row:
+        raise HTTPException(404)
+
+    # Check access
+    def can_access_job(job):
+        if job.get("user_token") == token:
+            return True
+        is_public = job.get("is_public")
+        has_password = job.get("password_hash")
+        return bool(is_public) and not has_password
+
+    if not can_access_job(row):
+        raise HTTPException(403, "No access to this file")
+
     path = os.path.join(result_dir(jid), filename)
     if not os.path.exists(path):
         raise HTTPException(404)

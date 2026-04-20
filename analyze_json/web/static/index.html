@@ -40,6 +40,10 @@
               <option value="__none__">未分组</option>
               <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
             </select>
+            <div v-if="filterProject && filterProject !== '__none__'" class="project-actions">
+              <button class="btn btn-xs btn-outline mt-1 w-full" @click="openShareModal(projects.find(p => p.id === filterProject))">分享设置</button>
+              <button class="btn btn-xs btn-danger mt-1 w-full" @click="deleteProject(filterProject)">删除项目</button>
+            </div>
           </div>
 
           <!-- Group by project -->
@@ -339,6 +343,37 @@
         <div class="modal-actions">
           <button class="btn btn-outline" @click="showNewProject=false">取消</button>
           <button class="btn btn-primary" @click="createProject">创建</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Share project modal ── -->
+    <div v-if="showShareProject" class="modal-mask" @click.self="showShareProject=false">
+      <div class="modal">
+        <div class="modal-title">分享设置</div>
+        <div class="form-row">
+          <label>访问密码（留空则无密码）</label>
+          <input v-model="shareProjectPassword" type="password" class="input w-full" placeholder="设置密码保护（可选）" />
+        </div>
+        <div class="form-row checkboxes">
+          <label><input type="checkbox" v-model="shareProjectPublic" /> 公开访问（无需密码）</label>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-outline" @click="showShareProject=false">取消</button>
+          <button class="btn btn-primary" @click="saveProjectSettings">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Unlock project modal ── -->
+    <div v-if="showUnlockModal" class="modal-mask" @click.self="showUnlockModal=false">
+      <div class="modal">
+        <div class="modal-title">输入访问密码</div>
+        <div class="text-sm text-muted mb-2">项目 "{{ unlockProjectName }}" 需要密码才能访问</div>
+        <input v-model="shareUnlockPassword" type="password" class="input w-full" placeholder="请输入密码" @keyup.enter="confirmUnlock" />
+        <div class="modal-actions">
+          <button class="btn btn-outline" @click="showUnlockModal=false">取消</button>
+          <button class="btn btn-primary" @click="confirmUnlock">解锁</button>
         </div>
       </div>
     </div>
