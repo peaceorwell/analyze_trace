@@ -23,7 +23,7 @@ from db import get_db, init_db, row_to_dict  # noqa: E402
 STORAGE_DIR = os.path.join(os.path.dirname(__file__), "storage")
 
 # Configured at startup via CLI; read-only after that
-ALLOW_FILE_DOWNLOAD = True
+ALLOW_FILE_DOWNLOAD = os.environ.get("TRACE_NO_DOWNLOAD", "") == ""
 
 
 # ── App lifecycle ─────────────────────────────────────────────────────────────
@@ -446,7 +446,7 @@ if __name__ == "__main__":
                         help="Disable downloading of uploaded trace files (default: download allowed)")
     cli_args = parser.parse_args()
 
-    global ALLOW_FILE_DOWNLOAD
-    ALLOW_FILE_DOWNLOAD = not cli_args.no_download
+    if cli_args.no_download:
+        os.environ["TRACE_NO_DOWNLOAD"] = "1"
 
     uvicorn.run("server:app", host=cli_args.host, port=cli_args.port, reload=False)
