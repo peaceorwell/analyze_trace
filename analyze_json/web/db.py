@@ -30,9 +30,11 @@ async def init_db():
 
                 file_a_name      TEXT,
                 file_a_path      TEXT,
+                file_a_gzip_path TEXT,
                 file_a_exists    INTEGER DEFAULT 1,
                 file_b_name      TEXT,
                 file_b_path      TEXT,
+                file_b_gzip_path TEXT,
                 file_b_exists    INTEGER DEFAULT 1,
 
                 source_job_a     TEXT REFERENCES jobs(id) ON DELETE SET NULL,
@@ -49,6 +51,12 @@ async def init_db():
                 result_dir       TEXT DEFAULT ''
             );
         """)
+        # Add gzip_path columns if they don't exist (for existing databases)
+        for col in ["file_a_gzip_path", "file_b_gzip_path"]:
+            try:
+                await db.execute(f"ALTER TABLE jobs ADD COLUMN {col} TEXT")
+            except Exception:
+                pass  # Column already exists
         await db.commit()
 
 

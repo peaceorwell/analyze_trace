@@ -89,19 +89,18 @@ def _extract_gz_to_json(gz_path: str, dest_path: str):
             shutil.copyfileobj(gz, out)
 
 
-async def save_and_extract(upload: UploadFile, dest_json: str):
-    """Save upload; if it's a .gz file, extract the JSON and remove the raw archive."""
+async def save_and_extract(upload: UploadFile, dest_json: str, gzip_path: list):
+    """Save upload; if it's a .gz file, extract the JSON and keep the original compressed file."""
     if upload.filename and upload.filename.lower().endswith(".gz"):
-        raw = dest_json + ".raw.gz"
-        await save_upload(upload, raw)
+        # Save original compressed file (keep it for download/perfetto)
+        gzip_path[0] = dest_json + ".gz"
+        await save_upload(upload, gzip_path[0])
         try:
-            await asyncio.to_thread(_extract_gz_to_json, raw, dest_json)
+            await asyncio.to_thread(_extract_gz_to_json, gzip_path[0], dest_json)
         except Exception as e:
             raise HTTPException(400, f"解压失败: {e}")
-        finally:
-            if os.path.exists(raw):
-                os.remove(raw)
     else:
+        gzip_path[0] = None
         await save_upload(upload, dest_json)
 
 
@@ -310,14 +309,16 @@ async def create_job(
     jdir = job_dir(jid)
 
     path_a = os.path.join(jdir, "trace_a.json")
-    await save_and_extract(file_a, path_a)
+    gzip_path_a = [None]
+    await save_and_extract(file_a, path_a, gzip_path_a)
 
     path_b = None
     name_b = None
+    gzip_path_b = [None]
     mode = "single"
     if file_b and file_b.filename:
         path_b = os.path.join(jdir, "trace_b.json")
-        await save_and_extract(file_b, path_b)
+        await save_and_extract(file_b, path_b, gzip_path_b)
         name_b = file_b.filename
         mode = "compare"
 
@@ -326,11 +327,11 @@ async def create_job(
     db = await get_db()
     await db.execute(
         """INSERT INTO jobs(id, project_id, label, mode,
-               file_a_name, file_a_path, file_b_name, file_b_path,
+               file_a_name, file_a_path, file_a_gzip_path, file_b_name, file_b_path, file_b_gzip_path,
                kernel_types, save_triton_csv, save_triton_code)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (jid, project_id or None, eff_label, mode,
-         file_a.filename, path_a, name_b, path_b,
+         file_a.filename, path_a, gzip_path_a[0], name_b, path_b, gzip_path_b[0],
          kernel_types, int(save_triton_csv), int(save_triton_code)),
     )
     await db.commit()
@@ -444,10 +445,14 @@ async def delete_job_file(jid: str, which: str):
         raise HTTPException(404)
 
     path_col = f"file_{which}_path"
+    gzip_col = f"file_{which}_gzip_path"
     exists_col = f"file_{which}_exists"
     fpath = row.get(path_col)
+    gzip_path = row.get(gzip_col)
     if fpath and os.path.exists(fpath):
         os.remove(fpath)
+    if gzip_path and os.path.exists(gzip_path):
+        os.remove(gzip_path)
     await db.execute(f"UPDATE jobs SET {exists_col}=0 WHERE id=?", (jid,))
     await db.commit()
     await db.close()
@@ -466,13 +471,22 @@ async def download_job_file(jid: str, which: str):
     await db.close()
     if row is None:
         raise HTTPException(404)
-    fpath = row.get(f"file_{which}_path")
+
+    gzip_path = row.get(f"file_{which}_gzip_path")
+    json_path = row.get(f"file_{which}_path")
+
+    # If original was .gz, serve the gzipped file (preserves compression for perfetto too)
+    if gzip_path and os.path.exists(gzip_path):
+        fname = row.get(f"file_{which}_name") or f"trace_{which}.json.gz"
+        return FileResponse(gzip_path, filename=fname, media_type="application/json")
+
+    # Otherwise serve the extracted JSON
     fname = row.get(f"file_{which}_name") or f"trace_{which}.json"
     if fname.lower().endswith(".gz"):
         fname = fname[:-3]  # serve extracted JSON with .json extension
-    if not fpath or not os.path.exists(fpath):
+    if not json_path or not os.path.exists(json_path):
         raise HTTPException(404, "File not found or already deleted")
-    return FileResponse(fpath, filename=fname, media_type="application/json")
+    return FileResponse(json_path, filename=fname, media_type="application/json")
 
 
 @app.get("/api/jobs/{jid}/results/{filename}")
