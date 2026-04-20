@@ -145,8 +145,14 @@
             </div>
           </div>
           <button class="btn btn-primary" :disabled="!fileA || submitting" @click="submitJob">
-            {{ submitting ? '提交中...' : '提交分析' }}
+            {{ submitting ? (uploadProgress < 100 ? `上传中 ${uploadProgress}%` : '分析中...') : '提交分析' }}
           </button>
+          <div v-if="submitting && uploadProgress < 100" class="upload-progress">
+            <div class="upload-progress-label">上传进度 {{ uploadProgress }}%</div>
+            <div class="progress-track">
+              <div class="progress-fill" :style="{ width: uploadProgress + '%' }"></div>
+            </div>
+          </div>
         </section>
 
         <!-- Result panel -->

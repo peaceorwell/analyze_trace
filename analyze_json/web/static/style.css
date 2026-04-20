@@ -133,6 +133,17 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 .btn-sm       { padding: 4px 10px; font-size: 11px; }
 .btn-xs       { padding: 2px 7px; font-size: 10px; }
 
+/* ── Upload progress ── */
+.upload-progress { margin-top: 10px; }
+.upload-progress-label { font-size: 11px; color: #64748b; margin-bottom: 4px; }
+.progress-track {
+  height: 6px; background: #e2e8f0; border-radius: 3px; overflow: hidden;
+}
+.progress-fill {
+  height: 100%; background: #6366f1; border-radius: 3px;
+  transition: width .2s ease;
+}
+
 /* ── Result panel ── */
 .result-card { flex: 1; }
 .result-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }

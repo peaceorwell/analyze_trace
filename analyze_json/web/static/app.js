@@ -16,6 +16,7 @@ createApp({
     const fileAName = ref("");
     const fileBName = ref("");
     const submitting = ref(false);
+    const uploadProgress = ref(0);
     const form = ref({
       kernelTypes: "gemm,embedding,pool",
       label: "",
@@ -240,9 +241,10 @@ createApp({
     };
 
     // ── Submit ─────────────────────────────────────────────────────────────
-    const submitJob = async () => {
+    const submitJob = () => {
       if (!fileA.value || submitting.value) return;
       submitting.value = true;
+      uploadProgress.value = 0;
       const fd = new FormData();
       fd.append("file_a", fileA.value);
       if (fileB.value) fd.append("file_b", fileB.value);
@@ -251,18 +253,28 @@ createApp({
       fd.append("project_id", form.value.projectId);
       fd.append("save_triton_csv", form.value.saveTritonCsv);
       fd.append("save_triton_code", form.value.saveTritonCode);
-      try {
-        const r = await fetch("/api/jobs", { method: "POST", body: fd });
-        const job = await r.json();
-        await loadJobs();
-        await selectJob(job.id);
-        fileA.value = null; fileAName.value = "";
-        fileB.value = null; fileBName.value = "";
-        form.value.label = "";
-        sidebarTab.value = "jobs";
-      } finally {
-        submitting.value = false;
-      }
+
+      const xhr = new XMLHttpRequest();
+      xhr.upload.onprogress = e => {
+        if (e.lengthComputable) uploadProgress.value = Math.round(e.loaded / e.total * 100);
+      };
+      xhr.onload = async () => {
+        try {
+          const job = JSON.parse(xhr.responseText);
+          await loadJobs();
+          await selectJob(job.id);
+          fileA.value = null; fileAName.value = "";
+          fileB.value = null; fileBName.value = "";
+          form.value.label = "";
+          sidebarTab.value = "jobs";
+        } finally {
+          submitting.value = false;
+          uploadProgress.value = 0;
+        }
+      };
+      xhr.onerror = () => { submitting.value = false; uploadProgress.value = 0; };
+      xhr.open("POST", "/api/jobs");
+      xhr.send(fd);
     };
 
     // ── Job actions ────────────────────────────────────────────────────────
@@ -375,7 +387,7 @@ createApp({
     return {
       projects, jobs, filterProject, sidebarTab, selectedJobId, selectedJob,
       collapsedGroups, groupedJobs, singleJobs,
-      fileA, fileB, fileAName, fileBName, submitting, form,
+      fileA, fileB, fileAName, fileBName, submitting, uploadProgress, form,
       resultTab, tableSearch, sortCol, sortAsc, ktChart,
       availableTabs, currentTable, filteredRows,
       showNewProject, newProjectName, newProjectDesc,
