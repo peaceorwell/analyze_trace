@@ -23,7 +23,7 @@ from db import get_db, init_db, row_to_dict  # noqa: E402
 STORAGE_DIR = os.path.join(os.path.dirname(__file__), "storage")
 
 # Configured at startup via CLI; read-only after that
-ALLOW_FILE_DOWNLOAD: bool = True
+ALLOW_FILE_DOWNLOAD = True
 
 
 # ── App lifecycle ─────────────────────────────────────────────────────────────
