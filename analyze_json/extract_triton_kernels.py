@@ -1,4 +1,5 @@
 import argparse
+import bisect
 import csv
 import json
 import os
@@ -30,6 +31,25 @@ def classify_kernel(name, args, kernel_types):
     if args.get("Collective name"):
         return "collective"
     return "other"
+
+
+def write_triton_code_file(code_dir, idx, kernel):
+    """Write kernel["triton_output_code"] to a .py file; return the filename."""
+    safe_name = kernel["kernel_name"].replace("/", "_").replace(" ", "_")
+    code_filename = f"kernel_{idx}_{safe_name}.py"
+    with open(os.path.join(code_dir, code_filename), "w") as cf:
+        cf.write(kernel["triton_output_code"])
+    return code_filename
+
+
+def write_avg_csv(path, data, name_field):
+    """Write {name -> {avg_count, avg_dur_ms}} to a CSV and print confirmation."""
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=[name_field, "avg_count", "avg_dur_ms"])
+        writer.writeheader()
+        for name, s in data.items():
+            writer.writerow({name_field: name, "avg_count": fmt3(s["avg_count"]), "avg_dur_ms": fmt3(s["avg_dur_ms"])})
+    print(f"Wrote {path} ({len(data)} rows)")
 
 
 def parse_trace(trace_file, kernel_types):
@@ -73,10 +93,15 @@ def parse_trace(trace_file, kernel_types):
         elif cat == "gpu_user_annotation" and (name.startswith("cncl") or name.startswith("nccl")):
             cncl_events.append(e)
 
+    sorted_steps = sorted(step_ranges.items(), key=lambda x: x[1][0])
+    step_starts  = [v[0] for _, v in sorted_steps]
+    step_ends    = [v[1] for _, v in sorted_steps]
+    step_nums    = [k    for k, _ in sorted_steps]
+
     def find_step(ts):
-        for step_num, (start, end) in step_ranges.items():
-            if start <= ts <= end:
-                return step_num
+        i = bisect.bisect_right(step_starts, ts) - 1
+        if i >= 0 and ts <= step_ends[i]:
+            return step_nums[i]
         return None
 
     step_to_triton       = defaultdict(list)
@@ -101,20 +126,15 @@ def parse_trace(trace_file, kernel_types):
         step_to_kernel_types[step][ktype]["dur_ms"] += dur_ms
 
         if name.startswith("triton_"):
-            if "triton output code" in args:
-                step_to_triton[step].append({
-                    "kernel_name":         name,
-                    "dur(ms)":             dur_ms if raw_dur is not None else None,
-                    "total io(GB)":        float(args["kernel num(GB)"]),
-                    "IO efficiency(GB/s)": float(args["IO efficiency(GB/s)"]),
-                    "tiling config":       args["kernel kwargs"],
-                    "triton_output_code":  args["triton output code"],
-                })
-            else:
-                step_to_triton[step].append({
-                    "kernel_name":         name,
-                    "dur(ms)":             dur_ms if raw_dur is not None else None,
-                })
+            has_code = "triton output code" in args
+            step_to_triton[step].append({
+                "kernel_name":         name,
+                "dur(ms)":             dur_ms if raw_dur is not None else None,
+                "total io(GB)":        float(args["kernel num(GB)"])      if has_code else None,
+                "IO efficiency(GB/s)": float(args["IO efficiency(GB/s)"]) if has_code else None,
+                "tiling config":       args["kernel kwargs"]              if has_code else None,
+                "triton_output_code":  args["triton output code"]         if has_code else None,
+            })
 
 
     for e in aten_events:
@@ -149,11 +169,15 @@ def avg_stats(step_to_dict, steps):
     for s in steps:
         all_names.update(step_to_dict[s])
     n = len(steps)
+    if not n:
+        return {}
     result = {}
+    zero = {"count": 0, "dur_ms": 0.0}
     for name in all_names:
+        entries = [step_to_dict[s].get(name) or zero for s in steps]
         result[name] = {
-            "avg_count":  sum(step_to_dict[s].get(name, {"count": 0})["count"]  for s in steps) / n,
-            "avg_dur_ms": sum(step_to_dict[s].get(name, {"dur_ms": 0.0})["dur_ms"] for s in steps) / n,
+            "avg_count":  sum(e["count"]  for e in entries) / n,
+            "avg_dur_ms": sum(e["dur_ms"] for e in entries) / n,
         }
     return dict(sorted(result.items(), key=lambda x: -x[1]["avg_dur_ms"]))
 
@@ -202,6 +226,7 @@ if __name__ == "__main__":
            f" {'cncl':<8} {'cncl_dur(ms)':<14}")
     print(hdr)
     print("-" * len(hdr))
+    step_stats = {}
     for step in all_steps:
         sd = step_durations.get(step, 0.0)
         kc = sum(v["count"]  for v in step_to_kernels[step].values())
@@ -212,18 +237,13 @@ if __name__ == "__main__":
         ad = sum(v["dur_ms"] for v in step_to_aten[step].values())
         cc = sum(v["count"]  for v in step_to_cncl[step].values())
         cd = sum(v["dur_ms"] for v in step_to_cncl[step].values())
+        step_stats[step] = (sd, kc, kd, tc, td, ac, ad, cc, cd)
         print(f"{step:<8} {sd:<14.3f} {kc:<10} {kd:<16.3f} {tc:<10} {td:<16.3f}"
               f" {ac:<10} {ad:<14.3f} {cc:<8} {cd:<14.3f}")
 
-    avg_sd = mean([step_durations.get(s, 0.0) for s in all_steps])
-    avg_kc = mean([sum(v["count"]  for v in step_to_kernels[s].values()) for s in all_steps])
-    avg_kd = mean([sum(v["dur_ms"] for v in step_to_kernels[s].values()) for s in all_steps])
-    avg_tc = mean([len(step_to_triton[s]) for s in all_steps])
-    avg_td = mean([sum((k["dur(ms)"] or 0.0) for k in step_to_triton[s]) for s in all_steps])
-    avg_ac = mean([sum(v["count"]  for v in step_to_aten[s].values()) for s in all_steps])
-    avg_ad = mean([sum(v["dur_ms"] for v in step_to_aten[s].values()) for s in all_steps])
-    avg_cc = mean([sum(v["count"]  for v in step_to_cncl[s].values()) for s in all_steps])
-    avg_cd = mean([sum(v["dur_ms"] for v in step_to_cncl[s].values()) for s in all_steps])
+    avg_sd, avg_kc, avg_kd, avg_tc, avg_td, avg_ac, avg_ad, avg_cc, avg_cd = (
+        mean([step_stats[s][i] for s in all_steps]) for i in range(9)
+    )
     print("-" * len(hdr))
     print(f"{'avg':<8} {avg_sd:<14.3f} {avg_kc:<10.1f} {avg_kd:<16.3f} {avg_tc:<10.1f} {avg_td:<16.3f}"
           f" {avg_ac:<10.1f} {avg_ad:<14.3f} {avg_cc:<8.1f} {avg_cd:<14.3f}")
@@ -245,7 +265,8 @@ if __name__ == "__main__":
     if args.save_triton_csv or args.save_triton_code:
         triton_fields = ["kernel_name", "dur(ms)", "total io(GB)", "IO efficiency(GB/s)", "tiling config", "triton_code_file"]
         for step in all_steps:
-            kernels = step_to_triton[step]
+            # Only kernels with triton output code support CSV/code output
+            kernels = [k for k in step_to_triton[step] if k["triton_output_code"] is not None]
             if not kernels:
                 continue
             code_dir = os.path.join(args.output_dir, f"step_{step}_triton_codes")
@@ -258,38 +279,26 @@ if __name__ == "__main__":
                     writer.writeheader()
                     for idx, kernel in enumerate(kernels):
                         row = {
-                            "kernel_name":          kernel["kernel_name"],
-                            "dur(ms)":              fmt3(kernel["dur(ms)"]),
-                            "total io(GB)":         fmt3(kernel["total io(GB)"]),
-                            "IO efficiency(GB/s)":  fmt3(kernel["IO efficiency(GB/s)"]),
-                            "tiling config":        kernel["tiling config"].replace("\n", "\\n").replace("\r", ""),
-                            "triton_code_file":     "",
+                            "kernel_name":         kernel["kernel_name"],
+                            "dur(ms)":             fmt3(kernel["dur(ms)"]),
+                            "total io(GB)":        fmt3(kernel["total io(GB)"]),
+                            "IO efficiency(GB/s)": fmt3(kernel["IO efficiency(GB/s)"]),
+                            "tiling config":       kernel["tiling config"].replace("\n", "\\n").replace("\r", ""),
+                            "triton_code_file":    "",
                         }
                         if args.save_triton_code:
-                            safe_name     = kernel["kernel_name"].replace("/", "_").replace(" ", "_")
-                            code_filename = f"kernel_{idx}_{safe_name}.py"
-                            with open(os.path.join(code_dir, code_filename), "w") as cf:
-                                cf.write(kernel["triton_output_code"])
-                            row["triton_code_file"] = os.path.join(f"step_{step}_triton_codes", code_filename)
+                            fname = write_triton_code_file(code_dir, idx, kernel)
+                            row["triton_code_file"] = os.path.join(f"step_{step}_triton_codes", fname)
                         writer.writerow(row)
                 print(f"Wrote {csv_path} ({len(kernels)} rows)")
             elif args.save_triton_code:
                 for idx, kernel in enumerate(kernels):
-                    safe_name     = kernel["kernel_name"].replace("/", "_").replace(" ", "_")
-                    code_filename = f"kernel_{idx}_{safe_name}.py"
-                    with open(os.path.join(code_dir, code_filename), "w") as cf:
-                        cf.write(kernel["triton_output_code"])
+                    write_triton_code_file(code_dir, idx, kernel)
                 print(f"Wrote {code_dir}/ ({len(kernels)} files)")
 
     # ── Averaged all-kernel stats ─────────────────────────────────────────────
-    avg_kernels = avg_stats(step_to_kernels, all_steps)
-    path = os.path.join(args.output_dir, "all_kernels_avg.csv")
-    with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["kernel_name", "avg_count", "avg_dur_ms"])
-        writer.writeheader()
-        for name, s in avg_kernels.items():
-            writer.writerow({"kernel_name": name, "avg_count": fmt3(s["avg_count"]), "avg_dur_ms": fmt3(s["avg_dur_ms"])})
-    print(f"Wrote {path} ({len(avg_kernels)} rows)")
+    write_avg_csv(os.path.join(args.output_dir, "all_kernels_avg.csv"),
+                  avg_stats(step_to_kernels, all_steps), "kernel_name")
 
     # ── Averaged triton kernel stats ──────────────────────────────────────────
     # Aggregate per step by kernel name so we can average across steps
@@ -299,8 +308,9 @@ if __name__ == "__main__":
             a = step_triton_agg[step][k["kernel_name"]]
             a["count"]  += 1
             a["dur_ms"] += k["dur(ms)"] or 0.0
-            a["io_gb"]  += k["total io(GB)"]
-            a["io_eff"] += k["IO efficiency(GB/s)"]
+            if k["total io(GB)"] is not None:
+                a["io_gb"]  += k["total io(GB)"]
+                a["io_eff"] += k["IO efficiency(GB/s)"]
 
     all_triton_names = set()
     for s in all_steps:
@@ -331,14 +341,8 @@ if __name__ == "__main__":
     print(f"Wrote {path} ({len(avg_triton)} rows)")
 
     # ── Averaged aten:: op stats ──────────────────────────────────────────────
-    avg_aten = avg_stats(step_to_aten, all_steps)
-    path = os.path.join(args.output_dir, "aten_ops_avg.csv")
-    with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["op_name", "avg_count", "avg_dur_ms"])
-        writer.writeheader()
-        for name, s in avg_aten.items():
-            writer.writerow({"op_name": name, "avg_count": fmt3(s["avg_count"]), "avg_dur_ms": fmt3(s["avg_dur_ms"])})
-    print(f"Wrote {path} ({len(avg_aten)} rows)")
+    write_avg_csv(os.path.join(args.output_dir, "aten_ops_avg.csv"),
+                  avg_stats(step_to_aten, all_steps), "op_name")
 
     # ── Averaged kernel type stats ────────────────────────────────────────────
     path = os.path.join(args.output_dir, "kernel_types_avg.csv")
@@ -352,11 +356,5 @@ if __name__ == "__main__":
     print(f"Wrote {path} ({len(KERNEL_TYPES)} rows)")
 
     # ── Averaged cncl op stats ────────────────────────────────────────────────
-    avg_cncl = avg_stats(step_to_cncl, all_steps)
-    path = os.path.join(args.output_dir, "cncl_ops_avg.csv")
-    with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["op_name", "avg_count", "avg_dur_ms"])
-        writer.writeheader()
-        for name, s in avg_cncl.items():
-            writer.writerow({"op_name": name, "avg_count": fmt3(s["avg_count"]), "avg_dur_ms": fmt3(s["avg_dur_ms"])})
-    print(f"Wrote {path} ({len(avg_cncl)} rows)")
+    write_avg_csv(os.path.join(args.output_dir, "cncl_ops_avg.csv"),
+                  avg_stats(step_to_cncl, all_steps), "op_name")
