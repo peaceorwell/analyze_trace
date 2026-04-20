@@ -221,31 +221,32 @@ if __name__ == "__main__":
 
     # ── Per-step summary ──────────────────────────────────────────────────────
     print(f"\n=== Per-Step Summary ({n_steps} steps) ===")
-    hdr = (f"{'step':<8} {'step_dur(ms)':<14} {'kernels':<10} {'kernel_dur(ms)':<16}"
+    hdr = (f"{'step':<8} {'step_dur(ms)':<14} {'kernels':<10} {'compute_kernel_dur(ms)':<24}"
            f" {'triton':<10} {'triton_dur(ms)':<16} {'aten_ops':<10} {'aten_dur(ms)':<14}"
            f" {'cncl':<8} {'cncl_dur(ms)':<14}")
     print(hdr)
     print("-" * len(hdr))
     step_stats = {}
     for step in all_steps:
-        sd = step_durations.get(step, 0.0)
-        kc = sum(v["count"]  for v in step_to_kernels[step].values())
-        kd = sum(v["dur_ms"] for v in step_to_kernels[step].values())
-        tc = len(step_to_triton[step])
-        td = sum((k["dur(ms)"] or 0.0) for k in step_to_triton[step])
-        ac = sum(v["count"]  for v in step_to_aten[step].values())
-        ad = sum(v["dur_ms"] for v in step_to_aten[step].values())
-        cc = sum(v["count"]  for v in step_to_cncl[step].values())
-        cd = sum(v["dur_ms"] for v in step_to_cncl[step].values())
-        step_stats[step] = (sd, kc, kd, tc, td, ac, ad, cc, cd)
-        print(f"{step:<8} {sd:<14.3f} {kc:<10} {kd:<16.3f} {tc:<10} {td:<16.3f}"
+        sd  = step_durations.get(step, 0.0)
+        kc  = sum(v["count"]  for v in step_to_kernels[step].values())
+        kd  = sum(v["dur_ms"] for v in step_to_kernels[step].values())
+        tc  = len(step_to_triton[step])
+        td  = sum((k["dur(ms)"] or 0.0) for k in step_to_triton[step])
+        ac  = sum(v["count"]  for v in step_to_aten[step].values())
+        ad  = sum(v["dur_ms"] for v in step_to_aten[step].values())
+        cc  = sum(v["count"]  for v in step_to_cncl[step].values())
+        cd  = sum(v["dur_ms"] for v in step_to_cncl[step].values())
+        ckd = kd - cd
+        step_stats[step] = (sd, kc, ckd, tc, td, ac, ad, cc, cd)
+        print(f"{step:<8} {sd:<14.3f} {kc:<10} {ckd:<24.3f} {tc:<10} {td:<16.3f}"
               f" {ac:<10} {ad:<14.3f} {cc:<8} {cd:<14.3f}")
 
     avg_sd, avg_kc, avg_kd, avg_tc, avg_td, avg_ac, avg_ad, avg_cc, avg_cd = (
         mean([step_stats[s][i] for s in all_steps]) for i in range(9)
     )
     print("-" * len(hdr))
-    print(f"{'avg':<8} {avg_sd:<14.3f} {avg_kc:<10.1f} {avg_kd:<16.3f} {avg_tc:<10.1f} {avg_td:<16.3f}"
+    print(f"{'avg':<8} {avg_sd:<14.3f} {avg_kc:<10.1f} {avg_kd:<24.3f} {avg_tc:<10.1f} {avg_td:<16.3f}"
           f" {avg_ac:<10.1f} {avg_ad:<14.3f} {avg_cc:<8.1f} {avg_cd:<14.3f}")
 
     # ── Kernel type breakdown (averaged) ─────────────────────────────────────
