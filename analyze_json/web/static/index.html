@@ -120,7 +120,7 @@
           <div class="card-title">提交分析</div>
           <div class="upload-row">
             <div class="upload-box" @dragover.prevent @drop.prevent="onDrop($event,'a')">
-              <input type="file" ref="fileInputA" accept=".json" @change="onFileChange($event,'a')" hidden />
+              <input type="file" ref="fileInputA" accept=".json,.json.gz,.gz" @change="onFileChange($event,'a')" hidden />
               <div @click="$refs.fileInputA.click()" class="upload-inner">
                 <div class="upload-icon">📂</div>
                 <div class="upload-label">{{ fileAName || '文件 A（必选）' }}</div>
@@ -128,7 +128,7 @@
               <button v-if="fileAName" class="upload-clear" @click.stop="clearFile('a')">✕</button>
             </div>
             <div class="upload-box" @dragover.prevent @drop.prevent="onDrop($event,'b')">
-              <input type="file" ref="fileInputB" accept=".json" @change="onFileChange($event,'b')" hidden />
+              <input type="file" ref="fileInputB" accept=".json,.json.gz,.gz" @change="onFileChange($event,'b')" hidden />
               <div @click="$refs.fileInputB.click()" class="upload-inner">
                 <div class="upload-icon">📂</div>
                 <div class="upload-label">{{ fileBName || '文件 B（可选，对比）' }}</div>

@@ -2,9 +2,12 @@ import argparse
 import asyncio
 import contextlib
 import csv
+import gzip
 import io
 import os
+import shutil
 import sys
+import tarfile
 import types
 import uuid
 from contextlib import asynccontextmanager
@@ -52,6 +55,54 @@ async def save_upload(upload: UploadFile, dest: str):
     async with aiofiles.open(dest, "wb") as f:
         while chunk := await upload.read(1 << 20):  # 1 MB chunks
             await f.write(chunk)
+
+
+def _extract_gz_to_json(gz_path: str, dest_path: str):
+    """Extract a .gz or .tar.gz file and write the contained JSON to dest_path.
+
+    Supports two layouts:
+    - tar.gz / tgz: archive containing a folder with a .json file inside
+    - plain gzip:   single gzip-compressed .json file
+    """
+    is_tar = False
+    try:
+        is_tar = tarfile.is_tarfile(gz_path)
+    except Exception:
+        pass
+
+    if is_tar:
+        with tarfile.open(gz_path, "r:*") as tar:
+            members = [m for m in tar.getmembers() if m.isfile() and m.name.endswith(".json")]
+            if not members:
+                raise ValueError("压缩包中未找到 .json 文件")
+            member = max(members, key=lambda m: m.size)
+            f = tar.extractfile(member)
+            if f is None:
+                raise ValueError("无法读取压缩包内的 JSON 文件")
+            with open(dest_path, "wb") as out:
+                shutil.copyfileobj(f, out)
+        return
+
+    # Plain gzip
+    with gzip.open(gz_path, "rb") as gz:
+        with open(dest_path, "wb") as out:
+            shutil.copyfileobj(gz, out)
+
+
+async def save_and_extract(upload: UploadFile, dest_json: str):
+    """Save upload; if it's a .gz file, extract the JSON and remove the raw archive."""
+    if upload.filename and upload.filename.lower().endswith(".gz"):
+        raw = dest_json + ".raw.gz"
+        await save_upload(upload, raw)
+        try:
+            await asyncio.to_thread(_extract_gz_to_json, raw, dest_json)
+        except Exception as e:
+            raise HTTPException(400, f"解压失败: {e}")
+        finally:
+            if os.path.exists(raw):
+                os.remove(raw)
+    else:
+        await save_upload(upload, dest_json)
 
 
 def csv_to_rows(path: str) -> dict:
@@ -259,14 +310,14 @@ async def create_job(
     jdir = job_dir(jid)
 
     path_a = os.path.join(jdir, "trace_a.json")
-    await save_upload(file_a, path_a)
+    await save_and_extract(file_a, path_a)
 
     path_b = None
     name_b = None
     mode = "single"
     if file_b and file_b.filename:
         path_b = os.path.join(jdir, "trace_b.json")
-        await save_upload(file_b, path_b)
+        await save_and_extract(file_b, path_b)
         name_b = file_b.filename
         mode = "compare"
 
@@ -373,7 +424,6 @@ async def delete_job(jid: str):
     # Remove all files on disk
     jdir = job_dir(jid)
     if os.path.exists(jdir):
-        import shutil
         shutil.rmtree(jdir)
     db = await get_db()
     await db.execute("DELETE FROM jobs WHERE id=?", (jid,))
@@ -418,6 +468,8 @@ async def download_job_file(jid: str, which: str):
         raise HTTPException(404)
     fpath = row.get(f"file_{which}_path")
     fname = row.get(f"file_{which}_name") or f"trace_{which}.json"
+    if fname.lower().endswith(".gz"):
+        fname = fname[:-3]  # serve extracted JSON with .json extension
     if not fpath or not os.path.exists(fpath):
         raise HTTPException(404, "File not found or already deleted")
     return FileResponse(fpath, filename=fname, media_type="application/json")
