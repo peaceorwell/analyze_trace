@@ -27,11 +27,14 @@ analyze_json/
     ├── server.py          # Web 服务器（FastAPI）
     ├── db.py              # SQLite 数据库操作
     ├── requirements.txt   # Python 依赖
+    ├── Dockerfile         # Docker 镜像构建
     └── static/
         ├── index.html     # 前端页面
         ├── app.js         # Vue 3 前端逻辑
         ├── style.css      # 样式
         └── favicon.svg    # 图标
+
+docker-compose.yml         # Docker Compose 部署配置
 ```
 
 ---
@@ -126,6 +129,30 @@ python server.py --no-download          # 禁止用户下载原始 trace 文件
 ```
 
 然后打开浏览器访问 `http://127.0.0.1:8181`。
+
+### Docker 部署
+
+```bash
+# 使用 docker-compose（推荐）
+docker-compose up -d
+
+# 或手动构建运行
+cd analyze_json/web
+docker build -t trace-analyzer .
+docker run -d -p 8181:8181 --name trace-analyzer trace-analyzer
+```
+
+访问 `http://localhost:8181`。
+
+**数据持久化**：Docker 部署中，SQLite 数据库和上传的文件存储在 named volume 中，删除容器后数据不会丢失。
+
+**禁用文件下载**：设置环境变量 `TRACE_NO_DOWNLOAD=1`：
+```bash
+# docker-compose 方式
+TRACE_NO_DOWNLOAD=1 docker-compose up -d
+
+# 或 Dockerfile 内置方式（取消注释 Dockerfile 中的相关行）
+```
 
 ### 功能
 

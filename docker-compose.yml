@@ -1,0 +1,19 @@
+services:
+  trace-analyzer:
+    build:
+      context: ./analyze_json/web
+      dockerfile: Dockerfile
+    container_name: trace-analyzer
+    ports:
+      - "8181:8181"
+    volumes:
+      # Persist SQLite database and uploaded files
+      - trace_analyzer_data:/app/storage
+    environment:
+      # Set to non-empty to disable file downloads
+      # - TRACE_NO_DOWNLOAD=1
+    restart: unless-stopped
+
+volumes:
+  trace_analyzer_data:
+    driver: local
