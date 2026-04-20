@@ -226,7 +226,11 @@
             <!-- CSV table tabs -->
             <div v-if="resultTab!=='console' && resultTab!=='chart'" class="table-wrap">
               <div class="table-toolbar">
-                <input v-model="tableSearch" class="input input-sm" placeholder="搜索..." />
+                <input v-model="tableSearch" class="input input-sm" placeholder="全局搜索..." />
+                <span v-if="hasColFilters" class="filter-active-tip">
+                  列筛选已启用
+                  <button class="btn-clear-filter" @click="colFilters={}">✕ 清除</button>
+                </span>
                 <button class="btn btn-sm btn-outline" @click="downloadCsv(resultTab)">下载 CSV</button>
               </div>
               <div class="table-scroll">
@@ -245,6 +249,17 @@
                         <div class="col-resize-handle"
                              @mousedown.stop="startResize(f, $event)"
                              @click.stop></div>
+                      </th>
+                    </tr>
+                    <tr class="filter-row">
+                      <th v-for="f in currentTable.fields" :key="f"
+                          :style="colWidths[f] ? { width: colWidths[f] + 'px' } : {}">
+                        <input
+                          v-model="colFilters[f]"
+                          class="col-filter-input"
+                          :class="{ active: colFilters[f] }"
+                          placeholder="筛选..."
+                          @click.stop />
                       </th>
                     </tr>
                   </thead>

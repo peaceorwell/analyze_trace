@@ -228,6 +228,34 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 .cell-neg { color: #dc2626; font-weight: 600; }
 .table-footer { font-size: 10px; color: #94a3b8; padding: 4px 2px; text-align: right; }
 
+/* ── Column filter row ── */
+.filter-row th {
+  background: #f5f6ff;
+  padding: 3px 6px 4px;
+  border-bottom: 2px solid #c7d0f8;
+}
+.filter-row th:first-child { background: #eaecfd; }
+.col-filter-input {
+  width: 100%; border: 1px solid #d1d5db; border-radius: 4px;
+  padding: 2px 6px; font-size: 10px; outline: none;
+  background: #fff; color: #374151; box-sizing: border-box;
+  transition: border-color .15s;
+}
+.col-filter-input::placeholder { color: #c0c8e0; }
+.col-filter-input:focus { border-color: #6366f1; }
+.col-filter-input.active { border-color: #6366f1; background: #eef0fe; color: #3730a3; font-weight: 500; }
+
+/* ── Filter active tip ── */
+.filter-active-tip {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 11px; color: #6366f1; font-weight: 500;
+}
+.btn-clear-filter {
+  border: none; background: #ede9fe; color: #6366f1; border-radius: 4px;
+  padding: 2px 7px; font-size: 10px; cursor: pointer; font-weight: 600;
+}
+.btn-clear-filter:hover { background: #ddd6fe; }
+
 /* ── Column resize handle ── */
 .col-resize-handle {
   position: absolute; top: 0; right: 0; bottom: 0; width: 5px;

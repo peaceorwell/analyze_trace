@@ -30,6 +30,7 @@ createApp({
     const sortCol     = ref("");
     const sortAsc     = ref(true);
     const colWidths   = ref({});
+    const colFilters  = ref({});
     const ktChartInst = ref(null);
     const ktChart     = ref(null);
 
@@ -101,11 +102,20 @@ createApp({
       return res[resultTab.value] || { fields: [], rows: [] };
     });
 
+    const hasColFilters = computed(() =>
+      Object.values(colFilters.value).some(v => v)
+    );
+
     const filteredRows = computed(() => {
       let rows = currentTable.value.rows || [];
       if (tableSearch.value) {
         const q = tableSearch.value.toLowerCase();
         rows = rows.filter(r => Object.values(r).some(v => String(v).toLowerCase().includes(q)));
+      }
+      for (const [field, val] of Object.entries(colFilters.value)) {
+        if (!val) continue;
+        const q = val.toLowerCase();
+        rows = rows.filter(r => String(r[field] ?? '').toLowerCase().includes(q));
       }
       if (sortCol.value) {
         rows = [...rows].sort((a, b) => {
@@ -227,7 +237,7 @@ createApp({
       });
     };
 
-    watch(resultTab, v => { colWidths.value = {}; if (v === "chart") buildChart(); });
+    watch(resultTab, v => { colWidths.value = {}; colFilters.value = {}; if (v === "chart") buildChart(); });
     watch(selectedJob, v => {
       if (v?.status === "done") nextTick(() => { if (resultTab.value === "chart") buildChart(); });
     });
@@ -434,6 +444,7 @@ createApp({
       onFileChange, onDrop, clearFile, submitJob,
       selectJob, deleteJob, deleteFile, editLabel, moveProject,
       setSort, downloadCsv, colWidths, startResize,
+      colFilters, hasColFilters,
       allowFileDownload, downloadTraceFile,
       toggleCompareSelect, submitCompare, createProject,
     };
