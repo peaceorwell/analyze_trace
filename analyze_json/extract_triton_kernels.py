@@ -132,6 +132,15 @@ def parse_trace(trace_file, kernel_types):
         step_to_kernel_types[step][ktype]["count"]  += 1
         step_to_kernel_types[step][ktype]["dur_ms"] += dur_ms
 
+        # For triton kernels, additionally accumulate any matching user patterns
+        # as sub-categories (a kernel can appear in both "triton" and e.g. "triton_red")
+        if ktype == "triton":
+            nl = name.lower()
+            for pattern in kernel_types:
+                if pattern in nl:
+                    step_to_kernel_types[step][pattern]["count"]  += 1
+                    step_to_kernel_types[step][pattern]["dur_ms"] += dur_ms
+
         if name.startswith("triton_"):
             has_code = "triton output code" in args
             step_to_triton[step].append({
