@@ -1,10 +1,22 @@
 # Trace Analyzer
 
+[![CI](https://github.com/peaceorwell/analyze_trace/actions/workflows/ci.yml/badge.svg)](https://github.com/peaceorwell/analyze_trace/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 GPU 性能分析工具，解析 PyTorch Profiler 生成的 Chrome Trace JSON 文件，提取并统计 GPU kernel、Triton kernel、ATen 算子、CNCL/NCCL 通信算子的耗时数据，支持单文件分析与双文件对比。
 
 提供命令行脚本和 Web 可视化界面两种使用方式。
 
 ---
+
+**快速开始：**
+```bash
+# 命令行分析
+python analyze_json/analyze_trace.py trace.json -o ./output
+
+# Web 界面
+cd analyze_json/web && pip install -r requirements.txt && python server.py
+```
 
 ## 目录结构
 
