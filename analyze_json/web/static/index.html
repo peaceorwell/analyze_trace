@@ -230,7 +230,13 @@
 
             <!-- Chart tab -->
             <div v-if="resultTab==='chart'" class="chart-wrap">
-              <canvas ref="ktChart"></canvas>
+              <div class="chart-bar-area">
+                <canvas ref="ktChart"></canvas>
+              </div>
+              <div class="chart-pie-area">
+                <canvas ref="ktPieChart"></canvas>
+                <canvas ref="ktPieChartB" v-show="selectedJob.mode==='compare'"></canvas>
+              </div>
             </div>
 
             <!-- CSV table tabs -->

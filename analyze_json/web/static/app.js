@@ -32,8 +32,12 @@ createApp({
     const colWidths     = ref({});
     const colFilters    = ref({});
     const colFilterOps  = ref({});
-    const ktChartInst = ref(null);
-    const ktChart     = ref(null);
+    const ktChartInst     = ref(null);
+    const ktChart         = ref(null);
+    const ktPieChartInst  = ref(null);
+    const ktPieChart      = ref(null);
+    const ktPieChartInstB = ref(null);
+    const ktPieChartB     = ref(null);
 
     const allowFileDownload = ref(true);
 
@@ -245,6 +249,38 @@ createApp({
     };
 
     // ── Chart ──────────────────────────────────────────────────────────────
+    const PIE_COLORS = [
+      'rgba(99,102,241,.82)',  'rgba(234,88,12,.82)',   'rgba(16,163,74,.82)',
+      'rgba(220,38,38,.82)',   'rgba(168,85,247,.82)',  'rgba(14,165,233,.82)',
+      'rgba(245,158,11,.82)',  'rgba(20,184,166,.82)',  'rgba(244,63,94,.82)',
+    ];
+
+    const buildPie = (canvas, labels, data, title) => {
+      const pairs = labels.map((l, i) => ({ l, v: data[i] })).filter(p => p.v > 0);
+      if (!pairs.length || !canvas) return null;
+      const total = pairs.reduce((s, p) => s + p.v, 0);
+      return new Chart(canvas, {
+        type: 'doughnut',
+        data: {
+          labels: pairs.map(p => p.l),
+          datasets: [{ data: pairs.map(p => p.v),
+            backgroundColor: PIE_COLORS.slice(0, pairs.length),
+            borderWidth: 2, borderColor: '#fff' }],
+        },
+        options: {
+          responsive: true,
+          plugins: {
+            title: { display: true, text: title, font: { size: 12 } },
+            legend: { position: 'right', labels: { font: { size: 11 }, boxWidth: 12, padding: 8 } },
+            tooltip: { callbacks: { label: ctx => {
+              const pct = total ? (ctx.parsed / total * 100).toFixed(1) : 0;
+              return ` ${ctx.label}: ${ctx.parsed.toFixed(2)} ms (${pct}%)`;
+            }}},
+          },
+        },
+      });
+    };
+
     const buildChart = async () => {
       await nextTick();
       if (!ktChart.value) return;
@@ -254,30 +290,57 @@ createApp({
       const table = res?.[csvKey];
       if (!table) return;
 
-      if (ktChartInst.value) ktChartInst.value.destroy();
+      const isCmp = csvKey === "kernel_types_cmp.csv";
+
+      if (ktChartInst.value)     { ktChartInst.value.destroy();     ktChartInst.value = null; }
+      if (ktPieChartInst.value)  { ktPieChartInst.value.destroy();  ktPieChartInst.value = null; }
+      if (ktPieChartInstB.value) { ktPieChartInstB.value.destroy(); ktPieChartInstB.value = null; }
 
       const labels = table.rows.map(r => r.type);
+
+      // Bar chart
       const datasets = [];
-      if (table.fields.includes("avg_dur_ms")) {
-        datasets.push({ label: "avg_dur_ms", data: table.rows.map(r => parseFloat(r.avg_dur_ms) || 0),
+      if (!isCmp) {
+        datasets.push({ label: "avg_dur_ms",
+          data: table.rows.map(r => parseFloat(r.avg_dur_ms) || 0),
           backgroundColor: "rgba(99,102,241,0.7)" });
-      }
-      if (table.fields.includes("avg_dur_ms_A")) {
-        datasets.push({ label: "A avg_dur_ms", data: table.rows.map(r => parseFloat(r.avg_dur_ms_A) || 0),
+      } else {
+        datasets.push({ label: "A avg_dur_ms",
+          data: table.rows.map(r => parseFloat(r.avg_dur_ms_A) || 0),
           backgroundColor: "rgba(99,102,241,0.7)" });
-        datasets.push({ label: "B avg_dur_ms", data: table.rows.map(r => parseFloat(r.avg_dur_ms_B) || 0),
+        datasets.push({ label: "B avg_dur_ms",
+          data: table.rows.map(r => parseFloat(r.avg_dur_ms_B) || 0),
           backgroundColor: "rgba(234,88,12,0.7)" });
       }
-
       ktChartInst.value = new Chart(ktChart.value, {
         type: "bar",
         data: { labels, datasets },
         options: {
-          responsive: true,
+          responsive: true, maintainAspectRatio: true,
           plugins: { legend: { position: "top" }, title: { display: true, text: "Kernel 类型耗时 (ms)" } },
           scales: { y: { beginAtZero: true } },
         },
       });
+
+      // Pie chart(s)
+      if (!isCmp) {
+        ktPieChartInst.value = buildPie(
+          ktPieChart.value, labels,
+          table.rows.map(r => parseFloat(r.avg_dur_ms) || 0),
+          "耗时占比"
+        );
+      } else {
+        ktPieChartInst.value = buildPie(
+          ktPieChart.value, labels,
+          table.rows.map(r => parseFloat(r.avg_dur_ms_A) || 0),
+          "A 耗时占比"
+        );
+        ktPieChartInstB.value = buildPie(
+          ktPieChartB.value, labels,
+          table.rows.map(r => parseFloat(r.avg_dur_ms_B) || 0),
+          "B 耗时占比"
+        );
+      }
     };
 
     watch(resultTab, v => { colWidths.value = {}; colFilters.value = {}; colFilterOps.value = {}; if (v === "chart") buildChart(); });
@@ -478,7 +541,7 @@ createApp({
       projects, jobs, filterProject, sidebarTab, selectedJobId, selectedJob,
       collapsedGroups, groupedJobs, singleJobs,
       fileA, fileB, fileAName, fileBName, submitting, uploadProgress, form,
-      resultTab, tableSearch, sortCol, sortAsc, ktChart,
+      resultTab, tableSearch, sortCol, sortAsc, ktChart, ktPieChart, ktPieChartB,
       availableTabs, currentTable, filteredRows,
       showNewProject, newProjectName, newProjectDesc,
       showMoveProject, moveProjectTarget, confirmMoveProject,
