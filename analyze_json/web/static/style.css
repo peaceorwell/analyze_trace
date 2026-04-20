@@ -153,6 +153,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 .btn-danger   { background: #fee2e2; color: #dc2626; border: 1px solid #fca5a5; }
 .btn-sm       { padding: 4px 10px; font-size: 11px; }
 .btn-xs       { padding: 2px 7px; font-size: 10px; }
+.btn-perfetto { background: #ede9fe; color: #5b21b6; border: 1px solid #c4b5fd; }
+.btn-perfetto:hover:not(:disabled) { background: #ddd6fe; opacity: 1; }
 
 /* ── Upload progress ── */
 .upload-progress { margin-top: 10px; }

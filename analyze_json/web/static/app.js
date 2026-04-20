@@ -482,6 +482,37 @@ createApp({
       window.open(`/api/jobs/${selectedJobId.value}/files/${slot}`);
     };
 
+    const openInPerfetto = async (slot) => {
+      const job = selectedJob.value;
+      if (!job) return;
+      const fname = (slot === 'a' ? job.file_a_name : job.file_b_name) || `trace_${slot}.json`;
+      const PERFETTO = 'https://ui.perfetto.dev';
+
+      // Open Perfetto immediately so the user sees progress
+      const win = window.open(PERFETTO);
+      if (!win) { alert('请允许浏览器弹出窗口后重试'); return; }
+
+      // Fetch trace in background
+      const resp = await fetch(`/api/jobs/${selectedJobId.value}/files/${slot}`);
+      if (!resp.ok) { win.close(); return; }
+      const buffer = await resp.arrayBuffer();
+
+      const send = () => {
+        if (!win.closed)
+          win.postMessage({ perfetto: { buffer, title: fname, fileName: fname } }, PERFETTO);
+      };
+
+      // Send when Perfetto signals ready (PING), with two timeout fallbacks
+      const handler = (e) => {
+        if (e.origin !== PERFETTO || !e.data?.perfetto) return;
+        window.removeEventListener('message', handler);
+        send();
+      };
+      window.addEventListener('message', handler);
+      setTimeout(send, 2000);
+      setTimeout(() => { window.removeEventListener('message', handler); send(); }, 8000);
+    };
+
     // ── Compare ────────────────────────────────────────────────────────────
     const toggleCompareSelect = job => {
       if (!job.file_a_exists) return;
@@ -553,7 +584,7 @@ createApp({
       colFilters, colFilterOps, hasColFilters, clearColFilters,
       sidebarWidth, sidebarCollapsed,
       toggleSidebar, startSidebarResize,
-      allowFileDownload, downloadTraceFile,
+      allowFileDownload, downloadTraceFile, openInPerfetto,
       toggleCompareSelect, submitCompare, createProject,
     };
   },
