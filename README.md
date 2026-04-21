@@ -171,11 +171,69 @@ TRACE_NO_DOWNLOAD=1 docker-compose up -d
 ### 用户隔离与分享
 
 - **无登录访问**：首次访问自动生成用户标识（UUID），数据按用户隔离
-- **项目分享设置**：
-  - **无密码公开**：任何人都可以查看项目内容
+- **项目分享设置**（新建项目默认公开）：
+  - **公开**：任何人都可以查看项目内容（默认）
   - **密码保护**：访问者需输入密码才能查看
   - **私有**：仅项目创建者可查看
 - **跨用户对比**：可选择任意两个可访问的任务进行对比分析
+
+### 自建部署
+
+使用 Docker 部署后，可通过反向代理配置域名 + SSL：
+
+**Caddy 2（推荐，自动 HTTPS）：**
+
+```bash
+# 目录结构
+# .
+# ├── docker-compose.yml
+# ├── Caddyfile
+# └── data/caddy/
+
+# docker-compose.yml 新增 caddy 服务
+```
+
+```yaml
+# docker-compose.yml
+services:
+  trace-analyzer:
+    build:
+      context: ./analyze_json/web
+      dockerfile: Dockerfile
+    volumes:
+      - trace_analyzer_data:/app/storage
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - ./data/caddy:/data
+    depends_on:
+      - trace-analyzer
+    restart: unless-stopped
+
+volumes:
+  trace_analyzer_data:
+```
+
+```nginx
+# Caddyfile
+trace.example.com {
+    reverse_proxy trace-analyzer:8181
+}
+```
+
+```bash
+# DNS 设置 A 记录指向服务器 IP
+# 启动服务
+docker-compose up -d
+```
+
+Caddy 会自动从 Let's Encrypt 申请 SSL 证书并续期。
 
 ### CLI 参数
 
