@@ -30,6 +30,14 @@ STORAGE_DIR = os.path.join(os.path.dirname(__file__), "storage")
 # Configured at startup via CLI; read-only after that
 ALLOW_FILE_DOWNLOAD = os.environ.get("TRACE_NO_DOWNLOAD", "") == ""
 
+# Cookie security settings
+# Set FORCE_SECURE=1 or USE_HTTPS=1 to enforce secure cookies (for HTTPS deployments)
+_is_https = os.environ.get("FORCE_SECURE", "") or os.environ.get("USE_HTTPS", "") or os.environ.get("HTTPS", "")
+_is_production = os.environ.get("PRODUCTION", "") == "1"
+COOKIE_SECURE = _is_https.lower() in ("1", "true", "yes") or (_is_production and not os.environ.get("DEV_MODE"))
+COOKIE_SAMESITE = os.environ.get("COOKIE_SAMESITE", "lax")  # 'strict', 'lax', or 'none'
+COOKIE_MAX_AGE = 365 * 24 * 60 * 60  # 1 year in seconds
+
 
 # ── App lifecycle ─────────────────────────────────────────────────────────────
 
@@ -278,10 +286,14 @@ async def guest_login(response: JSONResponse, user_token: Optional[str] = Cookie
     response.set_cookie(
         key="user_token",
         value=token,
-        httponly=True,
-        samesite="lax",
-        secure=False,  # Set True in production with HTTPS
-        max_age=365 * 24 * 60 * 60,  # 1 year
+        httponly=True,                    # Prevents XSS from accessing cookie
+        samesite=COOKIE_SAMESITE,         # CSRF protection
+        secure=COOKIE_SECURE,             # Requires HTTPS
+        max_age=COOKIE_MAX_AGE,
+        path="/",
+        # __Host- prefix requires secure=True and provides additional security
+        # (commented out to maintain compatibility with HTTP dev environments)
+        # cookie_prefix="__Host-" if COOKIE_SECURE else "",
     )
     return {"user_token": token}
 
