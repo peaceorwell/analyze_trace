@@ -164,6 +164,12 @@ def collect_results(jid: str) -> dict:
         full = os.path.join(rdir, name)
         if os.path.exists(full):
             files[name] = csv_to_rows(full)
+    # Collect per-step triton kernel CSVs
+    if os.path.isdir(rdir):
+        for fname in sorted(os.listdir(rdir)):
+            if fname.startswith("step_") and fname.endswith("_triton_kernels.csv"):
+                full = os.path.join(rdir, fname)
+                files[fname] = csv_to_rows(full)
     return files
 
 
@@ -806,6 +812,50 @@ async def download_result(jid: str, filename: str, user_token: Optional[str] = C
     if not os.path.exists(path):
         raise HTTPException(404)
     return FileResponse(path, filename=filename, media_type="text/csv")
+
+
+@app.get("/api/jobs/{jid}/triton-code/{path:path}")
+async def get_triton_code(jid: str, path: str, user_token: Optional[str] = Cookie(None)):
+    """Serve triton code file for display in browser."""
+    if not ALLOW_FILE_DOWNLOAD:
+        raise HTTPException(403, "File download is disabled")
+
+    token = await get_or_create_user(user_token)
+    db = await get_db()
+    cursor = await db.execute("""
+        SELECT j.*, p.user_token as proj_owner, p.is_public, p.password_hash
+        FROM jobs j
+        LEFT JOIN projects p ON j.project_id = p.id
+        WHERE j.id=?
+    """, (jid,))
+    row = await row_to_dict(await cursor.fetchone())
+    await db.close()
+
+    if not row:
+        raise HTTPException(404)
+
+    def can_access_job(job):
+        if job.get("user_token") == token:
+            return True
+        is_public = job.get("is_public")
+        has_password = job.get("password_hash")
+        return bool(is_public) and not has_password
+
+    if not can_access_job(row):
+        raise HTTPException(403, "No access to this file")
+
+    # Prevent path traversal - ensure path is within result_dir
+    full_path = os.path.normpath(os.path.join(result_dir(jid), path))
+    if not full_path.startswith(os.path.abspath(result_dir(jid))):
+        raise HTTPException(400, "Invalid path")
+
+    if not os.path.exists(full_path):
+        raise HTTPException(404)
+
+    with open(full_path, "r", encoding="utf-8", errors="replace") as f:
+        content = f.read()
+
+    return {"content": content, "filename": os.path.basename(path)}
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

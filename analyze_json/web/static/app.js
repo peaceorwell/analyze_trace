@@ -92,6 +92,16 @@ createApp({
     const unlockProjectName = ref("");
     const unlockedProjects = ref({});  // project_id -> true
 
+    // ── Project renaming ──────────────────────────────────────────────────────
+    const showRenameProject = ref(false);
+    const renameProjectId = ref("");
+    const renameProjectName = ref("");
+
+    // ── Triton code viewer ────────────────────────────────────────────────────
+    const showTritonCode = ref(false);
+    const tritonCodeContent = ref("");
+    const tritonCodeFilename = ref("");
+
     const compareSelection  = ref([]);
     const compareKernelTypes = ref("gemm,embedding,pool");
     const compareLabel      = ref("");
@@ -141,6 +151,13 @@ createApp({
       };
       for (const [file, label] of Object.entries(csvMap)) {
         if (res[file]) tabs.push({ key: file, label });
+      }
+      // Add per-step triton tabs (step_N_triton_kernels.csv)
+      for (const file of Object.keys(res).sort()) {
+        if (file.match(/^step_\d+_triton_kernels\.csv$/)) {
+          const stepNum = file.match(/^step_(\d+)_/)[1];
+          tabs.push({ key: file, label: `Triton Step ${stepNum}` });
+        }
       }
       return tabs;
     });
@@ -498,6 +515,45 @@ createApp({
       await loadJobs();
     };
 
+    const openRenameModal = (project) => {
+      if (!project?.id) return;
+      renameProjectId.value = project.id;
+      renameProjectName.value = project.name;
+      showRenameProject.value = true;
+    };
+
+    const confirmRenameProject = async () => {
+      const newName = renameProjectName.value.trim();
+      if (!newName) return;
+      const pid = renameProjectId.value;
+      if (!pid) { alert("项目ID无效"); return; }
+      // Optimistically update local state immediately
+      const proj = projects.value.find(p => p.id === pid);
+      if (proj) proj.name = newName;
+      try {
+        const r = await fetch(`/api/projects/${pid}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ name: newName }),
+        });
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({}));
+          throw new Error(err.detail || "更新失败");
+        }
+      } catch (e) {
+        // Revert optimistic update on error
+        if (proj) await loadProjects();
+        alert("重命名失败: " + e.message);
+        return;
+      }
+      showRenameProject.value = false;
+      await loadProjects();
+      if (filterProject.value === pid) {
+        await loadJobs();
+      }
+    };
+
     const unlockProject = async (project) => {
       unlockProjectId.value = project.id;
       unlockProjectName.value = project.name;
@@ -601,6 +657,16 @@ createApp({
       setTimeout(() => { window.removeEventListener('message', handler); send(); }, 8000);
     };
 
+    const viewTritonCode = async (codePath) => {
+      if (!selectedJobId.value || !codePath) return;
+      const resp = await fetch(`/api/jobs/${selectedJobId.value}/triton-code/${codePath}`, { credentials: "include" });
+      if (!resp.ok) { alert("无法加载代码文件"); return; }
+      const data = await resp.json();
+      tritonCodeContent.value = data.content;
+      tritonCodeFilename.value = data.filename;
+      showTritonCode.value = true;
+    };
+
     // ── Compare ────────────────────────────────────────────────────────────
     const toggleCompareSelect = job => {
       if (!job.file_a_exists) return;
@@ -669,6 +735,7 @@ createApp({
       showMoveProject, moveProjectTarget, confirmMoveProject,
       showShareProject, shareProjectId, shareProjectPassword, shareProjectPublic,
       openShareModal, saveProjectSettings,
+      showRenameProject, renameProjectName, openRenameModal, confirmRenameProject,
       showUnlockModal, unlockProjectId, unlockProjectName, shareUnlockPassword,
       unlockProject, confirmUnlock, isProjectLocked, unlockedProjects, deleteProject,
       compareSelection, compareKernelTypes, compareLabel, compareProjectId,
@@ -679,7 +746,8 @@ createApp({
       colFilters, colFilterOps, hasColFilters, clearColFilters,
       sidebarWidth, sidebarCollapsed,
       toggleSidebar, startSidebarResize,
-      allowFileDownload, downloadTraceFile, openInPerfetto,
+      allowFileDownload, downloadTraceFile, openInPerfetto, viewTritonCode,
+      showTritonCode, tritonCodeContent, tritonCodeFilename,
       toggleCompareSelect, submitCompare, createProject,
     };
   },

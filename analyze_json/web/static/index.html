@@ -41,6 +41,7 @@
               <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
             </select>
             <div v-if="filterProject && filterProject !== '__none__'" class="project-actions">
+              <button class="btn btn-xs btn-outline mt-1 w-full" @click="openRenameModal(projects.find(p => p.id === filterProject))">重命名</button>
               <button class="btn btn-xs btn-outline mt-1 w-full" @click="openShareModal(projects.find(p => p.id === filterProject))">分享设置</button>
               <button class="btn btn-xs btn-danger mt-1 w-full" @click="deleteProject(filterProject)">删除项目</button>
             </div>
@@ -159,7 +160,7 @@
             </div>
             <div class="form-row checkboxes">
               <label><input type="checkbox" v-model="form.saveTritonCsv" /> save-triton-csv</label>
-              <label><input type="checkbox" v-model="form.saveTritonCode" /> save-triton-code</label>
+              <label title="保存每个 Triton kernel 的生成代码为 .py 文件，可从结果查看"><input type="checkbox" v-model="form.saveTritonCode" /> save-triton-code</label>
             </div>
           </div>
           <button class="btn btn-primary" :disabled="!fileA || submitting" @click="submitJob">
@@ -304,7 +305,12 @@
                       <td v-for="f in currentTable.fields" :key="f"
                           :class="deltaCellClass(f, row[f])"
                           :title="row[f]">
-                        {{ row[f] }}
+                        <button v-if="f === 'triton_code_file' && row[f]"
+                                class="btn btn-xs btn-perfetto"
+                                @click.stop="viewTritonCode(row[f])">
+                          查看代码
+                        </button>
+                        <span v-else>{{ row[f] }}</span>
                       </td>
                     </tr>
                   </tbody>
@@ -365,6 +371,18 @@
       </div>
     </div>
 
+    <!-- ── Rename project modal ── -->
+    <div v-if="showRenameProject" class="modal-mask" @click.self="showRenameProject=false">
+      <div class="modal">
+        <div class="modal-title">重命名项目</div>
+        <input v-model="renameProjectName" class="input w-full" placeholder="项目名称" @keyup.enter="confirmRenameProject" />
+        <div class="modal-actions">
+          <button class="btn btn-outline" @click="showRenameProject=false">取消</button>
+          <button class="btn btn-primary" @click="confirmRenameProject">保存</button>
+        </div>
+      </div>
+    </div>
+
     <!-- ── Unlock project modal ── -->
     <div v-if="showUnlockModal" class="modal-mask" @click.self="showUnlockModal=false">
       <div class="modal">
@@ -374,6 +392,17 @@
         <div class="modal-actions">
           <button class="btn btn-outline" @click="showUnlockModal=false">取消</button>
           <button class="btn btn-primary" @click="confirmUnlock">解锁</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Triton code viewer modal ── -->
+    <div v-if="showTritonCode" class="modal-mask" @click.self="showTritonCode=false">
+      <div class="modal modal-wide">
+        <div class="modal-title">{{ tritonCodeFilename }}</div>
+        <pre class="code-viewer"><code>{{ tritonCodeContent }}</code></pre>
+        <div class="modal-actions">
+          <button class="btn btn-outline" @click="showTritonCode=false">关闭</button>
         </div>
       </div>
     </div>
