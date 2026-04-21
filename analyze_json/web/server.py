@@ -583,39 +583,70 @@ async def move_project_to_folder(pid: str, body: dict, user_token: Optional[str]
 @app.get("/api/jobs")
 async def list_jobs(
     project_id: Optional[str] = None,
-    user_token: Optional[str] = Cookie(None)
+    user_token: Optional[str] = Cookie(None),
+    limit: int = 50,
+    offset: int = 0,
 ):
     token = await get_or_create_user(user_token)
     db = await get_db()
 
-    # Build query to filter by user's own jobs + jobs in accessible projects
+    # Build base WHERE clause to filter by user's own jobs + jobs in accessible projects
+    def build_where():
+        return """(j.user_token = ?
+           OR (p.is_public = 1 AND p.password_hash IS NULL))"""
+
+    # Count query
+    count_sql = f"""
+        SELECT COUNT(*) as total FROM jobs j
+        LEFT JOIN projects p ON j.project_id = p.id
+        WHERE {build_where()}
+    """
+    count_params = [token]
+
     if project_id == "__none__":
-        # Jobs without project - only user's own
+        count_sql = """
+            SELECT COUNT(*) as total FROM jobs j
+            LEFT JOIN projects p ON j.project_id = p.id
+            WHERE j.user_token = ? AND j.project_id IS NULL
+        """
+        count_params = [token]
+    elif project_id:
+        count_sql = f"""
+            SELECT COUNT(*) as total FROM jobs j
+            LEFT JOIN projects p ON j.project_id = p.id
+            WHERE j.project_id = ? AND {build_where()}
+        """
+        count_params = [project_id, token]
+
+    count_cursor = await db.execute(count_sql, count_params)
+    total = (await count_cursor.fetchone())[0]
+
+    # Data query
+    if project_id == "__none__":
         rows = await (await db.execute(
-            "SELECT * FROM jobs WHERE user_token=? AND project_id IS NULL ORDER BY created_at DESC",
-            (token,)
+            "SELECT * FROM jobs WHERE user_token=? AND project_id IS NULL ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (token, limit, offset)
         )).fetchall()
     elif project_id:
-        # Specific project - check access first
         can_access = await verify_project_access(db, project_id, token)
         if not can_access:
             await db.close()
             raise HTTPException(403, "No access to this project")
         rows = await (await db.execute(
-            "SELECT * FROM jobs WHERE project_id=? ORDER BY created_at DESC", (project_id,)
+            "SELECT * FROM jobs WHERE project_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (project_id, limit, offset)
         )).fetchall()
     else:
-        # All jobs - user's own + accessible projects
-        rows = await (await db.execute("""
+        rows = await (await db.execute(f"""
             SELECT j.* FROM jobs j
             LEFT JOIN projects p ON j.project_id = p.id
-            WHERE j.user_token = ?
-               OR (p.is_public = 1 AND p.password_hash IS NULL)
+            WHERE {build_where()}
             ORDER BY j.created_at DESC
-        """, (token,))).fetchall()
+            LIMIT ? OFFSET ?
+        """, (token, limit, offset))).fetchall()
 
     await db.close()
-    return [dict(r) for r in rows]
+    return {"data": [dict(r) for r in rows], "total": total, "limit": limit, "offset": offset}
 
 
 @app.post("/api/jobs", status_code=201)

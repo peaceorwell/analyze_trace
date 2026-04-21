@@ -122,6 +122,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 .compare-form { margin-top: 12px; padding-top: 12px; border-top: 1px solid #e2e8f0; }
 .tip-text { font-size: 11px; color: #94a3b8; padding: 4px 2px; }
 .empty-tip { text-align: center; color: #94a3b8; padding: 24px 0; font-size: 12px; }
+.pagination { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 8px 0; }
+.page-info { font-size: 11px; color: #64748b; }
 
 /* ── Main ── */
 .main { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }

@@ -95,6 +95,11 @@
             </div>
           </div>
           <div v-if="jobs.length===0" class="empty-tip">暂无历史记录</div>
+          <div v-if="jobsTotal > jobsLimit" class="pagination">
+            <button class="btn btn-xs btn-outline" @click="prevPage" :disabled="jobsOffset === 0">上一页</button>
+            <span class="page-info">{{ jobsOffset + 1 }}-{{ Math.min(jobsOffset + jobsLimit, jobsTotal) }} / {{ jobsTotal }}</span>
+            <button class="btn btn-xs btn-outline" @click="nextPage" :disabled="jobsOffset + jobsLimit >= jobsTotal">下一页</button>
+          </div>
         </div>
 
         <!-- Compare tab: pick two single-file jobs -->

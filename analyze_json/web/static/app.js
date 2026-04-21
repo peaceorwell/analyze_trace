@@ -6,6 +6,9 @@ createApp({
     const projects      = ref([]);
     const folders       = ref([]);
     const jobs          = ref([]);
+    const jobsTotal     = ref(0);
+    const jobsLimit     = ref(50);
+    const jobsOffset    = ref(0);
     const filterProject = ref("");
     const sidebarTab    = ref("jobs");
     const selectedJobId = ref(null);
@@ -123,12 +126,24 @@ createApp({
 
     let pollTimer = null;
 
+    // ── Memoization cache for groupedJobs ─────────────────────────────────────
+    let groupedJobsCache = null;
+    let groupedJobsCacheKey = null;
+
+    const getGroupedJobsCacheKey = () =>
+      `${filterProject.value}-${jobs.value.length}-${projects.value.length}-${folders.value.length}-${JSON.stringify(collapsedFolders.value)}`;
+
     // ── Computed ───────────────────────────────────────────────────────────
     const singleJobs = computed(() =>
       jobs.value.filter(j => j.mode === "single" && j.status === "done")
     );
 
     const groupedJobs = computed(() => {
+      const cacheKey = getGroupedJobsCacheKey();
+      if (groupedJobsCache && groupedJobsCacheKey === cacheKey) {
+        return groupedJobsCache;
+      }
+
       const filtered = filterProject.value
         ? filterProject.value === "__none__"
           ? jobs.value.filter(j => !j.project_id)
@@ -194,6 +209,8 @@ createApp({
         });
       }
 
+      groupedJobsCacheKey = cacheKey;
+      groupedJobsCache = result;
       return result;
     });
 
@@ -311,11 +328,14 @@ createApp({
     };
 
     const loadJobs = async () => {
-      const url = filterProject.value
-        ? `/api/jobs?project_id=${filterProject.value}`
-        : "/api/jobs";
-      const r = await fetch(url, { credentials: "include" });
-      jobs.value = await r.json();
+      const params = new URLSearchParams();
+      if (filterProject.value) params.set("project_id", filterProject.value);
+      params.set("limit", String(jobsLimit.value));
+      params.set("offset", String(jobsOffset.value));
+      const r = await fetch(`/api/jobs?${params}`, { credentials: "include" });
+      const data = await r.json();
+      jobs.value = data.data || [];
+      jobsTotal.value = data.total || 0;
     };
 
     const loadJob = async id => {
@@ -915,7 +935,21 @@ createApp({
       collapsedFolders.value[folderId] = !collapsedFolders.value[folderId];
     };
 
-    watch(filterProject, () => loadJobs());
+    watch(filterProject, () => { jobsOffset.value = 0; loadJobs(); });
+
+    const prevPage = () => {
+      if (jobsOffset.value > 0) {
+        jobsOffset.value = Math.max(0, jobsOffset.value - jobsLimit.value);
+        loadJobs();
+      }
+    };
+
+    const nextPage = () => {
+      if (jobsOffset.value + jobsLimit.value < jobsTotal.value) {
+        jobsOffset.value += jobsLimit.value;
+        loadJobs();
+      }
+    };
 
     onMounted(async () => {
       await initAuth();
@@ -926,8 +960,10 @@ createApp({
     });
 
     return {
-      projects, folders, jobs, filterProject, sidebarTab, selectedJobId, selectedJob,
+      projects, folders, jobs, jobsTotal, jobsLimit, jobsOffset,
+      filterProject, sidebarTab, selectedJobId, selectedJob,
       collapsedGroups, collapsedFolders, groupedJobs, singleJobs,
+      prevPage, nextPage,
       fileA, fileB, fileAName, fileBName, submitting, uploadProgress, form,
       resultTab, tableSearch, sortCol, sortAsc, ktChart, ktPieChart, ktPieChartB,
       availableTabs, currentTable, filteredRows,
