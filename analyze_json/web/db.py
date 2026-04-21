@@ -19,9 +19,18 @@ async def init_db():
                 created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
             );
 
+            CREATE TABLE IF NOT EXISTS folders (
+                id           TEXT PRIMARY KEY,
+                user_token   TEXT REFERENCES users(user_token) ON DELETE CASCADE,
+                name         TEXT NOT NULL,
+                password_hash TEXT DEFAULT NULL,
+                created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+
             CREATE TABLE IF NOT EXISTS projects (
                 id           TEXT PRIMARY KEY,
                 user_token   TEXT REFERENCES users(user_token) ON DELETE CASCADE,
+                folder_id    TEXT REFERENCES folders(id) ON DELETE SET NULL,
                 name         TEXT NOT NULL,
                 description  TEXT DEFAULT '',
                 password_hash TEXT DEFAULT NULL,
@@ -77,6 +86,32 @@ async def init_db():
             await db.execute("ALTER TABLE jobs ADD COLUMN user_token TEXT")
         except Exception:
             pass
+        try:
+            await db.execute("ALTER TABLE projects ADD COLUMN folder_id TEXT")
+        except Exception:
+            pass
+
+        # Create folders table if not exists (for existing databases)
+        try:
+            await db.execute("SELECT id FROM folders LIMIT 1")
+        except Exception:
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS folders (
+                    id           TEXT PRIMARY KEY,
+                    user_token   TEXT REFERENCES users(user_token) ON DELETE CASCADE,
+                    name         TEXT NOT NULL,
+                    password_hash TEXT DEFAULT NULL,
+                    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_folders_user ON folders(user_token)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_projects_folder ON projects(folder_id)")
+
+        # Migration: add password_hash to folders for existing tables
+        try:
+            await db.execute("ALTER TABLE folders ADD COLUMN password_hash TEXT DEFAULT NULL")
+        except Exception:
+            pass
 
         # Create indexes for user_token lookups
         try:
@@ -85,6 +120,14 @@ async def init_db():
             pass
         try:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_jobs_user ON jobs(user_token)")
+        except Exception:
+            pass
+        try:
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_folders_user ON folders(user_token)")
+        except Exception:
+            pass
+        try:
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_projects_folder ON projects(folder_id)")
         except Exception:
             pass
 

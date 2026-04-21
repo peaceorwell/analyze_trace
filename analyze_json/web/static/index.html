@@ -14,7 +14,10 @@
     <!-- ── Header ── -->
     <header class="header">
       <span class="header-title">Trace Analyzer</span>
-      <button class="btn btn-sm btn-outline" @click="showNewProject=true">+ 新建项目</button>
+      <div class="header-actions">
+        <button class="btn btn-sm btn-outline" @click="showNewProject=true">+ 新建项目</button>
+        <button class="btn btn-sm btn-primary" @click="showNewFolder=true">+ 新建文件夹</button>
+      </div>
     </header>
 
     <div class="layout">
@@ -38,34 +41,54 @@
             <select v-model="filterProject" class="input input-sm w-full">
               <option value="">全部项目</option>
               <option value="__none__">未分组</option>
-              <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
+              <optgroup v-for="f in folders" :key="f.id" :label="f.name">
+                <option v-for="p in projects.filter(proj => proj.folder_id === f.id)" :key="p.id" :value="p.id">{{ p.name }}</option>
+              </optgroup>
+              <optgroup label="未分组">
+                <option v-for="p in projects.filter(proj => !proj.folder_id)" :key="p.id" :value="p.id">{{ p.name }}</option>
+              </optgroup>
             </select>
             <div v-if="filterProject && filterProject !== '__none__'" class="project-actions">
+              <button class="btn btn-xs btn-outline mt-1 w-full" @click="openMoveProjectToFolder()">移动到文件夹</button>
               <button class="btn btn-xs btn-outline mt-1 w-full" @click="openRenameModal(projects.find(p => p.id === filterProject))">重命名</button>
               <button class="btn btn-xs btn-outline mt-1 w-full" @click="openShareModal(projects.find(p => p.id === filterProject))">分享设置</button>
               <button class="btn btn-xs btn-danger mt-1 w-full" @click="deleteProject(filterProject)">删除项目</button>
             </div>
           </div>
 
-          <!-- Group by project -->
-          <div v-for="group in groupedJobs" :key="group.label" class="job-group">
-            <div class="group-header" @click="toggleGroup(group.label)">
-              <span class="group-caret">{{ collapsedGroups[group.label] ? '▶' : '▼' }}</span>
-              <span class="group-name">{{ group.label }}</span>
-              <span class="group-count">{{ group.jobs.length }}</span>
+          <!-- Group by folder and project -->
+          <div v-for="group in groupedJobs" :key="group.id || group.label" class="job-group">
+            <div v-if="group.type === 'folder'" class="folder-header" @click="toggleFolder(group.id)">
+              <span class="group-caret">{{ group.collapsed ? '▶' : '▼' }}</span>
+              <span class="group-name">📁 {{ group.label }}</span>
+              <button class="btn btn-xs btn-outline ml-auto" @click.stop="openFolderSettings(folders.find(f => f.id === group.id))" title="设置">⚙</button>
+              <button class="btn btn-xs btn-danger" @click.stop="deleteFolder(group.id)">✕</button>
             </div>
-            <div v-if="!collapsedGroups[group.label]">
-              <div
-                v-for="job in group.jobs" :key="job.id"
-                :class="['job-item', selectedJobId===job.id ? 'selected' : '']"
-                @click="selectJob(job.id)"
-              >
-                <div class="job-item-top">
-                  <span class="job-status" :class="'status-'+job.status">{{ statusIcon(job.status) }}</span>
-                  <span class="job-label">{{ job.label || job.id.slice(0,8) }}</span>
-                  <span class="job-mode-badge" :class="'mode-'+job.mode">{{ job.mode==='compare'?'对比':'单文件' }}</span>
+            <div v-else class="folder-header" @click="toggleFolder(group.id || '__none__')">
+              <span class="group-caret">{{ group.collapsed ? '▶' : '▼' }}</span>
+              <span class="group-name">{{ group.label }}</span>
+            </div>
+            <div v-if="!group.collapsed">
+              <div v-for="project in group.projects" :key="project.id" class="project-group">
+                <div class="project-header" @click="toggleGroup(project.id)">
+                  <span class="group-caret">{{ collapsedGroups[project.id] ? '▶' : '▼' }}</span>
+                  <span class="group-name">{{ project.label }}</span>
+                  <span class="group-count">{{ project.jobs.length }}</span>
                 </div>
-                <div class="job-item-meta">{{ fmtDate(job.created_at) }}</div>
+                <div v-if="!collapsedGroups[project.id]">
+                  <div
+                    v-for="job in project.jobs" :key="job.id"
+                    :class="['job-item', selectedJobId===job.id ? 'selected' : '']"
+                    @click="selectJob(job.id)"
+                  >
+                    <div class="job-item-top">
+                      <span class="job-status" :class="'status-'+job.status">{{ statusIcon(job.status) }}</span>
+                      <span class="job-label">{{ job.label || job.id.slice(0,8) }}</span>
+                      <span class="job-mode-badge" :class="'mode-'+job.mode">{{ job.mode==='compare'?'对比':'单文件' }}</span>
+                    </div>
+                    <div class="job-item-meta">{{ fmtDate(job.created_at) }}</div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -349,6 +372,46 @@
         <div class="modal-actions">
           <button class="btn btn-outline" @click="showNewProject=false">取消</button>
           <button class="btn btn-primary" @click="createProject">创建</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── New folder modal ── -->
+    <div v-if="showNewFolder" class="modal-mask" @click.self="showNewFolder=false">
+      <div class="modal">
+        <div class="modal-title">新建文件夹</div>
+        <input v-model="newFolderName" class="input w-full" placeholder="文件夹名称" @keyup.enter="createFolder" />
+        <input v-model="newFolderPassword" type="password" class="input w-full mt-2" placeholder="设置密码（可选）" @keyup.enter="createFolder" />
+        <div class="modal-actions">
+          <button class="btn btn-outline" @click="showNewFolder=false">取消</button>
+          <button class="btn btn-primary" @click="createFolder">创建</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Folder settings modal ── -->
+    <div v-if="showFolderSettings" class="modal-mask" @click.self="showFolderSettings=false">
+      <div class="modal">
+        <div class="modal-title">文件夹设置</div>
+        <input v-model="folderSettingsPassword" type="password" class="input w-full" placeholder="设置密码（留空则无密码）" />
+        <div class="modal-actions">
+          <button class="btn btn-outline" @click="showFolderSettings=false">取消</button>
+          <button class="btn btn-primary" @click="saveFolderSettings">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Move project to folder modal ── -->
+    <div v-if="showMoveProjectToFolder" class="modal-mask" @click.self="showMoveProjectToFolder=false">
+      <div class="modal">
+        <div class="modal-title">移动到文件夹</div>
+        <select v-model="moveProjectToFolderTarget" class="input w-full">
+          <option value="">无（移除文件夹）</option>
+          <option v-for="f in folders" :key="f.id" :value="f.id">{{ f.name }}</option>
+        </select>
+        <div class="modal-actions">
+          <button class="btn btn-outline" @click="showMoveProjectToFolder=false">取消</button>
+          <button class="btn btn-primary" @click="confirmMoveProjectToFolder()">确认</button>
         </div>
       </div>
     </div>

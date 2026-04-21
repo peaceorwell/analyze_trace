@@ -142,14 +142,13 @@ def parse_trace(trace_file, kernel_types):
                     step_to_kernel_types[step][pattern]["dur_ms"] += dur_ms
 
         if name.startswith("triton_"):
-            has_code = "triton output code" in args
             step_to_triton[step].append({
                 "kernel_name":         name,
                 "dur(ms)":             dur_ms if raw_dur is not None else None,
-                "total io(GB)":        float(args["kernel num(GB)"])      if has_code else None,
-                "IO efficiency(GB/s)": float(args["IO efficiency(GB/s)"]) if has_code else None,
-                "tiling config":       args["kernel kwargs"]              if has_code else None,
-                "triton_output_code":  args["triton output code"]         if has_code else None,
+                "total io(GB)":        float(args["kernel num(GB)"])      if "kernel num(GB)" in args else None,
+                "IO efficiency(GB/s)": float(args["IO efficiency(GB/s)"]) if "IO efficiency(GB/s)" in args else None,
+                "tiling config":       args.get("kernel kwargs", None),
+                "triton_output_code":  args.get("triton output code"),
             })
 
     for e in aten_events:
@@ -484,7 +483,7 @@ def write_single(data, args):
                             "dur(ms)":             fmt3(kernel["dur(ms)"]),
                             "total io(GB)":        fmt3(kernel["total io(GB)"]),
                             "IO efficiency(GB/s)": fmt3(kernel["IO efficiency(GB/s)"]),
-                            "tiling config":       kernel["tiling config"].replace("\n", "\\n").replace("\r", ""),
+                            "tiling config":       (kernel["tiling config"] or "").replace("\n", "\\n").replace("\r", ""),
                             "triton_code_file":    "",
                         }
                         if args.save_triton_code:
