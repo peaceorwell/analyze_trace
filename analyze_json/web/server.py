@@ -331,8 +331,8 @@ async def create_project(body: dict, user_token: Optional[str] = Cookie(None)):
     token = await get_or_create_user(user_token)
     db = await get_db()
     await db.execute(
-        "INSERT INTO projects(id, user_token, name, description) VALUES(?,?,?,?)",
-        (pid, token, body.get("name", "新项目"), body.get("description", "")),
+        "INSERT INTO projects(id, user_token, name, description, is_public) VALUES(?,?,?,?,?)",
+        (pid, token, body.get("name", "新项目"), body.get("description", ""), 1),
     )
     await db.commit()
     cursor = await db.execute("SELECT * FROM projects WHERE id=?", (pid,))
