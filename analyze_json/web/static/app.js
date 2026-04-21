@@ -325,9 +325,15 @@ createApp({
     };
 
     const selectJob = async id => {
+      // Destroy existing charts before loading new job
+      if (ktChartInst.value)     { ktChartInst.value.destroy();     ktChartInst.value = null; }
+      if (ktPieChartInst.value)  { ktPieChartInst.value.destroy();  ktPieChartInst.value = null; }
+      if (ktPieChartInstB.value) { ktPieChartInstB.value.destroy(); ktPieChartInstB.value = null; }
+
       selectedJobId.value = id;
       tableSearch.value = "";
       sortCol.value = "";
+      clearColFilters();
       await loadJob(id);
       if (selectedJob.value?.status === "done") {
         resultTab.value = "console";
@@ -389,18 +395,19 @@ createApp({
 
     const buildChart = async () => {
       await nextTick();
-      if (!ktChart.value) return;
-      const res = selectedJob.value?.results;
+      if (!ktChart.value || !selectedJob.value?.results) return;
+      const res = selectedJob.value.results;
       const csvKey = res?.["kernel_types_cmp.csv"]
         ? "kernel_types_cmp.csv" : "kernel_types_avg.csv";
       const table = res?.[csvKey];
       if (!table) return;
 
-      const isCmp = csvKey === "kernel_types_cmp.csv";
-
+      // Clean up existing charts first
       if (ktChartInst.value)     { ktChartInst.value.destroy();     ktChartInst.value = null; }
       if (ktPieChartInst.value)  { ktPieChartInst.value.destroy();  ktPieChartInst.value = null; }
       if (ktPieChartInstB.value) { ktPieChartInstB.value.destroy(); ktPieChartInstB.value = null; }
+
+      const isCmp = csvKey === "kernel_types_cmp.csv";
 
       const labels = table.rows.map(r => r.type);
 
@@ -449,10 +456,17 @@ createApp({
       }
     };
 
-    watch(resultTab, v => { colWidths.value = {}; colFilters.value = {}; colFilterOps.value = {}; if (v === "chart") buildChart(); });
+    watch(resultTab, v => {
+      colWidths.value = {};
+      colFilters.value = {};
+      colFilterOps.value = {};
+      if (v === "chart" && selectedJob.value?.status === "done") {
+        nextTick(() => buildChart());
+      }
+    });
     watch(selectedJob, v => {
       if (v?.status === "done") nextTick(() => { if (resultTab.value === "chart") buildChart(); });
-    });
+    }, { deep: true });
 
     // ── Uploads ────────────────────────────────────────────────────────────
     const onFileChange = (e, slot) => {
@@ -901,7 +915,7 @@ createApp({
       collapsedFolders.value[folderId] = !collapsedFolders.value[folderId];
     };
 
-    watch(filterProject, loadJobs);
+    watch(filterProject, () => loadJobs());
 
     onMounted(async () => {
       await initAuth();

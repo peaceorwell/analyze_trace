@@ -41,56 +41,66 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 .sidebar-resize-handle:active { background: #6366f1; opacity: .35; }
 .sidebar-tabs { display: flex; border-bottom: 1px solid #e2e8f0; }
 .sidebar-tabs .tab {
-  flex: 1; padding: 8px 0; border: none; background: none;
-  font-size: 12px; color: #64748b; cursor: pointer;
+  flex: 1; padding: 10px 0; border: none; background: none;
+  font-size: 12px; color: #64748b; cursor: pointer; font-weight: 500;
+  transition: color .15s;
 }
 .sidebar-tabs .tab.active { color: #6366f1; border-bottom: 2px solid #6366f1; font-weight: 600; }
+.sidebar-tabs .tab:hover:not(.active) { color: #475569; }
 .sidebar-body { flex: 1; overflow-y: auto; padding: 8px; }
 
-.project-filter { margin-bottom: 8px; }
+.project-filter { margin-bottom: 12px; padding: 0 4px; }
 
-.job-group { margin-bottom: 4px; }
+.job-group { margin-bottom: 6px; }
 .group-header {
   display: flex; align-items: center; gap: 4px;
-  padding: 4px 6px; border-radius: 4px; cursor: pointer;
-  font-weight: 600; color: #475569; font-size: 11px; text-transform: uppercase; letter-spacing: .4px;
+  padding: 6px 8px; border-radius: 4px; cursor: pointer;
+  font-weight: 700; color: #6366f1; font-size: 11px; text-transform: uppercase; letter-spacing: .5px;
 }
-.group-header:hover { background: #f8fafc; }
-.group-caret { font-size: 9px; }
+.group-header:hover { background: #f1f5f9; }
+.group-caret { font-size: 10px; color: #94a3b8; }
 .group-name { flex: 1; }
 .group-count {
-  font-size: 10px; background: #e2e8f0; border-radius: 10px;
-  padding: 1px 6px; color: #64748b;
+  font-size: 10px; background: #eef0fe; border-radius: 10px;
+  padding: 1px 6px; color: #6366f1; font-weight: 600;
 }
 
 .folder-header {
   display: flex; align-items: center; gap: 4px;
-  padding: 6px 6px; border-radius: 4px; cursor: pointer;
+  padding: 8px 10px; border-radius: 6px; cursor: pointer;
   font-weight: 600; color: #1e293b; font-size: 12px;
-  background: #f1f5f9; margin-bottom: 2px;
+  background: linear-gradient(135deg, #f1f5f9 0%, #e2e8f0 100%);
+  margin-bottom: 6px;
+  border-left: 4px solid #6366f1;
+  box-shadow: 0 1px 3px rgba(0,0,0,.04);
 }
-.folder-header:hover { background: #e2e8f0; }
+.folder-header:hover { background: linear-gradient(135deg, #e2e8f0 0%, #cbd5e1 100%); }
 
-.project-group { margin-bottom: 2px; }
+.project-group { margin-bottom: 4px; }
 .project-header {
   display: flex; align-items: center; gap: 4px;
-  padding: 4px 6px 4px 18px; border-radius: 4px; cursor: pointer;
-  font-weight: 500; color: #475569; font-size: 11px;
+  padding: 8px 10px 8px 22px; border-radius: 6px; cursor: pointer;
+  font-weight: 600; color: #1e293b; font-size: 12px;
+  border-left: 3px solid #818cf8;
+  margin-left: 4px;
+  transition: background .15s, border-left-color .15s;
 }
-.project-header:hover { background: #f8fafc; }
+.project-header:hover { background: #f1f5f9; border-left-color: #6366f1; }
+.project-header .group-name { color: #475569; font-weight: 600; }
 
 .job-item {
-  padding: 7px 8px; border-radius: 6px; cursor: pointer;
+  padding: 6px 8px 6px 28px; border-radius: 6px; cursor: pointer;
   margin-bottom: 2px; transition: background .1s;
+  border-left: 3px solid transparent;
 }
-.job-item:hover { background: #f1f5f9; }
-.job-item.selected { background: #ede9fe; }
-.job-item.compare-selected { background: #fef3c7; }
+.job-item:hover { background: #f8fafc; border-left-color: #cbd5e1; }
+.job-item.selected { background: #ede9fe; border-left-color: #6366f1; }
+.job-item.compare-selected { background: #fef3c7; border-left-color: #f59e0b; }
 .job-item.file-deleted { opacity: .55; }
 
 .job-item-top { display: flex; align-items: center; gap: 5px; }
-.job-label { flex: 1; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.job-item-meta { font-size: 10px; color: #94a3b8; margin-top: 2px; padding-left: 16px; }
+.job-label { flex: 1; font-size: 12px; color: #475569; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job-item-meta { font-size: 10px; color: #94a3b8; margin-top: 2px; padding-left: 18px; }
 .job-mode-badge {
   font-size: 9px; padding: 1px 5px; border-radius: 10px; font-weight: 600; flex-shrink: 0;
 }
@@ -99,10 +109,10 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 
 .job-status { font-size: 12px; flex-shrink: 0; }
 .job-status.lg { font-size: 16px; }
-.status-done    { color: #16a34a; }
-.status-error   { color: #dc2626; }
-.status-running { color: #d97706; }
-.status-pending { color: #94a3b8; }
+.status-done    { color: #10b981; }
+.status-error   { color: #ef4444; }
+.status-running { color: #f59e0b; }
+.status-pending { color: #9ca3af; }
 
 .tag-deleted  { font-size: 10px; background: #fee2e2; color: #dc2626;
                 border-radius: 4px; padding: 1px 5px; margin-left: 4px; }
