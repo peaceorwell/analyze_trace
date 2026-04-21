@@ -343,16 +343,21 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   display: flex; align-items: center; justify-content: center; z-index: 100;
 }
 .modal { background: #fff; border-radius: 10px; padding: 20px; min-width: 300px; }
-.modal-wide { min-width: 600px; max-width: 90vw; width: 800px; }
+.modal-wide { min-width: 700px; max-width: 95vw; width: 1200px; }
 .modal-title { font-size: 14px; font-weight: 600; margin-bottom: 12px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 
 /* ── Code viewer ── */
-.code-viewer {
-  background: #0f172a; border-radius: 6px; padding: 12px;
-  max-height: 60vh; overflow: auto;
+pre.code-viewer {
+  margin: 0; padding: 16px; background: #fafafa;
+  max-height: 75vh; overflow: auto; border-radius: 6px;
+  box-sizing: border-box; width: 100%;
+  white-space: pre;
 }
-.code-viewer code {
-  color: #94a3b8; font-family: "SF Mono", "Fira Code", Consolas, monospace;
-  font-size: 11px; white-space: pre; line-height: 1.6;
+pre.code-viewer code {
+  font-family: "SF Mono", "Fira Code", Consolas, monospace;
+  font-size: 12px; line-height: 1.6;
+  white-space: pre;
+  display: inline-block;
+  min-width: 100%;
 }

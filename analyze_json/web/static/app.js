@@ -79,6 +79,7 @@ createApp({
     const showNewProject  = ref(false);
     const newProjectName  = ref("");
     const newProjectDesc  = ref("");
+    const newProjectFolderId = ref("");
 
     const showNewFolder  = ref(false);
     const newFolderName  = ref("");
@@ -737,6 +738,30 @@ createApp({
       tritonCodeContent.value = data.content;
       tritonCodeFilename.value = data.filename;
       showTritonCode.value = true;
+      nextTick(() => {
+        if (window.hljs) {
+          document.querySelectorAll('pre.code-viewer code.language-python').forEach((block) => {
+            window.hljs.highlightElement(block);
+          });
+        }
+      });
+    };
+
+    const copyTritonCode = async () => {
+      if (!tritonCodeContent.value) return;
+      try {
+        await navigator.clipboard.writeText(tritonCodeContent.value);
+        alert("已复制到剪贴板");
+      } catch (e) {
+        // Fallback for older browsers
+        const textarea = document.createElement("textarea");
+        textarea.value = tritonCodeContent.value;
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textarea);
+        alert("已复制到剪贴板");
+      }
     };
 
     // ── Compare ────────────────────────────────────────────────────────────
@@ -780,11 +805,16 @@ createApp({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ name: newProjectName.value, description: newProjectDesc.value }),
+        body: JSON.stringify({
+          name: newProjectName.value,
+          description: newProjectDesc.value,
+          folder_id: newProjectFolderId.value || null,
+        }),
       });
       showNewProject.value = false;
       newProjectName.value = "";
       newProjectDesc.value = "";
+      newProjectFolderId.value = "";
       await loadProjects();
     };
 
@@ -887,7 +917,7 @@ createApp({
       fileA, fileB, fileAName, fileBName, submitting, uploadProgress, form,
       resultTab, tableSearch, sortCol, sortAsc, ktChart, ktPieChart, ktPieChartB,
       availableTabs, currentTable, filteredRows,
-      showNewProject, newProjectName, newProjectDesc,
+      showNewProject, newProjectName, newProjectDesc, newProjectFolderId,
       showNewFolder, newFolderName, newFolderPassword, createFolder, deleteFolder,
       showFolderSettings, folderSettingsId, folderSettingsPassword, openFolderSettings, saveFolderSettings,
       showMoveProject, moveProjectTarget, confirmMoveProject,
@@ -906,7 +936,7 @@ createApp({
       colFilters, colFilterOps, hasColFilters, clearColFilters,
       sidebarWidth, sidebarCollapsed,
       toggleSidebar, startSidebarResize,
-      allowFileDownload, downloadTraceFile, openInPerfetto, viewTritonCode,
+      allowFileDownload, downloadTraceFile, openInPerfetto, viewTritonCode, copyTritonCode,
       showTritonCode, tritonCodeContent, tritonCodeFilename,
       toggleCompareSelect, submitCompare, createProject,
     };

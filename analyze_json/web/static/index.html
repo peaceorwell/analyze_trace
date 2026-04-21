@@ -5,8 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>torch profiler analyzer</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
@@ -369,6 +371,10 @@
         <div class="modal-title">新建项目</div>
         <input v-model="newProjectName" class="input w-full" placeholder="项目名称" />
         <input v-model="newProjectDesc" class="input w-full mt-2" placeholder="描述（可选）" />
+        <select v-model="newProjectFolderId" class="input w-full mt-2">
+          <option value="">无（不放入文件夹）</option>
+          <option v-for="f in folders" :key="f.id" :value="f.id">{{ f.name }}</option>
+        </select>
         <div class="modal-actions">
           <button class="btn btn-outline" @click="showNewProject=false">取消</button>
           <button class="btn btn-primary" @click="createProject">创建</button>
@@ -462,8 +468,11 @@
     <!-- ── Triton code viewer modal ── -->
     <div v-if="showTritonCode" class="modal-mask" @click.self="showTritonCode=false">
       <div class="modal modal-wide">
-        <div class="modal-title">{{ tritonCodeFilename }}</div>
-        <pre class="code-viewer"><code>{{ tritonCodeContent }}</code></pre>
+        <div class="modal-title">
+          {{ tritonCodeFilename }}
+          <button class="btn btn-sm btn-outline ml-2" @click="copyTritonCode">复制代码</button>
+        </div>
+        <pre class="code-viewer"><code class="language-python">{{ tritonCodeContent }}</code></pre>
         <div class="modal-actions">
           <button class="btn btn-outline" @click="showTritonCode=false">关闭</button>
         </div>
