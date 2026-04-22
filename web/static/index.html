@@ -472,7 +472,20 @@
             <ul>
               <li><strong>Perfetto</strong>：点击按钮在 Perfetto UI 中打开 trace 文件</li>
               <li><strong>下载 CSV</strong>：在表格右上角可下载当前视图数据</li>
+              <li><strong>查看代码</strong>：Triton 表格中点击"查看代码"可查看生成的 kernel 代码</li>
             </ul>
+          </section>
+          <section class="guide-section">
+            <h3>6. 运行 Triton 代码</h3>
+            <ul>
+              <li>在 <strong>Triton</strong> 或 <strong>Triton Step N</strong> 表格中，每行有"运行"按钮</li>
+              <li>点击运行后会执行对应的 Triton kernel 代码，弹出执行结果</li>
+              <li>效率值会显示在行内（单位 GB/s），旁边有 ↻ 按钮可重新运行</li>
+            </ul>
+            <p class="guide-note">
+              <strong>注意</strong>：此功能依赖 MLU（寒武纪）硬件环境。需要已安装 <code>torch_mlu</code> 驱动并有物理 MLU 加速卡。
+              在非 MLU 环境下执行会报 ImportError，这是正常现象，不代表程序出错。
+            </p>
           </section>
         </div>
         <div class="modal-actions">

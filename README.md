@@ -12,27 +12,27 @@ GPU 性能分析工具，解析 PyTorch Profiler 生成的 Chrome Trace JSON 文
 **快速开始：**
 ```bash
 # 命令行分析
-python analyze_json/analyze_trace.py trace.json -o ./output
+python analyze_trace.py trace.json -o ./output
 
 # Web 界面
-cd analyze_json/web && pip install -r requirements.txt && python server.py
+cd web && pip install -r requirements.txt && python server.py
 ```
 
 ## 目录结构
 
 ```
-analyze_json/
+.
 ├── analyze_trace.py       # 核心分析脚本（命令行入口）
-└── web/
-    ├── server.py          # Web 服务器（FastAPI）
-    ├── db.py              # SQLite 数据库操作
-    ├── requirements.txt   # Python 依赖
-    ├── Dockerfile         # Docker 镜像构建
-    └── static/
-        ├── index.html     # 前端页面
-        ├── app.js         # Vue 3 前端逻辑
-        ├── style.css      # 样式
-        └── favicon.svg    # 图标
+├── web/
+│   ├── server.py          # Web 服务器（FastAPI）
+│   ├── db.py              # SQLite 数据库操作
+│   ├── requirements.txt   # Python 依赖
+│   ├── Dockerfile         # Docker 镜像构建
+│   └── static/
+│       ├── index.html     # 前端页面
+│       ├── app.js         # Vue 3 前端逻辑
+│       ├── style.css      # 样式
+│       └── favicon.svg    # 图标
 
 docker-compose.yml         # Docker Compose 部署配置
 ```
@@ -48,13 +48,13 @@ docker-compose.yml         # Docker Compose 部署配置
 ### 单文件分析
 
 ```bash
-python analyze_json/analyze_trace.py trace.json -o ./output
+python analyze_trace.py trace.json -o ./output
 ```
 
 ### 双文件对比
 
 ```bash
-python analyze_json/analyze_trace.py baseline.json optimized.json -o ./output
+python analyze_trace.py baseline.json optimized.json -o ./output
 ```
 
 ### 参数说明
@@ -120,7 +120,7 @@ other        1377.0       14.777
 ### 启动
 
 ```bash
-cd analyze_json/web
+cd web
 pip install -r requirements.txt
 
 python server.py                        # 默认 127.0.0.1:8181
@@ -137,7 +137,7 @@ python server.py --no-download          # 禁止用户下载原始 trace 文件
 docker-compose up -d
 
 # 或手动构建运行
-cd analyze_json/web
+cd web
 docker build -t trace-analyzer .
 docker run -d -p 8181:8181 --name trace-analyzer trace-analyzer
 ```

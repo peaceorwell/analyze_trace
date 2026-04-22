@@ -1,7 +1,7 @@
 services:
   trace-analyzer:
     build:
-      context: ./analyze_json/web
+      context: ./web
       dockerfile: Dockerfile
     container_name: trace-analyzer
     ports:
