@@ -4,7 +4,6 @@ createApp({
   setup() {
     // ── State ──────────────────────────────────────────────────────────────
     const projects      = ref([]);
-    const folders       = ref([]);
     const jobs          = ref([]);
     const jobsTotal     = ref(0);
     const jobsLimit     = ref(50);
@@ -14,20 +13,17 @@ createApp({
     const selectedJobId = ref(null);
     const selectedJob   = ref(null);
     const collapsedGroups = ref({});
-    const collapsedFolders = ref({});
 
     const fileA    = ref(null);
-    const fileB    = ref(null);
     const fileAName = ref("");
-    const fileBName = ref("");
     const submitting = ref(false);
     const uploadProgress = ref(0);
     const form = ref({
       kernelTypes: "gemm,embedding,pool",
       label: "",
       projectId: "",
-      saveTritonCsv: false,
-      saveTritonCode: false,
+      saveTritonCsv: true,
+      saveTritonCode: true,
     });
 
     const resultTab   = ref("console");
@@ -82,21 +78,6 @@ createApp({
     const showNewProject  = ref(false);
     const newProjectName  = ref("");
     const newProjectDesc  = ref("");
-    const newProjectFolderId = ref("");
-
-    const showNewFolder  = ref(false);
-    const newFolderName  = ref("");
-    const newFolderPassword = ref("");
-
-    const showFolderSettings = ref(false);
-    const folderSettingsId = ref("");
-    const folderSettingsPassword = ref("");
-
-    const showMoveProject   = ref(false);
-    const moveProjectTarget = ref("");
-
-    const showMoveProjectToFolder = ref(false);
-    const moveProjectToFolderTarget = ref("");
 
     // ── Project sharing ─────────────────────────────────────────────────────
     const showShareProject = ref(false);
@@ -131,7 +112,7 @@ createApp({
     let groupedJobsCacheKey = null;
 
     const getGroupedJobsCacheKey = () =>
-      `${filterProject.value}-${jobs.value.length}-${projects.value.length}-${folders.value.length}-${JSON.stringify(collapsedFolders.value)}`;
+      `${filterProject.value}-${jobs.value.length}-${projects.value.length}`;
 
     // ── Computed ───────────────────────────────────────────────────────────
     const singleJobs = computed(() =>
@@ -153,61 +134,21 @@ createApp({
       const map = {};
       for (const job of filtered) {
         const p = projects.value.find(p => p.id === job.project_id);
-        const folderId = p?.folder_id || "__none__";
         const projectId = p?.id || "__none__";
-        const folderName = folderId === "__none__" ? "未分组" : (folders.value.find(f => f.id === folderId)?.name || "未分组");
         const projectName = p ? p.name : "未分组";
 
-        if (!map[folderId]) {
-          map[folderId] = {
-            type: "folder",
-            id: folderId,
-            label: folderName,
-            children: {},
-            jobs: []
-          };
-        }
-        if (!map[folderId].children[projectId]) {
-          map[folderId].children[projectId] = {
+        if (!map[projectId]) {
+          map[projectId] = {
             type: "project",
             id: projectId,
             label: projectName,
             jobs: []
           };
         }
-        map[folderId].children[projectId].jobs.push(job);
+        map[projectId].jobs.push(job);
       }
 
-      // Build hierarchy: folders first, then root-level projects
-      const result = [];
-      const folderOrder = [...folders.value.map(f => f.id)];
-      const processedFolders = new Set();
-
-      for (const folderId of folderOrder) {
-        processedFolders.add(folderId);
-        const folder = map[folderId];
-        const projectsInFolder = folder ? Object.values(folder.children) : [];
-        const folderData = folders.value.find(f => f.id === folderId);
-        result.push({
-          type: "folder",
-          id: folderId,
-          label: folderData ? folderData.name : "未知文件夹",
-          collapsed: collapsedFolders.value[folderId] !== true,
-          projects: projectsInFolder
-        });
-      }
-
-      // Add ungrouped projects (no folder)
-      const ungrouped = map["__none__"];
-      if (ungrouped) {
-        const projectsUngrouped = Object.values(ungrouped.children);
-        result.push({
-          type: "root",
-          label: "未分组",
-          collapsed: collapsedFolders.value["__none__"] !== true,
-          projects: projectsUngrouped
-        });
-      }
+      const result = Object.values(map);
 
       groupedJobsCacheKey = cacheKey;
       groupedJobsCache = result;
@@ -320,11 +261,6 @@ createApp({
     const loadProjects = async () => {
       const r = await fetch("/api/projects", { credentials: "include" });
       projects.value = await r.json();
-    };
-
-    const loadFolders = async () => {
-      const r = await fetch("/api/folders", { credentials: "include" });
-      folders.value = await r.json();
     };
 
     const loadJobs = async () => {
@@ -489,23 +425,23 @@ createApp({
     }, { deep: true });
 
     // ── Uploads ────────────────────────────────────────────────────────────
-    const onFileChange = (e, slot) => {
+    const onFileChange = (e) => {
       const f = e.target.files[0];
       if (!f) return;
-      if (slot === "a") { fileA.value = f; fileAName.value = f.name; }
-      else              { fileB.value = f; fileBName.value = f.name; }
+      fileA.value = f;
+      fileAName.value = f.name;
     };
 
-    const onDrop = (e, slot) => {
+    const onDrop = (e) => {
       const f = e.dataTransfer.files[0];
       if (!f) return;
-      if (slot === "a") { fileA.value = f; fileAName.value = f.name; }
-      else              { fileB.value = f; fileBName.value = f.name; }
+      fileA.value = f;
+      fileAName.value = f.name;
     };
 
-    const clearFile = slot => {
-      if (slot === "a") { fileA.value = null; fileAName.value = ""; }
-      else              { fileB.value = null; fileBName.value = ""; }
+    const clearFile = () => {
+      fileA.value = null;
+      fileAName.value = "";
     };
 
     // ── Submit ─────────────────────────────────────────────────────────────
@@ -515,7 +451,6 @@ createApp({
       uploadProgress.value = 0;
       const fd = new FormData();
       fd.append("file_a", fileA.value);
-      if (fileB.value) fd.append("file_b", fileB.value);
       fd.append("kernel_types", form.value.kernelTypes);
       fd.append("label", form.value.label);
       fd.append("project_id", form.value.projectId);
@@ -532,7 +467,6 @@ createApp({
           await loadJobs();
           await selectJob(job.id);
           fileA.value = null; fileAName.value = "";
-          fileB.value = null; fileBName.value = "";
           form.value.label = "";
           sidebarTab.value = "jobs";
         } finally {
@@ -842,97 +776,12 @@ createApp({
         body: JSON.stringify({
           name: newProjectName.value,
           description: newProjectDesc.value,
-          folder_id: newProjectFolderId.value || null,
         }),
       });
       showNewProject.value = false;
       newProjectName.value = "";
       newProjectDesc.value = "";
-      newProjectFolderId.value = "";
       await loadProjects();
-    };
-
-    const createFolder = async () => {
-      if (!newFolderName.value.trim()) return;
-      await fetch("/api/folders", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          name: newFolderName.value,
-          password: newFolderPassword.value || undefined,
-        }),
-      });
-      showNewFolder.value = false;
-      newFolderName.value = "";
-      newFolderPassword.value = "";
-      await loadFolders();
-    };
-
-    const deleteFolder = async (folderId) => {
-      const folder = folders.value.find(f => f.id === folderId);
-      let password = "";
-      if (folder?.password_hash) {
-        password = prompt("请输入文件夹密码以确认删除：");
-        if (!password) return;
-      } else {
-        if (!confirm("确定删除该文件夹？文件夹内的项目将变为未分组状态。")) return;
-      }
-      const r = await fetch(`/api/folders/${folderId}`, {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ password }),
-      });
-      if (r.status === 403) {
-        alert("密码错误，无法删除文件夹");
-        return;
-      }
-      await loadFolders();
-      await loadProjects();
-      await loadJobs();
-    };
-
-    const openFolderSettings = (folder) => {
-      folderSettingsId.value = folder.id;
-      folderSettingsPassword.value = "";
-      showFolderSettings.value = true;
-    };
-
-    const saveFolderSettings = async () => {
-      await fetch(`/api/folders/${folderSettingsId.value}/password`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ password: folderSettingsPassword.value || null }),
-      });
-      showFolderSettings.value = false;
-      await loadFolders();
-    };
-
-    const openMoveProjectToFolder = () => {
-      const project = projects.value.find(p => p.id === filterProject.value);
-      if (!project) return;
-      moveProjectToFolderTarget.value = project.folder_id || "";
-      showMoveProjectToFolder.value = true;
-    };
-
-    const confirmMoveProjectToFolder = async () => {
-      const projectId = filterProject.value;
-      if (!projectId || projectId === "__none__") return;
-      await fetch(`/api/projects/${projectId}/folder`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ folder_id: moveProjectToFolderTarget.value || null }),
-      });
-      showMoveProjectToFolder.value = false;
-      await loadProjects();
-      await loadJobs();
-    };
-
-    const toggleFolder = (folderId) => {
-      collapsedFolders.value[folderId] = !collapsedFolders.value[folderId];
     };
 
     watch(filterProject, () => { jobsOffset.value = 0; loadJobs(); });
@@ -954,32 +803,26 @@ createApp({
     onMounted(async () => {
       await initAuth();
       await loadConfig();
-      await loadFolders();
       await loadProjects();
       await loadJobs();
     });
 
     return {
-      projects, folders, jobs, jobsTotal, jobsLimit, jobsOffset,
+      projects, jobs, jobsTotal, jobsLimit, jobsOffset,
       filterProject, sidebarTab, selectedJobId, selectedJob,
-      collapsedGroups, collapsedFolders, groupedJobs, singleJobs,
+      collapsedGroups, groupedJobs, singleJobs,
       prevPage, nextPage,
-      fileA, fileB, fileAName, fileBName, submitting, uploadProgress, form,
+      fileA, fileAName, submitting, uploadProgress, form,
       resultTab, tableSearch, sortCol, sortAsc, ktChart, ktPieChart, ktPieChartB,
       availableTabs, currentTable, filteredRows,
-      showNewProject, newProjectName, newProjectDesc, newProjectFolderId,
-      showNewFolder, newFolderName, newFolderPassword, createFolder, deleteFolder,
-      showFolderSettings, folderSettingsId, folderSettingsPassword, openFolderSettings, saveFolderSettings,
-      showMoveProject, moveProjectTarget, confirmMoveProject,
-      showMoveProjectToFolder, moveProjectToFolderTarget,
-      openMoveProjectToFolder, confirmMoveProjectToFolder,
+      showNewProject, newProjectName, newProjectDesc,
       showShareProject, shareProjectId, shareProjectPassword, shareProjectPublic,
       openShareModal, saveProjectSettings,
       showRenameProject, renameProjectName, openRenameModal, confirmRenameProject,
       showUnlockModal, unlockProjectId, unlockProjectName, shareUnlockPassword,
       unlockProject, confirmUnlock, isProjectLocked, unlockedProjects, deleteProject,
       compareSelection, compareKernelTypes, compareLabel, compareProjectId,
-      fmtDate, statusIcon, toggleGroup, toggleFolder, deltaCellClass,
+      fmtDate, statusIcon, toggleGroup, deltaCellClass,
       onFileChange, onDrop, clearFile, submitJob,
       selectJob, deleteJob, deleteFile, editLabel, moveProject,
       setSort, downloadCsv, colWidths, startResize,

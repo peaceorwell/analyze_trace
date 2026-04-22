@@ -326,108 +326,6 @@ async def verify_project(request: Request, body: dict):
     return {"verified": False}
 
 
-# ── Routes: folders ──────────────────────────────────────────────────────────
-
-@app.get("/api/folders")
-async def list_folders(user_token: Optional[str] = Cookie(None)):
-    token = await get_or_create_user(user_token)
-    db = await get_db()
-    rows = await (await db.execute("""
-        SELECT * FROM folders WHERE user_token = ? ORDER BY created_at DESC
-    """, (token,))).fetchall()
-    await db.close()
-    return [dict(r) for r in rows]
-
-
-@app.post("/api/folders", status_code=201)
-async def create_folder(body: dict, user_token: Optional[str] = Cookie(None)):
-    fid = str(uuid.uuid4())
-    token = await get_or_create_user(user_token)
-    password = body.get("password") or body.get("password_hash") or None
-    password_hash = generate_password_hash(password) if password else None
-    db = await get_db()
-    await db.execute(
-        "INSERT INTO folders(id, user_token, name, password_hash) VALUES(?,?,?,?)",
-        (fid, token, body.get("name", "新文件夹"), password_hash),
-    )
-    await db.commit()
-    cursor = await db.execute("SELECT * FROM folders WHERE id=?", (fid,))
-    row = await cursor.fetchone()
-    await db.close()
-    return dict(row)
-
-
-@app.put("/api/folders/{fid}")
-async def update_folder(fid: str, body: dict, user_token: Optional[str] = Cookie(None)):
-    token = await get_or_create_user(user_token)
-    db = await get_db()
-    cursor = await db.execute("SELECT * FROM folders WHERE id=?", (fid,))
-    row = await row_to_dict(await cursor.fetchone())
-    if not row:
-        await db.close()
-        raise HTTPException(404)
-    if row.get("user_token") != token:
-        await db.close()
-        raise HTTPException(403, "Not the folder owner")
-    await db.execute("UPDATE folders SET name=? WHERE id=?", (body.get("name"), fid))
-    await db.commit()
-    cursor = await db.execute("SELECT * FROM folders WHERE id=?", (fid,))
-    row = await cursor.fetchone()
-    await db.close()
-    return dict(row)
-
-
-@app.delete("/api/folders/{fid}", status_code=204)
-async def delete_folder(fid: str, body: dict = {}, user_token: Optional[str] = Cookie(None)):
-    token = await get_or_create_user(user_token)
-    db = await get_db()
-    cursor = await db.execute("SELECT * FROM folders WHERE id=?", (fid,))
-    row = await row_to_dict(await cursor.fetchone())
-    if not row:
-        await db.close()
-        raise HTTPException(404)
-    if row.get("user_token") != token:
-        await db.close()
-        raise HTTPException(403, "Not the folder owner")
-
-    # Verify password if folder has password
-    password = body.get("password") if isinstance(body, dict) else None
-    folder_password_hash = row.get("password_hash")
-    if folder_password_hash:
-        if not password or not check_password_hash(folder_password_hash, password):
-            await db.close()
-            raise HTTPException(403, "密码错误")
-
-    # Move projects in this folder to no folder
-    await db.execute("UPDATE projects SET folder_id=NULL WHERE folder_id=?", (fid,))
-    await db.execute("DELETE FROM folders WHERE id=?", (fid,))
-    await db.commit()
-    await db.close()
-
-
-@app.put("/api/folders/{fid}/password")
-async def set_folder_password(fid: str, body: dict, user_token: Optional[str] = Cookie(None)):
-    """Set or remove password on a folder."""
-    token = await get_or_create_user(user_token)
-    password = body.get("password")  # None or empty = remove password
-
-    db = await get_db()
-    cursor = await db.execute("SELECT * FROM folders WHERE id=?", (fid,))
-    row = await row_to_dict(await cursor.fetchone())
-    if not row:
-        await db.close()
-        raise HTTPException(404)
-    if row.get("user_token") != token:
-        await db.close()
-        raise HTTPException(403, "Not the folder owner")
-
-    password_hash = generate_password_hash(password) if password else None
-    await db.execute("UPDATE folders SET password_hash=? WHERE id=?", (password_hash, fid))
-    await db.commit()
-    await db.close()
-    return {"success": True}
-
-
 # ── Routes: projects ──────────────────────────────────────────────────────────
 
 @app.get("/api/projects")
@@ -451,8 +349,8 @@ async def create_project(body: dict, user_token: Optional[str] = Cookie(None)):
     token = await get_or_create_user(user_token)
     db = await get_db()
     await db.execute(
-        "INSERT INTO projects(id, user_token, folder_id, name, description, is_public) VALUES(?,?,?,?,?,?)",
-        (pid, token, body.get("folder_id") or None, body.get("name", "新项目"), body.get("description", ""), 1),
+        "INSERT INTO projects(id, user_token, name, description, is_public) VALUES(?,?,?,?,?)",
+        (pid, token, body.get("name", "新项目"), body.get("description", ""), 1),
     )
     await db.commit()
     cursor = await db.execute("SELECT * FROM projects WHERE id=?", (pid,))
@@ -477,8 +375,8 @@ async def update_project(pid: str, body: dict, user_token: Optional[str] = Cooki
         raise HTTPException(403, "Not the project owner")
 
     await db.execute(
-        "UPDATE projects SET name=?, description=?, folder_id=? WHERE id=?",
-        (body.get("name"), body.get("description", ""), body.get("folder_id") or None, pid),
+        "UPDATE projects SET name=?, description=? WHERE id=?",
+        (body.get("name"), body.get("description", ""), pid),
     )
     await db.commit()
     cursor = await db.execute("SELECT * FROM projects WHERE id=?", (pid,))
@@ -565,29 +463,6 @@ async def delete_project(pid: str, user_token: Optional[str] = Cookie(None)):
     await db.execute("DELETE FROM projects WHERE id=?", (pid,))
     await db.commit()
     await db.close()
-
-
-@app.patch("/api/projects/{pid}/folder")
-async def move_project_to_folder(pid: str, body: dict, user_token: Optional[str] = Cookie(None)):
-    """Move a project to a folder (or null to remove from folder)."""
-    token = await get_or_create_user(user_token)
-    db = await get_db()
-    cursor = await db.execute("SELECT * FROM projects WHERE id=?", (pid,))
-    row = await row_to_dict(await cursor.fetchone())
-    if not row:
-        await db.close()
-        raise HTTPException(404)
-    if row.get("user_token") != token:
-        await db.close()
-        raise HTTPException(403, "Not the project owner")
-
-    folder_id = body.get("folder_id") or None
-    await db.execute("UPDATE projects SET folder_id=? WHERE id=?", (folder_id, pid))
-    await db.commit()
-    cursor = await db.execute("SELECT * FROM projects WHERE id=?", (pid,))
-    row = await cursor.fetchone()
-    await db.close()
-    return dict(row)
 
 
 # ── Routes: jobs ──────────────────────────────────────────────────────────────
@@ -859,127 +734,6 @@ async def delete_job(jid: str, user_token: Optional[str] = Cookie(None)):
     await db.execute("DELETE FROM jobs WHERE id=?", (jid,))
     await db.commit()
     await db.close()
-
-
-@app.delete("/api/jobs/{jid}/files/{which}", status_code=204)
-async def delete_job_file(jid: str, which: str, user_token: Optional[str] = Cookie(None)):
-    token = await get_or_create_user(user_token)
-    if which not in ("a", "b"):
-        raise HTTPException(400, "which must be 'a' or 'b'")
-
-    db = await get_db()
-    cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
-    row = await row_to_dict(await cursor.fetchone())
-    if not row:
-        await db.close()
-        raise HTTPException(404)
-
-    # Only owner can delete files
-    if row.get("user_token") != token:
-        await db.close()
-        raise HTTPException(403, "Not the job owner")
-
-    path_col = f"file_{which}_path"
-    gzip_col = f"file_{which}_gzip_path"
-    exists_col = f"file_{which}_exists"
-    fpath = row.get(path_col)
-    gzip_path = row.get(gzip_col)
-    if fpath and os.path.exists(fpath):
-        os.remove(fpath)
-    if gzip_path and os.path.exists(gzip_path):
-        os.remove(gzip_path)
-    await db.execute(f"UPDATE jobs SET {exists_col}=0 WHERE id=?", (jid,))
-    await db.commit()
-    await db.close()
-
-
-@app.get("/api/jobs/{jid}/files/{which}")
-async def download_job_file(jid: str, which: str, user_token: Optional[str] = Cookie(None)):
-    if not ALLOW_FILE_DOWNLOAD:
-        raise HTTPException(403, "File download is disabled")
-    if which not in ("a", "b"):
-        raise HTTPException(400, "which must be 'a' or 'b'")
-
-    token = await get_or_create_user(user_token)
-    db = await get_db()
-
-    cursor = await db.execute("""
-        SELECT j.*, p.user_token as proj_owner, p.is_public, p.password_hash
-        FROM jobs j
-        LEFT JOIN projects p ON j.project_id = p.id
-        WHERE j.id=?
-    """, (jid,))
-    row = await row_to_dict(await cursor.fetchone())
-    await db.close()
-
-    if not row:
-        raise HTTPException(404)
-
-    # Check access
-    def can_access_job(job):
-        if job.get("user_token") == token:
-            return True
-        is_public = job.get("is_public")
-        has_password = job.get("password_hash")
-        return bool(is_public) and not has_password
-
-    if not can_access_job(row):
-        raise HTTPException(403, "No access to this file")
-
-    gzip_path = row.get(f"file_{which}_gzip_path")
-    json_path = row.get(f"file_{which}_path")
-
-    # If original was .gz, serve the gzipped file (preserves compression for perfetto too)
-    if gzip_path and os.path.exists(gzip_path):
-        fname = row.get(f"file_{which}_name") or f"trace_{which}.json.gz"
-        return FileResponse(gzip_path, filename=fname, media_type="application/json")
-
-    # Otherwise serve the extracted JSON
-    fname = row.get(f"file_{which}_name") or f"trace_{which}.json"
-    if fname.lower().endswith(".gz"):
-        fname = fname[:-3]  # serve extracted JSON with .json extension
-    if not json_path or not os.path.exists(json_path):
-        raise HTTPException(404, "File not found or already deleted")
-    return FileResponse(json_path, filename=fname, media_type="application/json")
-
-
-@app.get("/api/jobs/{jid}/results/{filename}")
-async def download_result(jid: str, filename: str, user_token: Optional[str] = Cookie(None)):
-    if not ALLOW_FILE_DOWNLOAD:
-        raise HTTPException(403, "File download is disabled")
-    # Prevent path traversal
-    if "/" in filename or ".." in filename:
-        raise HTTPException(400)
-
-    token = await get_or_create_user(user_token)
-    db = await get_db()
-    cursor = await db.execute("""
-        SELECT j.*, p.user_token as proj_owner, p.is_public, p.password_hash
-        FROM jobs j
-        LEFT JOIN projects p ON j.project_id = p.id
-        WHERE j.id=?
-    """, (jid,))
-    row = await row_to_dict(await cursor.fetchone())
-    await db.close()
-
-    if not row:
-        raise HTTPException(404)
-
-    # Check access
-    def can_access_job(job):
-        if job.get("user_token") == token:
-            return True
-        is_public = job.get("is_public")
-        has_password = job.get("password_hash")
-        return bool(is_public) and not has_password
-
-    if not can_access_job(row):
-        raise HTTPException(403, "No access to this file")
-
-    path = os.path.join(result_dir(jid), filename)
-    if not os.path.exists(path):
-        raise HTTPException(404)
-    return FileResponse(path, filename=filename, media_type="text/csv")
 
 
 @app.get("/api/jobs/{jid}/triton-code/{path:path}")

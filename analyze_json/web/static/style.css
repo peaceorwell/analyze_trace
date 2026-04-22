@@ -126,25 +126,33 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 .page-info { font-size: 11px; color: #64748b; }
 
 /* ── Main ── */
-.main { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.main { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .empty-main { display: flex; align-items: center; justify-content: center;
               flex: 1; color: #94a3b8; font-size: 14px; }
 
 /* ── Cards ── */
-.card { background: #fff; border-radius: 8px; border: 1px solid #e2e8f0; padding: 16px; }
-.card-title { font-size: 13px; font-weight: 600; margin-bottom: 12px; color: #374151; }
+.card { background: #fff; border-radius: 8px; border: 1px solid #e2e8f0; padding: 12px; }
+.card-title { font-size: 12px; font-weight: 600; margin-bottom: 8px; color: #374151; }
 
 /* ── Upload ── */
-.upload-row { display: flex; gap: 12px; margin-bottom: 12px; }
+.upload-row { display: flex; gap: 12px; margin-bottom: 8px; }
 .upload-box {
   flex: 1; border: 2px dashed #cbd5e1; border-radius: 8px;
   min-height: 72px; position: relative; cursor: pointer; transition: border-color .15s;
 }
 .upload-box:hover { border-color: #6366f1; }
+.upload-box-sm {
+  flex: 0 0 160px; border: 2px dashed #cbd5e1; border-radius: 6px;
+  min-height: 48px; position: relative; cursor: pointer; transition: border-color .15s;
+}
+.upload-box-sm:hover { border-color: #6366f1; }
 .upload-inner { display: flex; flex-direction: column; align-items: center;
-                justify-content: center; height: 100%; padding: 12px; }
-.upload-icon { font-size: 20px; margin-bottom: 4px; }
+                justify-content: center; height: 100%; padding: 8px; }
+.upload-box-sm .upload-inner { padding: 6px; }
+.upload-icon { font-size: 18px; margin-bottom: 2px; }
+.upload-box-sm .upload-icon { font-size: 16px; margin-bottom: 0; }
 .upload-label { font-size: 11px; color: #64748b; text-align: center; word-break: break-all; }
+.upload-box-sm .upload-label { font-size: 10px; }
 .upload-clear {
   position: absolute; top: 4px; right: 6px;
   background: none; border: none; color: #94a3b8; cursor: pointer; font-size: 14px;
@@ -152,8 +160,12 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 .upload-clear:hover { color: #dc2626; }
 
 /* ── Form ── */
-.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
+.form-grid-sm { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
 .form-row { display: flex; flex-direction: column; gap: 3px; }
+.form-row-inline { display: flex; flex-direction: row; align-items: center; gap: 6px; flex: 1; }
+.form-row-inline label { font-size: 11px; color: #64748b; font-weight: 500; white-space: nowrap; }
+.form-row-inline .input { flex: 1; }
 .form-row label { font-size: 11px; color: #64748b; font-weight: 500; }
 .form-row.checkboxes { flex-direction: row; align-items: center; gap: 12px; margin-top: 4px; }
 .form-row.checkboxes label { display: flex; align-items: center; gap: 4px;
@@ -190,6 +202,29 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 .btn-perfetto { background: #ede9fe; color: #5b21b6; border: 1px solid #c4b5fd; }
 .btn-perfetto:hover:not(:disabled) { background: #ddd6fe; opacity: 1; }
 
+/* ── Submit card ── */
+.submit-card { display: flex; flex-direction: column; gap: 8px; }
+.submit-cols { display: flex; flex-direction: column; gap: 8px; }
+.submit-cols .upload-box-sm {
+  width: 100%; height: 26px; min-height: 26px; border-radius: 5px;
+  flex: none;
+}
+.submit-cols .upload-inner { flex-direction: row; gap: 6px; padding: 3px 8px; height: auto; }
+.submit-cols .upload-icon { margin-bottom: 0; font-size: 13px; }
+.submit-cols .upload-label { font-size: 12px; text-align: left; }
+.submit-cols label { font-size: 11px; color: #64748b; font-weight: 500; }
+.form-row-info { position: relative; }
+.input-with-info { position: relative; display: flex; align-items: center; }
+.input-with-info .input { flex: 1; padding-right: 22px; }
+.info-icon {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  font-size: 11px; color: #94a3b8; cursor: default; font-style: italic;
+  line-height: 1;
+}
+.info-icon:hover { color: #6366f1; }
+.info-icon[title] { cursor: help; }
+.submit-row .btn-primary { flex-shrink: 0; align-self: flex-start; margin-top: 0; }
+
 /* ── Upload progress ── */
 .upload-progress { margin-top: 10px; }
 .upload-progress-label { font-size: 11px; color: #64748b; margin-bottom: 4px; }
@@ -202,43 +237,42 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 /* ── Result panel ── */
-.result-card { flex: 1; }
-.result-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
-.result-label { font-size: 14px; font-weight: 600; margin: 0 8px; }
-.result-actions { display: flex; gap: 6px; }
+.result-card { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.result-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.result-label { font-size: 13px; font-weight: 600; margin: 0 6px; }
+.result-actions { display: flex; gap: 4px; }
 
-.file-info { font-size: 11px; color: #64748b; margin-bottom: 10px;
+.file-info { font-size: 11px; color: #64748b; margin-bottom: 6px; flex-shrink: 0;
              display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
 
 /* ── Result tabs ── */
-.result-tabs { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 10px;
-               border-bottom: 1px solid #e2e8f0; padding-bottom: 6px; }
+.result-tabs { display: flex; gap: 3px; flex-wrap: wrap; margin-bottom: 6px; flex-shrink: 0; }
 .result-tabs .tab {
-  padding: 4px 10px; border-radius: 5px; border: none; background: none;
+  padding: 3px 8px; border-radius: 4px; border: none; background: none;
   font-size: 11px; color: #64748b; cursor: pointer;
 }
 .result-tabs .tab.active { background: #ede9fe; color: #6366f1; font-weight: 600; }
 .result-tabs .tab:hover:not(.active) { background: #f1f5f9; }
 
 /* ── Console ── */
-.console-out { background: #0f172a; border-radius: 6px; padding: 12px; overflow: auto; max-height: 500px; }
+.console-out { background: #0f172a; border-radius: 6px; padding: 10px; overflow: auto; flex: 1; min-height: 0; }
 .console-out pre { color: #94a3b8; font-family: "SF Mono", "Fira Code", monospace;
-                   font-size: 11px; white-space: pre; line-height: 1.6; }
+                   font-size: 11px; white-space: pre; line-height: 1.5; }
 
 /* ── Chart ── */
-.chart-wrap { display: flex; gap: 16px; padding: 8px 0; align-items: flex-start; }
-.chart-bar-area { flex: 1; min-width: 0; max-height: 340px; }
-.chart-bar-area canvas { max-height: 340px; }
+.chart-wrap { display: flex; gap: 12px; padding: 4px 0; align-items: flex-start; flex: 1; min-height: 0; }
+.chart-bar-area { flex: 1; min-width: 0; max-height: 260px; }
+.chart-bar-area canvas { max-height: 260px; }
 .chart-pie-area {
-  width: 260px; flex-shrink: 0;
-  display: flex; flex-direction: column; gap: 16px;
+  width: 220px; flex-shrink: 0;
+  display: flex; flex-direction: column; gap: 12px;
 }
-.chart-pie-area canvas { max-height: 220px; }
+.chart-pie-area canvas { max-height: 180px; }
 
 /* ── Table ── */
-.table-toolbar { display: flex; gap: 8px; margin-bottom: 8px; align-items: center; }
+.table-toolbar { display: flex; gap: 6px; margin-bottom: 6px; align-items: center; flex-shrink: 0; }
 .table-scroll {
-  overflow: auto; max-height: 420px;
+  overflow: auto; flex: 1; min-height: 0;
   border: 1px solid #dde1f0; border-radius: 8px;
   box-shadow: 0 1px 6px rgba(99,102,241,.07);
 }
@@ -250,7 +284,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   background: #eef0fe;
   color: #3730a3;
   border-bottom: 2px solid #c7d0f8;
-  padding: 7px 10px; text-align: left; white-space: nowrap;
+  padding: 5px 8px; text-align: left; white-space: nowrap;
   position: relative; overflow: hidden;
   font-weight: 600; font-size: 10.5px; letter-spacing: 0.3px;
 }
@@ -268,7 +302,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 
 /* Body cells */
 .data-table td {
-  padding: 5px 10px; border-bottom: 1px solid #eef0f8;
+  padding: 4px 8px; border-bottom: 1px solid #eef0f8;
   white-space: nowrap; font-variant-numeric: tabular-nums;
   overflow: hidden; text-overflow: ellipsis;
   color: #374151;

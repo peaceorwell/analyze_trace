@@ -18,7 +18,6 @@
       <span class="header-title">torch profiler analyzer</span>
       <div class="header-actions">
         <button class="btn btn-sm btn-outline" @click="showNewProject=true">+ 新建项目</button>
-        <button class="btn btn-sm btn-primary" @click="showNewFolder=true">+ 新建文件夹</button>
       </div>
     </header>
 
@@ -43,54 +42,34 @@
             <select v-model="filterProject" class="input input-sm w-full">
               <option value="">全部项目</option>
               <option value="__none__">未分组</option>
-              <optgroup v-for="f in folders" :key="f.id" :label="f.name">
-                <option v-for="p in projects.filter(proj => proj.folder_id === f.id)" :key="p.id" :value="p.id">{{ p.name }}</option>
-              </optgroup>
-              <optgroup label="未分组">
-                <option v-for="p in projects.filter(proj => !proj.folder_id)" :key="p.id" :value="p.id">{{ p.name }}</option>
-              </optgroup>
+              <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
             </select>
             <div v-if="filterProject && filterProject !== '__none__'" class="project-actions">
-              <button class="btn btn-xs btn-outline mt-1 w-full" @click="openMoveProjectToFolder()">移动到文件夹</button>
               <button class="btn btn-xs btn-outline mt-1 w-full" @click="openRenameModal(projects.find(p => p.id === filterProject))">重命名</button>
               <button class="btn btn-xs btn-outline mt-1 w-full" @click="openShareModal(projects.find(p => p.id === filterProject))">分享设置</button>
               <button class="btn btn-xs btn-danger mt-1 w-full" @click="deleteProject(filterProject)">删除项目</button>
             </div>
           </div>
 
-          <!-- Group by folder and project -->
+          <!-- Group by project -->
           <div v-for="group in groupedJobs" :key="group.id || group.label" class="job-group">
-            <div v-if="group.type === 'folder'" class="folder-header" @click="toggleFolder(group.id)">
-              <span class="group-caret">{{ group.collapsed ? '▶' : '▼' }}</span>
-              <span class="group-name">📁 {{ group.label }}</span>
-              <button class="btn btn-xs btn-outline ml-auto" @click.stop="openFolderSettings(folders.find(f => f.id === group.id))" title="设置">⚙</button>
-              <button class="btn btn-xs btn-danger" @click.stop="deleteFolder(group.id)">✕</button>
-            </div>
-            <div v-else class="folder-header" @click="toggleFolder(group.id || '__none__')">
-              <span class="group-caret">{{ group.collapsed ? '▶' : '▼' }}</span>
+            <div class="folder-header" @click="toggleGroup(group.id)">
+              <span class="group-caret">{{ collapsedGroups[group.id] ? '▼' : '▶' }}</span>
               <span class="group-name">{{ group.label }}</span>
+              <span class="group-count">{{ group.jobs.length }}</span>
             </div>
-            <div v-if="!group.collapsed">
-              <div v-for="project in group.projects" :key="project.id" class="project-group">
-                <div class="project-header" @click="toggleGroup(project.id)">
-                  <span class="group-caret">{{ collapsedGroups[project.id] ? '▶' : '▼' }}</span>
-                  <span class="group-name">{{ project.label }}</span>
-                  <span class="group-count">{{ project.jobs.length }}</span>
+            <div v-if="collapsedGroups[group.id]">
+              <div
+                v-for="job in group.jobs" :key="job.id"
+                :class="['job-item', selectedJobId===job.id ? 'selected' : '']"
+                @click="selectJob(job.id)"
+              >
+                <div class="job-item-top">
+                  <span class="job-status" :class="'status-'+job.status">{{ statusIcon(job.status) }}</span>
+                  <span class="job-label">{{ job.label || job.id.slice(0,8) }}</span>
+                  <span class="job-mode-badge" :class="'mode-'+job.mode">{{ job.mode==='compare'?'对比':'单文件' }}</span>
                 </div>
-                <div v-if="!collapsedGroups[project.id]">
-                  <div
-                    v-for="job in project.jobs" :key="job.id"
-                    :class="['job-item', selectedJobId===job.id ? 'selected' : '']"
-                    @click="selectJob(job.id)"
-                  >
-                    <div class="job-item-top">
-                      <span class="job-status" :class="'status-'+job.status">{{ statusIcon(job.status) }}</span>
-                      <span class="job-label">{{ job.label || job.id.slice(0,8) }}</span>
-                      <span class="job-mode-badge" :class="'mode-'+job.mode">{{ job.mode==='compare'?'对比':'单文件' }}</span>
-                    </div>
-                    <div class="job-item-meta">{{ fmtDate(job.created_at) }}</div>
-                  </div>
-                </div>
+                <div class="job-item-meta">{{ fmtDate(job.created_at) }}</div>
               </div>
             </div>
           </div>
@@ -151,35 +130,16 @@
       <!-- ── Main ── -->
       <main class="main">
         <!-- Submit form -->
-        <section class="card">
+        <section class="card submit-card">
           <div class="card-title">提交分析</div>
-          <div class="upload-row">
-            <div class="upload-box" @dragover.prevent @drop.prevent="onDrop($event,'a')">
+          <div class="submit-cols">
+            <div class="upload-box upload-box-sm" @dragover.prevent @drop.prevent="onDrop($event,'a')">
               <input type="file" ref="fileInputA" accept=".json,.json.gz,.gz" @change="onFileChange($event,'a')" hidden />
               <div @click="$refs.fileInputA.click()" class="upload-inner">
                 <div class="upload-icon">📂</div>
-                <div class="upload-label">{{ fileAName || '文件 A（必选）' }}</div>
+                <div class="upload-label">{{ fileAName || '选择文件' }}</div>
               </div>
-              <button v-if="fileAName" class="upload-clear" @click.stop="clearFile('a')">✕</button>
-            </div>
-            <div class="upload-box" @dragover.prevent @drop.prevent="onDrop($event,'b')">
-              <input type="file" ref="fileInputB" accept=".json,.json.gz,.gz" @change="onFileChange($event,'b')" hidden />
-              <div @click="$refs.fileInputB.click()" class="upload-inner">
-                <div class="upload-icon">📂</div>
-                <div class="upload-label">{{ fileBName || '文件 B（可选，对比）' }}</div>
-              </div>
-              <button v-if="fileBName" class="upload-clear" @click.stop="clearFile('b')">✕</button>
-            </div>
-          </div>
-
-          <div class="form-grid">
-            <div class="form-row">
-              <label>kernel-types</label>
-              <input v-model="form.kernelTypes" class="input" placeholder="gemm,embedding,pool" />
-            </div>
-            <div class="form-row">
-              <label>备注</label>
-              <input v-model="form.label" class="input" placeholder="可选" />
+              <button v-if="fileAName" class="upload-clear" @click.stop="clearFile()">✕</button>
             </div>
             <div class="form-row">
               <label>项目</label>
@@ -188,14 +148,21 @@
                 <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
               </select>
             </div>
-            <div class="form-row checkboxes">
-              <label><input type="checkbox" v-model="form.saveTritonCsv" /> save-triton-csv</label>
-              <label title="保存每个 Triton kernel 的生成代码为 .py 文件，可从结果查看"><input type="checkbox" v-model="form.saveTritonCode" /> save-triton-code</label>
+            <div class="form-row form-row-info">
+              <label>kernel-types</label>
+              <div class="input-with-info">
+                <input v-model="form.kernelTypes" class="input" placeholder="gemm,embedding,pool" />
+                <span class="info-icon" title="设置后会单独统计包含该内容的kernel，使用','隔开">i</span>
+              </div>
             </div>
+            <div class="form-row">
+              <label>备注</label>
+              <input v-model="form.label" class="input" placeholder="可选" />
+            </div>
+            <button class="btn btn-primary" :disabled="!fileA || submitting" @click="submitJob">
+              {{ submitting ? (uploadProgress < 100 ? `上传中 ${uploadProgress}%` : '分析中...') : '提交分析' }}
+            </button>
           </div>
-          <button class="btn btn-primary" :disabled="!fileA || submitting" @click="submitJob">
-            {{ submitting ? (uploadProgress < 100 ? `上传中 ${uploadProgress}%` : '分析中...') : '提交分析' }}
-          </button>
           <div v-if="submitting && uploadProgress < 100" class="upload-progress">
             <div class="upload-progress-label">上传进度 {{ uploadProgress }}%</div>
             <div class="progress-track">
@@ -376,53 +343,9 @@
         <div class="modal-title">新建项目</div>
         <input v-model="newProjectName" class="input w-full" placeholder="项目名称" />
         <input v-model="newProjectDesc" class="input w-full mt-2" placeholder="描述（可选）" />
-        <select v-model="newProjectFolderId" class="input w-full mt-2">
-          <option value="">无（不放入文件夹）</option>
-          <option v-for="f in folders" :key="f.id" :value="f.id">{{ f.name }}</option>
-        </select>
         <div class="modal-actions">
           <button class="btn btn-outline" @click="showNewProject=false">取消</button>
           <button class="btn btn-primary" @click="createProject">创建</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- ── New folder modal ── -->
-    <div v-if="showNewFolder" class="modal-mask" @click.self="showNewFolder=false">
-      <div class="modal">
-        <div class="modal-title">新建文件夹</div>
-        <input v-model="newFolderName" class="input w-full" placeholder="文件夹名称" @keyup.enter="createFolder" />
-        <input v-model="newFolderPassword" type="password" class="input w-full mt-2" placeholder="设置密码（可选）" @keyup.enter="createFolder" />
-        <div class="modal-actions">
-          <button class="btn btn-outline" @click="showNewFolder=false">取消</button>
-          <button class="btn btn-primary" @click="createFolder">创建</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- ── Folder settings modal ── -->
-    <div v-if="showFolderSettings" class="modal-mask" @click.self="showFolderSettings=false">
-      <div class="modal">
-        <div class="modal-title">文件夹设置</div>
-        <input v-model="folderSettingsPassword" type="password" class="input w-full" placeholder="设置密码（留空则无密码）" />
-        <div class="modal-actions">
-          <button class="btn btn-outline" @click="showFolderSettings=false">取消</button>
-          <button class="btn btn-primary" @click="saveFolderSettings">保存</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- ── Move project to folder modal ── -->
-    <div v-if="showMoveProjectToFolder" class="modal-mask" @click.self="showMoveProjectToFolder=false">
-      <div class="modal">
-        <div class="modal-title">移动到文件夹</div>
-        <select v-model="moveProjectToFolderTarget" class="input w-full">
-          <option value="">无（移除文件夹）</option>
-          <option v-for="f in folders" :key="f.id" :value="f.id">{{ f.name }}</option>
-        </select>
-        <div class="modal-actions">
-          <button class="btn btn-outline" @click="showMoveProjectToFolder=false">取消</button>
-          <button class="btn btn-primary" @click="confirmMoveProjectToFolder()">确认</button>
         </div>
       </div>
     </div>
