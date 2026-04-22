@@ -11,5 +11,5 @@ htmlcov/
 .venv/
 venv/
 ENV/
-analyze_json/web/storage/
+web/storage/
 *.json
