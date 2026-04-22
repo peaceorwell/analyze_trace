@@ -15,6 +15,18 @@
   <div id="app">
     <!-- ── Header ── -->
     <header class="header">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="24" height="24" style="margin-right:6px;flex-shrink:0;">
+        <rect width="32" height="32" rx="7" fill="#1e293b"/>
+        <rect x="3"  y="23" width="5" height="6"  rx="1.5" fill="#4f46e5" opacity=".85"/>
+        <rect x="10" y="18" width="5" height="11" rx="1.5" fill="#6366f1"/>
+        <rect x="17" y="13" width="5" height="16" rx="1.5" fill="#818cf8"/>
+        <rect x="24" y="8"  width="5" height="21" rx="1.5" fill="#a5b4fc"/>
+        <polyline points="5.5,23 12.5,18 19.5,13 26.5,8" fill="none" stroke="#e0e7ff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle cx="5.5"  cy="23" r="2" fill="#e0e7ff"/>
+        <circle cx="12.5" cy="18" r="2" fill="#e0e7ff"/>
+        <circle cx="19.5" cy="13" r="2" fill="#e0e7ff"/>
+        <circle cx="26.5" cy="8"  r="2" fill="#e0e7ff"/>
+      </svg>
       <span class="header-title">torch profiler analyzer</span>
       <div class="header-actions">
         <button class="btn btn-sm btn-outline" @click="showNewProject=true">+ 新建项目</button>
