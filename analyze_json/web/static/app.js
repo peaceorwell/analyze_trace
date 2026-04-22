@@ -79,17 +79,6 @@ createApp({
     const newProjectName  = ref("");
     const newProjectDesc  = ref("");
 
-    // ── Project sharing ─────────────────────────────────────────────────────
-    const showShareProject = ref(false);
-    const shareProjectId = ref("");
-    const shareProjectPassword = ref("");
-    const shareProjectPublic = ref(false);
-    const shareUnlockPassword = ref("");
-    const showUnlockModal = ref(false);
-    const unlockProjectId = ref("");
-    const unlockProjectName = ref("");
-    const unlockedProjects = ref({});  // project_id -> true
-
     // ── Project renaming ──────────────────────────────────────────────────────
     const showRenameProject = ref(false);
     const renameProjectId = ref("");
@@ -110,14 +99,24 @@ createApp({
     // ── Memoization cache for groupedJobs ─────────────────────────────────────
     let groupedJobsCache = null;
     let groupedJobsCacheKey = null;
+    const invalidateGroupedJobsCache = () => {
+      groupedJobsCache = null;
+      groupedJobsCacheKey = null;
+    };
 
     const getGroupedJobsCacheKey = () =>
       `${filterProject.value}-${jobs.value.length}-${projects.value.length}`;
 
     // ── Computed ───────────────────────────────────────────────────────────
-    const singleJobs = computed(() =>
-      jobs.value.filter(j => j.mode === "single" && j.status === "done")
-    );
+    const singleJobs = computed(() => {
+      let filtered = jobs.value.filter(j => j.mode === "single" && j.status === "done");
+      if (filterProject.value) {
+        filtered = filterProject.value === "__none__"
+          ? filtered.filter(j => !j.project_id)
+          : filtered.filter(j => j.project_id === filterProject.value);
+      }
+      return filtered;
+    });
 
     const groupedJobs = computed(() => {
       const cacheKey = getGroupedJobsCacheKey();
@@ -507,6 +506,7 @@ createApp({
         body: JSON.stringify({ label: newLabel }),
       });
       await loadJob(selectedJobId.value);
+      invalidateGroupedJobsCache();
       await loadJobs();
     };
 
@@ -524,32 +524,7 @@ createApp({
       });
       showMoveProject.value = false;
       await loadJob(selectedJobId.value);
-      await loadJobs();
-    };
-
-    // ── Project sharing ─────────────────────────────────────────────────────
-    const openShareModal = (project) => {
-      shareProjectId.value = project.id;
-      shareProjectPassword.value = "";
-      shareProjectPublic.value = !!project.is_public;
-      showShareProject.value = true;
-    };
-
-    const saveProjectSettings = async () => {
-      await fetch(`/api/projects/${shareProjectId.value}/password`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ password: shareProjectPassword.value }),
-      });
-      await fetch(`/api/projects/${shareProjectId.value}/public`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ is_public: shareProjectPublic.value }),
-      });
-      showShareProject.value = false;
-      await loadProjects();
+      invalidateGroupedJobsCache();
       await loadJobs();
     };
 
@@ -587,16 +562,10 @@ createApp({
       }
       showRenameProject.value = false;
       await loadProjects();
+      invalidateGroupedJobsCache();
       if (filterProject.value === pid) {
         await loadJobs();
       }
-    };
-
-    const unlockProject = async (project) => {
-      unlockProjectId.value = project.id;
-      unlockProjectName.value = project.name;
-      shareUnlockPassword.value = "";
-      showUnlockModal.value = true;
     };
 
     const deleteProject = async (projectId) => {
@@ -610,28 +579,8 @@ createApp({
       selectedJob.value = null;
       resultTab.value = "console";
       await loadProjects();
+      invalidateGroupedJobsCache();
       await loadJobs();
-    };
-
-    const confirmUnlock = async () => {
-      const r = await fetch("/api/auth/verify-project", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ project_id: unlockProjectId.value, password: shareUnlockPassword.value }),
-      });
-      const data = await r.json();
-      if (data.verified) {
-        unlockedProjects.value[unlockProjectId.value] = true;
-        showUnlockModal.value = false;
-        await loadJobs();
-      } else {
-        alert("密码错误");
-      }
-    };
-
-    const isProjectLocked = (project) => {
-      return project.password_hash && !unlockedProjects.value[project.id] && project.user_token !== userToken.value;
     };
 
     const setSort = col => {
@@ -745,6 +694,18 @@ createApp({
       }
     };
 
+    watch(compareSelection, () => {
+      if (compareSelection.value.length === 2) {
+        const jobA = jobs.value.find(j => j.id === compareSelection.value[0]);
+        const jobB = jobs.value.find(j => j.id === compareSelection.value[1]);
+        if (jobA?.project_id && jobA.project_id === jobB?.project_id) {
+          compareProjectId.value = jobA.project_id;
+        } else {
+          compareProjectId.value = "";
+        }
+      }
+    });
+
     const submitCompare = async () => {
       const [a, b] = compareSelection.value;
       const r = await fetch("/api/jobs/compare", {
@@ -782,9 +743,17 @@ createApp({
       newProjectName.value = "";
       newProjectDesc.value = "";
       await loadProjects();
+      invalidateGroupedJobsCache();
+      await loadJobs();
     };
 
-    watch(filterProject, () => { jobsOffset.value = 0; loadJobs(); });
+    watch(filterProject, () => {
+      jobsOffset.value = 0;
+      if (filterProject.value) {
+        collapsedGroups.value[filterProject.value] = true;
+      }
+      loadJobs();
+    });
 
     const prevPage = () => {
       if (jobsOffset.value > 0) {
@@ -816,11 +785,7 @@ createApp({
       resultTab, tableSearch, sortCol, sortAsc, ktChart, ktPieChart, ktPieChartB,
       availableTabs, currentTable, filteredRows,
       showNewProject, newProjectName, newProjectDesc,
-      showShareProject, shareProjectId, shareProjectPassword, shareProjectPublic,
-      openShareModal, saveProjectSettings,
-      showRenameProject, renameProjectName, openRenameModal, confirmRenameProject,
-      showUnlockModal, unlockProjectId, unlockProjectName, shareUnlockPassword,
-      unlockProject, confirmUnlock, isProjectLocked, unlockedProjects, deleteProject,
+      showRenameProject, renameProjectName, openRenameModal, confirmRenameProject, deleteProject,
       compareSelection, compareKernelTypes, compareLabel, compareProjectId,
       fmtDate, statusIcon, toggleGroup, deltaCellClass,
       onFileChange, onDrop, clearFile, submitJob,

@@ -18,7 +18,7 @@ from fastapi import BackgroundTasks, Cookie, FastAPI, Form, HTTPException, Uploa
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
-from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.security import check_password_hash
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from analyze_trace import compute_avgs, parse_trace  # noqa: E402
@@ -63,30 +63,6 @@ async def get_or_create_user(user_token: Optional[str]) -> str:
     finally:
         await db.close()
     return user_token
-
-
-async def verify_project_access(db, project_id: str, user_token: str, password: Optional[str] = None) -> bool:
-    """Verify user has access to project. Returns True if access granted."""
-    cursor = await db.execute("SELECT * FROM projects WHERE id=?", (project_id,))
-    row = await row_to_dict(await cursor.fetchone())
-    if not row:
-        return False
-
-    # Owner always has access
-    if row.get("user_token") == user_token:
-        return True
-
-    # Public projects are accessible to all
-    if row.get("is_public") and not row.get("password_hash"):
-        return True
-
-    # Password-protected projects require correct password
-    if row.get("password_hash"):
-        if not password:
-            return False
-        return check_password_hash(row["password_hash"], password)
-
-    return False
 
 
 def job_dir(job_id: str) -> str:
@@ -298,34 +274,6 @@ async def guest_login(response: JSONResponse, user_token: Optional[str] = Cookie
     return {"user_token": token}
 
 
-@app.post("/api/auth/verify-project", response_model=dict)
-async def verify_project(request: Request, body: dict):
-    """Verify password for accessing a project. Returns True if password is correct."""
-    project_id = body.get("project_id")
-    password = body.get("password", "")
-
-    if not project_id:
-        raise HTTPException(400, "project_id is required")
-
-    db = await get_db()
-    cursor = await db.execute("SELECT * FROM projects WHERE id=?", (project_id,))
-    row = await row_to_dict(await cursor.fetchone())
-    await db.close()
-
-    if not row:
-        raise HTTPException(404, "Project not found")
-
-    # No password required
-    if not row.get("password_hash"):
-        return {"verified": True}
-
-    # Verify password
-    if password and check_password_hash(row["password_hash"], password):
-        return {"verified": True}
-
-    return {"verified": False}
-
-
 # ── Routes: projects ──────────────────────────────────────────────────────────
 
 @app.get("/api/projects")
@@ -333,10 +281,10 @@ async def list_projects(user_token: Optional[str] = Cookie(None)):
     db = await get_db()
     token = await get_or_create_user(user_token)
 
-    # Get user's own projects + public projects without password
+    # Get user's own projects
     rows = await (await db.execute("""
         SELECT * FROM projects
-        WHERE user_token = ? OR (is_public = 1 AND password_hash IS NULL)
+        WHERE user_token = ?
         ORDER BY created_at DESC
     """, (token,))).fetchall()
     await db.close()
@@ -385,65 +333,6 @@ async def update_project(pid: str, body: dict, user_token: Optional[str] = Cooki
     return dict(row)
 
 
-@app.put("/api/projects/{pid}/password")
-async def set_project_password(
-    pid: str,
-    body: dict,
-    user_token: Optional[str] = Cookie(None)
-):
-    """Set or remove password protection on a project."""
-    token = await get_or_create_user(user_token)
-    password = body.get("password")  # None or empty = remove password
-
-    db = await get_db()
-    cursor = await db.execute("SELECT * FROM projects WHERE id=?", (pid,))
-    row = await row_to_dict(await cursor.fetchone())
-    if not row:
-        await db.close()
-        raise HTTPException(404)
-    if row.get("user_token") != token:
-        await db.close()
-        raise HTTPException(403, "Not the project owner")
-
-    password_hash = generate_password_hash(password) if password else None
-    await db.execute(
-        "UPDATE projects SET password_hash=? WHERE id=?",
-        (password_hash, pid),
-    )
-    await db.commit()
-    await db.close()
-    return {"success": True}
-
-
-@app.put("/api/projects/{pid}/public")
-async def set_project_public(
-    pid: str,
-    body: dict,
-    user_token: Optional[str] = Cookie(None)
-):
-    """Toggle public status of a project."""
-    token = await get_or_create_user(user_token)
-    is_public = body.get("is_public", False)
-
-    db = await get_db()
-    cursor = await db.execute("SELECT * FROM projects WHERE id=?", (pid,))
-    row = await row_to_dict(await cursor.fetchone())
-    if not row:
-        await db.close()
-        raise HTTPException(404)
-    if row.get("user_token") != token:
-        await db.close()
-        raise HTTPException(403, "Not the project owner")
-
-    await db.execute(
-        "UPDATE projects SET is_public=? WHERE id=?",
-        (1 if is_public else 0, pid),
-    )
-    await db.commit()
-    await db.close()
-    return {"success": True}
-
-
 @app.delete("/api/projects/{pid}", status_code=204)
 async def delete_project(pid: str, user_token: Optional[str] = Cookie(None)):
     token = await get_or_create_user(user_token)
@@ -477,58 +366,36 @@ async def list_jobs(
     token = await get_or_create_user(user_token)
     db = await get_db()
 
-    # Build base WHERE clause to filter by user's own jobs + jobs in accessible projects
-    def build_where():
-        return """(j.user_token = ?
-           OR (p.is_public = 1 AND p.password_hash IS NULL))"""
-
-    # Count query
-    count_sql = f"""
-        SELECT COUNT(*) as total FROM jobs j
-        LEFT JOIN projects p ON j.project_id = p.id
-        WHERE {build_where()}
-    """
+    # Count query - user's own jobs
+    count_sql = "SELECT COUNT(*) as total FROM jobs WHERE user_token = ?"
     count_params = [token]
 
     if project_id == "__none__":
-        count_sql = """
-            SELECT COUNT(*) as total FROM jobs j
-            LEFT JOIN projects p ON j.project_id = p.id
-            WHERE j.user_token = ? AND j.project_id IS NULL
-        """
+        count_sql = "SELECT COUNT(*) as total FROM jobs WHERE user_token = ? AND project_id IS NULL"
         count_params = [token]
     elif project_id:
-        count_sql = f"""
-            SELECT COUNT(*) as total FROM jobs j
-            LEFT JOIN projects p ON j.project_id = p.id
-            WHERE j.project_id = ? AND {build_where()}
-        """
+        count_sql = "SELECT COUNT(*) as total FROM jobs WHERE project_id = ? AND user_token = ?"
         count_params = [project_id, token]
 
     count_cursor = await db.execute(count_sql, count_params)
     total = (await count_cursor.fetchone())[0]
 
-    # Data query
+    # Data query - user's own jobs
     if project_id == "__none__":
         rows = await (await db.execute(
             "SELECT * FROM jobs WHERE user_token=? AND project_id IS NULL ORDER BY created_at DESC LIMIT ? OFFSET ?",
             (token, limit, offset)
         )).fetchall()
     elif project_id:
-        can_access = await verify_project_access(db, project_id, token)
-        if not can_access:
-            await db.close()
-            raise HTTPException(403, "No access to this project")
         rows = await (await db.execute(
-            "SELECT * FROM jobs WHERE project_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?",
-            (project_id, limit, offset)
+            "SELECT * FROM jobs WHERE project_id=? AND user_token=? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (project_id, token, limit, offset)
         )).fetchall()
     else:
-        rows = await (await db.execute(f"""
-            SELECT j.* FROM jobs j
-            LEFT JOIN projects p ON j.project_id = p.id
-            WHERE {build_where()}
-            ORDER BY j.created_at DESC
+        rows = await (await db.execute("""
+            SELECT * FROM jobs
+            WHERE user_token = ?
+            ORDER BY created_at DESC
             LIMIT ? OFFSET ?
         """, (token, limit, offset))).fetchall()
 
@@ -598,25 +465,17 @@ async def compare_jobs(body: dict, background_tasks: BackgroundTasks, user_token
     db = await get_db()
 
     # Check user has access to both source jobs
-    cursor_a = await db.execute("SELECT j.*, p.user_token as proj_owner, p.is_public, p.password_hash FROM jobs j LEFT JOIN projects p ON j.project_id = p.id WHERE j.id=?", (job_id_a,))
+    cursor_a = await db.execute("SELECT * FROM jobs WHERE id=?", (job_id_a,))
     src_a = await row_to_dict(await cursor_a.fetchone())
-    cursor_b = await db.execute("SELECT j.*, p.user_token as proj_owner, p.is_public, p.password_hash FROM jobs j LEFT JOIN projects p ON j.project_id = p.id WHERE j.id=?", (job_id_b,))
+    cursor_b = await db.execute("SELECT * FROM jobs WHERE id=?", (job_id_b,))
     src_b = await row_to_dict(await cursor_b.fetchone())
 
     if not src_a or not src_b:
         await db.close()
         raise HTTPException(404, "Source job not found")
 
-    # Verify access to source jobs
-    def can_access_job(job):
-        if job.get("user_token") == token:
-            return True
-        proj_owner = job.get("proj_owner")
-        is_public = job.get("is_public")
-        has_password = job.get("password_hash")
-        return bool(is_public) and not has_password
-
-    if not can_access_job(src_a) or not can_access_job(src_b):
+    # Verify user owns both source jobs
+    if src_a.get("user_token") != token or src_b.get("user_token") != token:
         await db.close()
         raise HTTPException(403, "No access to source job")
 
@@ -652,28 +511,15 @@ async def compare_jobs(body: dict, background_tasks: BackgroundTasks, user_token
 async def get_job(jid: str, user_token: Optional[str] = Cookie(None)):
     token = await get_or_create_user(user_token)
     db = await get_db()
-    cursor = await db.execute("""
-        SELECT j.*, p.user_token as proj_owner, p.is_public, p.password_hash
-        FROM jobs j
-        LEFT JOIN projects p ON j.project_id = p.id
-        WHERE j.id=?
-    """, (jid,))
+    cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
     row = await row_to_dict(await cursor.fetchone())
     await db.close()
 
     if row is None:
         raise HTTPException(404)
 
-    # Check access
-    def can_access_job(job):
-        if job.get("user_token") == token:
-            return True
-        proj_owner = job.get("proj_owner")
-        is_public = job.get("is_public")
-        has_password = job.get("password_hash")
-        return bool(is_public) and not has_password
-
-    if not can_access_job(row):
+    # Check access - user must own the job
+    if row.get("user_token") != token:
         raise HTTPException(403, "No access to this job")
 
     job = dict(row)
