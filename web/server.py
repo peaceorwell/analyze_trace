@@ -790,19 +790,24 @@ except Exception as e:
                 [sys.executable, code_path],
                 capture_output=True,
                 text=True,
-                timeout=120,
+                timeout=600,
             )
             if result.returncode != 0:
                 stderr = result.stderr
                 if "ModuleNotFoundError" in stderr or "ImportError" in stderr or "No module named" in stderr:
                     lines = stderr.split("\n")
                     mod_lines = [l for l in lines if "ModuleNotFoundError" in l or "ImportError" in l or "No module named" in l]
-                    mod_info = " ".join(mod_lines[:3])
-                    return {"efficiency": None, "error": f"缺少依赖模块 (ImportError): {mod_info[:150]}"}
-                return {"efficiency": None, "error": f"Return code {result.returncode}: {stderr[:300]}"}
+                    mod_info = " ".join(mod_lines)
+                    error_msg = f"缺少依赖模块 (ImportError): {mod_info}"
+                else:
+                    error_msg = f"Return code {result.returncode}: {stderr}"
+                full_error = f"{mlu_info}\n\n--- Execution Result ---\n{error_msg}" if mlu_info else error_msg
+                return {"efficiency": None, "error": full_error}
             output = result.stdout.strip()
             if not output:
-                return {"efficiency": None, "error": f"No output. stderr: {result.stderr[:200]}"}
+                error_msg = f"No output. stderr: {result.stderr}"
+                full_error = f"{mlu_info}\n\n--- Execution Result ---\n{error_msg}" if mlu_info else error_msg
+                return {"efficiency": None, "error": full_error}
             # Prepend MLU info to the output with separator
             full_output = f"{mlu_info}\n\n--- Execution Result ---\n{output}" if mlu_info else output
             return {"efficiency": full_output}
@@ -818,6 +823,104 @@ except Exception as e:
         return {"success": False, "message": result.get('error', 'unknown'), "output": None}
 
     # Just return the result - no CSV update needed, show in popup only
+    return {"success": True, "output": output}
+
+
+@app.post("/api/jobs/{jid}/run-triton-custom")
+async def run_custom_triton(jid: str, body: dict, user_token: Optional[str] = Cookie(None)):
+    """Run a custom triton code string and return its efficiency."""
+    db = await get_db()
+    cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
+    row = await row_to_dict(await cursor.fetchone())
+    await db.close()
+
+    if row is None:
+        raise HTTPException(404)
+
+    if row.get("status") != "done":
+        raise HTTPException(400, "Job not completed")
+
+    code_content = body.get("code_content")
+    if not code_content:
+        raise HTTPException(400, "code_content is required")
+
+    def do_run():
+        import subprocess, sys, tempfile, os
+        try:
+            # Get MLU device info first
+            get_mlu_info = '''
+import torch_mlu
+import subprocess
+try:
+    import torch
+    mlu_version = torch_mlu.get_version()
+    device_name = torch.mlu.get_device_name(0) if torch.mlu.is_available() else "N/A"
+    driver_version = torch_mlu.get_driver_version()
+    # Get pip-installed triton version
+    pip_result = subprocess.run(["pip", "show", "triton"], capture_output=True, text=True)
+    triton_version = "N/A"
+    for line in pip_result.stdout.split("\\n"):
+        if line.startswith("Version:"):
+            triton_version = line.split(":", 1)[1].strip()
+            break
+    print(f"MLU Device:   {device_name}")
+    print(f"Driver:       {driver_version}")
+    print(f"torch_mlu:    {mlu_version}")
+    print(f"Triton(pip):  {triton_version}")
+except Exception as e:
+    print(f"[MLU Info] Failed to get MLU info: {e}")
+'''
+            info_result = subprocess.run(
+                [sys.executable, "-c", get_mlu_info],
+                capture_output=True, text=True, timeout=10,
+            )
+            mlu_info = info_result.stdout.strip() or info_result.stderr.strip()
+
+            # Write code to a temporary file and run it
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+                f.write(code_content)
+                temp_path = f.name
+
+            try:
+                result = subprocess.run(
+                    [sys.executable, temp_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=600,
+                )
+            finally:
+                os.unlink(temp_path)
+
+            if result.returncode != 0:
+                stderr = result.stderr
+                if "ModuleNotFoundError" in stderr or "ImportError" in stderr or "No module named" in stderr:
+                    lines = stderr.split("\n")
+                    mod_lines = [l for l in lines if "ModuleNotFoundError" in l or "ImportError" in l or "No module named" in l]
+                    mod_info = " ".join(mod_lines)
+                    error_msg = f"缺少依赖模块 (ImportError): {mod_info}"
+                else:
+                    error_msg = f"Return code {result.returncode}: {stderr}"
+                full_error = f"{mlu_info}\n\n--- Execution Result ---\n{error_msg}" if mlu_info else error_msg
+                return {"efficiency": None, "error": full_error}
+            output = result.stdout.strip()
+            if not output:
+                error_msg = f"No output. stderr: {result.stderr}"
+                full_error = f"{mlu_info}\n\n--- Execution Result ---\n{error_msg}" if mlu_info else error_msg
+                return {"efficiency": None, "error": full_error}
+            # Prepend MLU info to the output with separator
+            full_output = f"{mlu_info}\n\n--- Execution Result ---\n{output}" if mlu_info else output
+            return {"efficiency": full_output}
+        except subprocess.TimeoutExpired:
+            return {"efficiency": None, "error": "Timeout after 120s"}
+        except OSError as e:
+            return {"efficiency": None, "error": str(e)}
+
+    result = await asyncio.to_thread(do_run)
+    output = result.get("efficiency")
+
+    if output is None:
+        return {"success": False, "message": result.get('error', 'unknown'), "output": None}
+
     return {"success": True, "output": output}
 
 

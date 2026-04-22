@@ -338,9 +338,10 @@
                           <span v-else-if="tritonStatus[row[f]].status === 'running'"
                                 class="status-running">运行中...</span>
                           <template v-else-if="tritonStatus[row[f]].status === 'success'">
-                            <span class="eff-value btn-success"
+                            <span class="eff-value" :class="tritonStatus[row[f]].custom ? 'eff-custom' : 'btn-success'"
                                   :title="'点击重新运行\n' + tritonStatus[row[f]].output"
                                   @click.stop="runSingleTriton(row[f])">
+                              <span v-if="tritonStatus[row[f]].custom" class="custom-badge">✎</span>
                               {{ tritonStatus[row[f]].value }} GB/s ✓
                             </span>
                             <button class="btn btn-xs btn-outline ml-1"
@@ -407,12 +408,22 @@
     <div v-if="showTritonCode" class="modal-mask" @click.self="showTritonCode=false">
       <div class="modal modal-wide">
         <div class="modal-title">
-          {{ tritonCodeFilename }}
-          <button class="btn btn-sm btn-outline ml-2" @click="copyTritonCode">复制代码</button>
+          <span v-if="!tritonCodeEditing">{{ tritonCodeFilename }} - 代码查看</span>
+          <span v-else>{{ tritonCodeFilename }} - 代码编辑</span>
+          <button v-if="!tritonCodeEditing" class="btn btn-sm btn-outline ml-2" @click="copyTritonCode">复制代码</button>
+          <button v-if="!tritonCodeEditing" class="btn btn-sm btn-perfetto ml-1" @click="editTritonCode">编辑代码</button>
         </div>
-        <pre class="code-viewer"><code class="language-python">{{ tritonCodeContent }}</code></pre>
+        <!-- View mode -->
+        <pre v-if="!tritonCodeEditing" class="code-viewer"><code class="language-python">{{ tritonCodeContent }}</code></pre>
+        <!-- Edit mode -->
+        <textarea v-else class="code-editor" v-model="tritonCodeEditContent" placeholder="输入要执行的Python代码..."></textarea>
         <div class="modal-actions">
-          <button class="btn btn-outline" @click="showTritonCode=false">关闭</button>
+          <button v-if="tritonCodeEditing && customRunStatus === 'running'" class="btn btn-success" disabled>
+            <span class="spinner-small"></span> 运行中...
+          </button>
+          <button v-else-if="tritonCodeEditing" class="btn btn-success" @click="runCustomTriton">运行修改</button>
+          <button v-if="tritonCodeEditing" class="btn btn-outline" @click="cancelEditTritonCode">取消</button>
+          <button v-if="!tritonCodeEditing" class="btn btn-outline" @click="showTritonCode=false">关闭</button>
         </div>
       </div>
     </div>

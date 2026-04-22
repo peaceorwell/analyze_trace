@@ -97,6 +97,10 @@ createApp({
     const showTritonCode = ref(false);
     const tritonCodeContent = ref("");
     const tritonCodeFilename = ref("");
+    const tritonCodeEditing = ref(false);
+    const tritonCodeEditContent = ref("");
+    const customRunStatus = ref("");
+    const currentTritonCodePath = ref("");
 
     // ── Guide ─────────────────────────────────────────────────────────────────
     const showGuide = ref(false);
@@ -666,6 +670,64 @@ createApp({
       }
     };
 
+    const runCustomTriton = async () => {
+      if (!selectedJobId.value || !tritonCodeEditContent.value) return;
+      customRunStatus.value = "running";
+      try {
+        const resp = await fetch(`/api/jobs/${selectedJobId.value}/run-triton-custom`, {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code_content: tritonCodeEditContent.value }),
+        });
+        const data = await resp.json();
+        showTritonCode.value = false;
+        if (resp.ok && data.success) {
+          customRunStatus.value = "done";
+          // Update tritonStatus with custom flag
+          let efficiency = "";
+          const m = data.output.match(/([\d.]+)\s*GB\/s/);
+          if (m) efficiency = m[1];
+          const codePath = currentTritonCodePath.value;
+          if (codePath) {
+            tritonStatus.value = { ...tritonStatus.value, [codePath]: { status: 'success', value: efficiency, output: data.output.trim(), custom: true } };
+          }
+          errorModalTitle.value = "执行结果";
+          errorModalMsg.value = data.output.trim();
+          showErrorModal.value = true;
+        } else {
+          customRunStatus.value = "failed";
+          const errMsg = data.detail || data.message || `HTTP ${resp.status}`;
+          const codePath = currentTritonCodePath.value;
+          if (codePath) {
+            tritonStatus.value = { ...tritonStatus.value, [codePath]: { status: 'failed' } };
+          }
+          errorModalTitle.value = "错误信息";
+          errorModalMsg.value = `执行失败: ${errMsg}`;
+          showErrorModal.value = true;
+        }
+      } catch (e) {
+        showTritonCode.value = false;
+        customRunStatus.value = "failed";
+        const codePath = currentTritonCodePath.value;
+        if (codePath) {
+          tritonStatus.value = { ...tritonStatus.value, [codePath]: { status: 'failed' } };
+        }
+        errorModalMsg.value = "执行出错: " + e.message;
+        showErrorModal.value = true;
+      }
+    };
+
+    const editTritonCode = () => {
+      tritonCodeEditContent.value = tritonCodeContent.value;
+      tritonCodeEditing.value = true;
+    };
+
+    const cancelEditTritonCode = () => {
+      tritonCodeEditing.value = false;
+      tritonCodeEditContent.value = "";
+    };
+
     const clearInductorCache = async () => {
       if (!selectedJobId.value) return;
       try {
@@ -729,6 +791,7 @@ createApp({
 
     const viewTritonCode = async (codePath) => {
       if (!selectedJobId.value || !codePath) return;
+      currentTritonCodePath.value = codePath;
       const resp = await fetch(`/api/jobs/${selectedJobId.value}/triton-code/${codePath}`, { credentials: "include" });
       if (!resp.ok) { alert("无法加载代码文件"); return; }
       const data = await resp.json();
@@ -892,7 +955,8 @@ createApp({
       toggleSidebar, startSidebarResize,
       allowFileDownload, downloadTraceFile, openInPerfetto, viewTritonCode, copyTritonCode, copyErrorModal, runSingleTriton, tritonStatus, clearInductorCache,
       isTritonStepTab,
-      showTritonCode, tritonCodeContent, tritonCodeFilename,
+      showTritonCode, tritonCodeContent, tritonCodeFilename, tritonCodeEditing, tritonCodeEditContent,
+      runCustomTriton, editTritonCode, cancelEditTritonCode, customRunStatus,
       showGuide, showErrorModal, errorModalMsg, errorModalTitle,
       toggleCompareSelect, submitCompare, createProject,
     };
