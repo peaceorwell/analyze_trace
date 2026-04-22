@@ -273,20 +273,16 @@ async def guest_login(response: JSONResponse, user_token: Optional[str] = Cookie
     )
     return {"user_token": token}
 
-
 # ── Routes: projects ──────────────────────────────────────────────────────────
 
 @app.get("/api/projects")
-async def list_projects(user_token: Optional[str] = Cookie(None)):
+async def list_projects():
+    # No account system - all projects are public, return everything
     db = await get_db()
-    token = await get_or_create_user(user_token)
-
-    # Get user's own projects
     rows = await (await db.execute("""
         SELECT * FROM projects
-        WHERE user_token = ?
         ORDER BY created_at DESC
-    """, (token,))).fetchall()
+    """)).fetchall()
     await db.close()
     return [dict(r) for r in rows]
 
@@ -359,45 +355,42 @@ async def delete_project(pid: str, user_token: Optional[str] = Cookie(None)):
 @app.get("/api/jobs")
 async def list_jobs(
     project_id: Optional[str] = None,
-    user_token: Optional[str] = Cookie(None),
     limit: int = 50,
     offset: int = 0,
 ):
-    token = await get_or_create_user(user_token)
+    # No account system - all jobs are visible to everyone
     db = await get_db()
 
-    # Count query - user's own jobs
-    count_sql = "SELECT COUNT(*) as total FROM jobs WHERE user_token = ?"
-    count_params = [token]
+    # Count query
+    count_sql = "SELECT COUNT(*) as total FROM jobs"
+    count_params = []
 
     if project_id == "__none__":
-        count_sql = "SELECT COUNT(*) as total FROM jobs WHERE user_token = ? AND project_id IS NULL"
-        count_params = [token]
+        count_sql = "SELECT COUNT(*) as total FROM jobs WHERE project_id IS NULL"
     elif project_id:
-        count_sql = "SELECT COUNT(*) as total FROM jobs WHERE project_id = ? AND user_token = ?"
-        count_params = [project_id, token]
+        count_sql = "SELECT COUNT(*) as total FROM jobs WHERE project_id = ?"
+        count_params = [project_id]
 
     count_cursor = await db.execute(count_sql, count_params)
     total = (await count_cursor.fetchone())[0]
 
-    # Data query - user's own jobs
+    # Data query - all jobs
     if project_id == "__none__":
         rows = await (await db.execute(
-            "SELECT * FROM jobs WHERE user_token=? AND project_id IS NULL ORDER BY created_at DESC LIMIT ? OFFSET ?",
-            (token, limit, offset)
+            "SELECT * FROM jobs WHERE project_id IS NULL ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (limit, offset)
         )).fetchall()
     elif project_id:
         rows = await (await db.execute(
-            "SELECT * FROM jobs WHERE project_id=? AND user_token=? ORDER BY created_at DESC LIMIT ? OFFSET ?",
-            (project_id, token, limit, offset)
+            "SELECT * FROM jobs WHERE project_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (project_id, limit, offset)
         )).fetchall()
     else:
         rows = await (await db.execute("""
             SELECT * FROM jobs
-            WHERE user_token = ?
             ORDER BY created_at DESC
             LIMIT ? OFFSET ?
-        """, (token, limit, offset))).fetchall()
+        """, (limit, offset))).fetchall()
 
     await db.close()
     return {"data": [dict(r) for r in rows], "total": total, "limit": limit, "offset": offset}
@@ -509,7 +502,6 @@ async def compare_jobs(body: dict, background_tasks: BackgroundTasks, user_token
 
 @app.get("/api/jobs/{jid}")
 async def get_job(jid: str, user_token: Optional[str] = Cookie(None)):
-    token = await get_or_create_user(user_token)
     db = await get_db()
     cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
     row = await row_to_dict(await cursor.fetchone())
@@ -518,10 +510,7 @@ async def get_job(jid: str, user_token: Optional[str] = Cookie(None)):
     if row is None:
         raise HTTPException(404)
 
-    # Check access - user must own the job
-    if row.get("user_token") != token:
-        raise HTTPException(403, "No access to this job")
-
+    # No account system - all jobs are public
     job = dict(row)
     if job["status"] == "done":
         job["results"] = collect_results(jid)
@@ -744,7 +733,6 @@ async def clear_inductor_cache(jid: str, user_token: Optional[str] = Cookie(None
 @app.post("/api/jobs/{jid}/run-triton-single")
 async def run_single_triton(jid: str, body: dict, user_token: Optional[str] = Cookie(None)):
     """Run a single triton code file and return its efficiency."""
-    token = await get_or_create_user(user_token)
     db = await get_db()
     cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
     row = await row_to_dict(await cursor.fetchone())
@@ -752,9 +740,6 @@ async def run_single_triton(jid: str, body: dict, user_token: Optional[str] = Co
 
     if row is None:
         raise HTTPException(404)
-
-    if row.get("user_token") != token:
-        raise HTTPException(403, "Not the job owner")
 
     if row.get("status") != "done":
         raise HTTPException(400, "Job not completed")
@@ -772,6 +757,35 @@ async def run_single_triton(jid: str, body: dict, user_token: Optional[str] = Co
     def do_run():
         import subprocess, sys
         try:
+            # Get MLU device info first
+            get_mlu_info = '''
+import torch_mlu
+import subprocess
+try:
+    import torch
+    mlu_version = torch_mlu.get_version()
+    device_name = torch.mlu.get_device_name(0) if torch.mlu.is_available() else "N/A"
+    driver_version = torch_mlu.get_driver_version()
+    # Get pip-installed triton version
+    pip_result = subprocess.run(["pip", "show", "triton"], capture_output=True, text=True)
+    triton_version = "N/A"
+    for line in pip_result.stdout.split("\\n"):
+        if line.startswith("Version:"):
+            triton_version = line.split(":", 1)[1].strip()
+            break
+    print(f"MLU Device:   {device_name}")
+    print(f"Driver:       {driver_version}")
+    print(f"torch_mlu:    {mlu_version}")
+    print(f"Triton(pip):  {triton_version}")
+except Exception as e:
+    print(f"[MLU Info] Failed to get MLU info: {e}")
+'''
+            info_result = subprocess.run(
+                [sys.executable, "-c", get_mlu_info],
+                capture_output=True, text=True, timeout=10,
+            )
+            mlu_info = info_result.stdout.strip() or info_result.stderr.strip()
+
             result = subprocess.run(
                 [sys.executable, code_path],
                 capture_output=True,
@@ -780,9 +794,7 @@ async def run_single_triton(jid: str, body: dict, user_token: Optional[str] = Co
             )
             if result.returncode != 0:
                 stderr = result.stderr
-                # Detect import errors - these usually mean the environment doesn't support standalone execution
                 if "ModuleNotFoundError" in stderr or "ImportError" in stderr or "No module named" in stderr:
-                    # Extract the module name
                     lines = stderr.split("\n")
                     mod_lines = [l for l in lines if "ModuleNotFoundError" in l or "ImportError" in l or "No module named" in l]
                     mod_info = " ".join(mod_lines[:3])
@@ -791,8 +803,9 @@ async def run_single_triton(jid: str, body: dict, user_token: Optional[str] = Co
             output = result.stdout.strip()
             if not output:
                 return {"efficiency": None, "error": f"No output. stderr: {result.stderr[:200]}"}
-            # Return the full output for display
-            return {"efficiency": output}
+            # Prepend MLU info to the output with separator
+            full_output = f"{mlu_info}\n\n--- Execution Result ---\n{output}" if mlu_info else output
+            return {"efficiency": full_output}
         except subprocess.TimeoutExpired:
             return {"efficiency": None, "error": "Timeout after 120s"}
         except OSError as e:
