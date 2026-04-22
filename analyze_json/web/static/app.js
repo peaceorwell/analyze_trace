@@ -147,7 +147,11 @@ createApp({
         map[projectId].jobs.push(job);
       }
 
-      const result = Object.values(map);
+      const result = Object.values(map).sort((a, b) => {
+        if (a.id === "__none__") return 1;
+        if (b.id === "__none__") return -1;
+        return a.label.localeCompare(b.label);
+      });
 
       groupedJobsCacheKey = cacheKey;
       groupedJobsCache = result;
