@@ -42,6 +42,15 @@ createApp({
 
     const allowFileDownload = ref(true);
 
+    // ── Triton execution status (keyed by code_path) ──────────────────────────
+    // Status: 'idle' | 'running' | 'success' | 'failed'
+    const tritonStatus = ref({});
+
+    // ── Error display modal ──────────────────────────────────────────────────
+    const showErrorModal = ref(false);
+    const errorModalMsg = ref("");
+    const errorModalTitle = ref("错误信息");
+
     // ── Auth ─────────────────────────────────────────────────────────────────
     const userToken = ref(null);
 
@@ -618,6 +627,41 @@ createApp({
       window.open(`/api/jobs/${selectedJobId.value}/results/${filename}`);
     };
 
+    const runSingleTriton = async (codePath) => {
+      if (!selectedJobId.value || !codePath) return;
+      // Set status to running
+      tritonStatus.value = { ...tritonStatus.value, [codePath]: { status: 'running' } };
+      try {
+        const resp = await fetch(`/api/jobs/${selectedJobId.value}/run-triton-single`, {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code_path: codePath }),
+        });
+        const data = await resp.json();
+        if (resp.ok && data.success) {
+          // Parse efficiency for status
+          let efficiency = "";
+          const m = data.output.match(/([\d.]+)\s*GB\/s/);
+          if (m) efficiency = m[1];
+          tritonStatus.value = { ...tritonStatus.value, [codePath]: { status: 'success', value: efficiency, output: data.output.trim() } };
+          errorModalTitle.value = "执行结果";
+          errorModalMsg.value = data.output.trim();
+          showErrorModal.value = true;
+        } else {
+          tritonStatus.value = { ...tritonStatus.value, [codePath]: { status: 'failed' } };
+          const errMsg = data.detail || data.message || `HTTP ${resp.status}`;
+          errorModalTitle.value = "错误信息";
+          errorModalMsg.value = `执行失败: ${errMsg}`;
+          showErrorModal.value = true;
+        }
+      } catch (e) {
+        tritonStatus.value = { ...tritonStatus.value, [codePath]: { status: 'failed' } };
+        errorModalMsg.value = "执行出错: " + e.message;
+        showErrorModal.value = true;
+      }
+    };
+
     const downloadTraceFile = slot => {
       if (!selectedJobId.value) return;
       window.open(`/api/jobs/${selectedJobId.value}/files/${slot}`);
@@ -680,6 +724,22 @@ createApp({
         // Fallback for older browsers
         const textarea = document.createElement("textarea");
         textarea.value = tritonCodeContent.value;
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textarea);
+        alert("已复制到剪贴板");
+      }
+    };
+
+    const copyErrorModal = async () => {
+      if (!errorModalMsg.value) return;
+      try {
+        await navigator.clipboard.writeText(errorModalMsg.value);
+        alert("已复制到剪贴板");
+      } catch (e) {
+        const textarea = document.createElement("textarea");
+        textarea.value = errorModalMsg.value;
         document.body.appendChild(textarea);
         textarea.select();
         document.execCommand("copy");
@@ -801,9 +861,9 @@ createApp({
       colFilters, colFilterOps, hasColFilters, clearColFilters,
       sidebarWidth, sidebarCollapsed,
       toggleSidebar, startSidebarResize,
-      allowFileDownload, downloadTraceFile, openInPerfetto, viewTritonCode, copyTritonCode,
+      allowFileDownload, downloadTraceFile, openInPerfetto, viewTritonCode, copyTritonCode, copyErrorModal, runSingleTriton, tritonStatus,
       showTritonCode, tritonCodeContent, tritonCodeFilename,
-      showGuide,
+      showGuide, showErrorModal, errorModalMsg, errorModalTitle,
       toggleCompareSelect, submitCompare, createProject,
     };
   },

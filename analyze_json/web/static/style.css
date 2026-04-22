@@ -201,6 +201,14 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 .btn-xs       { padding: 2px 7px; font-size: 10px; }
 .btn-perfetto { background: #ede9fe; color: #5b21b6; border: 1px solid #c4b5fd; }
 .btn-perfetto:hover:not(:disabled) { background: #ddd6fe; opacity: 1; }
+.btn-run       { background: #dcfce7; color: #166534; border: 1px solid #86efac; }
+.btn-run:hover:not(:disabled) { background: #bbf7d0; opacity: 1; }
+.btn-success   { background: #16a34a; color: #fff; border: 1px solid #16a34a; cursor: pointer; }
+.btn-success:hover:not(:disabled) { background: #15803d; opacity: 1; }
+.ml-1 { margin-left: 4px; }
+.status-running { color: #2563eb; font-size: 10px; }
+.status-success { color: #16a34a; font-size: 10px; font-weight: 500; }
+.mb-1 { margin-bottom: 4px; display: inline-block; }
 
 /* ── Submit card ── */
 .submit-card { display: flex; flex-direction: column; gap: 8px; }
@@ -392,6 +400,12 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 .modal-wide { min-width: 700px; max-width: 95vw; width: 1200px; }
 .modal-title { font-size: 14px; font-weight: 600; margin-bottom: 12px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.error-modal-content {
+  background: #f5f5f5; padding: 12px; border-radius: 6px;
+  font-family: monospace; font-size: 12px; white-space: pre-wrap;
+  word-break: break-all; max-height: 50vh; overflow: auto; user-select: text;
+  cursor: text;
+}
 
 /* ── Code viewer ── */
 pre.code-viewer {

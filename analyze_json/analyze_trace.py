@@ -3,6 +3,8 @@ import bisect
 import csv
 import json
 import os
+import subprocess
+import sys
 from collections import defaultdict
 from decimal import Decimal
 
@@ -47,6 +49,48 @@ def write_triton_code_file(code_dir, idx, kernel):
     with open(os.path.join(code_dir, code_filename), "w") as cf:
         cf.write(kernel["triton_output_code"])
     return code_filename
+
+
+def run_triton_code_and_get_efficiency(code_path):
+    """Execute a triton .py file and return its efficiency output (GB/s).
+
+    Returns the efficiency value as a string on success, or None if execution fails.
+    The script is run with stdout captured; if it fails (non-zero return code),
+    None is returned and no modification to CSV should occur.
+    """
+    try:
+        result = subprocess.run(
+            [sys.executable, code_path],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if result.returncode != 0:
+            print(f"Triton execution failed with return code {result.returncode}: {result.stderr[:500]}", file=sys.stderr)
+            return None
+        # Output format: "{ms:.3f}ms    {num_gb:.3f}GB    {gb_per_s:.2f}GB/s"
+        # We want the GB/s value (3rd field)
+        output = result.stdout.strip()
+        if not output:
+            print(f"Triton execution produced no output. stderr: {result.stderr[:500]}", file=sys.stderr)
+            return None
+        parts = output.split()
+        if len(parts) >= 3:
+            # Last part is like "GB/s", second to last is the number
+            try:
+                efficiency = float(parts[-2])
+                return f"{efficiency:.2f}"
+            except (ValueError, IndexError):
+                print(f"Failed to parse efficiency from output: {output}", file=sys.stderr)
+                return None
+        print(f"Unexpected output format: {output}", file=sys.stderr)
+        return None
+    except subprocess.TimeoutExpired:
+        print(f"Triton execution timed out after 120s: {code_path}", file=sys.stderr)
+        return None
+    except OSError as e:
+        print(f"OSError running triton code {code_path}: {e}", file=sys.stderr)
+        return None
 
 
 def write_avg_csv(path, data, name_field):
@@ -356,9 +400,9 @@ def print_comparison(data_a, data_b, label_a, label_b):
 
 # ── CSV write helpers ─────────────────────────────────────────────────────────
 
-def _write_triton_avg_csv(path, avg_triton):
+def _write_triton_avg_csv(path, avg_triton, local_efficiency=None):
     with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["kernel_name", "avg_count", "avg_dur_ms", "avg_io_gb", "avg_io_efficiency"])
+        writer = csv.DictWriter(f, fieldnames=["kernel_name", "avg_count", "avg_dur_ms", "avg_io_gb", "avg_io_efficiency", "local efficiency"])
         writer.writeheader()
         for name, s in avg_triton.items():
             writer.writerow({
@@ -367,6 +411,7 @@ def _write_triton_avg_csv(path, avg_triton):
                 "avg_dur_ms":        fmt3(s["avg_dur_ms"]),
                 "avg_io_gb":         fmt3(s["avg_io_gb"]),
                 "avg_io_efficiency": fmt3(s["avg_io_eff"]),
+                "local efficiency":  local_efficiency.get(name, "") if local_efficiency else "",
             })
     print(f"Wrote {path} ({len(avg_triton)} rows)")
 
@@ -463,8 +508,9 @@ def write_single(data, args):
     os.makedirs(args.output_dir, exist_ok=True)
 
     # Per-step triton CSVs + source files
+    local_efficiency_by_kernel = {}  # kernel_name -> local efficiency (GB/s)
     if args.save_triton_csv or args.save_triton_code:
-        triton_fields = ["kernel_name", "dur(ms)", "total io(GB)", "IO efficiency(GB/s)", "tiling config", "triton_code_file"]
+        triton_fields = ["kernel_name", "dur(ms)", "total io(GB)", "IO efficiency(GB/s)", "tiling config", "triton_code_file", "local efficiency"]
         for step in data["all_steps"]:
             kernels = [k for k in data["step_to_triton"][step] if k["triton_output_code"] is not None]
             if not kernels:
@@ -474,6 +520,7 @@ def write_single(data, args):
                 os.makedirs(code_dir, exist_ok=True)
             if args.save_triton_csv:
                 csv_path = os.path.join(args.output_dir, f"step_{step}_triton_kernels.csv")
+                code_file_paths = []  # (idx, kernel_name, code_rel_path, code_abs_path)
                 with open(csv_path, "w", newline="") as f:
                     writer = csv.DictWriter(f, fieldnames=triton_fields)
                     writer.writeheader()
@@ -485,19 +532,52 @@ def write_single(data, args):
                             "IO efficiency(GB/s)": fmt3(kernel["IO efficiency(GB/s)"]),
                             "tiling config":       (kernel["tiling config"] or "").replace("\n", "\\n").replace("\r", ""),
                             "triton_code_file":    "",
+                            "local efficiency":    "",
                         }
                         if args.save_triton_code:
                             fname = write_triton_code_file(code_dir, idx, kernel)
-                            row["triton_code_file"] = os.path.join(f"step_{step}_triton_codes", fname)
+                            code_rel_path = os.path.join(f"step_{step}_triton_codes", fname)
+                            code_abs_path = os.path.join(code_dir, fname)
+                            row["triton_code_file"] = code_rel_path
+                            code_file_paths.append((idx, kernel["kernel_name"], code_rel_path, code_abs_path))
                         writer.writerow(row)
                 print(f"Wrote {csv_path} ({len(kernels)} rows)")
+
+                # Execute triton code files and get local efficiency
+                for idx, kernel_name, code_rel_path, code_abs_path in code_file_paths:
+                    if kernel_name not in local_efficiency_by_kernel:
+                        efficiency = run_triton_code_and_get_efficiency(code_abs_path)
+                        if efficiency is not None:
+                            local_efficiency_by_kernel[kernel_name] = efficiency
+
+                # Re-write CSV with local efficiency values (only if at least one execution succeeded)
+                if local_efficiency_by_kernel:
+                    # Build a lookup from idx to code_rel_path
+                    idx_to_rel_path = {item[0]: item[2] for item in code_file_paths}
+                    with open(csv_path, "w", newline="") as f:
+                        writer = csv.DictWriter(f, fieldnames=triton_fields)
+                        writer.writeheader()
+                        for idx, kernel in enumerate(kernels):
+                            row = {
+                                "kernel_name":         kernel["kernel_name"],
+                                "dur(ms)":             fmt3(kernel["dur(ms)"]),
+                                "total io(GB)":        fmt3(kernel["total io(GB)"]),
+                                "IO efficiency(GB/s)": fmt3(kernel["IO efficiency(GB/s)"]),
+                                "tiling config":       (kernel["tiling config"] or "").replace("\n", "\\n").replace("\r", ""),
+                                "triton_code_file":    "",
+                                "local efficiency":    local_efficiency_by_kernel.get(kernel["kernel_name"], ""),
+                            }
+                            if args.save_triton_code:
+                                row["triton_code_file"] = idx_to_rel_path.get(idx, "")
+                            writer.writerow(row)
+                print(f"Wrote {csv_path} with local efficiency")
             elif args.save_triton_code:
                 for idx, kernel in enumerate(kernels):
                     write_triton_code_file(code_dir, idx, kernel)
                 print(f"Wrote {code_dir}/ ({len(kernels)} files)")
 
     write_avg_csv(os.path.join(args.output_dir, "all_kernels_avg.csv"), data["avg_kernels"], "kernel_name")
-    _write_triton_avg_csv(os.path.join(args.output_dir, "triton_kernels_avg.csv"), data["avg_triton"])
+    _write_triton_avg_csv(os.path.join(args.output_dir, "triton_kernels_avg.csv"), data["avg_triton"], local_efficiency_by_kernel)
     write_avg_csv(os.path.join(args.output_dir, "aten_ops_avg.csv"),    data["avg_aten"],    "op_name")
     _write_kernel_types_csv(os.path.join(args.output_dir, "kernel_types_avg.csv"), data["KERNEL_TYPES"], data["kt_avgs"])
     write_avg_csv(os.path.join(args.output_dir, "cncl_ops_avg.csv"),    data["avg_cncl"],    "op_name")

@@ -21,7 +21,7 @@ from starlette.requests import Request
 from werkzeug.security import check_password_hash
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from analyze_trace import compute_avgs, parse_trace  # noqa: E402
+from analyze_trace import compute_avgs, parse_trace, run_triton_code_and_get_efficiency  # noqa: E402
 
 from db import get_db, init_db, row_to_dict  # noqa: E402
 
@@ -580,6 +580,199 @@ async def delete_job(jid: str, user_token: Optional[str] = Cookie(None)):
     await db.execute("DELETE FROM jobs WHERE id=?", (jid,))
     await db.commit()
     await db.close()
+
+
+@app.post("/api/jobs/{jid}/run-triton")
+async def run_job_triton(jid: str, user_token: Optional[str] = Cookie(None)):
+    """Run triton code files and append local efficiency to CSV."""
+    token = await get_or_create_user(user_token)
+    db = await get_db()
+    cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
+    row = await row_to_dict(await cursor.fetchone())
+    await db.close()
+
+    if row is None:
+        raise HTTPException(404)
+
+    if row.get("user_token") != token:
+        raise HTTPException(403, "Not the job owner")
+
+    if row.get("status") != "done":
+        raise HTTPException(400, "Job not completed")
+
+    rdir = result_dir(jid)
+
+    def do_run():
+        results = {}
+        # Find all triton code files in step_*_triton_codes directories
+        if not os.path.isdir(rdir):
+            return results
+        for dname in sorted(os.listdir(rdir)):
+            if dname.startswith("step_") and dname.endswith("_triton_codes"):
+                code_dir = os.path.join(rdir, dname)
+                if not os.path.isdir(code_dir):
+                    continue
+                for fname in sorted(os.listdir(code_dir)):
+                    if fname.endswith(".py"):
+                        code_path = os.path.join(code_dir, fname)
+                        key = f"{dname}/{fname}"
+                        efficiency = run_triton_code_and_get_efficiency(code_path)
+                        results[key] = efficiency
+        return results
+
+    # Run in thread pool since subprocess is blocking
+    run_results = await asyncio.to_thread(do_run)
+
+    # If no triton code files found, return early
+    if not run_results:
+        return {"success": True, "message": "No triton code files found", "results": {}}
+
+    # Check if any execution succeeded
+    any_success = any(v is not None for v in run_results.values())
+    if not any_success:
+        return {"success": False, "message": "All triton executions failed", "results": run_results}
+
+    # Read the step CSV files and add local efficiency column
+    def update_csv_with_efficiency():
+        updated = []
+        for dname in sorted(os.listdir(rdir)):
+            if dname.startswith("step_") and dname.endswith("_triton_kernels.csv"):
+                csv_path = os.path.join(rdir, dname)
+                temp_path = csv_path + ".tmp"
+                with open(csv_path, "r", newline="", encoding="utf-8") as fin:
+                    with open(temp_path, "w", newline="", encoding="utf-8") as fout:
+                        reader = csv.reader(fin)
+                        writer = csv.writer(fout)
+                        header = next(reader)
+                        # Check if "local efficiency" column already exists
+                        if "local efficiency" not in header:
+                            header.append("local efficiency")
+                        writer.writerow(header)
+                        # Create mapping from kernel name to efficiency
+                        for row in reader:
+                            if len(row) >= 1:
+                                kernel_name = row[0]
+                                # Try to find matching triton code file
+                                matched_eff = None
+                                for code_key, eff in run_results.items():
+                                    if kernel_name in code_key and eff is not None:
+                                        matched_eff = eff
+                                        break
+                                if matched_eff:
+                                    row.append(matched_eff)
+                                else:
+                                    row.append("")
+                            writer.writerow(row)
+                os.replace(temp_path, csv_path)
+                updated.append(dname)
+
+                # Also update the parent triton_kernels_avg.csv if it exists
+                parent_csv = os.path.join(rdir, "triton_kernels_avg.csv")
+                if os.path.exists(parent_csv):
+                    _update_parent_triton_csv(parent_csv, run_results)
+
+        return updated
+
+    def _update_parent_triton_csv(csv_path, exec_results):
+        temp_path = csv_path + ".tmp"
+        with open(csv_path, "r", newline="", encoding="utf-8") as fin:
+            with open(temp_path, "w", newline="", encoding="utf-8") as fout:
+                reader = csv.reader(fin)
+                writer = csv.writer(fout)
+                header = next(reader)
+                if "local efficiency" not in header:
+                    header.append("local efficiency")
+                writer.writerow(header)
+                for row in reader:
+                    if len(row) >= 1:
+                        kernel_name = row[0]
+                        matched_eff = None
+                        for code_key, eff in exec_results.items():
+                            if kernel_name in code_key and eff is not None:
+                                matched_eff = eff
+                                break
+                        if matched_eff:
+                            row.append(matched_eff)
+                        else:
+                            row.append("")
+                    writer.writerow(row)
+        os.replace(temp_path, csv_path)
+
+    updated_files = await asyncio.to_thread(update_csv_with_efficiency)
+
+    return {
+        "success": True,
+        "message": f"Updated {len(updated_files)} files",
+        "results": run_results,
+        "updated_files": updated_files,
+    }
+
+
+@app.post("/api/jobs/{jid}/run-triton-single")
+async def run_single_triton(jid: str, body: dict, user_token: Optional[str] = Cookie(None)):
+    """Run a single triton code file and return its efficiency."""
+    token = await get_or_create_user(user_token)
+    db = await get_db()
+    cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
+    row = await row_to_dict(await cursor.fetchone())
+    await db.close()
+
+    if row is None:
+        raise HTTPException(404)
+
+    if row.get("user_token") != token:
+        raise HTTPException(403, "Not the job owner")
+
+    if row.get("status") != "done":
+        raise HTTPException(400, "Job not completed")
+
+    code_path_rel = body.get("code_path")
+    if not code_path_rel:
+        raise HTTPException(400, "code_path is required")
+
+    rdir = result_dir(jid)
+    code_path = os.path.normpath(os.path.join(rdir, code_path_rel))
+    # Security: ensure the resolved path is within rdir
+    if not code_path.startswith(os.path.abspath(rdir)):
+        raise HTTPException(400, "Invalid code_path")
+
+    def do_run():
+        import subprocess, sys
+        try:
+            result = subprocess.run(
+                [sys.executable, code_path],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if result.returncode != 0:
+                stderr = result.stderr
+                # Detect import errors - these usually mean the environment doesn't support standalone execution
+                if "ModuleNotFoundError" in stderr or "ImportError" in stderr or "No module named" in stderr:
+                    # Extract the module name
+                    lines = stderr.split("\n")
+                    mod_lines = [l for l in lines if "ModuleNotFoundError" in l or "ImportError" in l or "No module named" in l]
+                    mod_info = " ".join(mod_lines[:3])
+                    return {"efficiency": None, "error": f"缺少依赖模块 (ImportError): {mod_info[:150]}"}
+                return {"efficiency": None, "error": f"Return code {result.returncode}: {stderr[:300]}"}
+            output = result.stdout.strip()
+            if not output:
+                return {"efficiency": None, "error": f"No output. stderr: {result.stderr[:200]}"}
+            # Return the full output for display
+            return {"efficiency": output}
+        except subprocess.TimeoutExpired:
+            return {"efficiency": None, "error": "Timeout after 120s"}
+        except OSError as e:
+            return {"efficiency": None, "error": str(e)}
+
+    result = await asyncio.to_thread(do_run)
+    output = result.get("efficiency")
+
+    if output is None:
+        return {"success": False, "message": result.get('error', 'unknown'), "output": None}
+
+    # Just return the result - no CSV update needed, show in popup only
+    return {"success": True, "output": output}
 
 
 @app.get("/api/jobs/{jid}/triton-code/{path:path}")

@@ -321,11 +321,32 @@
                       <td v-for="f in currentTable.fields" :key="f"
                           :class="deltaCellClass(f, row[f])"
                           :title="row[f]">
-                        <button v-if="f === 'triton_code_file' && row[f]"
-                                class="btn btn-xs btn-perfetto"
-                                @click.stop="viewTritonCode(row[f])">
-                          查看代码
-                        </button>
+                        <!-- triton_code_file column: show view button + run button with status -->
+                        <template v-if="f === 'triton_code_file' && row[f]">
+                          <button class="btn btn-xs btn-perfetto mb-1"
+                                  @click.stop="viewTritonCode(row[f])">
+                            查看代码
+                          </button>
+                          <br />
+                          <!-- Run button with status -->
+                          <button v-if="!tritonStatus[row[f]] || tritonStatus[row[f]].status === 'idle' || tritonStatus[row[f]].status === 'failed'"
+                                  class="btn btn-xs btn-run"
+                                  @click.stop="runSingleTriton(row[f])">
+                            运行
+                          </button>
+                          <span v-else-if="tritonStatus[row[f]].status === 'running'"
+                                class="status-running">运行中...</span>
+                          <template v-else-if="tritonStatus[row[f]].status === 'success'">
+                            <span class="eff-value btn-success"
+                                  :title="'点击重新运行\n' + tritonStatus[row[f]].output"
+                                  @click.stop="runSingleTriton(row[f])">
+                              {{ tritonStatus[row[f]].value }} GB/s ✓
+                            </span>
+                            <button class="btn btn-xs btn-outline ml-1"
+                                    @click.stop="runSingleTriton(row[f])"
+                                    :title="'点击重新运行'">↻</button>
+                          </template>
+                        </template>
                         <span v-else>{{ row[f] }}</span>
                       </td>
                     </tr>
@@ -391,6 +412,20 @@
         <pre class="code-viewer"><code class="language-python">{{ tritonCodeContent }}</code></pre>
         <div class="modal-actions">
           <button class="btn btn-outline" @click="showTritonCode=false">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Error modal (selectable text) ── -->
+    <div v-if="showErrorModal" class="modal-mask" @click.self="showErrorModal=false">
+      <div class="modal">
+        <div class="modal-title">
+          {{ errorModalTitle }}
+          <button class="btn btn-xs btn-outline ml-2" @click="copyErrorModal">复制</button>
+        </div>
+        <div class="error-modal-content">{{ errorModalMsg }}</div>
+        <div class="modal-actions">
+          <button class="btn btn-outline" @click="showErrorModal=false">关闭</button>
         </div>
       </div>
     </div>
