@@ -271,6 +271,7 @@
                   <button class="btn-clear-filter" @click="clearColFilters()">✕ 清除</button>
                 </span>
                 <button class="btn btn-sm btn-outline" @click="downloadCsv(resultTab)">下载 CSV</button>
+                <button v-if="isTritonStepTab" class="btn btn-sm btn-outline" @click="clearInductorCache()">清除 Cache</button>
               </div>
               <div class="table-scroll">
                 <table class="data-table">
@@ -481,6 +482,7 @@
               <li>在 <strong>Triton</strong> 或 <strong>Triton Step N</strong> 表格中，每行有"运行"按钮</li>
               <li>点击运行后会执行对应的 Triton kernel 代码，弹出执行结果</li>
               <li>效率值会显示在行内（单位 GB/s），旁边有 ↻ 按钮可重新运行</li>
+              <li><strong>清除 Cache</strong>：在 Triton Step N 表格右上角有"清除 Cache"按钮，可清除 <code>/tmp/torchinductor_*</code> 缓存目录，重新运行以获得准确性能数据</li>
             </ul>
             <p class="guide-note">
               <strong>注意</strong>：此功能依赖 MLU（寒武纪）硬件环境。需要已安装 <code>torch_mlu</code> 驱动并有物理 MLU 加速卡。

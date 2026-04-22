@@ -708,6 +708,39 @@ async def run_job_triton(jid: str, user_token: Optional[str] = Cookie(None)):
     }
 
 
+@app.post("/api/jobs/{jid}/clear-inductor-cache")
+async def clear_inductor_cache(jid: str, user_token: Optional[str] = Cookie(None)):
+    """Clear the torchinductor cache for a job's triton runs."""
+    import shutil, glob
+
+    token = await get_or_create_user(user_token)
+    db = await get_db()
+    cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
+    row = await row_to_dict(await cursor.fetchone())
+    await db.close()
+
+    if row is None:
+        raise HTTPException(404)
+
+    if row.get("user_token") != token:
+        raise HTTPException(403, "Not the job owner")
+
+    def do_clear():
+        import subprocess
+        try:
+            # Find and remove all torchinductor_* directories in /tmp
+            pattern = "/tmp/torchinductor_*"
+            dirs = glob.glob(pattern)
+            for d in dirs:
+                subprocess.run(["rm", "-rf", d], check=False)
+            return {"success": True, "removed": dirs}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    result = await asyncio.to_thread(do_clear)
+    return result
+
+
 @app.post("/api/jobs/{jid}/run-triton-single")
 async def run_single_triton(jid: str, body: dict, user_token: Optional[str] = Cookie(None)):
     """Run a single triton code file and return its efficiency."""

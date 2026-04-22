@@ -162,6 +162,8 @@ TRACE_NO_DOWNLOAD=1 docker-compose up -d
   - CSV 数据表格（可搜索、列排序、列宽拖拽调整、超长内容截断并 hover 显示全文）
   - Kernel 类型耗时柱状图
   - 一键下载各 CSV 文件
+  - **Triton 代码执行**：在 Triton / Triton Step N 表格中可直接运行 kernel 代码，查看效率（GB/s）
+  - **清除 Cache**：在 Triton Step N 表格中可清除 `/tmp/torchinductor_*` 缓存目录
 - **历史管理**：按项目分组，支持重命名、删除任务
 - **项目分组**：自定义项目，将相关任务归类管理
 - **历史对比**：在"对比"标签页选择两个已完成的单文件任务直接发起对比分析，无需重新上传文件

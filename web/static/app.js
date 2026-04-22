@@ -199,6 +199,10 @@ createApp({
       return tabs;
     });
 
+    const isTritonStepTab = computed(() => {
+      return resultTab.value && resultTab.value.match(/^step_\d+_triton_kernels\.csv$/);
+    });
+
     const currentTable = computed(() => {
       const res = selectedJob.value?.results;
       if (!res || !resultTab.value.endsWith(".csv")) return { fields: [], rows: [] };
@@ -662,6 +666,31 @@ createApp({
       }
     };
 
+    const clearInductorCache = async () => {
+      if (!selectedJobId.value) return;
+      try {
+        const resp = await fetch(`/api/jobs/${selectedJobId.value}/clear-inductor-cache`, {
+          method: "POST",
+          credentials: "include",
+        });
+        const data = await resp.json();
+        if (resp.ok && data.success) {
+          const count = data.removed ? data.removed.length : 0;
+          errorModalTitle.value = "清除 Cache";
+          errorModalMsg.value = `已清除 ${count} 个 torchinductor cache 目录`;
+          showErrorModal.value = true;
+        } else {
+          const errMsg = data.detail || data.message || `HTTP ${resp.status}`;
+          errorModalTitle.value = "错误信息";
+          errorModalMsg.value = `清除失败: ${errMsg}`;
+          showErrorModal.value = true;
+        }
+      } catch (e) {
+        errorModalMsg.value = "清除出错: " + e.message;
+        showErrorModal.value = true;
+      }
+    };
+
     const downloadTraceFile = slot => {
       if (!selectedJobId.value) return;
       window.open(`/api/jobs/${selectedJobId.value}/files/${slot}`);
@@ -861,7 +890,8 @@ createApp({
       colFilters, colFilterOps, hasColFilters, clearColFilters,
       sidebarWidth, sidebarCollapsed,
       toggleSidebar, startSidebarResize,
-      allowFileDownload, downloadTraceFile, openInPerfetto, viewTritonCode, copyTritonCode, copyErrorModal, runSingleTriton, tritonStatus,
+      allowFileDownload, downloadTraceFile, openInPerfetto, viewTritonCode, copyTritonCode, copyErrorModal, runSingleTriton, tritonStatus, clearInductorCache,
+      isTritonStepTab,
       showTritonCode, tritonCodeContent, tritonCodeFilename,
       showGuide, showErrorModal, errorModalMsg, errorModalTitle,
       toggleCompareSelect, submitCompare, createProject,
