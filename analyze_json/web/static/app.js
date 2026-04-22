@@ -89,6 +89,9 @@ createApp({
     const tritonCodeContent = ref("");
     const tritonCodeFilename = ref("");
 
+    // ── Guide ─────────────────────────────────────────────────────────────────
+    const showGuide = ref(false);
+
     const compareSelection  = ref([]);
     const compareKernelTypes = ref("gemm,embedding,pool");
     const compareLabel      = ref("");
@@ -800,6 +803,7 @@ createApp({
       toggleSidebar, startSidebarResize,
       allowFileDownload, downloadTraceFile, openInPerfetto, viewTritonCode, copyTritonCode,
       showTritonCode, tritonCodeContent, tritonCodeFilename,
+      showGuide,
       toggleCompareSelect, submitCompare, createProject,
     };
   },

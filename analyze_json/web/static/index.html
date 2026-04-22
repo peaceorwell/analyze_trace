@@ -29,6 +29,7 @@
       </svg>
       <span class="header-title">torch profiler analyzer</span>
       <div class="header-actions">
+        <button class="btn btn-sm btn-outline" @click="showGuide=true">使用指南</button>
         <button class="btn btn-sm btn-outline" @click="showNewProject=true">+ 新建项目</button>
       </div>
     </header>
@@ -390,6 +391,57 @@
         <pre class="code-viewer"><code class="language-python">{{ tritonCodeContent }}</code></pre>
         <div class="modal-actions">
           <button class="btn btn-outline" @click="showTritonCode=false">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── 使用指南 modal ── -->
+    <div v-if="showGuide" class="modal-mask" @click.self="showGuide=false">
+      <div class="modal modal-wide">
+        <div class="modal-title">使用指南</div>
+        <div class="guide-content">
+          <section class="guide-section">
+            <h3>1. 提交分析</h3>
+            <ul>
+              <li>在左侧上传区拖拽或点击上传 <code>.json</code> 或 <code>.json.gz</code> 文件（PyTorch Profiler 导出的 Chrome Trace 格式）</li>
+              <li>选择所属项目（可选，用于分类管理）</li>
+              <li>设置 kernel-types 关键词（默认：gemm,embedding,pool），逗号分隔</li>
+              <li>点击"提交分析"，等待完成</li>
+            </ul>
+          </section>
+          <section class="guide-section">
+            <h3>2. 查看结果</h3>
+            <ul>
+              <li><strong>控制台</strong>：原始文本输出</li>
+              <li><strong>图表</strong>：Kernel 类型耗时柱状图和占比饼图</li>
+              <li><strong>CSV 表格</strong>：支持搜索、列筛选、排序、列宽拖拽调整</li>
+            </ul>
+          </section>
+          <section class="guide-section">
+            <h3>3. 项目管理</h3>
+            <ul>
+              <li>点击"+ 新建项目"创建项目，用于分类管理分析任务</li>
+              <li>选择历史记录后可移动到其他项目或删除</li>
+            </ul>
+          </section>
+          <section class="guide-section">
+            <h3>4. 历史对比</h3>
+            <ul>
+              <li>在左侧"对比"标签页选择两个已完成的单文件任务</li>
+              <li>设置 kernel-types 和备注，发起对比分析</li>
+              <li>无需重新上传文件，直接复用已有数据</li>
+            </ul>
+          </section>
+          <section class="guide-section">
+            <h3>5. 其他功能</h3>
+            <ul>
+              <li><strong>Perfetto</strong>：点击按钮在 Perfetto UI 中打开 trace 文件</li>
+              <li><strong>下载 CSV</strong>：在表格右上角可下载当前视图数据</li>
+            </ul>
+          </section>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-primary" @click="showGuide=false">知道了</button>
         </div>
       </div>
     </div>
