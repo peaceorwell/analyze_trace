@@ -40,7 +40,7 @@ async def init_db():
 
             CREATE TABLE IF NOT EXISTS jobs (
                 id               TEXT PRIMARY KEY,
-                project_id       TEXT REFERENCES projects(id) ON DELETE SET NULL,
+                project_id       TEXT REFERENCES projects(id) ON DELETE CASCADE,
                 user_token       TEXT REFERENCES users(user_token) ON DELETE CASCADE,
                 created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
                 label            TEXT DEFAULT '',
@@ -68,6 +68,18 @@ async def init_db():
                 error_msg        TEXT DEFAULT '',
                 result_dir       TEXT DEFAULT ''
             );
+
+            CREATE TABLE IF NOT EXISTS deleted_projects (
+                id           TEXT PRIMARY KEY,
+                user_token   TEXT,
+                folder_id    TEXT,
+                name         TEXT NOT NULL,
+                description  TEXT DEFAULT '',
+                password_hash TEXT DEFAULT NULL,
+                is_public    INTEGER DEFAULT 0,
+                created_at   DATETIME,
+                deleted_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
         """)
 
         # Migration for existing databases
@@ -90,6 +102,26 @@ async def init_db():
             await db.execute("ALTER TABLE projects ADD COLUMN folder_id TEXT")
         except Exception:
             pass
+
+        # Migration: add deleted_projects table for soft delete recovery
+        try:
+            await db.execute("SELECT id FROM deleted_projects LIMIT 1")
+        except Exception:
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS deleted_projects (
+                    id           TEXT PRIMARY KEY,
+                    user_token   TEXT,
+                    folder_id    TEXT,
+                    name         TEXT NOT NULL,
+                    description  TEXT DEFAULT '',
+                    password_hash TEXT DEFAULT NULL,
+                    is_public    INTEGER DEFAULT 0,
+                    created_at   DATETIME,
+                    deleted_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_deleted_projects_user ON deleted_projects(user_token)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_deleted_projects_deleted_at ON deleted_projects(deleted_at)")
 
         # Create folders table if not exists (for existing databases)
         try:

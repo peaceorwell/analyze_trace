@@ -31,6 +31,7 @@
       <div class="header-actions">
         <button class="btn btn-sm btn-outline" @click="showGuide=true">使用指南</button>
         <button class="btn btn-sm btn-outline" @click="showNewProject=true">+ 新建项目</button>
+        <button class="btn btn-sm btn-outline" @click="showDeletedProjects=true; loadDeletedProjects()">找回项目</button>
       </div>
     </header>
 
@@ -400,6 +401,32 @@
         <div class="modal-actions">
           <button class="btn btn-outline" @click="showRenameProject=false">取消</button>
           <button class="btn btn-primary" @click="confirmRenameProject">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Deleted projects recovery modal ── -->
+    <div v-if="showDeletedProjects" class="modal-mask" @click.self="showDeletedProjects=false">
+      <div class="modal">
+        <div class="modal-title">找回项目 <span class="text-xs text-gray">（近10天内删除）</span></div>
+        <div v-if="deletedProjects.length===0" class="empty-tip mt-4">暂无已删除的项目</div>
+        <div v-else class="deleted-projects-list">
+          <div v-for="p in deletedProjects" :key="p.id" class="deleted-project-item">
+            <div class="deleted-project-info">
+              <div class="deleted-project-name">{{ p.name }}</div>
+              <div class="deleted-project-meta">
+                删除于 {{ fmtDate(p.deleted_at) }}
+                <span v-if="isDeletedOver10Days(p.deleted_at)" class="tag-deleted">已过期</span>
+              </div>
+            </div>
+            <div class="deleted-project-actions">
+              <button class="btn btn-sm btn-primary" @click="restoreProject(p.id)">恢复</button>
+              <button v-if="isDeletedOver10Days(p.deleted_at)" class="btn btn-sm btn-danger" @click="permanentlyDeleteProject(p.id)">永久删除</button>
+            </div>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-outline" @click="showDeletedProjects=false">关闭</button>
         </div>
       </div>
     </div>

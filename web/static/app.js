@@ -93,6 +93,48 @@ createApp({
     const renameProjectId = ref("");
     const renameProjectName = ref("");
 
+    // ── Deleted projects recovery ──────────────────────────────────────────────
+    const showDeletedProjects = ref(false);
+    const deletedProjects = ref([]);
+
+    const loadDeletedProjects = async () => {
+      const r = await fetch("/api/deleted-projects", { credentials: "include" });
+      deletedProjects.value = await r.json();
+    };
+
+    const isDeletedOver10Days = (deletedAt) => {
+      if (!deletedAt) return false;
+      const deletedTime = new Date(deletedAt).getTime();
+      const now = Date.now();
+      const tenDays = 10 * 24 * 60 * 60 * 1000;
+      return now - deletedTime > tenDays;
+    };
+
+    const restoreProject = async (projectId) => {
+      if (!confirm("确定恢复该项目？")) return;
+      const r = await fetch(`/api/deleted-projects/${projectId}/restore`, {
+        method: "POST",
+        credentials: "include",
+      });
+      if (!r.ok) {
+        const err = await r.json();
+        alert("恢复失败: " + (err.detail || err.message || "未知错误"));
+        return;
+      }
+      await loadDeletedProjects();
+      await loadProjects();
+      await loadJobs();
+    };
+
+    const permanentlyDeleteProject = async (projectId) => {
+      if (!confirm("确定永久删除？此操作不可恢复。")) return;
+      await fetch(`/api/deleted-projects/${projectId}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      await loadDeletedProjects();
+    };
+
     // ── Triton code viewer ────────────────────────────────────────────────────
     const showTritonCode = ref(false);
     const tritonCodeContent = ref("");
@@ -593,11 +635,16 @@ createApp({
     };
 
     const deleteProject = async (projectId) => {
-      if (!confirm("确定删除该项目？项目内的任务不会被删除，但会变为未分组状态。")) return;
-      await fetch(`/api/projects/${projectId}`, {
+      if (!confirm("确定删除该项目？项目内的任务将同时被删除。删除后10天内可以找回。")) return;
+      const r = await fetch(`/api/projects/${projectId}`, {
         method: "DELETE",
         credentials: "include",
       });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        alert("删除失败: " + (err.detail || err.message || `HTTP ${r.status}`));
+        return;
+      }
       filterProject.value = "";
       selectedJobId.value = null;
       selectedJob.value = null;
@@ -959,6 +1006,7 @@ createApp({
       runCustomTriton, editTritonCode, cancelEditTritonCode, customRunStatus,
       showGuide, showErrorModal, errorModalMsg, errorModalTitle,
       toggleCompareSelect, submitCompare, createProject,
+      showDeletedProjects, deletedProjects, loadDeletedProjects, isDeletedOver10Days, restoreProject, permanentlyDeleteProject,
     };
   },
 }).mount("#app");

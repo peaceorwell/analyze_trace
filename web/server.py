@@ -331,7 +331,7 @@ async def update_project(pid: str, body: dict, user_token: Optional[str] = Cooki
 
 @app.delete("/api/projects/{pid}", status_code=204)
 async def delete_project(pid: str, user_token: Optional[str] = Cookie(None)):
-    token = await get_or_create_user(user_token)
+    await get_or_create_user(user_token)  # Ensure user exists, but no ownership check (public system)
     db = await get_db()
 
     cursor = await db.execute("SELECT * FROM projects WHERE id=?", (pid,))
@@ -339,13 +339,94 @@ async def delete_project(pid: str, user_token: Optional[str] = Cookie(None)):
     if not row:
         await db.close()
         raise HTTPException(404)
-    if row.get("user_token") != token:
-        await db.close()
-        raise HTTPException(403, "Not the project owner")
 
-    # Delete all jobs in the project
-    await db.execute("UPDATE jobs SET project_id=NULL WHERE project_id=?", (pid,))
+    # Move project info to deleted_projects table for recovery
+    await db.execute("""
+        INSERT INTO deleted_projects(id, user_token, folder_id, name, description, password_hash, is_public, created_at, deleted_at)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    """, (row["id"], row["user_token"], row.get("folder_id"), row["name"],
+          row.get("description", ""), row.get("password_hash"), row.get("is_public", 0), row.get("created_at")))
+
+    # Delete all jobs in the project (including files on disk)
+    cursor = await db.execute("SELECT id FROM jobs WHERE project_id=?", (pid,))
+    job_ids = [r["id"] for r in await cursor.fetchall()]
+    for jid in job_ids:
+        jdir = job_dir(jid)
+        if os.path.exists(jdir):
+            shutil.rmtree(jdir)
+    await db.execute("DELETE FROM jobs WHERE project_id=?", (pid,))
+
+    # Delete the project
     await db.execute("DELETE FROM projects WHERE id=?", (pid,))
+    await db.commit()
+    await db.close()
+
+
+# ── Routes: deleted projects (recovery) ───────────────────────────────────────
+
+@app.get("/api/deleted-projects")
+async def list_deleted_projects(user_token: Optional[str] = Cookie(None)):
+    """List recoverable projects deleted within the last 10 days."""
+    await get_or_create_user(user_token)  # Ensure user exists, but no ownership check (public system)
+    db = await get_db()
+    rows = await (await db.execute("""
+        SELECT * FROM deleted_projects
+        WHERE deleted_at >= datetime('now', '-10 days')
+        ORDER BY deleted_at DESC
+    """)).fetchall()
+    await db.close()
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/deleted-projects/{pid}/restore", status_code=200)
+async def restore_project(pid: str, user_token: Optional[str] = Cookie(None)):
+    """Restore a project deleted within the last 10 days."""
+    await get_or_create_user(user_token)  # Ensure user exists, but no ownership check (public system)
+    db = await get_db()
+
+    # Get deleted project info
+    cursor = await db.execute("SELECT * FROM deleted_projects WHERE id=?", (pid,))
+    row = await row_to_dict(await cursor.fetchone())
+    if not row:
+        await db.close()
+        raise HTTPException(404, "Deleted project not found or expired")
+
+    # Check if project with same ID already exists (shouldn't happen, but safety check)
+    cursor = await db.execute("SELECT id FROM projects WHERE id=?", (pid,))
+    if await cursor.fetchone():
+        await db.close()
+        raise HTTPException(409, "Project with this ID already exists")
+
+    # Restore the project
+    await db.execute("""
+        INSERT INTO projects(id, user_token, folder_id, name, description, password_hash, is_public, created_at)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+    """, (row["id"], row["user_token"], row.get("folder_id"), row["name"],
+          row.get("description", ""), row.get("password_hash"), row.get("is_public", 0), row.get("created_at")))
+
+    # Remove from deleted_projects
+    await db.execute("DELETE FROM deleted_projects WHERE id=?", (pid,))
+
+    await db.commit()
+    cursor = await db.execute("SELECT * FROM projects WHERE id=?", (pid,))
+    restored = await cursor.fetchone()
+    await db.close()
+    return dict(restored)
+
+
+@app.delete("/api/deleted-projects/{pid}", status_code=204)
+async def permanently_delete_project(pid: str, user_token: Optional[str] = Cookie(None)):
+    """Permanently delete a project from recovery list (without restoring)."""
+    await get_or_create_user(user_token)  # Ensure user exists, but no ownership check (public system)
+    db = await get_db()
+
+    cursor = await db.execute("SELECT * FROM deleted_projects WHERE id=?", (pid,))
+    row = await row_to_dict(await cursor.fetchone())
+    if not row:
+        await db.close()
+        raise HTTPException(404, "Deleted project not found")
+
+    await db.execute("DELETE FROM deleted_projects WHERE id=?", (pid,))
     await db.commit()
     await db.close()
 
@@ -812,7 +893,7 @@ except Exception as e:
             full_output = f"{mlu_info}\n\n--- Execution Result ---\n{output}" if mlu_info else output
             return {"efficiency": full_output}
         except subprocess.TimeoutExpired:
-            return {"efficiency": None, "error": "Timeout after 120s"}
+            return {"efficiency": None, "error": "执行超时（600秒）"}
         except OSError as e:
             return {"efficiency": None, "error": str(e)}
 
@@ -911,7 +992,7 @@ except Exception as e:
             full_output = f"{mlu_info}\n\n--- Execution Result ---\n{output}" if mlu_info else output
             return {"efficiency": full_output}
         except subprocess.TimeoutExpired:
-            return {"efficiency": None, "error": "Timeout after 120s"}
+            return {"efficiency": None, "error": "执行超时（600秒）"}
         except OSError as e:
             return {"efficiency": None, "error": str(e)}
 

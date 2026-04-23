@@ -186,7 +186,9 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 .ml-4 { margin-left: 16px; }
 .ml-auto { margin-left: auto; }
 .text-sm { font-size: 12px; }
+.text-xs { font-size: 11px; }
 .text-muted { color: #6b7280; }
+.text-gray { color: #64748b; }
 
 .btn {
   border: none; border-radius: 5px; padding: 6px 14px; font-size: 12px;
@@ -417,6 +419,17 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   word-break: break-all; max-height: 50vh; overflow: auto; user-select: text;
   cursor: text;
 }
+
+/* ── Deleted projects recovery ── */
+.deleted-projects-list { max-height: 60vh; overflow-y: auto; }
+.deleted-project-item {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 12px; border: 1px solid #e2e8f0; border-radius: 6px; margin-bottom: 8px;
+}
+.deleted-project-info { flex: 1; }
+.deleted-project-name { font-weight: 500; }
+.deleted-project-meta { font-size: 11px; color: #64748b; margin-top: 2px; }
+.deleted-project-actions { display: flex; gap: 6px; }
 
 /* ── Code viewer ── */
 pre.code-viewer {
