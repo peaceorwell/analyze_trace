@@ -76,9 +76,9 @@ def run_triton_code_and_get_efficiency(code_path):
             return None
         parts = output.split()
         if len(parts) >= 3:
-            # Last part is like "GB/s", second to last is the number
+            # Last part is like "GB/s", e.g., "8.00GB/s"
             try:
-                efficiency = float(parts[-2])
+                efficiency = float(parts[-1].replace("GB/s", ""))
                 return f"{efficiency:.2f}"
             except (ValueError, IndexError):
                 print(f"Failed to parse efficiency from output: {output}", file=sys.stderr)
@@ -504,7 +504,7 @@ def _write_kernel_types_cmp_csv(path, data_a, data_b):
 
 # ── Top-level write functions ─────────────────────────────────────────────────
 
-def write_single(data, args):
+def write_single(data, args, run_triton_codes=False):
     os.makedirs(args.output_dir, exist_ok=True)
 
     # Per-step triton CSVs + source files
@@ -543,12 +543,13 @@ def write_single(data, args):
                         writer.writerow(row)
                 print(f"Wrote {csv_path} ({len(kernels)} rows)")
 
-                # Execute triton code files and get local efficiency
-                for idx, kernel_name, code_rel_path, code_abs_path in code_file_paths:
-                    if kernel_name not in local_efficiency_by_kernel:
-                        efficiency = run_triton_code_and_get_efficiency(code_abs_path)
-                        if efficiency is not None:
-                            local_efficiency_by_kernel[kernel_name] = efficiency
+                # Execute triton code files and get local efficiency (only when explicitly requested)
+                if run_triton_codes:
+                    for idx, kernel_name, code_rel_path, code_abs_path in code_file_paths:
+                        if kernel_name not in local_efficiency_by_kernel:
+                            efficiency = run_triton_code_and_get_efficiency(code_abs_path)
+                            if efficiency is not None:
+                                local_efficiency_by_kernel[kernel_name] = efficiency
 
                 # Re-write CSV with local efficiency values (only if at least one execution succeeded)
                 if local_efficiency_by_kernel:
