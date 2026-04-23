@@ -112,18 +112,23 @@ createApp({
 
     const restoreProject = async (projectId) => {
       if (!confirm("确定恢复该项目？")) return;
-      const r = await fetch(`/api/deleted-projects/${projectId}/restore`, {
-        method: "POST",
-        credentials: "include",
-      });
-      if (!r.ok) {
-        const err = await r.json();
-        alert("恢复失败: " + (err.detail || err.message || "未知错误"));
-        return;
+      try {
+        const r = await fetch(`/api/deleted-projects/${projectId}/restore`, {
+          method: "POST",
+          credentials: "include",
+        });
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({}));
+          alert("恢复失败: " + (err.detail || err.message || "未知错误"));
+          return;
+        }
+        const restored = await r.json();
+        await loadDeletedProjects();
+        await loadProjects();
+        await loadJobs();
+      } catch (e) {
+        alert("恢复出错: " + e.message);
       }
-      await loadDeletedProjects();
-      await loadProjects();
-      await loadJobs();
     };
 
     const permanentlyDeleteProject = async (projectId) => {
@@ -324,8 +329,13 @@ createApp({
     };
 
     const loadProjects = async () => {
-      const r = await fetch("/api/projects", { credentials: "include" });
-      projects.value = await r.json();
+      try {
+        const r = await fetch("/api/projects", { credentials: "include" });
+        if (!r.ok) throw new Error("加载项目失败: HTTP " + r.status);
+        projects.value = await r.json();
+      } catch (e) {
+        console.error("loadProjects error:", e);
+      }
     };
 
     const loadJobs = async () => {

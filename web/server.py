@@ -347,13 +347,27 @@ async def delete_project(pid: str, user_token: Optional[str] = Cookie(None)):
     """, (row["id"], row["user_token"], row.get("folder_id"), row["name"],
           row.get("description", ""), row.get("password_hash"), row.get("is_public", 0), row.get("created_at")))
 
-    # Delete all jobs in the project (including files on disk)
-    cursor = await db.execute("SELECT id FROM jobs WHERE project_id=?", (pid,))
-    job_ids = [r["id"] for r in await cursor.fetchall()]
-    for jid in job_ids:
-        jdir = job_dir(jid)
-        if os.path.exists(jdir):
-            shutil.rmtree(jdir)
+    # Move all jobs to deleted_jobs table (keep files for recovery)
+    cursor = await db.execute("SELECT * FROM jobs WHERE project_id=?", (pid,))
+    jobs_data = await cursor.fetchall()
+    for job in jobs_data:
+        job_dict = dict(job)
+        await db.execute("""
+            INSERT INTO deleted_jobs(id, project_id, user_token, created_at, label, mode,
+                file_a_name, file_a_path, file_a_gzip_path, file_a_exists,
+                file_b_name, file_b_path, file_b_gzip_path, file_b_exists,
+                source_job_a, source_job_b, kernel_types, save_triton_csv, save_triton_code,
+                status, console_out, error_msg, result_dir, deleted_at)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """, (job_dict["id"], job_dict.get("project_id"), job_dict.get("user_token"),
+              job_dict.get("created_at"), job_dict.get("label", ""), job_dict.get("mode"),
+              job_dict.get("file_a_name"), job_dict.get("file_a_path"), job_dict.get("file_a_gzip_path"), job_dict.get("file_a_exists", 1),
+              job_dict.get("file_b_name"), job_dict.get("file_b_path"), job_dict.get("file_b_gzip_path"), job_dict.get("file_b_exists", 1),
+              job_dict.get("source_job_a"), job_dict.get("source_job_b"),
+              job_dict.get("kernel_types", "gemm,embedding,pool"), job_dict.get("save_triton_csv", 0), job_dict.get("save_triton_code", 0),
+              job_dict.get("status", "pending"), job_dict.get("console_out", ""), job_dict.get("error_msg", ""), job_dict.get("result_dir", "")))
+
+    # Delete jobs from main table
     await db.execute("DELETE FROM jobs WHERE project_id=?", (pid,))
 
     # Delete the project
@@ -397,12 +411,52 @@ async def restore_project(pid: str, user_token: Optional[str] = Cookie(None)):
         await db.close()
         raise HTTPException(409, "Project with this ID already exists")
 
-    # Restore the project
-    await db.execute("""
-        INSERT INTO projects(id, user_token, folder_id, name, description, password_hash, is_public, created_at)
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-    """, (row["id"], row["user_token"], row.get("folder_id"), row["name"],
-          row.get("description", ""), row.get("password_hash"), row.get("is_public", 0), row.get("created_at")))
+    # Restore the project - first ensure user exists
+    token = row.get("user_token")
+    if token:
+        await db.execute("INSERT OR IGNORE INTO users(user_token) VALUES(?)", (token,))
+
+    created_at = row.get("created_at") or "CURRENT_TIMESTAMP"
+    try:
+        if created_at == "CURRENT_TIMESTAMP":
+            await db.execute("""
+                INSERT INTO projects(id, user_token, folder_id, name, description, password_hash, is_public, created_at)
+                VALUES(?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """, (row["id"], row["user_token"], row.get("folder_id"), row["name"],
+                  row.get("description", ""), row.get("password_hash"), row.get("is_public", 0)))
+        else:
+            await db.execute("""
+                INSERT INTO projects(id, user_token, folder_id, name, description, password_hash, is_public, created_at)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+            """, (row["id"], row["user_token"], row.get("folder_id"), row["name"],
+                  row.get("description", ""), row.get("password_hash"), row.get("is_public", 0), created_at))
+    except Exception as e:
+        await db.close()
+        raise HTTPException(500, f"数据库错误: {e}")
+
+    # Restore jobs from deleted_jobs table
+    cursor = await db.execute("SELECT * FROM deleted_jobs WHERE project_id=?", (pid,))
+    deleted_jobs = await cursor.fetchall()
+
+    for job in deleted_jobs:
+        job_dict = dict(job)
+        await db.execute("""
+            INSERT INTO jobs(id, project_id, user_token, created_at, label, mode,
+                file_a_name, file_a_path, file_a_gzip_path, file_a_exists,
+                file_b_name, file_b_path, file_b_gzip_path, file_b_exists,
+                source_job_a, source_job_b, kernel_types, save_triton_csv, save_triton_code,
+                status, console_out, error_msg, result_dir)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (job_dict["id"], pid, job_dict.get("user_token"),
+              job_dict.get("created_at"), job_dict.get("label", ""), job_dict.get("mode"),
+              job_dict.get("file_a_name"), job_dict.get("file_a_path"), job_dict.get("file_a_gzip_path"), job_dict.get("file_a_exists", 1),
+              job_dict.get("file_b_name"), job_dict.get("file_b_path"), job_dict.get("file_b_gzip_path"), job_dict.get("file_b_exists", 1),
+              job_dict.get("source_job_a"), job_dict.get("source_job_b"),
+              job_dict.get("kernel_types", "gemm,embedding,pool"), job_dict.get("save_triton_csv", 0), job_dict.get("save_triton_code", 0),
+              job_dict.get("status", "pending"), job_dict.get("console_out", ""), job_dict.get("error_msg", ""), job_dict.get("result_dir", "")))
+
+    # Remove restored jobs from deleted_jobs
+    await db.execute("DELETE FROM deleted_jobs WHERE project_id=?", (pid,))
 
     # Remove from deleted_projects
     await db.execute("DELETE FROM deleted_projects WHERE id=?", (pid,))
@@ -411,6 +465,7 @@ async def restore_project(pid: str, user_token: Optional[str] = Cookie(None)):
     cursor = await db.execute("SELECT * FROM projects WHERE id=?", (pid,))
     restored = await cursor.fetchone()
     await db.close()
+
     return dict(restored)
 
 
@@ -426,6 +481,18 @@ async def permanently_delete_project(pid: str, user_token: Optional[str] = Cooki
         await db.close()
         raise HTTPException(404, "Deleted project not found")
 
+    # Get job ids from deleted_jobs to delete files
+    cursor = await db.execute("SELECT id FROM deleted_jobs WHERE project_id=?", (pid,))
+    job_ids = [r["id"] for r in await cursor.fetchall()]
+    for jid in job_ids:
+        jdir = job_dir(jid)
+        if os.path.exists(jdir):
+            shutil.rmtree(jdir)
+
+    # Delete jobs from deleted_jobs table
+    await db.execute("DELETE FROM deleted_jobs WHERE project_id=?", (pid,))
+
+    # Delete from deleted_projects
     await db.execute("DELETE FROM deleted_projects WHERE id=?", (pid,))
     await db.commit()
     await db.close()

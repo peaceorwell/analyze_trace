@@ -123,6 +123,45 @@ async def init_db():
             await db.execute("CREATE INDEX IF NOT EXISTS idx_deleted_projects_user ON deleted_projects(user_token)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_deleted_projects_deleted_at ON deleted_projects(deleted_at)")
 
+        # Migration: add deleted_jobs table for job recovery
+        try:
+            await db.execute("SELECT id FROM deleted_jobs LIMIT 1")
+        except Exception:
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS deleted_jobs (
+                    id               TEXT PRIMARY KEY,
+                    project_id       TEXT,
+                    user_token       TEXT,
+                    created_at       DATETIME,
+                    label            TEXT DEFAULT '',
+                    mode             TEXT,
+
+                    file_a_name      TEXT,
+                    file_a_path      TEXT,
+                    file_a_gzip_path TEXT,
+                    file_a_exists    INTEGER DEFAULT 1,
+                    file_b_name      TEXT,
+                    file_b_path      TEXT,
+                    file_b_gzip_path TEXT,
+                    file_b_exists    INTEGER DEFAULT 1,
+
+                    source_job_a     TEXT,
+                    source_job_b     TEXT,
+
+                    kernel_types     TEXT DEFAULT 'gemm,embedding,pool',
+                    save_triton_csv  INTEGER DEFAULT 0,
+                    save_triton_code INTEGER DEFAULT 0,
+
+                    status           TEXT DEFAULT 'pending',
+                    console_out      TEXT DEFAULT '',
+                    error_msg        TEXT DEFAULT '',
+                    result_dir       TEXT DEFAULT '',
+                    deleted_at       DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_deleted_jobs_project ON deleted_jobs(project_id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_deleted_jobs_deleted_at ON deleted_jobs(deleted_at)")
+
         # Create folders table if not exists (for existing databases)
         try:
             await db.execute("SELECT id FROM folders LIMIT 1")

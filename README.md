@@ -9,15 +9,6 @@ GPU 性能分析工具，解析 PyTorch Profiler 生成的 Chrome Trace JSON 文
 
 ---
 
-**快速开始：**
-```bash
-# 命令行分析
-python analyze_trace.py trace.json -o ./output
-
-# Web 界面
-cd web && pip install -r requirements.txt && python server.py
-```
-
 ## 目录结构
 
 ```
@@ -36,6 +27,146 @@ cd web && pip install -r requirements.txt && python server.py
 
 docker-compose.yml         # Docker Compose 部署配置
 ```
+
+---
+
+**快速开始：**
+```bash
+# 命令行分析
+python analyze_trace.py trace.json -o ./output
+
+# Web 界面
+cd web && pip install -r requirements.txt && python server.py
+```
+
+---
+
+## Web 界面
+
+提供浏览器操作界面，支持上传文件、查看结果、历史管理和双文件对比。
+
+### 启动
+
+```bash
+cd web
+pip install -r requirements.txt
+
+python server.py                        # 默认 127.0.0.1:8181
+python server.py --host 0.0.0.0 --port 8080
+python server.py --no-download          # 禁止用户下载原始 trace 文件
+```
+
+然后打开浏览器访问 `http://127.0.0.1:8181`。
+
+### Docker 部署
+
+```bash
+# 使用 docker-compose（推荐）
+docker-compose up -d
+
+# 或手动构建运行
+cd web
+docker build -t trace-analyzer .
+docker run -d -p 8181:8181 --name trace-analyzer trace-analyzer
+```
+
+访问 `http://localhost:8181`。
+
+**数据持久化**：Docker 部署中，SQLite 数据库和上传的文件存储在 named volume 中，删除容器后数据不会丢失。
+
+**禁用文件下载**：设置环境变量 `TRACE_NO_DOWNLOAD=1`：
+```bash
+# docker-compose 方式
+TRACE_NO_DOWNLOAD=1 docker-compose up -d
+```
+
+### 功能特性
+
+#### 核心功能
+- **提交分析**：拖拽或点击上传 trace JSON 文件，填写项目、kernel-types 和备注后提交，后台异步分析，实时显示进度
+- **结果查看**：
+  - 控制台输出（原始文本）
+  - CSV 数据表格（可搜索、列排序、列宽拖拽调整、超长内容截断并 hover 显示全文）
+  - Kernel 类型耗时柱状图
+  - 一键下载各 CSV 文件
+  - **Triton 代码执行**：在 Triton / Triton Step N 表格中可直接运行 kernel 代码，查看效率（GB/s）
+  - **清除 Cache**：在 Triton Step N 表格中可清除 `/tmp/torchinductor_*` 缓存目录
+- **历史管理**：按项目分组，支持重命名、删除任务
+- **项目分组**：自定义项目，将相关任务归类管理
+- **历史对比**：在"对比"标签页选择两个已完成的单文件任务直接发起对比分析，无需重新上传文件
+- **Perfetto 集成**：点击"Perfetto ↗"按钮可在 Perfetto UI 中打开 trace 文件
+- **gz 文件支持**：上传 `.json.gz` 文件时自动解压，下载时保留原始压缩格式
+
+#### 项目恢复（重要特性）
+- **删除项目时**：项目及其下的所有任务会被保存到回收站，而不是真正删除
+- **恢复项目**：在"找回项目"中可以恢复近10天内删除的项目，任务会一起恢复
+- **永久删除**：超过10天的已删除项目会显示"已过期"标签，此时只能永久删除
+
+#### CLI 参数
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--host` | `127.0.0.1` | 监听地址 |
+| `--port` | `8181` | 监听端口 |
+| `--no-download` | off | 禁止下载上传的原始 trace 文件 |
+
+### 自建部署
+
+使用 Docker 部署后，可通过反向代理配置域名 + SSL：
+
+**Caddy 2（推荐，自动 HTTPS）：**
+
+```bash
+# 目录结构
+# .
+# ├── docker-compose.yml
+# ├── Caddyfile
+# └── data/caddy/
+
+# docker-compose.yml 新增 caddy 服务
+```
+
+```yaml
+# docker-compose.yml
+services:
+  trace-analyzer:
+    build:
+      context: ./analyze_json/web
+      dockerfile: Dockerfile
+    volumes:
+      - trace_analyzer_data:/app/storage
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - ./data/caddy:/data
+    depends_on:
+      - trace-analyzer
+    restart: unless-stopped
+
+volumes:
+  trace_analyzer_data:
+```
+
+```nginx
+# Caddyfile
+trace.example.com {
+    reverse_proxy trace-analyzer:8181
+}
+```
+
+```bash
+# DNS 设置 A 记录指向服务器 IP
+# 启动服务
+docker-compose up -d
+```
+
+Caddy 会自动从 Let's Encrypt 申请 SSL 证书并续期。
 
 ---
 
@@ -113,135 +244,6 @@ other        1377.0       14.777
 
 ---
 
-## Web 界面
-
-提供浏览器操作界面，支持上传文件、查看结果、历史管理和双文件对比。
-
-### 启动
-
-```bash
-cd web
-pip install -r requirements.txt
-
-python server.py                        # 默认 127.0.0.1:8181
-python server.py --host 0.0.0.0 --port 8080
-python server.py --no-download          # 禁止用户下载原始 trace 文件
-```
-
-然后打开浏览器访问 `http://127.0.0.1:8181`。
-
-### Docker 部署
-
-```bash
-# 使用 docker-compose（推荐）
-docker-compose up -d
-
-# 或手动构建运行
-cd web
-docker build -t trace-analyzer .
-docker run -d -p 8181:8181 --name trace-analyzer trace-analyzer
-```
-
-访问 `http://localhost:8181`。
-
-**数据持久化**：Docker 部署中，SQLite 数据库和上传的文件存储在 named volume 中，删除容器后数据不会丢失。
-
-**禁用文件下载**：设置环境变量 `TRACE_NO_DOWNLOAD=1`：
-```bash
-# docker-compose 方式
-TRACE_NO_DOWNLOAD=1 docker-compose up -d
-
-# 或 Dockerfile 内置方式（取消注释 Dockerfile 中的相关行）
-```
-
-### 功能
-
-- **提交分析**：拖拽或点击上传 trace JSON 文件，填写项目、kernel-types 和备注后提交，后台异步分析，实时显示进度
-- **结果查看**：
-  - 控制台输出（原始文本）
-  - CSV 数据表格（可搜索、列排序、列宽拖拽调整、超长内容截断并 hover 显示全文）
-  - Kernel 类型耗时柱状图
-  - 一键下载各 CSV 文件
-  - **Triton 代码执行**：在 Triton / Triton Step N 表格中可直接运行 kernel 代码，查看效率（GB/s）
-  - **清除 Cache**：在 Triton Step N 表格中可清除 `/tmp/torchinductor_*` 缓存目录
-- **历史管理**：按项目分组，支持重命名、删除任务
-- **项目分组**：自定义项目，将相关任务归类管理
-- **历史对比**：在"对比"标签页选择两个已完成的单文件任务直接发起对比分析，无需重新上传文件
-- **Perfetto 集成**：点击"Perfetto ↗"按钮可在 Perfetto UI 中打开 trace 文件
-- **gz 文件支持**：上传 `.json.gz` 文件时自动解压，下载时保留原始压缩格式
-
-### 用户隔离
-
-首次访问自动生成用户标识（UUID），数据按用户隔离。
-
-### 自建部署
-
-使用 Docker 部署后，可通过反向代理配置域名 + SSL：
-
-**Caddy 2（推荐，自动 HTTPS）：**
-
-```bash
-# 目录结构
-# .
-# ├── docker-compose.yml
-# ├── Caddyfile
-# └── data/caddy/
-
-# docker-compose.yml 新增 caddy 服务
-```
-
-```yaml
-# docker-compose.yml
-services:
-  trace-analyzer:
-    build:
-      context: ./analyze_json/web
-      dockerfile: Dockerfile
-    volumes:
-      - trace_analyzer_data:/app/storage
-    restart: unless-stopped
-
-  caddy:
-    image: caddy:2-alpine
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile
-      - ./data/caddy:/data
-    depends_on:
-      - trace-analyzer
-    restart: unless-stopped
-
-volumes:
-  trace_analyzer_data:
-```
-
-```nginx
-# Caddyfile
-trace.example.com {
-    reverse_proxy trace-analyzer:8181
-}
-```
-
-```bash
-# DNS 设置 A 记录指向服务器 IP
-# 启动服务
-docker-compose up -d
-```
-
-Caddy 会自动从 Let's Encrypt 申请 SSL 证书并续期。
-
-### CLI 参数
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `--host` | `127.0.0.1` | 监听地址 |
-| `--port` | `8181` | 监听端口 |
-| `--no-download` | off | 禁止下载上传的原始 trace 文件 |
-
----
-
 ## 工作原理
 
 `analyze_trace.py` 对 Chrome Trace 格式的 JSON 执行两遍扫描：
@@ -252,3 +254,9 @@ Caddy 会自动从 Let's Encrypt 申请 SSL 证书并续期。
 每个 ProfilerStep 内按 kernel 名称聚合耗时后，再对所有 step 求均值，消除单步抖动。
 
 kernel 分类优先级：`triton` (名称前缀 `triton_`) > 用户自定义 `-k` 关键词 > `collective` (含 Collective name) > `other`。
+
+---
+
+## 用户隔离
+
+首次访问自动生成用户标识（UUID），数据按用户隔离。
