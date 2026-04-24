@@ -2,6 +2,17 @@ const { createApp, ref, computed, watch, nextTick, onMounted } = Vue;
 
 createApp({
   setup() {
+    // ── Theme ──────────────────────────────────────────────────────────────
+    const isDark = ref(
+      (localStorage.getItem('tpa-theme') || 'dark') === 'dark'
+    );
+    const toggleTheme = () => {
+      isDark.value = !isDark.value;
+      const t = isDark.value ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', t);
+      localStorage.setItem('tpa-theme', t);
+    };
+
     // ── State ──────────────────────────────────────────────────────────────
     const projects      = ref([]);
     const jobs          = ref([]);
@@ -1076,6 +1087,7 @@ createApp({
       showGuide, showErrorModal, errorModalMsg, errorModalTitle,
       toggleCompareSelect, submitCompare, createProject,
       showDeletedProjects, deletedProjects, loadDeletedProjects, isDeletedOver10Days, restoreProject, permanentlyDeleteProject,
+      isDark, toggleTheme,
     };
   },
 }).mount("#app");
