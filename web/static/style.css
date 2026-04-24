@@ -7,10 +7,39 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 .header {
   display: flex; align-items: center; justify-content: space-between;
   padding: 0 16px; height: 48px;
-  background: #1e293b; color: #fff;
+  background: linear-gradient(135deg, #1e1b4b 0%, #1e293b 50%, #0f172a 100%);
+  color: #fff;
+  border-bottom: 1px solid rgba(255,255,255,.06);
 }
-.header-title { font-size: 15px; font-weight: 600; letter-spacing: .3px; }
+.header-brand { display: flex; align-items: center; gap: 10px; }
+.header-logo { width: 30px; height: 30px; flex-shrink: 0; filter: drop-shadow(0 2px 5px rgba(249,115,22,.45)); }
+.header-title {
+  font-size: 16px; font-weight: 700;
+  background: linear-gradient(90deg, #fbbf24 0%, #f97316 50%, #ef4444 100%);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  letter-spacing: .5px;
+}
 .header-actions { display: flex; gap: 8px; }
+
+.header-actions .btn-outline {
+  background: rgba(255,255,255,.1);
+  color: #e0e7ff;
+  border: 1px solid rgba(255,255,255,.25);
+}
+.header-actions .btn-outline:hover:not(:disabled) {
+  background: rgba(255,255,255,.18);
+  opacity: 1;
+}
+.header-actions .btn-primary {
+  background: #f97316;
+  color: #fff;
+  border: 1px solid #f97316;
+  box-shadow: 0 1px 3px rgba(249,115,22,.4);
+}
+.header-actions .btn-primary:hover:not(:disabled) {
+  background: #ea580c;
+  opacity: 1;
+}
 
 .layout { display: flex; height: calc(100vh - 48px); overflow: hidden; }
 
@@ -127,8 +156,30 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 
 /* ── Main ── */
 .main { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-.empty-main { display: flex; align-items: center; justify-content: center;
-              flex: 1; color: #94a3b8; font-size: 14px; }
+.empty-main {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  gap: 12px;
+  padding: 32px 16px;
+}
+.empty-main-icon { font-size: 36px; margin-bottom: 4px; }
+.empty-main-title { font-size: 15px; color: #475569; font-weight: 500; }
+.empty-main-tips { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.empty-tip-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #64748b;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 6px 12px;
+}
+.empty-tip-item::before { content: "💡"; }
 
 /* ── Cards ── */
 .card { background: #fff; border-radius: 8px; border: 1px solid #e2e8f0; padding: 12px; }
@@ -196,7 +247,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 .btn:disabled { opacity: .45; cursor: not-allowed; }
 .btn:hover:not(:disabled) { opacity: .85; }
-.btn-primary  { background: #6366f1; color: #fff; }
+.btn-primary  { background: #6366f1; color: #fff; border: 1px solid #6366f1; }
 .btn-outline  { background: #fff; color: #374151; border: 1px solid #d1d5db; }
 .btn-danger   { background: #fee2e2; color: #dc2626; border: 1px solid #fca5a5; }
 .btn-sm       { padding: 4px 10px; font-size: 11px; }

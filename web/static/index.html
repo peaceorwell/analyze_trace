@@ -15,23 +15,64 @@
   <div id="app">
     <!-- ── Header ── -->
     <header class="header">
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="24" height="24" style="margin-right:6px;flex-shrink:0;">
-        <rect width="32" height="32" rx="7" fill="#1e293b"/>
-        <rect x="3"  y="23" width="5" height="6"  rx="1.5" fill="#4f46e5" opacity=".85"/>
-        <rect x="10" y="18" width="5" height="11" rx="1.5" fill="#6366f1"/>
-        <rect x="17" y="13" width="5" height="16" rx="1.5" fill="#818cf8"/>
-        <rect x="24" y="8"  width="5" height="21" rx="1.5" fill="#a5b4fc"/>
-        <polyline points="5.5,23 12.5,18 19.5,13 26.5,8" fill="none" stroke="#e0e7ff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
-        <circle cx="5.5"  cy="23" r="2" fill="#e0e7ff"/>
-        <circle cx="12.5" cy="18" r="2" fill="#e0e7ff"/>
-        <circle cx="19.5" cy="13" r="2" fill="#e0e7ff"/>
-        <circle cx="26.5" cy="8"  r="2" fill="#e0e7ff"/>
-      </svg>
-      <span class="header-title">torch profiler analyzer</span>
+      <div class="header-brand">
+        <svg class="header-logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+          <defs>
+            <linearGradient id="lgBg" x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" stop-color="#1e1b4b"/>
+              <stop offset="100%" stop-color="#0f172a"/>
+            </linearGradient>
+            <linearGradient id="lgHandle" x1="0%" y1="0%" x2="100%" y2="0%">
+              <stop offset="0%" stop-color="#475569"/>
+              <stop offset="50%" stop-color="#64748b"/>
+              <stop offset="100%" stop-color="#334155"/>
+            </linearGradient>
+            <linearGradient id="lgFlame1" x1="0%" y1="100%" x2="0%" y2="0%">
+              <stop offset="0%" stop-color="#f97316"/>
+              <stop offset="100%" stop-color="#fb923c"/>
+            </linearGradient>
+            <linearGradient id="lgFlame2" x1="0%" y1="100%" x2="0%" y2="0%">
+              <stop offset="0%" stop-color="#f97316"/>
+              <stop offset="60%" stop-color="#fbbf24"/>
+              <stop offset="100%" stop-color="#fde047"/>
+            </linearGradient>
+            <linearGradient id="lgFlame3" x1="0%" y1="100%" x2="0%" y2="0%">
+              <stop offset="0%" stop-color="#ef4444"/>
+              <stop offset="50%" stop-color="#f97316"/>
+              <stop offset="100%" stop-color="#fbbf24"/>
+            </linearGradient>
+            <linearGradient id="lgFlame4" x1="0%" y1="100%" x2="0%" y2="0%">
+              <stop offset="0%" stop-color="#dc2626"/>
+              <stop offset="40%" stop-color="#ef4444"/>
+              <stop offset="100%" stop-color="#fbbf24"/>
+            </linearGradient>
+            <filter id="lgFlameGlow">
+              <feGaussianBlur stdDeviation="1.2" result="blur"/>
+              <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+            </filter>
+          </defs>
+          <rect width="32" height="32" rx="8" fill="url(#lgBg)"/>
+          <!-- torch handle -->
+          <rect x="13" y="25" width="6" height="5" rx="1.5" fill="url(#lgHandle)"/>
+          <rect x="11" y="27" width="10" height="3" rx="1.5" fill="#334155"/>
+          <!-- flame as performance bars -->
+          <!-- bar 1 (left, shortest) -->
+          <rect x="6" y="17" width="5" height="9" rx="2" fill="url(#lgFlame1)" opacity=".85"/>
+          <!-- bar 2 -->
+          <rect x="13.5" y="10" width="5" height="16" rx="2" fill="url(#lgFlame2)" filter="url(#lgFlameGlow)"/>
+          <!-- bar 3 (tallest, center) -->
+          <rect x="21" y="5" width="5" height="21" rx="2" fill="url(#lgFlame3)" filter="url(#lgFlameGlow)"/>
+          <!-- highlight dot at flame tip -->
+          <circle cx="23.5" cy="5" r="2" fill="#fde047" opacity=".95"/>
+          <circle cx="15.5" cy="10" r="1.5" fill="#fde047" opacity=".7"/>
+          <circle cx="8.5" cy="17" r="1.2" fill="#fbbf24" opacity=".7"/>
+        </svg>
+        <span class="header-title">Torch Profiler Analyzer</span>
+      </div>
       <div class="header-actions">
         <button class="btn btn-sm btn-outline" @click="showGuide=true">使用指南</button>
-        <button class="btn btn-sm btn-outline" @click="showNewProject=true">+ 新建项目</button>
         <button class="btn btn-sm btn-outline" @click="showDeletedProjects=true; loadDeletedProjects()">找回项目</button>
+        <button class="btn btn-sm btn-primary" @click="showNewProject=true">+ 新建项目</button>
       </div>
     </header>
 
@@ -361,7 +402,14 @@
           </div>
         </section>
 
-        <div v-else class="empty-main">选择左侧历史记录查看结果，或上传文件开始分析</div>
+        <div v-else class="empty-main">
+          <div class="empty-main-icon">📊</div>
+          <div class="empty-main-title">选择左侧历史记录查看结果，或上传文件开始分析</div>
+          <div class="empty-main-tips">
+            <div class="empty-tip-item">详细使用指南见右上角「使用指南」</div>
+            <div class="empty-tip-item">建议上传的 trace 文件中开启了 triton code 保存功能</div>
+          </div>
+        </div>
       </main>
     </div>
 
