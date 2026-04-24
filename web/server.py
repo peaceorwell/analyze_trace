@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 import aiofiles
-from fastapi import BackgroundTasks, Cookie, FastAPI, Form, HTTPException, UploadFile
+from fastapi import BackgroundTasks, Cookie, FastAPI, Form, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
@@ -52,17 +52,30 @@ app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__
 
 # ── User token helpers ─────────────────────────────────────────────────────────
 
-async def get_or_create_user(user_token: Optional[str]) -> str:
-    """Get existing user or create new one. Returns user_token."""
-    if not user_token:
-        user_token = str(uuid.uuid4())
+async def get_or_create_user(user_token: Optional[str] = None, x_user_token: Optional[str] = None) -> str:
+    """Get existing user or create new one. Returns user_token.
+
+    Accepts token from cookie or X-User-Token header (localStorage fallback).
+    Cookie takes precedence over X-User-Token header.
+
+    If no valid token is provided, creates a new user in both cookie and header context.
+    """
+    # Prefer cookie token, fall back to header token
+    token = user_token if user_token else x_user_token
     db = await get_db()
     try:
-        await db.execute("INSERT OR IGNORE INTO users(user_token) VALUES(?)", (user_token,))
+        if token:
+            # Token provided: ensure it exists in DB
+            await db.execute("INSERT OR IGNORE INTO users(user_token) VALUES(?)", (token,))
+            await db.commit()
+            return token
+        # No token provided: create new one (instead of returning a random user)
+        new_token = str(uuid.uuid4())
+        await db.execute("INSERT INTO users(user_token) VALUES(?)", (new_token,))
         await db.commit()
+        return new_token
     finally:
         await db.close()
-    return user_token
 
 
 def job_dir(job_id: str) -> str:
@@ -666,8 +679,8 @@ async def get_job(jid: str, user_token: Optional[str] = Cookie(None)):
 
 
 @app.patch("/api/jobs/{jid}")
-async def patch_job(jid: str, body: dict, user_token: Optional[str] = Cookie(None)):
-    token = await get_or_create_user(user_token)
+async def patch_job(jid: str, body: dict, user_token: Optional[str] = Cookie(None), x_user_token: Optional[str] = Header(None)):
+    token = await get_or_create_user(user_token, x_user_token)
     db = await get_db()
 
     cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
@@ -1070,6 +1083,48 @@ except Exception as e:
         return {"success": False, "message": result.get('error', 'unknown'), "output": None}
 
     return {"success": True, "output": output}
+
+
+@app.get("/api/jobs/{jid}/files/{slot}")
+async def get_job_file(jid: str, slot: str, user_token: Optional[str] = Cookie(None)):
+    """Serve trace file (a or b) for Perfetto. Returns the raw file content."""
+    token = await get_or_create_user(user_token)
+    db = await get_db()
+    cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
+    row = await row_to_dict(await cursor.fetchone())
+    await db.close()
+
+    if not row:
+        raise HTTPException(404)
+
+    if row.get("user_token") != token:
+        raise HTTPException(403, "Not the job owner")
+
+    if slot not in ("a", "b"):
+        raise HTTPException(400, "slot must be 'a' or 'b'")
+
+    # Prefer gzip path if available, fall back to json path
+    gzip_path = row.get(f"file_{slot}_gzip_path")
+    json_path = row.get(f"file_{slot}_path")
+
+    file_path = gzip_path if gzip_path else json_path
+    if not file_path or not os.path.exists(file_path):
+        raise HTTPException(404, "File not found")
+
+    # Send raw file (gzip or json) as-is to Perfetto
+    media_type = "application/gzip" if file_path.endswith(".gz") else "application/json"
+
+    from starlette.responses import Response
+
+    try:
+        with open(file_path, "rb") as f:
+            content = f.read()
+    except Exception as e:
+        raise HTTPException(500, f"Failed to read file: {e}")
+
+    filename = row.get(f"file_{slot}_name") or f"trace_{slot}.json"
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return Response(content, media_type=media_type, headers=headers)
 
 
 @app.get("/api/jobs/{jid}/triton-code/{path:path}")

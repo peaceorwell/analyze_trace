@@ -52,12 +52,32 @@ createApp({
     const errorModalTitle = ref("错误信息");
 
     // ── Auth ─────────────────────────────────────────────────────────────────
-    const userToken = ref(null);
+    const userToken = ref(localStorage.getItem("user_token") || null);
 
     const initAuth = async () => {
-      const r = await fetch("/api/auth/guest", { method: "POST" });
-      const data = await r.json();
-      userToken.value = data.user_token;
+      // If we already have a token in localStorage, use it
+      let token = localStorage.getItem("user_token");
+      if (token) {
+        userToken.value = token;
+        // Verify this token is valid on server
+        const r = await fetch("/api/auth/guest", {
+          method: "POST",
+          headers: token ? { "X-User-Token": token } : {},
+          credentials: "include",
+        });
+        const data = await r.json();
+        if (data.user_token !== token) {
+          // Token was invalidated or server created new one, update localStorage
+          localStorage.setItem("user_token", data.user_token);
+          userToken.value = data.user_token;
+        }
+      } else {
+        // No localStorage token, get one from server
+        const r = await fetch("/api/auth/guest", { method: "POST", credentials: "include" });
+        const data = await r.json();
+        localStorage.setItem("user_token", data.user_token);
+        userToken.value = data.user_token;
+      }
     };
 
     // ── Layout ────────────────────────────────────────────────────────────────
@@ -92,6 +112,10 @@ createApp({
     const showRenameProject = ref(false);
     const renameProjectId = ref("");
     const renameProjectName = ref("");
+
+    // ── Move job to project ───────────────────────────────────────────────────
+    const showMoveProject = ref(false);
+    const moveProjectTarget = ref("");
 
     // ── Deleted projects recovery ──────────────────────────────────────────────
     const showDeletedProjects = ref(false);
@@ -575,9 +599,13 @@ createApp({
     const editLabel = async () => {
       const newLabel = prompt("新备注名称：", selectedJob.value?.label || "");
       if (newLabel === null) return;
+      const token = localStorage.getItem("user_token");
       await fetch(`/api/jobs/${selectedJobId.value}`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { "X-User-Token": token } : {}),
+        },
         credentials: "include",
         body: JSON.stringify({ label: newLabel }),
       });
@@ -592,12 +620,30 @@ createApp({
     };
 
     const confirmMoveProject = async () => {
-      await fetch(`/api/jobs/${selectedJobId.value}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ project_id: moveProjectTarget.value || null }),
-      });
+      if (!selectedJobId.value) {
+        alert("未选中任务");
+        return;
+      }
+      const token = localStorage.getItem("user_token");
+      try {
+        const r = await fetch(`/api/jobs/${selectedJobId.value}`, {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { "X-User-Token": token } : {}),
+          },
+          credentials: "include",
+          body: JSON.stringify({ project_id: moveProjectTarget.value || null }),
+        });
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({}));
+          alert("移动项目失败: " + (err.detail || r.status));
+          return;
+        }
+      } catch (e) {
+        alert("移动项目失败: " + e.message);
+        return;
+      }
       showMoveProject.value = false;
       await loadJob(selectedJobId.value);
       invalidateGroupedJobsCache();
@@ -1002,10 +1048,11 @@ createApp({
       availableTabs, currentTable, filteredRows,
       showNewProject, newProjectName, newProjectDesc,
       showRenameProject, renameProjectName, openRenameModal, confirmRenameProject, deleteProject,
+      showMoveProject, moveProjectTarget,
       compareSelection, compareKernelTypes, compareLabel, compareProjectId,
       fmtDate, statusIcon, toggleGroup, deltaCellClass,
       onFileChange, onDrop, clearFile, submitJob,
-      selectJob, deleteJob, deleteFile, editLabel, moveProject,
+      selectJob, deleteJob, deleteFile, editLabel, moveProject, confirmMoveProject,
       setSort, downloadCsv, colWidths, startResize,
       colFilters, colFilterOps, hasColFilters, clearColFilters,
       sidebarWidth, sidebarCollapsed,

@@ -311,7 +311,7 @@
                             v-model="colFilters[f]"
                             class="col-filter-input"
                             :class="{ active: colFilters[f] }"
-                            :type="(colFilterOps[f] && colFilterOps[f] !== '~') ? 'number' : 'text'"
+                            :type="(colFilterOps[f] && ['~', '!~'].includes(colFilterOps[f])) ? 'text' : 'number'"
                             placeholder="筛选..."
                             @click.stop />
                         </div>
