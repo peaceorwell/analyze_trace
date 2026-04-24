@@ -581,13 +581,25 @@ createApp({
 
     // ── Job actions ────────────────────────────────────────────────────────
     const deleteJob = async () => {
-      if (!selectedJobId.value) return;
+      if (!selectedJobId.value) {
+        alert("未选中任务，无法删除");
+        return;
+      }
       if (!confirm("确定删除该任务及所有关联文件？")) return;
-      await fetch(`/api/jobs/${selectedJobId.value}`, { method: "DELETE", credentials: "include" });
-      selectedJobId.value = null;
-      selectedJob.value = null;
-      resultTab.value = "console";
-      await loadJobs();
+      try {
+        const response = await fetch(`/api/jobs/${selectedJobId.value}`, { method: "DELETE", credentials: "include" });
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          alert("删除失败: " + (errorData.detail || errorData.message || "未知错误"));
+          return;
+        }
+        selectedJobId.value = null;
+        selectedJob.value = null;
+        resultTab.value = "console";
+        await loadJobs();
+      } catch (error) {
+        alert("删除出错: " + error.message);
+      }
     };
 
     const deleteFile = async slot => {

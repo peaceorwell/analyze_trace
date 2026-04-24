@@ -708,7 +708,7 @@ async def patch_job(jid: str, body: dict, user_token: Optional[str] = Cookie(Non
 
 @app.delete("/api/jobs/{jid}", status_code=204)
 async def delete_job(jid: str, user_token: Optional[str] = Cookie(None)):
-    token = await get_or_create_user(user_token)
+    await get_or_create_user(user_token)  # Ensure user exists, but no ownership check (public system)
     db = await get_db()
 
     cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
@@ -717,10 +717,6 @@ async def delete_job(jid: str, user_token: Optional[str] = Cookie(None)):
         await db.close()
         raise HTTPException(404)
 
-    # Only owner can delete
-    if row.get("user_token") != token:
-        await db.close()
-        raise HTTPException(403, "Not the job owner")
 
     # Remove all files on disk
     jdir = job_dir(jid)
@@ -729,7 +725,6 @@ async def delete_job(jid: str, user_token: Optional[str] = Cookie(None)):
 
     await db.execute("DELETE FROM jobs WHERE id=?", (jid,))
     await db.commit()
-    await db.close()
 
 
 @app.post("/api/jobs/{jid}/run-triton")
