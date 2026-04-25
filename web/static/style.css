@@ -406,12 +406,22 @@ select.input { appearance: none; cursor: pointer; }
 
 /* submit card */
 .submit-card { display: flex; flex-direction: column; gap: 10px; flex-shrink: 0; }
-.submit-cols { display: flex; flex-direction: column; gap: 8px; }
-.submit-cols .upload-box-sm { width: 100%; height: 30px; min-height: 30px; border-radius: 6px; flex: none; }
-.submit-cols .upload-inner { flex-direction: row; gap: 6px; padding: 3px 10px; height: auto; }
+.submit-cols {
+  display: grid;
+  grid-template-columns: minmax(140px, 1.2fr) 1fr 1.2fr 1fr auto;
+  gap: 10px;
+  align-items: end;
+}
+.submit-cols .upload-box-sm {
+  width: 100%; height: 34px; min-height: 34px; border-radius: 6px; flex: none;
+}
+.submit-cols .upload-inner { flex-direction: row; gap: 6px; padding: 4px 10px; height: auto; }
 .submit-cols .upload-icon { margin-bottom: 0; font-size: 13px; }
 .submit-cols .upload-label { font-size: 12px; text-align: left; }
+.submit-cols .form-row { display: flex; flex-direction: column; gap: 4px; }
 .submit-cols label { font-size: 11px; color: var(--text3); font-weight: 500; }
+.submit-cols .btn { height: 34px; white-space: nowrap; align-self: end; }
+.submit-cols .input { height: 34px; }
 
 .upload-progress { margin-top: 8px; }
 .upload-progress-label { font-size: 11px; color: var(--text3); margin-bottom: 5px; }
