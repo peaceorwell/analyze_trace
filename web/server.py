@@ -175,8 +175,8 @@ def collect_results(jid: str) -> dict:
 def _run_sync_analysis(job, kernel_types, rdir, path_a, path_b, name_a, name_b):
     """All blocking I/O lives here so the event loop stays free."""
     from analyze_trace import (compute_avgs, parse_trace,
-                               print_step_summary, print_kernel_type_breakdown, write_single,
-                               print_comparison, write_comparison)
+                               print_step_summary, print_kernel_type_breakdown, print_top_kernels,
+                               write_single, print_comparison, write_comparison)
 
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
@@ -189,6 +189,7 @@ def _run_sync_analysis(job, kernel_types, rdir, path_a, path_b, name_a, name_b):
             )
             print_step_summary(data)
             print_kernel_type_breakdown(data)
+            print_top_kernels(data)
             write_single(data, fake_args)
         else:
             data_a = compute_avgs(parse_trace(path_a, kernel_types), kernel_types)
@@ -197,6 +198,8 @@ def _run_sync_analysis(job, kernel_types, rdir, path_a, path_b, name_a, name_b):
             label_a = name_a or os.path.basename(path_a)
             label_b = name_b or os.path.basename(path_b)
             print_comparison(data_a, data_b, label_a, label_b)
+            print_top_kernels(data_a, label=label_a)
+            print_top_kernels(data_b, label=label_b)
             write_comparison(data_a, data_b, fake_args)
 
     return buf.getvalue()

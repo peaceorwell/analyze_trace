@@ -236,6 +236,31 @@ def write_avg_csv(path, data, name_field):
     print(f"Wrote {path} ({len(data)} rows)")
 
 
+def _write_kernels_avg_csv(path, avg_kernels):
+    """Write all_kernels_avg.csv with family, dur_pct, count_pct, and avg_us_per_call."""
+    total_dur   = sum(v["avg_dur_ms"] for v in avg_kernels.values()) or 1.0
+    total_count = sum(v["avg_count"]  for v in avg_kernels.values()) or 1.0
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=[
+            "kernel_name", "family", "avg_count", "count_pct",
+            "avg_dur_ms", "dur_pct", "avg_us_per_call",
+        ])
+        writer.writeheader()
+        for name, s in avg_kernels.items():
+            cnt = s["avg_count"]
+            dur = s["avg_dur_ms"]
+            writer.writerow({
+                "kernel_name":    name,
+                "family":         extract_kernel_family(name),
+                "avg_count":      fmt3(cnt),
+                "count_pct":      f"{cnt / total_count * 100:.1f}%",
+                "avg_dur_ms":     fmt3(dur),
+                "dur_pct":        f"{dur / total_dur  * 100:.1f}%",
+                "avg_us_per_call": fmt3(dur / cnt * 1000) if cnt > 0 else "",
+            })
+    print(f"Wrote {path} ({len(avg_kernels)} rows)")
+
+
 def parse_trace(trace_file, kernel_types):
     """Parse a PyTorch profiler trace JSON.
 
@@ -485,14 +510,39 @@ def print_kernel_type_breakdown(data, label=""):
     if label:
         title += f" — {label}"
     print(f"\n{title} ===")
-    # Dynamic type column width to accommodate auto-classified names (e.g. triton_pointwise)
+    total_dur   = sum(ad for _, ad in data["kt_avgs"].values()) or 1.0
+    total_count = sum(ac for ac, _ in data["kt_avgs"].values()) or 1.0
     type_w = max(16, max((len(k) for k in data["KERNEL_TYPES"]), default=16))
-    hdr = f"{'type':<{type_w}} {'avg_count':<12} {'avg_dur_ms':<14}"
+    hdr = f"{'type':<{type_w}} {'avg_count':<12} {'count_pct':<11} {'avg_dur_ms':<14} {'dur_pct':<10}"
     print(hdr)
     print("-" * len(hdr))
     for ktype in data["KERNEL_TYPES"]:
         ac, ad = data["kt_avgs"][ktype]
-        print(f"{ktype:<{type_w}} {ac:<12.1f} {ad:<14.3f}")
+        pct_d = f"{ad / total_dur   * 100:.1f}%"
+        pct_c = f"{ac / total_count * 100:.1f}%"
+        print(f"{ktype:<{type_w}} {ac:<12.1f} {pct_c:<11} {ad:<14.3f} {pct_d:<10}")
+
+
+def print_top_kernels(data, top_n=10, label=""):
+    """Print the top-N most time-consuming kernels with family tag and duration %."""
+    avg_kernels = data["avg_kernels"]
+    if not avg_kernels:
+        return
+    total_dur = sum(v["avg_dur_ms"] for v in avg_kernels.values()) or 1.0
+    title = f"=== Top {top_n} Hotspot Kernels"
+    if label:
+        title += f" — {label}"
+    print(f"\n{title} ===")
+    hdr = f"{'#':<4} {'family':<18} {'dur_pct':<9} {'avg_dur_ms':<14} {'avg_count':<12} kernel_name"
+    print(hdr)
+    print("-" * len(hdr))
+    for i, (name, stats) in enumerate(list(avg_kernels.items())[:top_n], 1):
+        dur    = stats["avg_dur_ms"]
+        cnt    = stats["avg_count"]
+        family = extract_kernel_family(name)
+        pct_s  = f"{dur / total_dur * 100:.1f}%"
+        short  = name if len(name) <= 55 else name[:52] + "..."
+        print(f"{i:<4} {family:<18} {pct_s:<9} {dur:<14.3f} {cnt:<12.1f} {short}")
 
 
 def print_comparison(data_a, data_b, label_a, label_b):
@@ -538,14 +588,22 @@ def print_comparison(data_a, data_b, label_a, label_b):
 # ── CSV write helpers ─────────────────────────────────────────────────────────
 
 def _write_triton_avg_csv(path, avg_triton):
+    total_dur = sum(s["avg_dur_ms"] for s in avg_triton.values()) or 1.0
     with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["kernel_name", "avg_count", "avg_dur_ms", "avg_io_gb", "avg_io_efficiency"])
+        writer = csv.DictWriter(f, fieldnames=[
+            "kernel_name", "avg_count", "avg_dur_ms", "dur_pct",
+            "avg_us_per_call", "avg_io_gb", "avg_io_efficiency",
+        ])
         writer.writeheader()
         for name, s in avg_triton.items():
+            cnt = s["avg_count"]
+            dur = s["avg_dur_ms"]
             writer.writerow({
                 "kernel_name":       name,
-                "avg_count":         fmt3(s["avg_count"]),
-                "avg_dur_ms":        fmt3(s["avg_dur_ms"]),
+                "avg_count":         fmt3(cnt),
+                "avg_dur_ms":        fmt3(dur),
+                "dur_pct":           f"{dur / total_dur * 100:.1f}%",
+                "avg_us_per_call":   fmt3(dur / cnt * 1000) if cnt > 0 else "",
                 "avg_io_gb":         fmt3(s["avg_io_gb"]),
                 "avg_io_efficiency": fmt3(s["avg_io_eff"]),
             })
@@ -553,12 +611,20 @@ def _write_triton_avg_csv(path, avg_triton):
 
 
 def _write_kernel_types_csv(path, kernel_types, kt_avgs):
+    total_dur   = sum(v[1] for v in kt_avgs.values()) or 1.0
+    total_count = sum(v[0] for v in kt_avgs.values()) or 1.0
     with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["type", "avg_count", "avg_dur_ms"])
+        writer = csv.DictWriter(f, fieldnames=["type", "avg_count", "count_pct", "avg_dur_ms", "dur_pct"])
         writer.writeheader()
         for ktype in kernel_types:
             ac, ad = kt_avgs[ktype]
-            writer.writerow({"type": ktype, "avg_count": fmt3(ac), "avg_dur_ms": fmt3(ad)})
+            writer.writerow({
+                "type":       ktype,
+                "avg_count":  fmt3(ac),
+                "count_pct":  f"{ac / total_count * 100:.1f}%",
+                "avg_dur_ms": fmt3(ad),
+                "dur_pct":    f"{ad / total_dur * 100:.1f}%",
+            })
     print(f"Wrote {path} ({len(kernel_types)} rows)")
 
 
@@ -627,13 +693,17 @@ def _write_kernel_types_cmp_csv(path, data_a, data_b):
         data_a["kt_avgs"].get(t, (0.0, 0.0))[1] + data_b["kt_avgs"].get(t, (0.0, 0.0))[1]
     ))
     all_types.append("other")
+    total_a = sum(v[1] for v in data_a["kt_avgs"].values()) or 1.0
+    total_b = sum(v[1] for v in data_b["kt_avgs"].values()) or 1.0
     rows = []
     for ktype in all_types:
         ac_a, ad_a = data_a["kt_avgs"].get(ktype, (0.0, 0.0))
         ac_b, ad_b = data_b["kt_avgs"].get(ktype, (0.0, 0.0))
         rows.append({
             "type":         ktype,
+            "dur_pct_A":    f"{ad_a / total_a * 100:.1f}%",
             "avg_dur_ms_A": fmt3(ad_a),
+            "dur_pct_B":    f"{ad_b / total_b * 100:.1f}%",
             "avg_dur_ms_B": fmt3(ad_b),
             "delta_dur_ms": fmt3(ad_b - ad_a),
             "pct_change":   pct(ad_a, ad_b),
@@ -641,8 +711,10 @@ def _write_kernel_types_cmp_csv(path, data_a, data_b):
             "avg_count_B":  fmt3(ac_b),
         })
     with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["type", "avg_dur_ms_A", "avg_dur_ms_B",
-                                               "delta_dur_ms", "pct_change", "avg_count_A", "avg_count_B"])
+        writer = csv.DictWriter(f, fieldnames=[
+            "type", "dur_pct_A", "avg_dur_ms_A", "dur_pct_B", "avg_dur_ms_B",
+            "delta_dur_ms", "pct_change", "avg_count_A", "avg_count_B",
+        ])
         writer.writeheader()
         writer.writerows(rows)
     print(f"Wrote {path} ({len(rows)} rows)")
@@ -691,7 +763,7 @@ def write_single(data, args):
                     write_triton_code_file(code_dir, idx, kernel)
                 print(f"Wrote {code_dir}/ ({len(kernels)} files)")
 
-    write_avg_csv(os.path.join(args.output_dir, "all_kernels_avg.csv"), data["avg_kernels"], "kernel_name")
+    _write_kernels_avg_csv(os.path.join(args.output_dir, "all_kernels_avg.csv"), data["avg_kernels"])
     _write_triton_avg_csv(os.path.join(args.output_dir, "triton_kernels_avg.csv"), data["avg_triton"])
     write_avg_csv(os.path.join(args.output_dir, "aten_ops_avg.csv"),    data["avg_aten"],    "op_name")
     _write_kernel_types_csv(os.path.join(args.output_dir, "kernel_types_avg.csv"), data["KERNEL_TYPES"], data["kt_avgs"])
@@ -752,6 +824,7 @@ if __name__ == "__main__":
         data = compute_avgs(parse_trace(args.trace_files[0], kernel_types), kernel_types)
         print_step_summary(data)
         print_kernel_type_breakdown(data)
+        print_top_kernels(data)
         write_single(data, args)
     else:
         label_a = os.path.basename(args.trace_files[0])
@@ -759,4 +832,6 @@ if __name__ == "__main__":
         data_a = compute_avgs(parse_trace(args.trace_files[0], kernel_types), kernel_types)
         data_b = compute_avgs(parse_trace(args.trace_files[1], kernel_types), kernel_types)
         print_comparison(data_a, data_b, label_a, label_b)
+        print_top_kernels(data_a, label=label_a)
+        print_top_kernels(data_b, label=label_b)
         write_comparison(data_a, data_b, args)
