@@ -1098,6 +1098,23 @@ createApp({
       await loadJobs();
     });
 
+    const formatConsole = (text) => {
+      if (!text) return '';
+      return text.split('\n').map(line => {
+        const e = line.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        if (/^={3,}/.test(line))  return `<span class="co-hdr">${e}</span>`;
+        if (/^-{5,}/.test(line))  return `<span class="co-sep">${e}</span>`;
+        if (/^Wrote /.test(line)) return `<span class="co-wrote">${e}</span>`;
+        if (/^\s*$/.test(line))   return e;
+        // highlight numbers within data lines
+        const highlighted = e.replace(
+          /(\b\d+\.?\d*%?|\+[\d.]+|[-][\d.]+)/g,
+          '<span class="co-num">$1</span>'
+        );
+        return `<span class="co-line">${highlighted}</span>`;
+      }).join('\n');
+    };
+
     return {
       projects, jobs, jobsTotal, jobsLimit, jobsOffset,
       filterProject, sidebarTab, selectedJobId, selectedJob,
@@ -1125,6 +1142,7 @@ createApp({
       toggleCompareSelect, submitCompare, createProject,
       showDeletedProjects, deletedProjects, loadDeletedProjects, isDeletedOver10Days, restoreProject, permanentlyDeleteProject,
       isDark, toggleTheme,
+      formatConsole,
     };
   },
 }).mount("#app");

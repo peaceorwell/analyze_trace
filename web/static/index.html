@@ -295,7 +295,13 @@
 
             <!-- Console output -->
             <div v-if="resultTab==='console'" class="console-out">
-              <pre>{{ selectedJob.console_out }}</pre>
+              <div class="console-toolbar">
+                <span class="console-dot dot-red"></span>
+                <span class="console-dot dot-yellow"></span>
+                <span class="console-dot dot-green"></span>
+                <span class="console-title">Console Output</span>
+              </div>
+              <pre v-html="formatConsole(selectedJob.console_out)"></pre>
             </div>
 
             <!-- Chart tab -->
