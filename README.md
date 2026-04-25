@@ -194,7 +194,6 @@ python analyze_trace.py baseline.json optimized.json -o ./output
 |------|--------|------|
 | `trace_files` | — | 1 或 2 个 PyTorch Profiler trace JSON 文件 |
 | `-o, --output-dir` | `.` | 输出目录 |
-| `-k, --kernel-types` | `gemm,embedding,pool` | 自定义 kernel 分类关键词，逗号分隔，大小写不敏感的子串匹配，首次命中生效 |
 | `-s, --save-triton-csv` | off | 输出逐 step 的 Triton kernel 详情 CSV |
 | `-c, --save-triton-code` | off | 将每个 Triton kernel 的生成代码保存为 `.py` 文件 |
 
@@ -233,13 +232,22 @@ step     step_dur(ms)   kernels    compute_kernel_dur(ms)   triton     triton_du
 ...
 avg      124.659        1841.0     98.131                   312.0      45.007           ...
 
+=== Top 10 Hotspot Kernels (compute only, collective excluded) ===
+rank  family              count   count%   dur_ms   dur%
+---------------------------------------------------------
+1     triton_mm           86.0    4.67%    28.431   28.96%
+2     Cijk_Alik_Bljk_SB   42.0    2.28%    18.205   18.55%
+3     triton_reduce       112.0   6.08%    11.243   11.45%
+...
+
 === Kernel Type Breakdown (avg across 10 steps) ===
-type         avg_count    avg_dur_ms
-------------------------------------
-triton       312.0        45.007
-gemm         128.0        31.244
-collective   24.0         8.103
-other        1377.0       14.777
+type              count    count%    dur_ms    dur%
+----------------------------------------------------
+triton_mm         86.0     4.67%     28.431    28.96%
+Cijk_Alik_Bljk    42.0     2.28%     18.205    18.55%
+triton_reduce     112.0    6.08%     11.243    11.45%
+triton_pointwise  114.0    6.19%     5.323     5.42%
+other             1487.0   80.77%    34.929    35.62%
 ```
 
 ---
@@ -253,7 +261,14 @@ other        1377.0       14.777
 
 每个 ProfilerStep 内按 kernel 名称聚合耗时后，再对所有 step 求均值，消除单步抖动。
 
-kernel 分类优先级：`triton` (名称前缀 `triton_`) > 用户自定义 `-k` 关键词 > `collective` (含 Collective name) > `other`。
+kernel 自动分类逻辑：
+
+- **triton**：名称以 `triton_` 开头，进一步细分为 `triton_mm`、`triton_reduce`、`triton_pointwise` 等子类型
+- **collective**：TCDP 前缀或包含 `nccl`、`cncl`、`allreduce`、`allgather` 等集合通信关键词，单独统计，**不计入** compute 分析
+- **语义聚类**：通过内置规则匹配 `gemm`、`conv`、`embedding`、`pool`、`norm`、`attention` 等常见类型
+- **fallback**：无法匹配规则的 kernel 按名称前缀归入对应 family（保留原始大小写），兜底归入 `other`
+
+所有非 collective 的 kernel family 均在 Kernel Type Breakdown 和图表中展示。
 
 ---
 

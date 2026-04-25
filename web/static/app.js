@@ -33,7 +33,6 @@ createApp({
     const submitting = ref(false);
     const uploadProgress = ref(0);
     const form = ref({
-      kernelTypes: "",
       label: "",
       projectId: "",
       saveTritonCsv: true,
@@ -191,7 +190,6 @@ createApp({
     const showGuide = ref(false);
 
     const compareSelection  = ref([]);
-    const compareKernelTypes = ref("gemm,embedding,pool");
     const compareLabel      = ref("");
     const compareProjectId  = ref("");
 
@@ -594,7 +592,6 @@ createApp({
       uploadProgress.value = 0;
       const fd = new FormData();
       fd.append("file_a", fileA.value);
-      fd.append("kernel_types", form.value.kernelTypes);
       fd.append("label", form.value.label);
       fd.append("project_id", form.value.projectId);
       fd.append("save_triton_csv", form.value.saveTritonCsv);
@@ -1032,7 +1029,6 @@ createApp({
         credentials: "include",
         body: JSON.stringify({
           job_id_a: a, job_id_b: b,
-          kernel_types: compareKernelTypes.value,
           label: compareLabel.value,
           project_id: compareProjectId.value || null,
         }),
@@ -1105,7 +1101,7 @@ createApp({
       showNewProject, newProjectName, newProjectDesc,
       showRenameProject, renameProjectName, openRenameModal, confirmRenameProject, deleteProject,
       showMoveProject, moveProjectTarget,
-      compareSelection, compareKernelTypes, compareLabel, compareProjectId,
+      compareSelection, compareLabel, compareProjectId,
       fmtDate, statusIcon, toggleGroup, deltaCellClass,
       onFileChange, onDrop, clearFile, submitJob,
       selectJob, deleteJob, deleteFile, editLabel, moveProject, confirmMoveProject,
