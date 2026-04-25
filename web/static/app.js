@@ -3,9 +3,12 @@ const { createApp, ref, computed, watch, nextTick, onMounted } = Vue;
 createApp({
   setup() {
     // ── Theme ──────────────────────────────────────────────────────────────
-    const isDark = ref(
-      (localStorage.getItem('tpa-theme') || 'dark') === 'dark'
-    );
+    const getInitialTheme = () => {
+      const saved = localStorage.getItem('tpa-theme');
+      if (saved) return saved === 'dark';
+      return window.matchMedia('(prefers-color-scheme: dark)').matches;
+    };
+    const isDark = ref(getInitialTheme());
     const toggleTheme = () => {
       isDark.value = !isDark.value;
       const t = isDark.value ? 'dark' : 'light';

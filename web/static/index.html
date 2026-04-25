@@ -11,9 +11,14 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <link rel="stylesheet" href="/static/style.css" />
   <script>
-    // Apply saved theme before page paint to avoid flash
+    // Apply saved theme or system preference before page paint to avoid flash
     (function() {
-      var t = localStorage.getItem('tpa-theme') || 'dark';
+      var saved = localStorage.getItem('tpa-theme');
+      if (saved) {
+        var t = saved;
+      } else {
+        var t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      }
       document.documentElement.setAttribute('data-theme', t);
     })();
   </script>
