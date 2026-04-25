@@ -240,9 +240,19 @@ def write_avg_csv(path, data, name_field):
 
 
 def _write_kernels_avg_csv(path, avg_kernels):
-    """Write all_kernels_avg.csv with family, dur_pct, count_pct, and avg_us_per_call."""
-    total_dur   = sum(v["avg_dur_ms"] for v in avg_kernels.values()) or 1.0
-    total_count = sum(v["avg_count"]  for v in avg_kernels.values()) or 1.0
+    """Write all_kernels_avg.csv with family, dur_pct, count_pct, and avg_us_per_call.
+
+    dur_pct / count_pct for compute kernels are relative to the compute total
+    (collective excluded).  For collective kernels they are relative to all-kernel total.
+    """
+    # Pre-compute family for each kernel (avoid calling extract_kernel_family twice)
+    families = {name: extract_kernel_family(name) for name in avg_kernels}
+    total_dur     = sum(v["avg_dur_ms"] for v in avg_kernels.values()) or 1.0
+    total_count   = sum(v["avg_count"]  for v in avg_kernels.values()) or 1.0
+    compute_dur   = sum(v["avg_dur_ms"] for name, v in avg_kernels.items()
+                        if families[name] != "collective") or 1.0
+    compute_count = sum(v["avg_count"]  for name, v in avg_kernels.items()
+                        if families[name] != "collective") or 1.0
     with open(path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=[
             "kernel_name", "family", "avg_count", "count_pct",
@@ -250,15 +260,19 @@ def _write_kernels_avg_csv(path, avg_kernels):
         ])
         writer.writeheader()
         for name, s in avg_kernels.items():
+            fam = families[name]
             cnt = s["avg_count"]
             dur = s["avg_dur_ms"]
+            is_collective = (fam == "collective")
+            d_denom = total_dur   if is_collective else compute_dur
+            c_denom = total_count if is_collective else compute_count
             writer.writerow({
-                "kernel_name":    name,
-                "family":         extract_kernel_family(name),
-                "avg_count":      fmt3(cnt),
-                "count_pct":      f"{cnt / total_count * 100:.1f}%",
-                "avg_dur_ms":     fmt3(dur),
-                "dur_pct":        f"{dur / total_dur  * 100:.1f}%",
+                "kernel_name":     name,
+                "family":          fam,
+                "avg_count":       fmt3(cnt),
+                "count_pct":       f"{cnt / c_denom * 100:.1f}%",
+                "avg_dur_ms":      fmt3(dur),
+                "dur_pct":         f"{dur / d_denom * 100:.1f}%",
                 "avg_us_per_call": fmt3(dur / cnt * 1000) if cnt > 0 else "",
             })
     print(f"Wrote {path} ({len(avg_kernels)} rows)")
@@ -513,16 +527,23 @@ def print_kernel_type_breakdown(data, label=""):
     if label:
         title += f" — {label}"
     print(f"\n{title} ===")
-    total_dur   = sum(ad for _, ad in data["kt_avgs"].values()) or 1.0
-    total_count = sum(ac for ac, _ in data["kt_avgs"].values()) or 1.0
+    total_dur     = sum(ad for _, ad in data["kt_avgs"].values()) or 1.0
+    total_count   = sum(ac for ac, _ in data["kt_avgs"].values()) or 1.0
+    coll_dur      = data["kt_avgs"].get("collective", (0.0, 0.0))[1]
+    coll_count    = data["kt_avgs"].get("collective", (0.0, 0.0))[0]
+    compute_dur   = (total_dur   - coll_dur)   or 1.0
+    compute_count = (total_count - coll_count) or 1.0
     type_w = max(16, max((len(k) for k in data["KERNEL_TYPES"]), default=16))
     hdr = f"{'type':<{type_w}} {'avg_count':<12} {'count_pct':<11} {'avg_dur_ms':<14} {'dur_pct':<10}"
     print(hdr)
     print("-" * len(hdr))
     for ktype in data["KERNEL_TYPES"]:
         ac, ad = data["kt_avgs"][ktype]
-        pct_d = f"{ad / total_dur   * 100:.1f}%"
-        pct_c = f"{ac / total_count * 100:.1f}%"
+        is_collective = (ktype == "collective")
+        d_denom = total_dur   if is_collective else compute_dur
+        c_denom = total_count if is_collective else compute_count
+        pct_d = f"{ad / d_denom * 100:.1f}%"
+        pct_c = f"{ac / c_denom * 100:.1f}%"
         print(f"{ktype:<{type_w}} {ac:<12.1f} {pct_c:<11} {ad:<14.3f} {pct_d:<10}")
 
 
@@ -629,19 +650,26 @@ def _write_triton_avg_csv(path, avg_triton):
 
 
 def _write_kernel_types_csv(path, kernel_types, kt_avgs):
-    total_dur   = sum(v[1] for v in kt_avgs.values()) or 1.0
-    total_count = sum(v[0] for v in kt_avgs.values()) or 1.0
+    total_dur     = sum(v[1] for v in kt_avgs.values()) or 1.0
+    total_count   = sum(v[0] for v in kt_avgs.values()) or 1.0
+    coll_dur      = kt_avgs.get("collective", (0.0, 0.0))[1]
+    coll_count    = kt_avgs.get("collective", (0.0, 0.0))[0]
+    compute_dur   = (total_dur   - coll_dur)   or 1.0
+    compute_count = (total_count - coll_count) or 1.0
     with open(path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=["type", "avg_count", "count_pct", "avg_dur_ms", "dur_pct"])
         writer.writeheader()
         for ktype in kernel_types:
             ac, ad = kt_avgs[ktype]
+            is_collective = (ktype == "collective")
+            d_denom = total_dur   if is_collective else compute_dur
+            c_denom = total_count if is_collective else compute_count
             writer.writerow({
                 "type":       ktype,
                 "avg_count":  fmt3(ac),
-                "count_pct":  f"{ac / total_count * 100:.1f}%",
+                "count_pct":  f"{ac / c_denom * 100:.1f}%",
                 "avg_dur_ms": fmt3(ad),
-                "dur_pct":    f"{ad / total_dur * 100:.1f}%",
+                "dur_pct":    f"{ad / d_denom * 100:.1f}%",
             })
     print(f"Wrote {path} ({len(kernel_types)} rows)")
 
@@ -711,17 +739,22 @@ def _write_kernel_types_cmp_csv(path, data_a, data_b):
         data_a["kt_avgs"].get(t, (0.0, 0.0))[1] + data_b["kt_avgs"].get(t, (0.0, 0.0))[1]
     ))
     all_types.append("other")
-    total_a = sum(v[1] for v in data_a["kt_avgs"].values()) or 1.0
-    total_b = sum(v[1] for v in data_b["kt_avgs"].values()) or 1.0
+    total_a    = sum(v[1] for v in data_a["kt_avgs"].values()) or 1.0
+    total_b    = sum(v[1] for v in data_b["kt_avgs"].values()) or 1.0
+    compute_a  = (total_a - data_a["kt_avgs"].get("collective", (0.0, 0.0))[1]) or 1.0
+    compute_b  = (total_b - data_b["kt_avgs"].get("collective", (0.0, 0.0))[1]) or 1.0
     rows = []
     for ktype in all_types:
         ac_a, ad_a = data_a["kt_avgs"].get(ktype, (0.0, 0.0))
         ac_b, ad_b = data_b["kt_avgs"].get(ktype, (0.0, 0.0))
+        is_collective = (ktype == "collective")
+        da_a = total_a if is_collective else compute_a
+        da_b = total_b if is_collective else compute_b
         rows.append({
             "type":         ktype,
-            "dur_pct_A":    f"{ad_a / total_a * 100:.1f}%",
+            "dur_pct_A":    f"{ad_a / da_a * 100:.1f}%",
             "avg_dur_ms_A": fmt3(ad_a),
-            "dur_pct_B":    f"{ad_b / total_b * 100:.1f}%",
+            "dur_pct_B":    f"{ad_b / da_b * 100:.1f}%",
             "avg_dur_ms_B": fmt3(ad_b),
             "delta_dur_ms": fmt3(ad_b - ad_a),
             "pct_change":   pct(ad_a, ad_b),

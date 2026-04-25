@@ -434,7 +434,13 @@ createApp({
       'rgba(99,102,241,.82)',  'rgba(234,88,12,.82)',   'rgba(16,163,74,.82)',
       'rgba(220,38,38,.82)',   'rgba(168,85,247,.82)',  'rgba(14,165,233,.82)',
       'rgba(245,158,11,.82)',  'rgba(20,184,166,.82)',  'rgba(244,63,94,.82)',
+      'rgba(6,182,212,.82)',   'rgba(251,191,36,.82)',  'rgba(52,211,153,.82)',
+      'rgba(239,68,68,.82)',   'rgba(139,92,246,.82)',  'rgba(34,197,94,.82)',
+      'rgba(249,115,22,.82)',  'rgba(59,130,246,.82)',  'rgba(236,72,153,.82)',
+      'rgba(132,204,22,.82)',  'rgba(20,184,166,.82)',
     ];
+    // Cycle through PIE_COLORS for any number of labels
+    const getColors = n => Array.from({ length: n }, (_, i) => PIE_COLORS[i % PIE_COLORS.length]);
 
     const buildPie = (canvas, labels, data, title) => {
       const pairs = labels.map((l, i) => ({ l, v: data[i] })).filter(p => p.v > 0);
@@ -445,7 +451,7 @@ createApp({
         data: {
           labels: pairs.map(p => p.l),
           datasets: [{ data: pairs.map(p => p.v),
-            backgroundColor: PIE_COLORS.slice(0, pairs.length),
+            backgroundColor: getColors(pairs.length),
             borderWidth: 2, borderColor: '#fff' }],
         },
         options: {
@@ -481,11 +487,12 @@ createApp({
       const labels = table.rows.map(r => r.type);
 
       // Bar chart
+      const barColors = getColors(labels.length);
       const datasets = [];
       if (!isCmp) {
         datasets.push({ label: "avg_dur_ms",
           data: table.rows.map(r => parseFloat(r.avg_dur_ms) || 0),
-          backgroundColor: "rgba(99,102,241,0.7)" });
+          backgroundColor: barColors });
       } else {
         datasets.push({ label: "A avg_dur_ms",
           data: table.rows.map(r => parseFloat(r.avg_dur_ms_A) || 0),
