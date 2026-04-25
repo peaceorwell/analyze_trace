@@ -73,8 +73,9 @@ def extract_kernel_family(name: str) -> str:
 
     Priority order:
     1. triton_ prefix  → triton sub-type (triton_reduce / triton_pointwise / triton_<sub>)
-    2. Known semantic patterns from _FAMILY_PATTERNS
-    3. Collective communication keywords
+    2. Collective / communication keywords  (checked BEFORE semantic patterns to avoid
+       misclassifying e.g. TCDP_RING_ALLREDUCE as "reduce")
+    3. Known semantic patterns from _FAMILY_PATTERNS
     4. Fallback: first meaningful token from the cleaned name
     """
     nl = name.lower()
@@ -93,16 +94,18 @@ def extract_kernel_family(name: str) -> str:
             return f"triton_{sub}"
         return "triton"
 
+    # Collective / communication — must come before _FAMILY_PATTERNS so that names like
+    # TCDP_RING_ALLREDUCE_* are not matched by the "reduce_" pattern first.
+    if nl.startswith("tcdp") or any(kw in nl for kw in (
+            "nccl", "cncl", "collective",
+            "allreduce", "allgather", "reducescatter", "broadcast_")):
+        return "collective"
+
     # Known semantic families
     for keywords, family in _FAMILY_PATTERNS:
         for kw in keywords:
             if kw in nl:
                 return family
-
-    # Collective / communication (tcdp is a collective variant)
-    if any(kw in nl for kw in ("nccl", "cncl", "tcdp", "collective",
-                                "allreduce", "allgather", "reducescatter", "broadcast_")):
-        return "collective"
 
     # Fallback: strip templates / namespaces / "void", take first meaningful token
     clean = _STRIP_TEMPLATE_RE.sub("", name)
@@ -524,25 +527,40 @@ def print_kernel_type_breakdown(data, label=""):
 
 
 def print_top_kernels(data, top_n=10, label=""):
-    """Print the top-N most time-consuming kernels with family tag and duration %."""
+    """Print the top-N compute hotspot kernels (collective excluded) with family and duration %."""
     avg_kernels = data["avg_kernels"]
     if not avg_kernels:
         return
-    total_dur = sum(v["avg_dur_ms"] for v in avg_kernels.values()) or 1.0
-    title = f"=== Top {top_n} Hotspot Kernels"
+
+    # Build compute-only list (exclude collective kernels)
+    compute_kernels = [
+        (name, stats, extract_kernel_family(name))
+        for name, stats in avg_kernels.items()
+        if extract_kernel_family(name) != "collective"
+    ]
+    if not compute_kernels:
+        return
+
+    total_dur = sum(stats["avg_dur_ms"] for _, stats, _ in compute_kernels) or 1.0
+    candidates = compute_kernels[:top_n]
+
+    # Dynamic family column width
+    fam_w = max(12, max(len(fam) for _, _, fam in candidates))
+
+    title = f"=== Top {top_n} Compute Hotspot Kernels"
     if label:
         title += f" — {label}"
     print(f"\n{title} ===")
-    hdr = f"{'#':<4} {'family':<18} {'dur_pct':<9} {'avg_dur_ms':<14} {'avg_count':<12} kernel_name"
+    hdr = (f"{'#':<4} {'family':<{fam_w}} {'dur_pct':<9} "
+           f"{'avg_dur_ms':<14} {'avg_count':<12} kernel_name")
     print(hdr)
     print("-" * len(hdr))
-    for i, (name, stats) in enumerate(list(avg_kernels.items())[:top_n], 1):
-        dur    = stats["avg_dur_ms"]
-        cnt    = stats["avg_count"]
-        family = extract_kernel_family(name)
-        pct_s  = f"{dur / total_dur * 100:.1f}%"
-        short  = name if len(name) <= 55 else name[:52] + "..."
-        print(f"{i:<4} {family:<18} {pct_s:<9} {dur:<14.3f} {cnt:<12.1f} {short}")
+    for i, (name, stats, family) in enumerate(candidates, 1):
+        dur   = stats["avg_dur_ms"]
+        cnt   = stats["avg_count"]
+        pct_s = f"{dur / total_dur * 100:.1f}%"
+        short = name if len(name) <= 55 else name[:52] + "..."
+        print(f"{i:<4} {family:<{fam_w}} {pct_s:<9} {dur:<14.3f} {cnt:<12.1f} {short}")
 
 
 def print_comparison(data_a, data_b, label_a, label_b):
