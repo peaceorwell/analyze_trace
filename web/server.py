@@ -854,11 +854,11 @@ async def run_job_triton(jid: str, user_token: Optional[str] = Cookie(None)):
 
 
 @app.post("/api/jobs/{jid}/clear-inductor-cache")
-async def clear_inductor_cache(jid: str, user_token: Optional[str] = Cookie(None)):
+async def clear_inductor_cache(jid: str, user_token: Optional[str] = Cookie(None), x_user_token: Optional[str] = Header(None)):
     """Clear the torchinductor cache for a job's triton runs."""
     import shutil, glob
 
-    token = await get_or_create_user(user_token)
+    token = await get_or_create_user(user_token, x_user_token)
     db = await get_db()
     cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
     row = await row_to_dict(await cursor.fetchone())

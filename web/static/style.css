@@ -82,8 +82,8 @@
   --upload-hover:  rgba(99,102,241,.06);
 }
 
-/* Theme transition */
-body, .header, .sidebar, .card, .modal, .data-table th, .data-table td {
+/* Theme transition — applied to all elements so variable-driven properties animate together */
+*, *::before, *::after {
   transition: background-color .2s ease, border-color .2s ease, color .2s ease;
 }
 
@@ -98,7 +98,7 @@ body, .header, .sidebar, .card, .modal, .data-table th, .data-table td {
 body {
   font-family: var(--sans);
   font-size: 13px;
-  background: var(--bg);
+  background-color: var(--bg);
   color: var(--text);
   height: 100vh;
   overflow: hidden;
@@ -115,7 +115,7 @@ body {
 .header {
   display: flex; align-items: center; justify-content: space-between;
   padding: 0 20px; height: 48px;
-  background: var(--surface); border-bottom: 1px solid var(--border);
+  background-color: var(--surface); border-bottom: 1px solid var(--border);
 }
 .header-brand { display: flex; align-items: center; gap: 10px; }
 .header-logo {
@@ -172,9 +172,9 @@ body {
    ═══════════════════════════════════════════════ */
 .sidebar {
   position: relative; min-width: 28px;
-  background: var(--surface); border-right: 1px solid var(--border);
+  background-color: var(--surface); border-right: 1px solid var(--border);
   display: flex; flex-direction: column; overflow: hidden;
-  flex-shrink: 0; transition: width .15s ease;
+  flex-shrink: 0; transition: width .15s ease, background-color .2s ease, border-color .2s ease, color .2s ease;
 }
 .sidebar-toggle-btn {
   position: absolute; top: 8px; right: 4px; z-index: 10;
@@ -294,7 +294,7 @@ body {
    CARDS
    ═══════════════════════════════════════════════ */
 .card {
-  background: var(--card); border-radius: 10px;
+  background-color: var(--card); border-radius: 10px;
   border: 1px solid var(--border); padding: 14px;
 }
 .card-title {
@@ -475,7 +475,7 @@ select.input { appearance: none; cursor: pointer; }
 .data-table thead { position: sticky; top: 0; z-index: 1; }
 
 .data-table th {
-  background: var(--th-bg); color: var(--text3);
+  background-color: var(--th-bg); color: var(--text3);
   border-bottom: 1px solid var(--border2);
   padding: 6px 9px; text-align: left; white-space: nowrap;
   position: relative; overflow: hidden;
@@ -492,20 +492,20 @@ select.input { appearance: none; cursor: pointer; }
   white-space: nowrap; font-variant-numeric: tabular-nums;
   overflow: hidden; text-overflow: ellipsis; color: var(--text2); font-size: 11px;
 }
-.data-table tbody tr:nth-child(even) td { background: var(--td-even-bg); }
+.data-table tbody tr:nth-child(even) td { background-color: var(--td-even-bg); }
 .data-table tbody td:first-child {
-  background: var(--td-first-bg); border-right: 1px solid var(--border);
+  background-color: var(--td-first-bg); border-right: 1px solid var(--border);
   font-weight: 500; color: var(--text); font-family: var(--mono); font-size: 10.5px;
 }
-.data-table tbody tr:nth-child(even) td:first-child { background: var(--td-first-even); }
-.data-table tr:hover td { background: var(--td-hover) !important; }
+.data-table tbody tr:nth-child(even) td:first-child { background-color: var(--td-first-even); }
+.data-table tr:hover td { background-color: var(--td-hover) !important; }
 
 .cell-pos { color: var(--green); font-weight: 600; }
 .cell-neg { color: var(--red); font-weight: 600; }
 .table-footer { font-size: 10px; color: var(--text3); padding: 5px 3px; text-align: right; font-family: var(--mono); }
 
 .filter-row th {
-  background: var(--filter-row-bg); padding: 3px 6px 4px;
+  background-color: var(--filter-row-bg); padding: 3px 6px 4px;
   border-bottom: 1px solid var(--border2);
 }
 .filter-row th:first-child { background: var(--filter-first-bg); }
@@ -569,7 +569,7 @@ select.input { appearance: none; cursor: pointer; }
   backdrop-filter: blur(2px);
 }
 .modal {
-  background: var(--card); border: 1px solid var(--border2);
+  background-color: var(--card); border: 1px solid var(--border2);
   border-radius: 12px; padding: 22px; min-width: 320px;
   box-shadow: var(--shadow);
 }
