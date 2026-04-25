@@ -455,10 +455,22 @@ createApp({
             borderWidth: 2, borderColor: '#fff' }],
         },
         options: {
-          responsive: true,
+          responsive: true, maintainAspectRatio: false,
           plugins: {
-            title: { display: true, text: title, font: { size: 12 } },
-            legend: { position: 'right', labels: { font: { size: 11 }, boxWidth: 12, padding: 8 } },
+            title: { display: true, text: title, font: { size: 13 } },
+            legend: {
+              position: 'bottom',
+              labels: { font: { size: 11 }, boxWidth: 12, padding: 10,
+                        generateLabels: chart => {
+                          const ds = chart.data.datasets[0];
+                          return chart.data.labels.map((l, i) => ({
+                            text: `${l}  ${(ds.data[i] / total * 100).toFixed(1)}%`,
+                            fillStyle: ds.backgroundColor[i],
+                            strokeStyle: ds.backgroundColor[i],
+                            hidden: false, index: i,
+                          }));
+                        }},
+            },
             tooltip: { callbacks: { label: ctx => {
               const pct = total ? (ctx.parsed / total * 100).toFixed(1) : 0;
               return ` ${ctx.label}: ${ctx.parsed.toFixed(2)} ms (${pct}%)`;
@@ -486,28 +498,39 @@ createApp({
 
       const labels = table.rows.map(r => r.type);
 
-      // Bar chart
+      // Bar chart — horizontal (indexAxis:'y') for single trace so type names are readable
       const barColors = getColors(labels.length);
       const datasets = [];
       if (!isCmp) {
         datasets.push({ label: "avg_dur_ms",
           data: table.rows.map(r => parseFloat(r.avg_dur_ms) || 0),
-          backgroundColor: barColors });
+          backgroundColor: barColors, borderRadius: 3 });
       } else {
         datasets.push({ label: "A avg_dur_ms",
           data: table.rows.map(r => parseFloat(r.avg_dur_ms_A) || 0),
-          backgroundColor: "rgba(99,102,241,0.7)" });
+          backgroundColor: "rgba(99,102,241,0.75)", borderRadius: 3 });
         datasets.push({ label: "B avg_dur_ms",
           data: table.rows.map(r => parseFloat(r.avg_dur_ms_B) || 0),
-          backgroundColor: "rgba(234,88,12,0.7)" });
+          backgroundColor: "rgba(234,88,12,0.75)", borderRadius: 3 });
       }
+      const durPcts = isCmp
+        ? table.rows.map(r => `A:${r.dur_pct_A || ''} B:${r.dur_pct_B || ''}`)
+        : table.rows.map(r => r.dur_pct || '');
       ktChartInst.value = new Chart(ktChart.value, {
         type: "bar",
         data: { labels, datasets },
         options: {
-          responsive: true, maintainAspectRatio: true,
-          plugins: { legend: { position: "top" }, title: { display: true, text: "Kernel 类型耗时 (ms)" } },
-          scales: { y: { beginAtZero: true } },
+          indexAxis: isCmp ? 'x' : 'y',   // horizontal for single, vertical for compare
+          responsive: true, maintainAspectRatio: false,
+          plugins: {
+            legend: { display: isCmp, position: "top" },
+            title: { display: true, text: "Kernel 类型耗时 (ms)", font: { size: 13 } },
+            tooltip: { callbacks: { afterLabel: (ctx) => `  占比: ${durPcts[ctx.dataIndex]}` } },
+          },
+          scales: {
+            x: { beginAtZero: true, ticks: { font: { size: 11 } } },
+            y: { ticks: { font: { size: 11 } } },
+          },
         },
       });
 

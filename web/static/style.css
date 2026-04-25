@@ -457,11 +457,14 @@ select.input { appearance: none; cursor: pointer; }
 .console-out pre { color: var(--console-color); font-family: var(--mono); font-size: 11px; white-space: pre; line-height: 1.6; }
 
 /* chart */
-.chart-wrap { display: flex; gap: 14px; padding: 4px 0; align-items: flex-start; flex: 1; min-height: 0; }
-.chart-bar-area { flex: 1; min-width: 0; max-height: 260px; }
-.chart-bar-area canvas { max-height: 260px; }
-.chart-pie-area { width: 220px; flex-shrink: 0; display: flex; flex-direction: column; gap: 12px; }
-.chart-pie-area canvas { max-height: 180px; }
+.chart-wrap { display: flex; flex-direction: column; gap: 20px; padding: 8px 0; }
+.chart-bar-area { position: relative; height: 420px; }
+.chart-bar-area canvas { width: 100% !important; height: 100% !important; }
+.chart-pie-area {
+  display: flex; flex-direction: row; gap: 20px;
+  justify-content: center; align-items: flex-start; flex-wrap: wrap;
+}
+.chart-pie-area canvas { height: 300px !important; max-width: 420px; width: 100%; }
 
 /* ═══════════════════════════════════════════════
    TABLE

@@ -107,12 +107,13 @@ def extract_kernel_family(name: str) -> str:
             if kw in nl:
                 return family
 
-    # Fallback: strip templates / namespaces / "void", take first meaningful token
+    # Fallback: strip templates / namespaces / "void", take first meaningful token.
+    # Preserve the original case — the token IS the type name, not a synthetic label.
     clean = _STRIP_TEMPLATE_RE.sub("", name)
     clean = _STRIP_LEADING_RE.sub("", clean)
     tokens = [t for t in re.split(r'[_\s:]+', clean) if t and not t.isdigit() and len(t) > 1]
     if tokens:
-        return tokens[0].lower()[:24]
+        return tokens[0][:24]
     return "other"
 
 
