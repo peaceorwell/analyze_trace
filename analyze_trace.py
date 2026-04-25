@@ -116,26 +116,23 @@ def extract_kernel_family(name: str) -> str:
     return "other"
 
 
-def auto_classify_kernels(avg_kernels: dict,
-                           dur_threshold: float = 0.08,
-                           count_threshold: float = 0.10) -> tuple:
-    """Auto-classify kernel families from aggregated per-kernel stats.
+def auto_classify_kernels(avg_kernels: dict) -> tuple:
+    """Classify kernel families from aggregated per-kernel stats.
 
-    A family is considered "notable" (gets its own category) when ANY of:
-      1. Family total avg_dur_ms  ≥ dur_threshold   (default 8%) of all kernel time
-      2. Family total avg_count   ≥ count_threshold  (default 10%) of all kernel count
-      3. Family is collective or starts with "triton" (always shown when present)
+    Every distinct non-collective family with any duration gets its own category,
+    sorted by avg_dur_ms descending.  "other" is always last.
+    Collective kernels are excluded from KERNEL_TYPES — they are handled separately
+    and should not appear in Kernel Type Breakdown / chart / kernel_types_avg.csv.
 
     Returns:
         (KERNEL_TYPES, kt_avgs)
-        KERNEL_TYPES : list of type labels sorted by avg_dur_ms desc, "other" last
-        kt_avgs      : {type -> (avg_count, avg_dur_ms)}
+        KERNEL_TYPES : list of compute family labels sorted by avg_dur_ms desc,
+                       "other" last.  "collective" is NOT included.
+        kt_avgs      : {type -> (avg_count, avg_dur_ms)}  — includes "collective"
+                       so callers can still reference it for percentage calculations.
     """
     if not avg_kernels:
         return ["other"], {"other": (0.0, 0.0)}
-
-    total_dur   = sum(v["avg_dur_ms"] for v in avg_kernels.values())
-    total_count = sum(v["avg_count"]  for v in avg_kernels.values())
 
     # Aggregate per-kernel stats into families
     family_dur   = defaultdict(float)
@@ -145,35 +142,19 @@ def auto_classify_kernels(avg_kernels: dict,
         family_dur[fam]   += stats["avg_dur_ms"]
         family_count[fam] += stats["avg_count"]
 
-    # Determine notable families
-    notable = set()
-    if total_dur > 0:
-        for fam, dur in family_dur.items():
-            if dur / total_dur >= dur_threshold:
-                notable.add(fam)
-    if total_count > 0:
-        for fam, cnt in family_count.items():
-            if cnt / total_count >= count_threshold:
-                notable.add(fam)
-    # Always include collective and triton sub-types if they have any time
-    for fam, dur in family_dur.items():
-        if dur > 0 and (fam == "collective" or fam.startswith("triton")):
-            notable.add(fam)
+    # All distinct compute families (exclude collective and other; other goes last)
+    compute_fams = [
+        f for f in family_dur
+        if f not in ("collective", "other") and family_dur[f] > 0
+    ]
+    compute_fams.sort(key=lambda f: -family_dur[f])
 
-    notable.discard("other")
+    KERNEL_TYPES = compute_fams + ["other"]
 
-    # Sort by avg_dur_ms descending, "other" always last
-    notable_sorted = sorted(notable, key=lambda f: -family_dur.get(f, 0.0))
-    KERNEL_TYPES = notable_sorted + ["other"]
-
-    noted_dur   = sum(family_dur.get(f, 0.0)   for f in notable_sorted)
-    noted_count = sum(family_count.get(f, 0.0) for f in notable_sorted)
-
-    kt_avgs: dict = {}
-    for f in notable_sorted:
-        kt_avgs[f] = (family_count.get(f, 0.0), family_dur.get(f, 0.0))
-    kt_avgs["other"] = (max(0.0, total_count - noted_count),
-                        max(0.0, total_dur   - noted_dur))
+    kt_avgs: dict = {f: (family_count[f], family_dur[f]) for f in compute_fams}
+    kt_avgs["other"]      = (family_count.get("other", 0.0),      family_dur.get("other", 0.0))
+    # Keep collective in kt_avgs for callers that need it in percentage calculations
+    kt_avgs["collective"] = (family_count.get("collective", 0.0), family_dur.get("collective", 0.0))
 
     return KERNEL_TYPES, kt_avgs
 
@@ -537,13 +518,11 @@ def print_kernel_type_breakdown(data, label=""):
     hdr = f"{'type':<{type_w}} {'avg_count':<12} {'count_pct':<11} {'avg_dur_ms':<14} {'dur_pct':<10}"
     print(hdr)
     print("-" * len(hdr))
+    # KERNEL_TYPES contains only compute families (no collective)
     for ktype in data["KERNEL_TYPES"]:
         ac, ad = data["kt_avgs"][ktype]
-        is_collective = (ktype == "collective")
-        d_denom = total_dur   if is_collective else compute_dur
-        c_denom = total_count if is_collective else compute_count
-        pct_d = f"{ad / d_denom * 100:.1f}%"
-        pct_c = f"{ac / c_denom * 100:.1f}%"
+        pct_d = f"{ad / compute_dur   * 100:.1f}%"
+        pct_c = f"{ac / compute_count * 100:.1f}%"
         print(f"{ktype:<{type_w}} {ac:<12.1f} {pct_c:<11} {ad:<14.3f} {pct_d:<10}")
 
 
@@ -659,17 +638,15 @@ def _write_kernel_types_csv(path, kernel_types, kt_avgs):
     with open(path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=["type", "avg_count", "count_pct", "avg_dur_ms", "dur_pct"])
         writer.writeheader()
+        # kernel_types contains only compute families (no collective)
         for ktype in kernel_types:
             ac, ad = kt_avgs[ktype]
-            is_collective = (ktype == "collective")
-            d_denom = total_dur   if is_collective else compute_dur
-            c_denom = total_count if is_collective else compute_count
             writer.writerow({
                 "type":       ktype,
                 "avg_count":  fmt3(ac),
-                "count_pct":  f"{ac / c_denom * 100:.1f}%",
+                "count_pct":  f"{ac / compute_count * 100:.1f}%",
                 "avg_dur_ms": fmt3(ad),
-                "dur_pct":    f"{ad / d_denom * 100:.1f}%",
+                "dur_pct":    f"{ad / compute_dur   * 100:.1f}%",
             })
     print(f"Wrote {path} ({len(kernel_types)} rows)")
 
@@ -743,18 +720,16 @@ def _write_kernel_types_cmp_csv(path, data_a, data_b):
     total_b    = sum(v[1] for v in data_b["kt_avgs"].values()) or 1.0
     compute_a  = (total_a - data_a["kt_avgs"].get("collective", (0.0, 0.0))[1]) or 1.0
     compute_b  = (total_b - data_b["kt_avgs"].get("collective", (0.0, 0.0))[1]) or 1.0
+    # all_types contains only compute families (no collective); use compute totals
     rows = []
     for ktype in all_types:
         ac_a, ad_a = data_a["kt_avgs"].get(ktype, (0.0, 0.0))
         ac_b, ad_b = data_b["kt_avgs"].get(ktype, (0.0, 0.0))
-        is_collective = (ktype == "collective")
-        da_a = total_a if is_collective else compute_a
-        da_b = total_b if is_collective else compute_b
         rows.append({
             "type":         ktype,
-            "dur_pct_A":    f"{ad_a / da_a * 100:.1f}%",
+            "dur_pct_A":    f"{ad_a / compute_a * 100:.1f}%",
             "avg_dur_ms_A": fmt3(ad_a),
-            "dur_pct_B":    f"{ad_b / da_b * 100:.1f}%",
+            "dur_pct_B":    f"{ad_b / compute_b * 100:.1f}%",
             "avg_dur_ms_B": fmt3(ad_b),
             "delta_dur_ms": fmt3(ad_b - ad_a),
             "pct_change":   pct(ad_a, ad_b),
