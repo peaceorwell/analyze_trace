@@ -14,6 +14,10 @@ createApp({
       const t = isDark.value ? 'dark' : 'light';
       document.documentElement.setAttribute('data-theme', t);
       localStorage.setItem('tpa-theme', t);
+      // Rebuild charts so colors update immediately on theme switch
+      if (resultTab.value === 'chart' && selectedJob.value?.status === 'done') {
+        nextTick(() => buildChart());
+      }
     };
 
     // ── State ──────────────────────────────────────────────────────────────
@@ -276,12 +280,13 @@ createApp({
       for (const [file, label] of Object.entries(csvMap)) {
         if (res[file]) tabs.push({ key: file, label });
       }
-      // Add per-step triton tabs (step_N_triton_kernels.csv)
-      for (const file of Object.keys(res).sort()) {
-        if (file.match(/^step_\d+_triton_kernels\.csv$/)) {
-          const stepNum = file.match(/^step_(\d+)_/)[1];
-          tabs.push({ key: file, label: `Triton Step ${stepNum}` });
-        }
+      // Add per-step triton tabs (step_N_triton_kernels.csv), at most 3
+      const tritonFiles = Object.keys(res).sort()
+        .filter(f => f.match(/^step_\d+_triton_kernels\.csv$/))
+        .slice(0, 3);
+      for (const file of tritonFiles) {
+        const stepNum = file.match(/^step_(\d+)_/)[1];
+        tabs.push({ key: file, label: `Triton Step ${stepNum}` });
       }
       return tabs;
     });
@@ -440,31 +445,44 @@ createApp({
     // Cycle through PIE_COLORS for any number of labels
     const getColors = n => Array.from({ length: n }, (_, i) => PIE_COLORS[i % PIE_COLORS.length]);
 
+    // Returns theme-aware color tokens for Chart.js
+    const chartColors = () => {
+      const dark = isDark.value;
+      return {
+        text:       dark ? '#cbd5e1' : '#475569',
+        title:      dark ? '#e2e8f0' : '#1e293b',
+        grid:       dark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.07)',
+        border:     dark ? '#1e293b' : '#ffffff',
+      };
+    };
+
     const buildPie = (canvas, labels, data, title) => {
       const pairs = labels.map((l, i) => ({ l, v: data[i] })).filter(p => p.v > 0);
       if (!pairs.length || !canvas) return null;
       const total = pairs.reduce((s, p) => s + p.v, 0);
+      const cc = chartColors();
       return new Chart(canvas, {
         type: 'doughnut',
         data: {
           labels: pairs.map(p => p.l),
           datasets: [{ data: pairs.map(p => p.v),
             backgroundColor: getColors(pairs.length),
-            borderWidth: 2, borderColor: '#fff' }],
+            borderWidth: 2, borderColor: cc.border }],
         },
         options: {
           responsive: true, maintainAspectRatio: false,
           plugins: {
-            title: { display: true, text: title, font: { size: 13 } },
+            title: { display: true, text: title, font: { size: 13 }, color: cc.title },
             legend: {
               position: 'bottom',
-              labels: { font: { size: 11 }, boxWidth: 12, padding: 10,
+              labels: { font: { size: 11 }, boxWidth: 12, padding: 10, color: cc.text,
                         generateLabels: chart => {
                           const ds = chart.data.datasets[0];
                           return chart.data.labels.map((l, i) => ({
                             text: `${l}  ${(ds.data[i] / total * 100).toFixed(1)}%`,
                             fillStyle: ds.backgroundColor[i],
                             strokeStyle: ds.backgroundColor[i],
+                            fontColor: cc.text,
                             hidden: false, index: i,
                           }));
                         }},
@@ -522,6 +540,7 @@ createApp({
       const durPcts = isCmp
         ? table.rows.map(r => `A:${r.dur_pct_A || ''} B:${r.dur_pct_B || ''}`)
         : table.rows.map(r => r.dur_pct || '');
+      const cc = chartColors();
       ktChartInst.value = new Chart(ktChart.value, {
         type: "bar",
         data: { labels, datasets },
@@ -529,13 +548,17 @@ createApp({
           indexAxis: isCmp ? 'x' : 'y',   // horizontal for single, vertical for compare
           responsive: true, maintainAspectRatio: false,
           plugins: {
-            legend: { display: isCmp, position: "top" },
-            title: { display: true, text: "Kernel 类型耗时 (ms)", font: { size: 13 } },
+            legend: { display: isCmp, position: "top",
+              labels: { color: cc.text, font: { size: 11 } } },
+            title: { display: true, text: "Kernel 类型耗时 (ms)", font: { size: 13 }, color: cc.title },
             tooltip: { callbacks: { afterLabel: (ctx) => `  占比: ${durPcts[ctx.dataIndex]}` } },
           },
           scales: {
-            x: { beginAtZero: true, ticks: { font: { size: 11 } } },
-            y: { ticks: { font: { size: 11 } } },
+            x: { beginAtZero: true,
+              ticks: { font: { size: 11 }, color: cc.text },
+              grid:  { color: cc.grid } },
+            y: { ticks: { font: { size: 11 }, color: cc.text },
+              grid:  { color: cc.grid } },
           },
         },
       });
