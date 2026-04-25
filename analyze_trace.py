@@ -99,8 +99,8 @@ def extract_kernel_family(name: str) -> str:
             if kw in nl:
                 return family
 
-    # Collective / communication
-    if any(kw in nl for kw in ("nccl", "cncl", "collective",
+    # Collective / communication (tcdp is a collective variant)
+    if any(kw in nl for kw in ("nccl", "cncl", "tcdp", "collective",
                                 "allreduce", "allgather", "reducescatter", "broadcast_")):
         return "collective"
 
@@ -485,12 +485,14 @@ def print_kernel_type_breakdown(data, label=""):
     if label:
         title += f" — {label}"
     print(f"\n{title} ===")
-    hdr = f"{'type':<12} {'avg_count':<12} {'avg_dur_ms':<14}"
+    # Dynamic type column width to accommodate auto-classified names (e.g. triton_pointwise)
+    type_w = max(16, max((len(k) for k in data["KERNEL_TYPES"]), default=16))
+    hdr = f"{'type':<{type_w}} {'avg_count':<12} {'avg_dur_ms':<14}"
     print(hdr)
     print("-" * len(hdr))
     for ktype in data["KERNEL_TYPES"]:
         ac, ad = data["kt_avgs"][ktype]
-        print(f"{ktype:<12} {ac:<12.1f} {ad:<14.3f}")
+        print(f"{ktype:<{type_w}} {ac:<12.1f} {ad:<14.3f}")
 
 
 def print_comparison(data_a, data_b, label_a, label_b):
