@@ -63,8 +63,7 @@ _FAMILY_PATTERNS = [
     (["copy_", "memcpy", "fill_", "zeros_", "ones_"],                                       "memory"),
 ]
 
-# Pre-compiled regexes for kernel name normalization (used in fallback)
-_STRIP_TEMPLATE_RE = re.compile(r'<.*')
+# Pre-compiled regex for stripping leading "void " and C++ namespace prefixes (used in fallback)
 _STRIP_LEADING_RE  = re.compile(r'^(void\s+|at::native::|\w+::)+', re.IGNORECASE)
 
 
@@ -107,13 +106,15 @@ def extract_kernel_family(name: str) -> str:
             if kw in nl:
                 return family
 
-    # Fallback: strip templates / namespaces / "void", take first meaningful token.
-    # Preserve the original case — the token IS the type name, not a synthetic label.
-    clean = _STRIP_TEMPLATE_RE.sub("", name)
-    clean = _STRIP_LEADING_RE.sub("", clean)
-    tokens = [t for t in re.split(r'[_\s:]+', clean) if t and not t.isdigit() and len(t) > 1]
-    if tokens:
-        return tokens[0][:24]
+    # Fallback: strip "void " and C++ namespace prefixes, then take the identifier
+    # up to (but not including) the first '<'.  No truncation; preserve original case.
+    # e.g. "void mlu::PoolingForwardKernel<float, long>" → "PoolingForwardKernel"
+    clean = _STRIP_LEADING_RE.sub("", name)
+    if '<' in clean:
+        clean = clean[:clean.index('<')]
+    clean = clean.strip()
+    if clean:
+        return clean
     return "other"
 
 
