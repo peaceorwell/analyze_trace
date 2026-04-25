@@ -500,6 +500,17 @@ select.input { appearance: none; cursor: pointer; }
 .data-table tbody tr:nth-child(even) td:first-child { background-color: var(--td-first-even); }
 .data-table tr:hover td { background-color: var(--td-hover) !important; }
 
+/* Triton Step table - scrollable container */
+.triton-step-table-wrap {
+  max-height: 400px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border2) transparent;
+}
+.triton-step-table-wrap::-webkit-scrollbar { width: 6px; }
+.triton-step-table-wrap::-webkit-scrollbar-track { background: transparent; }
+.triton-step-table-wrap::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+
 .cell-pos { color: var(--green); font-weight: 600; }
 .cell-neg { color: var(--red); font-weight: 600; }
 .table-footer { font-size: 10px; color: var(--text3); padding: 5px 3px; text-align: right; font-family: var(--mono); }

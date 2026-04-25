@@ -332,6 +332,7 @@
                 <button v-if="isTritonStepTab" class="btn btn-sm btn-outline" @click="clearInductorCache()">清除 Cache</button>
               </div>
               <div class="table-scroll">
+                <div v-if="isTritonStepTab" class="triton-step-table-wrap">
                 <table class="data-table">
                   <colgroup>
                     <col v-for="f in currentTable.fields" :key="f"
@@ -412,6 +413,7 @@
                     </tr>
                   </tbody>
                 </table>
+                </div>
               </div>
               <div class="table-footer">共 {{ filteredRows.length }} 行</div>
             </div>

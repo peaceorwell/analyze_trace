@@ -858,7 +858,7 @@ async def clear_inductor_cache(jid: str, user_token: Optional[str] = Cookie(None
     """Clear the torchinductor cache for a job's triton runs."""
     import shutil, glob
 
-    token = await get_or_create_user(user_token, x_user_token)
+    await get_or_create_user(user_token, x_user_token)  # Ensure user exists, but no ownership check (public system)
     db = await get_db()
     cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
     row = await row_to_dict(await cursor.fetchone())
@@ -866,9 +866,6 @@ async def clear_inductor_cache(jid: str, user_token: Optional[str] = Cookie(None
 
     if row is None:
         raise HTTPException(404)
-
-    if row.get("user_token") != token:
-        raise HTTPException(403, "Not the job owner")
 
     def do_clear():
         import subprocess
