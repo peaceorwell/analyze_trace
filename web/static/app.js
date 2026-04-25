@@ -496,13 +496,21 @@ createApp({
 
       const labels = table.rows.map(r => r.type);
 
+      // For horizontal bars, make the container tall enough so each bar is ~32px
+      if (!isCmp) {
+        ktChart.value.parentElement.style.height =
+          Math.max(420, labels.length * 32 + 80) + 'px';
+      } else {
+        ktChart.value.parentElement.style.height = '420px';
+      }
+
       // Bar chart — horizontal (indexAxis:'y') for single trace so type names are readable
       const barColors = getColors(labels.length);
       const datasets = [];
       if (!isCmp) {
         datasets.push({ label: "avg_dur_ms",
           data: table.rows.map(r => parseFloat(r.avg_dur_ms) || 0),
-          backgroundColor: barColors, borderRadius: 3 });
+          backgroundColor: barColors, borderRadius: 3, barThickness: 22 });
       } else {
         datasets.push({ label: "A avg_dur_ms",
           data: table.rows.map(r => parseFloat(r.avg_dur_ms_A) || 0),

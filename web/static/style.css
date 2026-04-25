@@ -464,7 +464,7 @@ select.input { appearance: none; cursor: pointer; }
   display: flex; flex-direction: row; gap: 20px;
   justify-content: center; align-items: flex-start; flex-wrap: wrap;
 }
-.chart-pie-area canvas { height: 300px !important; max-width: 420px; width: 100%; }
+.chart-pie-area canvas { height: 420px !important; max-width: 540px; width: 100%; }
 
 /* ═══════════════════════════════════════════════
    TABLE
