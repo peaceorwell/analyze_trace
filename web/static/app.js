@@ -33,7 +33,7 @@ createApp({
     const submitting = ref(false);
     const uploadProgress = ref(0);
     const form = ref({
-      kernelTypes: "gemm,embedding,pool",
+      kernelTypes: "",
       label: "",
       projectId: "",
       saveTritonCsv: true,

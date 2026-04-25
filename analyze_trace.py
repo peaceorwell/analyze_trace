@@ -3,6 +3,7 @@ import bisect
 import csv
 import json
 import os
+import re
 import subprocess
 import sys
 from collections import defaultdict
@@ -40,6 +41,138 @@ def classify_kernel(name, args, kernel_types):
     if args.get("Collective name"):
         return "collective"
     return "other"
+
+
+# ── Auto kernel classification ────────────────────────────────────────────────
+
+# Ordered (keywords, family_label) pairs for semantic kernel family detection.
+# First matching keyword wins. Keywords are checked as lowercase substrings.
+_FAMILY_PATTERNS = [
+    (["gemm", "sgemm", "dgemm", "hgemm", "igemm", "bgemm", "cutlass", "matmul", "cublas"], "gemm"),
+    (["flash_attn", "flash_attention", "fmha", "scaled_dot_product", "self_attention"],     "attention"),
+    (["layer_norm", "layernorm", "rms_norm", "rmsnorm", "group_norm", "groupnorm",
+      "batch_norm", "batchnorm"],                                                            "norm"),
+    (["elementwise", "pointwise", "eltwise"],                                               "elementwise"),
+    (["embedding", "lookup_table"],                                                         "embedding"),
+    (["conv2d", "conv1d", "conv3d", "convolution", "scudnn", "cudnn_conv", "winograd"],    "conv"),
+    (["softmax", "log_softmax"],                                                            "softmax"),
+    (["reduce_", "cub::device_reduce", "sum_kernel", "mean_kernel"],                        "reduce"),
+    (["dropout"],                                                                           "dropout"),
+    (["index_", "scatter", "gather_", "take_"],                                             "index_op"),
+    (["sort_", "topk", "argsort"],                                                          "sort"),
+    (["copy_", "memcpy", "fill_", "zeros_", "ones_"],                                       "memory"),
+]
+
+# Pre-compiled regexes for kernel name normalization (used in fallback)
+_STRIP_TEMPLATE_RE = re.compile(r'<.*')
+_STRIP_LEADING_RE  = re.compile(r'^(void\s+|at::native::|\w+::)+', re.IGNORECASE)
+
+
+def extract_kernel_family(name: str) -> str:
+    """Map a GPU kernel name to a semantic family label.
+
+    Priority order:
+    1. triton_ prefix  → triton sub-type (triton_reduce / triton_pointwise / triton_<sub>)
+    2. Known semantic patterns from _FAMILY_PATTERNS
+    3. Collective communication keywords
+    4. Fallback: first meaningful token from the cleaned name
+    """
+    nl = name.lower()
+
+    # Triton kernels — group by sub-type token
+    if nl.startswith("triton_"):
+        parts = name.split("_")
+        if len(parts) >= 2:
+            sub = parts[1].lower()
+            if sub in ("red", "per"):    # reduction / persistent-reduction
+                return "triton_reduce"
+            if sub in ("poi", "tem"):    # pointwise / template-pointwise
+                return "triton_pointwise"
+            if sub == "mm":
+                return "triton_mm"
+            return f"triton_{sub}"
+        return "triton"
+
+    # Known semantic families
+    for keywords, family in _FAMILY_PATTERNS:
+        for kw in keywords:
+            if kw in nl:
+                return family
+
+    # Collective / communication
+    if any(kw in nl for kw in ("nccl", "cncl", "collective",
+                                "allreduce", "allgather", "reducescatter", "broadcast_")):
+        return "collective"
+
+    # Fallback: strip templates / namespaces / "void", take first meaningful token
+    clean = _STRIP_TEMPLATE_RE.sub("", name)
+    clean = _STRIP_LEADING_RE.sub("", clean)
+    tokens = [t for t in re.split(r'[_\s:]+', clean) if t and not t.isdigit() and len(t) > 1]
+    if tokens:
+        return tokens[0].lower()[:24]
+    return "other"
+
+
+def auto_classify_kernels(avg_kernels: dict,
+                           dur_threshold: float = 0.08,
+                           count_threshold: float = 0.10) -> tuple:
+    """Auto-classify kernel families from aggregated per-kernel stats.
+
+    A family is considered "notable" (gets its own category) when ANY of:
+      1. Family total avg_dur_ms  ≥ dur_threshold   (default 8%) of all kernel time
+      2. Family total avg_count   ≥ count_threshold  (default 10%) of all kernel count
+      3. Family is collective or starts with "triton" (always shown when present)
+
+    Returns:
+        (KERNEL_TYPES, kt_avgs)
+        KERNEL_TYPES : list of type labels sorted by avg_dur_ms desc, "other" last
+        kt_avgs      : {type -> (avg_count, avg_dur_ms)}
+    """
+    if not avg_kernels:
+        return ["other"], {"other": (0.0, 0.0)}
+
+    total_dur   = sum(v["avg_dur_ms"] for v in avg_kernels.values())
+    total_count = sum(v["avg_count"]  for v in avg_kernels.values())
+
+    # Aggregate per-kernel stats into families
+    family_dur   = defaultdict(float)
+    family_count = defaultdict(float)
+    for name, stats in avg_kernels.items():
+        fam = extract_kernel_family(name)
+        family_dur[fam]   += stats["avg_dur_ms"]
+        family_count[fam] += stats["avg_count"]
+
+    # Determine notable families
+    notable = set()
+    if total_dur > 0:
+        for fam, dur in family_dur.items():
+            if dur / total_dur >= dur_threshold:
+                notable.add(fam)
+    if total_count > 0:
+        for fam, cnt in family_count.items():
+            if cnt / total_count >= count_threshold:
+                notable.add(fam)
+    # Always include collective and triton sub-types if they have any time
+    for fam, dur in family_dur.items():
+        if dur > 0 and (fam == "collective" or fam.startswith("triton")):
+            notable.add(fam)
+
+    notable.discard("other")
+
+    # Sort by avg_dur_ms descending, "other" always last
+    notable_sorted = sorted(notable, key=lambda f: -family_dur.get(f, 0.0))
+    KERNEL_TYPES = notable_sorted + ["other"]
+
+    noted_dur   = sum(family_dur.get(f, 0.0)   for f in notable_sorted)
+    noted_count = sum(family_count.get(f, 0.0) for f in notable_sorted)
+
+    kt_avgs: dict = {}
+    for f in notable_sorted:
+        kt_avgs[f] = (family_count.get(f, 0.0), family_dur.get(f, 0.0))
+    kt_avgs["other"] = (max(0.0, total_count - noted_count),
+                        max(0.0, total_dur   - noted_dur))
+
+    return KERNEL_TYPES, kt_avgs
 
 
 def write_triton_code_file(code_dir, idx, kernel):
@@ -263,8 +396,6 @@ def compute_avgs(parsed, kernel_types):
     n_steps   = len(all_steps)
     mean      = lambda vals: sum(vals) / n_steps if n_steps else 0.0
 
-    KERNEL_TYPES = ["triton"] + kernel_types + ["collective", "other"]
-
     step_stats = {}
     for step in all_steps:
         sd  = step_durations.get(step, 0.0)
@@ -281,13 +412,9 @@ def compute_avgs(parsed, kernel_types):
 
     avg_row = tuple(mean([step_stats[s][i] for s in all_steps]) for i in range(9))
 
-    kt_avgs = {
-        ktype: (
-            mean([step_to_kernel_types[s].get(ktype, {"count": 0})["count"]    for s in all_steps]),
-            mean([step_to_kernel_types[s].get(ktype, {"dur_ms": 0.0})["dur_ms"] for s in all_steps]),
-        )
-        for ktype in KERNEL_TYPES
-    }
+    # Auto-classify kernel families from aggregated per-kernel stats
+    avg_kernels_data = avg_stats(step_to_kernels, all_steps)
+    KERNEL_TYPES, kt_avgs = auto_classify_kernels(avg_kernels_data)
 
     # Triton aggregation: per step by kernel name
     step_triton_agg = defaultdict(lambda: defaultdict(lambda: {"count": 0, "dur_ms": 0.0, "io_gb": 0.0, "io_eff": 0.0}))
@@ -321,7 +448,7 @@ def compute_avgs(parsed, kernel_types):
         "avg_row":        avg_row,
         "KERNEL_TYPES":   KERNEL_TYPES,
         "kt_avgs":        kt_avgs,
-        "avg_kernels":    avg_stats(step_to_kernels, all_steps),
+        "avg_kernels":    avg_kernels_data,
         "avg_aten":       avg_stats(step_to_aten, all_steps),
         "avg_cncl":       avg_stats(step_to_cncl, all_steps),
         "avg_triton":     avg_triton,
@@ -385,16 +512,24 @@ def print_comparison(data_a, data_b, label_a, label_b):
         va, vb = data_a["avg_row"][i], data_b["avg_row"][i]
         print(f"{metric:<26} {va:<18.3f} {vb:<18.3f} {vb - va:<+14.3f} {pct(va, vb):<12}")
 
-    # Kernel type comparison
+    # Kernel type comparison — union of both auto-classified type lists
+    all_types = list(dict.fromkeys(
+        [t for t in data_a["KERNEL_TYPES"] if t != "other"] +
+        [t for t in data_b["KERNEL_TYPES"] if t != "other"]
+    ))
+    all_types.sort(key=lambda t: -(
+        data_a["kt_avgs"].get(t, (0.0, 0.0))[1] + data_b["kt_avgs"].get(t, (0.0, 0.0))[1]
+    ))
+    all_types.append("other")
     print(f"\n=== Kernel Type Comparison ({label_a} vs {label_b}) ===")
-    hdr2 = (f"{'type':<12} {'count_A':<10} {'count_B':<10} {'dur_A(ms)':<12}"
+    hdr2 = (f"{'type':<16} {'count_A':<10} {'count_B':<10} {'dur_A(ms)':<12}"
             f" {'dur_B(ms)':<12} {'delta_dur':<12} {'pct':<10}")
     print(hdr2)
     print("-" * len(hdr2))
-    for ktype in data_a["KERNEL_TYPES"]:
+    for ktype in all_types:
         ac_a, ad_a = data_a["kt_avgs"].get(ktype, (0.0, 0.0))
         ac_b, ad_b = data_b["kt_avgs"].get(ktype, (0.0, 0.0))
-        print(f"{ktype:<12} {ac_a:<10.1f} {ac_b:<10.1f} {ad_a:<12.3f}"
+        print(f"{ktype:<16} {ac_a:<10.1f} {ac_b:<10.1f} {ad_a:<12.3f}"
               f" {ad_b:<12.3f} {ad_b - ad_a:<+12.3f} {pct(ad_a, ad_b):<10}")
 
 
@@ -480,8 +615,18 @@ def _write_triton_cmp_csv(path, avg_triton_a, avg_triton_b):
 
 
 def _write_kernel_types_cmp_csv(path, data_a, data_b):
+    # Use union of both type lists (excluding "other"), then append "other" at the end
+    all_types = list(dict.fromkeys(
+        [t for t in data_a["KERNEL_TYPES"] if t != "other"] +
+        [t for t in data_b["KERNEL_TYPES"] if t != "other"]
+    ))
+    # Sort by max duration across A/B descending, then append "other"
+    all_types.sort(key=lambda t: -(
+        data_a["kt_avgs"].get(t, (0.0, 0.0))[1] + data_b["kt_avgs"].get(t, (0.0, 0.0))[1]
+    ))
+    all_types.append("other")
     rows = []
-    for ktype in data_a["KERNEL_TYPES"]:
+    for ktype in all_types:
         ac_a, ad_a = data_a["kt_avgs"].get(ktype, (0.0, 0.0))
         ac_b, ad_b = data_b["kt_avgs"].get(ktype, (0.0, 0.0))
         rows.append({

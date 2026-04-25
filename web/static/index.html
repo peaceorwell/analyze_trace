@@ -182,7 +182,7 @@
           <div v-if="compareSelection.length===2" class="compare-form">
             <div class="form-row">
               <label>kernel-types</label>
-              <input v-model="compareKernelTypes" class="input" placeholder="gemm,embedding,pool" />
+              <input v-model="compareKernelTypes" class="input" placeholder="自动分类（可留空）" />
             </div>
             <div class="form-row">
               <label>备注</label>
@@ -228,8 +228,8 @@
             <div class="form-row form-row-info">
               <label>kernel-types</label>
               <div class="input-with-info">
-                <input v-model="form.kernelTypes" class="input" placeholder="gemm,embedding,pool" />
-                <span class="info-icon" title="设置后会单独统计包含该内容的kernel，使用','隔开">i</span>
+                <input v-model="form.kernelTypes" class="input" placeholder="自动分类（可留空）" />
+                <span class="info-icon" title="留空则按规则自动分类（时长占比>8%、数量占比>10%等）；填入关键词可额外指定分类，逗号分隔">i</span>
               </div>
             </div>
             <div class="form-row">
@@ -545,7 +545,7 @@
             <ul>
               <li>在左侧上传区拖拽或点击上传 <code>.json</code> 或 <code>.json.gz</code> 文件（PyTorch Profiler 导出的 Chrome Trace 格式）</li>
               <li>选择所属项目（可选，用于分类管理）</li>
-              <li>设置 kernel-types 关键词（默认：gemm,embedding,pool），逗号分隔</li>
+              <li>kernel-types 留空则按规则<strong>自动分类</strong>（时长占比 &gt;8%、数量占比 &gt;10% 等）；也可填入额外关键词，逗号分隔</li>
               <li>点击"提交分析"，等待完成</li>
             </ul>
           </section>
@@ -568,7 +568,7 @@
             <h3>4. 历史对比</h3>
             <ul>
               <li>在左侧"对比"标签页选择两个已完成的单文件任务</li>
-              <li>设置 kernel-types 和备注，发起对比分析</li>
+              <li>可选填 kernel-types 额外关键词和备注，发起对比分析（Kernel 类型自动分类）</li>
               <li>无需重新上传文件，直接复用已有数据</li>
             </ul>
           </section>
