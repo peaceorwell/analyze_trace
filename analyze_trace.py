@@ -40,7 +40,7 @@ def classify_kernel(name, args, kernel_types):
             return pattern
     if args.get("Collective name"):
         return "collective"
-    return "other"
+    return extract_kernel_family(name)
 
 
 # ── Auto kernel classification ────────────────────────────────────────────────
