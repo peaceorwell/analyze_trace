@@ -321,8 +321,11 @@ createApp({
         const op = colFilterOps.value[field] || '~';
         rows = rows.filter(r => {
           const cell = r[field] ?? '';
-          if (op === '~')  return  String(cell).toLowerCase().includes(val.toLowerCase());
-          if (op === '!~') return !String(cell).toLowerCase().includes(val.toLowerCase());
+          if (op === '~' || op === '!~') {
+            const terms = val.split('|').map(t => t.toLowerCase()).filter(t => t);
+            const hit = terms.some(t => String(cell).toLowerCase().includes(t));
+            return op === '~' ? hit : !hit;
+          }
           const num = parseFloat(val);
           const cellNum = parseFloat(cell);
           if (isNaN(num) || isNaN(cellNum)) return isNaN(num);
