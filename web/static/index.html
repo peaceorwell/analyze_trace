@@ -407,6 +407,14 @@
                       </td>
                     </tr>
                   </tbody>
+                  <tfoot v-if="filteredRows.length > 0">
+                    <tr class="sum-row">
+                      <td v-for="(f, i) in currentTable.fields" :key="f" class="sum-cell">
+                        <template v-if="i === 0">Σ 合计</template>
+                        <template v-else-if="colSums[f] !== null">{{ fmtSum(colSums[f]) }}</template>
+                      </td>
+                    </tr>
+                  </tfoot>
                 </table>
                 </div>
               </div>

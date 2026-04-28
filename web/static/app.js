@@ -346,6 +346,29 @@ createApp({
       return rows;
     });
 
+    // ── Column sums ────────────────────────────────────────────────────────
+    const colSums = computed(() => {
+      const fields = currentTable.value.fields;
+      const rows   = filteredRows.value;
+      const result = {};
+      for (const f of fields) {
+        // Percentages are not meaningful to sum
+        if (rows.some(r => String(r[f] ?? '').trim().endsWith('%'))) {
+          result[f] = null; continue;
+        }
+        const nums = rows.map(r => parseFloat(r[f])).filter(n => !isNaN(n));
+        result[f] = nums.length > 0 ? nums.reduce((a, b) => a + b, 0) : null;
+      }
+      return result;
+    });
+
+    const fmtSum = v => {
+      if (v === null) return '';
+      if (Number.isInteger(v)) return String(v);
+      const s = v.toFixed(3);
+      return parseFloat(s).toString(); // strip trailing zeros
+    };
+
     // ── Helpers ────────────────────────────────────────────────────────────
     const fmtDate = iso => iso ? iso.replace("T", " ").slice(0, 16) : "";
 
@@ -1184,7 +1207,7 @@ createApp({
       fmtDate, statusIcon, toggleGroup, deltaCellClass,
       onFileChange, onDrop, clearFile, submitJob,
       selectJob, deleteJob, deleteFile, editLabel, moveProject, confirmMoveProject,
-      setSort, downloadCsv, colWidths, startResize,
+      setSort, downloadCsv, colWidths, startResize, colSums, fmtSum,
       colFilters, colFilterOps, hasColFilters, clearColFilters,
       sidebarWidth, sidebarCollapsed,
       toggleSidebar, startSidebarResize,
