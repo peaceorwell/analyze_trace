@@ -1098,8 +1098,22 @@ async def get_job_file(jid: str, slot: str, user_token: Optional[str] = Cookie(N
     # Prefer gzip path if available, fall back to json path
     gzip_path = row.get(f"file_{slot}_gzip_path")
     json_path = row.get(f"file_{slot}_path")
-
     file_path = gzip_path if gzip_path else json_path
+
+    # Compare-from-history jobs have no file stored directly;
+    # resolve via the corresponding source job (slot a → source_job_a, slot b → source_job_b)
+    if not file_path:
+        src_jid = row.get(f"source_job_{slot}")
+        if src_jid:
+            db2 = await get_db()
+            cur2 = await db2.execute("SELECT file_a_path, file_a_gzip_path FROM jobs WHERE id=?", (src_jid,))
+            src = await row_to_dict(await cur2.fetchone())
+            await db2.close()
+            if src:
+                gzip_path = src.get("file_a_gzip_path")
+                json_path = src.get("file_a_path")
+                file_path = gzip_path if gzip_path else json_path
+
     if not file_path or not os.path.exists(file_path):
         raise HTTPException(404, "File not found")
 
