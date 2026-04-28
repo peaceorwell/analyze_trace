@@ -1081,9 +1081,9 @@ except Exception as e:
 
 
 @app.get("/api/jobs/{jid}/files/{slot}")
-async def get_job_file(jid: str, slot: str, user_token: Optional[str] = Cookie(None), x_user_token: Optional[str] = Header(None)):
-    """Serve trace file (a or b) for Perfetto. Returns the raw file content."""
-    await get_or_create_user(user_token, x_user_token)
+async def get_job_file(jid: str, slot: str, token: Optional[str] = None, user_token: Optional[str] = Cookie(None), x_user_token: Optional[str] = Header(None)):
+    """Serve trace file (a or b) for Perfetto/download. Returns the raw file content."""
+    await get_or_create_user(user_token, token or x_user_token)
     db = await get_db()
     cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
     row = await row_to_dict(await cursor.fetchone())
@@ -1117,20 +1117,10 @@ async def get_job_file(jid: str, slot: str, user_token: Optional[str] = Cookie(N
     if not file_path or not os.path.exists(file_path):
         raise HTTPException(404, "File not found")
 
-    # Send raw file (gzip or json) as-is to Perfetto
+    # Stream file directly — avoids loading entire file into memory
     media_type = "application/gzip" if file_path.endswith(".gz") else "application/json"
-
-    from starlette.responses import Response
-
-    try:
-        with open(file_path, "rb") as f:
-            content = f.read()
-    except Exception as e:
-        raise HTTPException(500, f"Failed to read file: {e}")
-
     filename = row.get(f"file_{slot}_name") or f"trace_{slot}.json"
-    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
-    return Response(content, media_type=media_type, headers=headers)
+    return FileResponse(file_path, media_type=media_type, filename=filename)
 
 
 @app.delete("/api/jobs/{jid}/files/{slot}", status_code=204)

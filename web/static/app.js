@@ -981,22 +981,13 @@ createApp({
       }
     };
 
-    const downloadTraceFile = async (slot) => {
+    const downloadTraceFile = (slot) => {
       if (!selectedJobId.value) return;
-      const fname = (slot === 'a' ? selectedJob.value?.file_a_name : selectedJob.value?.file_b_name) || `trace_${slot}.json`;
       const token = localStorage.getItem("user_token");
-      const resp = await fetch(`/api/jobs/${selectedJobId.value}/files/${slot}`, {
-        credentials: "include",
-        headers: token ? { "X-User-Token": token } : {},
-      });
-      if (!resp.ok) { alert("下载失败: " + resp.status); return; }
-      const blob = await resp.blob();
-      const url = URL.createObjectURL(blob);
+      const params = token ? `?token=${encodeURIComponent(token)}` : "";
       const a = document.createElement('a');
-      a.href = url;
-      a.download = fname;
+      a.href = `/api/jobs/${selectedJobId.value}/files/${slot}${params}`;
       a.click();
-      URL.revokeObjectURL(url);
     };
 
     const openInPerfetto = async (slot) => {
