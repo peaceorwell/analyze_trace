@@ -514,13 +514,10 @@ createApp({
 
       const labels = table.rows.map(r => r.type);
 
-      // For horizontal bars, make the container tall enough so each bar is ~32px
-      if (!isCmp) {
-        ktChart.value.parentElement.style.height =
-          Math.max(420, labels.length * 32 + 80) + 'px';
-      } else {
-        ktChart.value.parentElement.style.height = '420px';
-      }
+      // Scale container height so each bar is ~32px (compare has 2 bars per label)
+      const barsPerLabel = isCmp ? 2 : 1;
+      ktChart.value.parentElement.style.height =
+        Math.max(420, labels.length * barsPerLabel * 32 + 80) + 'px';
 
       // Bar chart — horizontal (indexAxis:'y') for single trace so type names are readable
       const barColors = getColors(labels.length);
@@ -545,7 +542,7 @@ createApp({
         type: "bar",
         data: { labels, datasets },
         options: {
-          indexAxis: isCmp ? 'x' : 'y',   // horizontal for single, vertical for compare
+          indexAxis: 'y',   // always horizontal so category labels are readable
           responsive: true, maintainAspectRatio: false,
           plugins: {
             legend: { display: isCmp, position: "top",
@@ -940,9 +937,22 @@ createApp({
       }
     };
 
-    const downloadTraceFile = slot => {
+    const downloadTraceFile = async (slot) => {
       if (!selectedJobId.value) return;
-      window.open(`/api/jobs/${selectedJobId.value}/files/${slot}`);
+      const fname = (slot === 'a' ? selectedJob.value?.file_a_name : selectedJob.value?.file_b_name) || `trace_${slot}.json`;
+      const token = localStorage.getItem("user_token");
+      const resp = await fetch(`/api/jobs/${selectedJobId.value}/files/${slot}`, {
+        credentials: "include",
+        headers: token ? { "X-User-Token": token } : {},
+      });
+      if (!resp.ok) { alert("下载失败: " + resp.status); return; }
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fname;
+      a.click();
+      URL.revokeObjectURL(url);
     };
 
     const openInPerfetto = async (slot) => {
@@ -956,8 +966,12 @@ createApp({
       if (!win) { alert('请允许浏览器弹出窗口后重试'); return; }
 
       // Fetch trace in background
-      const resp = await fetch(`/api/jobs/${selectedJobId.value}/files/${slot}`, { credentials: "include" });
-      if (!resp.ok) { win.close(); return; }
+      const token = localStorage.getItem("user_token");
+      const resp = await fetch(`/api/jobs/${selectedJobId.value}/files/${slot}`, {
+        credentials: "include",
+        headers: token ? { "X-User-Token": token } : {},
+      });
+      if (!resp.ok) { win.close(); alert("获取 trace 文件失败 (" + resp.status + ")"); return; }
       const buffer = await resp.arrayBuffer();
 
       const send = () => {

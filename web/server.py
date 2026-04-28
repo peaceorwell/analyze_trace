@@ -272,9 +272,9 @@ async def get_config():
 # ── Routes: auth ──────────────────────────────────────────────────────────────
 
 @app.post("/api/auth/guest", response_model=dict)
-async def guest_login(response: JSONResponse, user_token: Optional[str] = Cookie(None)):
+async def guest_login(response: JSONResponse, user_token: Optional[str] = Cookie(None), x_user_token: Optional[str] = Header(None)):
     """Get existing user token or create new one. Sets HttpOnly cookie."""
-    token = await get_or_create_user(user_token)
+    token = await get_or_create_user(user_token, x_user_token)
     response.set_cookie(
         key="user_token",
         value=token,
@@ -1081,9 +1081,9 @@ except Exception as e:
 
 
 @app.get("/api/jobs/{jid}/files/{slot}")
-async def get_job_file(jid: str, slot: str, user_token: Optional[str] = Cookie(None)):
+async def get_job_file(jid: str, slot: str, user_token: Optional[str] = Cookie(None), x_user_token: Optional[str] = Header(None)):
     """Serve trace file (a or b) for Perfetto. Returns the raw file content."""
-    token = await get_or_create_user(user_token)
+    await get_or_create_user(user_token, x_user_token)
     db = await get_db()
     cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
     row = await row_to_dict(await cursor.fetchone())
@@ -1091,9 +1091,6 @@ async def get_job_file(jid: str, slot: str, user_token: Optional[str] = Cookie(N
 
     if not row:
         raise HTTPException(404)
-
-    if row.get("user_token") != token:
-        raise HTTPException(403, "Not the job owner")
 
     if slot not in ("a", "b"):
         raise HTTPException(400, "slot must be 'a' or 'b'")
