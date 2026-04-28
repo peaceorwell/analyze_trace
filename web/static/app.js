@@ -815,8 +815,25 @@ createApp({
     };
 
     const downloadCsv = filename => {
-      if (!selectedJobId.value) return;
-      window.open(`/api/jobs/${selectedJobId.value}/results/${filename}`);
+      const fields = currentTable.value.fields;
+      const rows   = filteredRows.value;
+      if (!fields.length) return;
+      const escape = v => {
+        const s = String(v ?? '');
+        return s.includes(',') || s.includes('"') || s.includes('\n')
+          ? '"' + s.replace(/"/g, '""') + '"' : s;
+      };
+      const lines = [
+        fields.map(escape).join(','),
+        ...rows.map(r => fields.map(f => escape(r[f] ?? '')).join(',')),
+      ];
+      const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href     = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
     };
 
     const runSingleTriton = async (codePath) => {
