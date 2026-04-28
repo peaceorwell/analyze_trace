@@ -1119,6 +1119,33 @@ async def get_job_file(jid: str, slot: str, user_token: Optional[str] = Cookie(N
     return Response(content, media_type=media_type, headers=headers)
 
 
+@app.delete("/api/jobs/{jid}/files/{slot}", status_code=204)
+async def delete_job_file(jid: str, slot: str, user_token: Optional[str] = Cookie(None), x_user_token: Optional[str] = Header(None)):
+    """Delete the stored trace file (a or b) for a job."""
+    token = await get_or_create_user(user_token, x_user_token)
+    db = await get_db()
+    cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
+    row = await row_to_dict(await cursor.fetchone())
+    if not row:
+        await db.close()
+        raise HTTPException(404)
+    if row.get("user_token") != token:
+        await db.close()
+        raise HTTPException(403, "Not the job owner")
+    if slot not in ("a", "b"):
+        await db.close()
+        raise HTTPException(400, "slot must be 'a' or 'b'")
+
+    for col in (f"file_{slot}_path", f"file_{slot}_gzip_path"):
+        path = row.get(col)
+        if path and os.path.exists(path):
+            os.remove(path)
+        await db.execute(f"UPDATE jobs SET {col}=NULL WHERE id=?", (jid,))
+
+    await db.commit()
+    await db.close()
+
+
 @app.get("/api/jobs/{jid}/triton-code/{path:path}")
 async def get_triton_code(jid: str, path: str, user_token: Optional[str] = Cookie(None)):
     """Serve triton code file for display in browser."""
