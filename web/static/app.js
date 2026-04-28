@@ -352,7 +352,8 @@ createApp({
       const rows   = filteredRows.value;
       const result = {};
       for (const f of fields) {
-        // Percentages are not meaningful to sum
+        // Percentages and efficiency metrics are not meaningful to sum
+        if (f.toLowerCase().includes('efficiency')) { result[f] = null; continue; }
         if (rows.some(r => String(r[f] ?? '').trim().endsWith('%'))) {
           result[f] = null; continue;
         }
