@@ -107,12 +107,16 @@ def extract_kernel_family(name: str) -> str:
                 return family
 
     # Fallback: strip "void " and C++ namespace prefixes, then take the identifier
-    # up to (but not including) the first '<'.  No truncation; preserve original case.
+    # up to (but not including) the first '<' or '('.  Preserve original case.
     # e.g. "void mlu::PoolingForwardKernel<float, long>" → "PoolingForwardKernel"
+    #      "cudaKernel(int, float*)"                     → "cudaKernel"
     clean = _STRIP_LEADING_RE.sub("", name)
+    cut = len(clean)
     if '<' in clean:
-        clean = clean[:clean.index('<')]
-    clean = clean.strip()
+        cut = min(cut, clean.index('<'))
+    if '(' in clean:
+        cut = min(cut, clean.index('('))
+    clean = clean[:cut].strip()
     if clean:
         return clean
     return "other"
@@ -594,14 +598,15 @@ def print_comparison(data_a, data_b, label_a, label_b):
     ))
     all_types.append("other")
     print(f"\n=== Kernel Type Comparison ({label_a} vs {label_b}) ===")
-    hdr2 = (f"{'type':<16} {'count_A':<10} {'count_B':<10} {'dur_A(ms)':<12}"
+    type_w = max(16, max((len(t) for t in all_types), default=16))
+    hdr2 = (f"{'type':<{type_w}} {'count_A':<10} {'count_B':<10} {'dur_A(ms)':<12}"
             f" {'dur_B(ms)':<12} {'delta_dur':<12} {'pct':<10}")
     print(hdr2)
     print("-" * len(hdr2))
     for ktype in all_types:
         ac_a, ad_a = data_a["kt_avgs"].get(ktype, (0.0, 0.0))
         ac_b, ad_b = data_b["kt_avgs"].get(ktype, (0.0, 0.0))
-        print(f"{ktype:<16} {ac_a:<10.1f} {ac_b:<10.1f} {ad_a:<12.3f}"
+        print(f"{ktype:<{type_w}} {ac_a:<10.1f} {ac_b:<10.1f} {ad_a:<12.3f}"
               f" {ad_b:<12.3f} {ad_b - ad_a:<+12.3f} {pct(ad_a, ad_b):<10}")
 
 
