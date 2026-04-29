@@ -936,11 +936,14 @@ try:
 except Exception as e:
     print(f"[MLU Info] Failed to get MLU info: {e}")
 '''
-            info_result = subprocess.run(
-                [sys.executable, "-c", get_mlu_info],
-                capture_output=True, text=True, timeout=10,
-            )
-            mlu_info = info_result.stdout.strip() or info_result.stderr.strip()
+            try:
+                info_result = subprocess.run(
+                    [sys.executable, "-c", get_mlu_info],
+                    capture_output=True, text=True, timeout=10,
+                )
+                mlu_info = info_result.stdout.strip() or info_result.stderr.strip()
+            except subprocess.TimeoutExpired:
+                mlu_info = "[MLU Info] 获取超时"
 
             result = subprocess.run(
                 [sys.executable, code_path],
@@ -1026,11 +1029,14 @@ try:
 except Exception as e:
     print(f"[MLU Info] Failed to get MLU info: {e}")
 '''
-            info_result = subprocess.run(
-                [sys.executable, "-c", get_mlu_info],
-                capture_output=True, text=True, timeout=10,
-            )
-            mlu_info = info_result.stdout.strip() or info_result.stderr.strip()
+            try:
+                info_result = subprocess.run(
+                    [sys.executable, "-c", get_mlu_info],
+                    capture_output=True, text=True, timeout=10,
+                )
+                mlu_info = info_result.stdout.strip() or info_result.stderr.strip()
+            except subprocess.TimeoutExpired:
+                mlu_info = "[MLU Info] 获取超时"
 
             # Write code to a temporary file and run it
             with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
