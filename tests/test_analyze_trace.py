@@ -4,7 +4,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from analyze_trace import (
+from trace_analyzer import (
     fmt3,
     pct,
     classify_kernel,

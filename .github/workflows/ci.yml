@@ -26,7 +26,7 @@ jobs:
 
       - name: Run CLI tests
         run: |
-          python -c "from analyze_trace import parse_trace, compute_avgs; print('CLI import OK')"
+          python -c "from trace_analyzer import parse_trace, compute_avgs; print('Package import OK')"
 
       - name: Run unit tests
         run: |
@@ -46,5 +46,6 @@ jobs:
       - name: Run syntax check
         run: |
           python -m py_compile analyze_trace.py
+          python -m py_compile trace_analyzer/core.py
           python -m py_compile web/server.py
           python -m py_compile web/db.py
