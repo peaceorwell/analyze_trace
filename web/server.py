@@ -233,8 +233,8 @@ async def run_analysis(job_id: str):
             src_a = await row_to_dict(await cursor_a.fetchone())
             cursor_b = await db.execute("SELECT * FROM jobs WHERE id=?", (job["source_job_b"],))
             src_b = await row_to_dict(await cursor_b.fetchone())
-            path_a = src_a["file_a_path"]
-            path_b = src_b["file_a_path"]
+            path_a = src_a.get("file_a_gzip_path") or src_a["file_a_path"]
+            path_b = src_b.get("file_a_gzip_path") or src_b["file_a_path"]
             name_a = src_a.get("file_a_name") or os.path.basename(path_a)
             name_b = src_b.get("file_a_name") or os.path.basename(path_b)
         else:

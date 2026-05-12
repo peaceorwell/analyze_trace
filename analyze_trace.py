@@ -1,6 +1,7 @@
 import argparse
 import bisect
 import csv
+import gzip
 import json
 import os
 import re
@@ -278,8 +279,12 @@ def parse_trace(trace_file, kernel_types):
         step_to_cncl:         step -> {op_name -> {"count": int, "dur_ms": float}}
         step_durations:       step -> wall-clock duration in ms (from ProfilerStep# event)
     """
-    with open(trace_file) as f:
-        trace = json.load(f)
+    if str(trace_file).endswith(".gz"):
+        with gzip.open(trace_file, "rt", encoding="utf-8") as f:
+            trace = json.load(f)
+    else:
+        with open(trace_file) as f:
+            trace = json.load(f)
 
     events = trace["traceEvents"]
 
