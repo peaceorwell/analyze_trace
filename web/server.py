@@ -557,7 +557,45 @@ async def list_jobs(
         """, (limit, offset))).fetchall()
 
     await db.close()
-    return {"data": [dict(r) for r in rows], "total": total, "limit": limit, "offset": offset}
+
+    # Verify actual file existence on disk (DB flag may be stale)
+    # Resolve source jobs for compare jobs in batch
+    src_ids = set()
+    for r in rows:
+        d = dict(r)
+        for slot in ("a", "b"):
+            if not (d.get(f"file_{slot}_gzip_path") or d.get(f"file_{slot}_path")):
+                src = d.get(f"source_job_{slot}")
+                if src:
+                    src_ids.add(src)
+
+    src_paths = {}
+    if src_ids:
+        db2 = await get_db()
+        placeholders = ",".join("?" * len(src_ids))
+        cur = await db2.execute(
+            f"SELECT id, file_a_path, file_a_gzip_path FROM jobs WHERE id IN ({placeholders})",
+            tuple(src_ids))
+        async for src_row in cur:
+            s = dict(src_row)
+            src_paths[s["id"]] = s.get("file_a_gzip_path") or s.get("file_a_path")
+        await db2.close()
+
+    data = []
+    for r in rows:
+        d = dict(r)
+        for slot in ("a", "b"):
+            path = d.get(f"file_{slot}_gzip_path") or d.get(f"file_{slot}_path")
+            if path:
+                d[f"file_{slot}_exists"] = 1 if os.path.exists(path) else 0
+            else:
+                src_jid = d.get(f"source_job_{slot}")
+                if src_jid and src_paths.get(src_jid):
+                    d[f"file_{slot}_exists"] = 1 if os.path.exists(src_paths[src_jid]) else 0
+                else:
+                    d[f"file_{slot}_exists"] = 0
+        data.append(d)
+    return {"data": data, "total": total, "limit": limit, "offset": offset}
 
 
 @app.post("/api/jobs", status_code=201)
@@ -636,9 +674,15 @@ async def compare_jobs(body: dict, background_tasks: BackgroundTasks, user_token
         await db.close()
         raise HTTPException(403, "No access to source job")
 
-    if not src_a.get("file_a_exists") or not src_b.get("file_a_exists"):
+    # Verify actual file existence on disk (DB flag may be stale)
+    path_a = src_a.get("file_a_gzip_path") or src_a.get("file_a_path")
+    path_b = src_b.get("file_a_gzip_path") or src_b.get("file_a_path")
+    if not path_a or not os.path.exists(path_a):
         await db.close()
-        raise HTTPException(409, "Source file has been deleted")
+        raise HTTPException(409, f"Source file A has been deleted")
+    if not path_b or not os.path.exists(path_b):
+        await db.close()
+        raise HTTPException(409, f"Source file B has been deleted")
 
     jid = str(uuid.uuid4())
     kernel_types = body.get("kernel_types", "gemm,embedding,pool")
@@ -676,6 +720,26 @@ async def get_job(jid: str, user_token: Optional[str] = Cookie(None)):
 
     # No account system - all jobs are public
     job = dict(row)
+    # Verify actual file existence on disk (DB flag may be stale)
+    # For compare jobs, resolve via source jobs
+    for slot in ("a", "b"):
+        path = job.get(f"file_{slot}_gzip_path") or job.get(f"file_{slot}_path")
+        if path:
+            job[f"file_{slot}_exists"] = 1 if os.path.exists(path) else 0
+        else:
+            src_jid = job.get(f"source_job_{slot}")
+            if src_jid:
+                db2 = await get_db()
+                cur2 = await db2.execute("SELECT file_a_path, file_a_gzip_path FROM jobs WHERE id=?", (src_jid,))
+                src = await row_to_dict(await cur2.fetchone())
+                await db2.close()
+                if src:
+                    src_path = src.get("file_a_gzip_path") or src.get("file_a_path")
+                    job[f"file_{slot}_exists"] = 1 if src_path and os.path.exists(src_path) else 0
+                else:
+                    job[f"file_{slot}_exists"] = 0
+            else:
+                job[f"file_{slot}_exists"] = 0
     if job["status"] == "done":
         job["results"] = collect_results(jid)
     return job
@@ -1152,6 +1216,7 @@ async def delete_job_file(jid: str, slot: str, user_token: Optional[str] = Cooki
             os.remove(path)
         await db.execute(f"UPDATE jobs SET {col}=NULL WHERE id=?", (jid,))
 
+    await db.execute(f"UPDATE jobs SET file_{slot}_exists=0 WHERE id=?", (jid,))
     await db.commit()
     await db.close()
 

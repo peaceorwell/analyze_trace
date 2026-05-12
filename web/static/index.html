@@ -7,6 +7,7 @@
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <script src="https://unpkg.com/vue-router@4/dist/vue-router.global.prod.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <link rel="stylesheet" href="/static/style.css" />
@@ -27,7 +28,7 @@
   <div id="app">
     <!-- ── Header ── -->
     <header class="header">
-      <div class="header-brand">
+      <div class="header-brand" @click="$router.push('/')" style="cursor:pointer" title="返回上传页面">
         <svg class="header-logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
           <defs>
             <linearGradient id="lgBg" x1="0%" y1="0%" x2="0%" y2="100%">
@@ -132,7 +133,7 @@
               <div
                 v-for="job in group.jobs" :key="job.id"
                 :class="['job-item', selectedJobId===job.id ? 'selected' : '']"
-                @click="selectJob(job.id)"
+                @click="navigateToJob(job.id)"
               >
                 <div class="job-item-top">
                   <span class="job-status" :class="'status-'+job.status">{{ statusIcon(job.status) }}</span>
@@ -202,235 +203,7 @@
 
       <!-- ── Main ── -->
       <main class="main">
-        <!-- Submit form -->
-        <section class="card submit-card">
-          <div class="card-title">提交分析</div>
-          <div class="submit-cols">
-            <div class="upload-box upload-box-sm" @dragover.prevent @drop.prevent="onDrop($event,'a')">
-              <input type="file" ref="fileInputA" accept=".json,.json.gz,.gz" @change="onFileChange($event,'a')" hidden />
-              <div @click="$refs.fileInputA.click()" class="upload-inner">
-                <div class="upload-icon">📂</div>
-                <div class="upload-label">{{ fileAName || '选择文件' }}</div>
-              </div>
-              <button v-if="fileAName" class="upload-clear" @click.stop="clearFile()">✕</button>
-            </div>
-            <div class="form-row">
-              <label>项目</label>
-              <select v-model="form.projectId" class="input">
-                <option value="">未分组</option>
-                <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
-              </select>
-            </div>
-            <div class="form-row">
-              <label>备注</label>
-              <input v-model="form.label" class="input" placeholder="可选" />
-            </div>
-            <button class="btn btn-primary" :disabled="!fileA || submitting" @click="submitJob">
-              {{ submitting ? (uploadProgress < 100 ? `上传中 ${uploadProgress}%` : '分析中...') : '提交分析' }}
-            </button>
-          </div>
-          <div v-if="submitting && uploadProgress < 100" class="upload-progress">
-            <div class="upload-progress-label">上传进度 {{ uploadProgress }}%</div>
-            <div class="progress-track">
-              <div class="progress-fill" :style="{ width: uploadProgress + '%' }"></div>
-            </div>
-          </div>
-        </section>
-
-        <!-- Result panel -->
-        <section v-if="selectedJob" class="card result-card">
-          <div class="result-header">
-            <div>
-              <span class="job-status lg" :class="'status-'+selectedJob.status">
-                {{ statusIcon(selectedJob.status) }}
-              </span>
-              <span class="result-label">{{ selectedJob.label }}</span>
-              <span class="job-mode-badge" :class="'mode-'+selectedJob.mode">
-                {{ selectedJob.mode==='compare'?'对比':'单文件' }}
-              </span>
-            </div>
-            <div class="result-actions">
-              <button class="btn btn-sm btn-outline" @click="editLabel">重命名</button>
-              <button class="btn btn-sm btn-outline" @click="moveProject">移动项目</button>
-              <button class="btn btn-sm btn-danger" @click="deleteJob">删除任务</button>
-            </div>
-          </div>
-
-          <!-- File info -->
-          <div class="file-info">
-            <span v-if="selectedJob.file_a_name">
-              📄 {{ selectedJob.file_a_name }}
-              <span v-if="!selectedJob.file_a_exists" class="tag-deleted">已删除</span>
-              <template v-else>
-                <button v-if="allowFileDownload" class="btn btn-xs btn-outline" @click="downloadTraceFile('a')">下载</button>
-                <button v-if="allowFileDownload" class="btn btn-xs btn-perfetto" @click="openInPerfetto('a')">Perfetto ↗</button>
-                <button class="btn btn-xs btn-danger" @click="deleteFile('a')">删除文件</button>
-              </template>
-            </span>
-            <span v-if="selectedJob.file_b_name" class="ml-4">
-              📄 {{ selectedJob.file_b_name }}
-              <span v-if="!selectedJob.file_b_exists" class="tag-deleted">已删除</span>
-              <template v-else>
-                <button v-if="allowFileDownload" class="btn btn-xs btn-outline" @click="downloadTraceFile('b')">下载</button>
-                <button v-if="allowFileDownload" class="btn btn-xs btn-perfetto" @click="openInPerfetto('b')">Perfetto ↗</button>
-                <button class="btn btn-xs btn-danger" @click="deleteFile('b')">删除文件</button>
-              </template>
-            </span>
-          </div>
-
-          <div v-if="selectedJob.status==='running' || selectedJob.status==='pending'" class="loading">
-            <span class="spinner"></span> 分析中...
-          </div>
-          <div v-else-if="selectedJob.status==='error'" class="error-box">
-            {{ selectedJob.error_msg }}
-          </div>
-
-          <!-- Done: tabs -->
-          <div v-else-if="selectedJob.status==='done'">
-            <div class="result-tabs">
-              <button v-for="t in availableTabs" :key="t.key"
-                      :class="['tab', resultTab===t.key?'active':'']"
-                      @click="resultTab=t.key">{{ t.label }}</button>
-            </div>
-
-            <!-- Console output -->
-            <div v-if="resultTab==='console'" class="console-out">
-              <div class="console-toolbar">
-                <span class="console-dot dot-red"></span>
-                <span class="console-dot dot-yellow"></span>
-                <span class="console-dot dot-green"></span>
-                <span class="console-title">Console Output</span>
-              </div>
-              <pre v-html="formatConsole(selectedJob.console_out)"></pre>
-            </div>
-
-            <!-- Chart tab -->
-            <div v-if="resultTab==='chart'" class="chart-wrap">
-              <div class="chart-bar-area">
-                <canvas ref="ktChart"></canvas>
-              </div>
-              <div class="chart-pie-area">
-                <canvas ref="ktPieChart"></canvas>
-                <canvas ref="ktPieChartB" v-show="selectedJob.mode==='compare'"></canvas>
-              </div>
-            </div>
-
-            <!-- CSV table tabs -->
-            <div v-if="resultTab!=='console' && resultTab!=='chart'" class="table-wrap">
-              <div class="table-toolbar">
-                <input v-model="tableSearch" class="input input-sm" placeholder="全局搜索..." />
-                <span v-if="hasColFilters" class="filter-active-tip">
-                  列筛选已启用
-                  <button class="btn-clear-filter" @click="clearColFilters()">✕ 清除</button>
-                </span>
-                <button class="btn btn-sm btn-outline" @click="downloadCsv(resultTab)">下载 CSV</button>
-                <button v-if="isTritonStepTab" class="btn btn-sm btn-outline" @click="clearInductorCache()">清除 Cache</button>
-              </div>
-              <div class="table-scroll">
-                <div class="csv-table-wrap">
-                <table class="data-table">
-                  <colgroup>
-                    <col v-for="f in currentTable.fields" :key="f"
-                         :style="colWidths[f] ? { width: colWidths[f] + 'px' } : {}" />
-                  </colgroup>
-                  <thead>
-                    <tr>
-                      <th v-for="f in currentTable.fields" :key="f"
-                          @click="setSort(f)" class="th-sortable"
-                          :style="colWidths[f] ? { width: colWidths[f] + 'px' } : {}">
-                        <span class="th-label">{{ f }}</span>
-                        <span v-if="sortCol===f" class="th-sort-icon">{{ sortAsc?'↑':'↓' }}</span>
-                        <div class="col-resize-handle"
-                             @mousedown.stop="startResize(f, $event)"
-                             @click.stop></div>
-                      </th>
-                    </tr>
-                    <tr class="filter-row">
-                      <th v-for="f in currentTable.fields" :key="f"
-                          :style="colWidths[f] ? { width: colWidths[f] + 'px' } : {}">
-                        <div class="col-filter-wrap">
-                          <select v-model="colFilterOps[f]" class="col-filter-op"
-                                  :class="{ 'op-active': colFilterOps[f] && colFilterOps[f] !== '~' }"
-                                  @click.stop>
-                            <option value="~">包含</option>
-                            <option value="!~">不包含</option>
-                            <option value=">=">&gt;=</option>
-                            <option value="<=">&lt;=</option>
-                            <option value=">">&gt;</option>
-                            <option value="<">&lt;</option>
-                            <option value="=">=</option>
-                          </select>
-                          <input
-                            v-model="colFilters[f]"
-                            class="col-filter-input"
-                            :class="{ active: colFilters[f] }"
-                            :type="(colFilterOps[f] && ['~', '!~'].includes(colFilterOps[f])) ? 'text' : 'number'"
-                            placeholder="筛选..."
-                            @click.stop />
-                        </div>
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="(row,i) in filteredRows" :key="i">
-                      <td v-for="f in currentTable.fields" :key="f"
-                          :class="deltaCellClass(f, row[f])"
-                          :title="row[f]">
-                        <!-- triton_code_file column: show view button + run button with status -->
-                        <template v-if="f === 'triton_code_file' && row[f]">
-                          <button class="btn btn-xs btn-perfetto mb-1"
-                                  @click.stop="viewTritonCode(row[f])">
-                            查看代码
-                          </button>
-                          <br />
-                          <!-- Run button with status -->
-                          <button v-if="!tritonStatus[row[f]] || tritonStatus[row[f]].status === 'idle' || tritonStatus[row[f]].status === 'failed'"
-                                  class="btn btn-xs btn-run"
-                                  @click.stop="runSingleTriton(row[f])">
-                            运行
-                          </button>
-                          <span v-else-if="tritonStatus[row[f]].status === 'running'"
-                                class="status-running">运行中...</span>
-                          <template v-else-if="tritonStatus[row[f]].status === 'success'">
-                            <span class="eff-value" :class="tritonStatus[row[f]].custom ? 'eff-custom' : 'btn-success'"
-                                  :title="'点击重新运行\n' + tritonStatus[row[f]].output"
-                                  @click.stop="runSingleTriton(row[f])">
-                              <span v-if="tritonStatus[row[f]].custom" class="custom-badge">✎</span>
-                              {{ tritonStatus[row[f]].value }} GB/s ✓
-                            </span>
-                            <button class="btn btn-xs btn-outline ml-1"
-                                    @click.stop="runSingleTriton(row[f])"
-                                    :title="'点击重新运行'">↻</button>
-                          </template>
-                        </template>
-                        <span v-else>{{ row[f] }}</span>
-                      </td>
-                    </tr>
-                  </tbody>
-                  <tfoot v-if="filteredRows.length > 0">
-                    <tr class="sum-row">
-                      <td v-for="(f, i) in currentTable.fields" :key="f" class="sum-cell">
-                        <template v-if="i === 0">Σ 合计</template>
-                        <template v-else-if="colSums[f] !== null">{{ fmtSum(colSums[f]) }}</template>
-                      </td>
-                    </tr>
-                  </tfoot>
-                </table>
-                </div>
-              </div>
-              <div class="table-footer">共 {{ filteredRows.length }} 行</div>
-            </div>
-          </div>
-        </section>
-
-        <div v-else class="empty-main">
-          <div class="empty-main-icon">📊</div>
-          <div class="empty-main-title">选择左侧历史记录查看结果，或上传文件开始分析</div>
-          <div class="empty-main-tips">
-            <div class="empty-tip-item">详细使用指南见右上角「使用指南」</div>
-            <div class="empty-tip-item">建议上传的 trace 文件中开启了 triton code 保存功能</div>
-          </div>
-        </div>
+        <router-view></router-view>
       </main>
     </div>
 
@@ -604,6 +377,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=2"></script>
 </body>
 </html>
