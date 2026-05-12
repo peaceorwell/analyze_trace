@@ -10,6 +10,27 @@ async def get_db():
     return db
 
 
+async def table_exists(db, table_name):
+    cursor = await db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table_name,),
+    )
+    return await cursor.fetchone() is not None
+
+
+async def column_exists(db, table_name, column_name):
+    cursor = await db.execute(f"PRAGMA table_info({table_name})")
+    rows = await cursor.fetchall()
+    return any(row[1] == column_name for row in rows)
+
+
+async def add_column_if_missing(db, table_name, column_name, column_def):
+    if not await table_exists(db, table_name):
+        return
+    if not await column_exists(db, table_name, column_name):
+        await db.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_def}")
+
+
 async def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     async with aiosqlite.connect(DB_PATH) as db:
@@ -80,127 +101,65 @@ async def init_db():
                 created_at   DATETIME,
                 deleted_at   DATETIME DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version     INTEGER PRIMARY KEY,
+                applied_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
         """)
 
-        # Migration for existing databases
-        try:
-            await db.execute("ALTER TABLE users ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP")
-        except Exception:
-            pass
-        try:
-            await db.execute("ALTER TABLE projects ADD COLUMN user_token TEXT")
-            await db.execute("ALTER TABLE projects ADD COLUMN password_hash TEXT DEFAULT NULL")
-            await db.execute("ALTER TABLE projects ADD COLUMN is_public INTEGER DEFAULT 0")
-            await db.execute("ALTER TABLE projects ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP")
-        except Exception:
-            pass
-        try:
-            await db.execute("ALTER TABLE jobs ADD COLUMN user_token TEXT")
-        except Exception:
-            pass
-        try:
-            await db.execute("ALTER TABLE projects ADD COLUMN folder_id TEXT")
-        except Exception:
-            pass
+        # Column migrations for databases created by earlier versions.
+        await add_column_if_missing(db, "users", "created_at", "DATETIME")
+        await add_column_if_missing(db, "projects", "user_token", "TEXT")
+        await add_column_if_missing(db, "projects", "password_hash", "TEXT DEFAULT NULL")
+        await add_column_if_missing(db, "projects", "is_public", "INTEGER DEFAULT 0")
+        await add_column_if_missing(db, "projects", "created_at", "DATETIME")
+        await add_column_if_missing(db, "projects", "folder_id", "TEXT")
+        await add_column_if_missing(db, "jobs", "user_token", "TEXT")
+        await add_column_if_missing(db, "folders", "password_hash", "TEXT DEFAULT NULL")
 
-        # Migration: add deleted_projects table for soft delete recovery
-        try:
-            await db.execute("SELECT id FROM deleted_projects LIMIT 1")
-        except Exception:
-            await db.execute("""
-                CREATE TABLE IF NOT EXISTS deleted_projects (
-                    id           TEXT PRIMARY KEY,
-                    user_token   TEXT,
-                    folder_id    TEXT,
-                    name         TEXT NOT NULL,
-                    description  TEXT DEFAULT '',
-                    password_hash TEXT DEFAULT NULL,
-                    is_public    INTEGER DEFAULT 0,
-                    created_at   DATETIME,
-                    deleted_at   DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            await db.execute("CREATE INDEX IF NOT EXISTS idx_deleted_projects_user ON deleted_projects(user_token)")
-            await db.execute("CREATE INDEX IF NOT EXISTS idx_deleted_projects_deleted_at ON deleted_projects(deleted_at)")
+        await db.executescript("""
+            CREATE TABLE IF NOT EXISTS deleted_jobs (
+                id               TEXT PRIMARY KEY,
+                project_id       TEXT,
+                user_token       TEXT,
+                created_at       DATETIME,
+                label            TEXT DEFAULT '',
+                mode             TEXT,
 
-        # Migration: add deleted_jobs table for job recovery
-        try:
-            await db.execute("SELECT id FROM deleted_jobs LIMIT 1")
-        except Exception:
-            await db.execute("""
-                CREATE TABLE IF NOT EXISTS deleted_jobs (
-                    id               TEXT PRIMARY KEY,
-                    project_id       TEXT,
-                    user_token       TEXT,
-                    created_at       DATETIME,
-                    label            TEXT DEFAULT '',
-                    mode             TEXT,
+                file_a_name      TEXT,
+                file_a_path      TEXT,
+                file_a_gzip_path TEXT,
+                file_a_exists    INTEGER DEFAULT 1,
+                file_b_name      TEXT,
+                file_b_path      TEXT,
+                file_b_gzip_path TEXT,
+                file_b_exists    INTEGER DEFAULT 1,
 
-                    file_a_name      TEXT,
-                    file_a_path      TEXT,
-                    file_a_gzip_path TEXT,
-                    file_a_exists    INTEGER DEFAULT 1,
-                    file_b_name      TEXT,
-                    file_b_path      TEXT,
-                    file_b_gzip_path TEXT,
-                    file_b_exists    INTEGER DEFAULT 1,
+                source_job_a     TEXT,
+                source_job_b     TEXT,
 
-                    source_job_a     TEXT,
-                    source_job_b     TEXT,
+                kernel_types     TEXT DEFAULT 'gemm,embedding,pool',
+                save_triton_csv  INTEGER DEFAULT 0,
+                save_triton_code INTEGER DEFAULT 0,
 
-                    kernel_types     TEXT DEFAULT 'gemm,embedding,pool',
-                    save_triton_csv  INTEGER DEFAULT 0,
-                    save_triton_code INTEGER DEFAULT 0,
+                status           TEXT DEFAULT 'pending',
+                console_out      TEXT DEFAULT '',
+                error_msg        TEXT DEFAULT '',
+                result_dir       TEXT DEFAULT '',
+                deleted_at       DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
 
-                    status           TEXT DEFAULT 'pending',
-                    console_out      TEXT DEFAULT '',
-                    error_msg        TEXT DEFAULT '',
-                    result_dir       TEXT DEFAULT '',
-                    deleted_at       DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            await db.execute("CREATE INDEX IF NOT EXISTS idx_deleted_jobs_project ON deleted_jobs(project_id)")
-            await db.execute("CREATE INDEX IF NOT EXISTS idx_deleted_jobs_deleted_at ON deleted_jobs(deleted_at)")
-
-        # Create folders table if not exists (for existing databases)
-        try:
-            await db.execute("SELECT id FROM folders LIMIT 1")
-        except Exception:
-            await db.execute("""
-                CREATE TABLE IF NOT EXISTS folders (
-                    id           TEXT PRIMARY KEY,
-                    user_token   TEXT REFERENCES users(user_token) ON DELETE CASCADE,
-                    name         TEXT NOT NULL,
-                    password_hash TEXT DEFAULT NULL,
-                    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            await db.execute("CREATE INDEX IF NOT EXISTS idx_folders_user ON folders(user_token)")
-            await db.execute("CREATE INDEX IF NOT EXISTS idx_projects_folder ON projects(folder_id)")
-
-        # Migration: add password_hash to folders for existing tables
-        try:
-            await db.execute("ALTER TABLE folders ADD COLUMN password_hash TEXT DEFAULT NULL")
-        except Exception:
-            pass
-
-        # Create indexes for user_token lookups
-        try:
-            await db.execute("CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_token)")
-        except Exception:
-            pass
-        try:
-            await db.execute("CREATE INDEX IF NOT EXISTS idx_jobs_user ON jobs(user_token)")
-        except Exception:
-            pass
-        try:
-            await db.execute("CREATE INDEX IF NOT EXISTS idx_folders_user ON folders(user_token)")
-        except Exception:
-            pass
-        try:
-            await db.execute("CREATE INDEX IF NOT EXISTS idx_projects_folder ON projects(folder_id)")
-        except Exception:
-            pass
+            CREATE INDEX IF NOT EXISTS idx_deleted_projects_user ON deleted_projects(user_token);
+            CREATE INDEX IF NOT EXISTS idx_deleted_projects_deleted_at ON deleted_projects(deleted_at);
+            CREATE INDEX IF NOT EXISTS idx_deleted_jobs_project ON deleted_jobs(project_id);
+            CREATE INDEX IF NOT EXISTS idx_deleted_jobs_deleted_at ON deleted_jobs(deleted_at);
+            CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_token);
+            CREATE INDEX IF NOT EXISTS idx_jobs_user ON jobs(user_token);
+            CREATE INDEX IF NOT EXISTS idx_folders_user ON folders(user_token);
+            CREATE INDEX IF NOT EXISTS idx_projects_folder ON projects(folder_id);
+        """)
+        await db.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(1)")
 
         await db.commit()
 
