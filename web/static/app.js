@@ -5,32 +5,7 @@ const { createRouter, createWebHashHistory } = VueRouter;
 // Module-level reactive state (shared across all components via closure)
 // ══════════════════════════════════════════════════════════════════════════════
 
-// ── Auth ─────────────────────────────────────────────────────────────────
-const userToken = ref(localStorage.getItem("user_token") || null);
-let authInitialized = false;
-
-const initAuth = async () => {
-  let token = localStorage.getItem("user_token");
-  if (token) {
-    userToken.value = token;
-    const r = await fetch("/api/auth/guest", {
-      method: "POST",
-      headers: token ? { "X-User-Token": token } : {},
-      credentials: "include",
-    });
-    const data = await r.json();
-    if (data.user_token !== token) {
-      localStorage.setItem("user_token", data.user_token);
-      userToken.value = data.user_token;
-    }
-  } else {
-    const r = await fetch("/api/auth/guest", { method: "POST", credentials: "include" });
-    const data = await r.json();
-    localStorage.setItem("user_token", data.user_token);
-    userToken.value = data.user_token;
-  }
-  authInitialized = true;
-};
+let appInitialized = false;
 
 // ── Theme ──────────────────────────────────────────────────────────────
 const getInitialTheme = () => {
@@ -691,13 +666,9 @@ const deleteFile = async slot => {
 const editLabel = async () => {
   const newLabel = prompt("新备注名称：", selectedJob.value?.label || "");
   if (newLabel === null) return;
-  const token = localStorage.getItem("user_token");
   await fetch(`/api/jobs/${selectedJobId.value}`, {
     method: "PATCH",
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { "X-User-Token": token } : {}),
-    },
+    headers: { "Content-Type": "application/json" },
     credentials: "include",
     body: JSON.stringify({ label: newLabel }),
   });
@@ -716,14 +687,10 @@ const confirmMoveProject = async () => {
     alert("未选中任务");
     return;
   }
-  const token = localStorage.getItem("user_token");
   try {
     const r = await fetch(`/api/jobs/${selectedJobId.value}`, {
       method: "PATCH",
-      headers: {
-        "Content-Type": "application/json",
-        ...(token ? { "X-User-Token": token } : {}),
-      },
+      headers: { "Content-Type": "application/json" },
       credentials: "include",
       body: JSON.stringify({ project_id: moveProjectTarget.value || null }),
     });
@@ -960,10 +927,8 @@ const clearInductorCache = async () => {
 
 const downloadTraceFile = (slot) => {
   if (!selectedJobId.value) return;
-  const token = localStorage.getItem("user_token");
-  const params = token ? `?token=${encodeURIComponent(token)}` : "";
   const a = document.createElement('a');
-  a.href = `/api/jobs/${selectedJobId.value}/files/${slot}${params}`;
+  a.href = `/api/jobs/${selectedJobId.value}/files/${slot}`;
   a.click();
 };
 
@@ -976,10 +941,8 @@ const openInPerfetto = async (slot) => {
   const win = window.open(PERFETTO);
   if (!win) { alert('请允许浏览器弹出窗口后重试'); return; }
 
-  const token = localStorage.getItem("user_token");
   const resp = await fetch(`/api/jobs/${selectedJobId.value}/files/${slot}?format=json`, {
     credentials: "include",
-    headers: token ? { "X-User-Token": token } : {},
   });
   if (!resp.ok) { win.close(); alert("获取 trace 文件失败 (" + resp.status + ")"); return; }
   const buffer = await resp.arrayBuffer();
@@ -1455,12 +1418,12 @@ const router = createRouter({
 // ══════════════════════════════════════════════════════════════════════════════
 
 router.beforeEach(async (to, from) => {
-  // Ensure auth/config/data is loaded on first navigation
-  if (!authInitialized) {
-    await initAuth();
+  // Ensure config/data is loaded on first navigation
+  if (!appInitialized) {
     await loadConfig();
     await loadProjects();
     await loadJobs();
+    appInitialized = true;
   }
 
   const newJobId = to.params?.id || null;
