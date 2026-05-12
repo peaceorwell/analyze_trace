@@ -665,6 +665,7 @@ def _write_cmp_avg_csv(path, data_a, data_b, name_field):
     for name in set(data_a) | set(data_b):
         a, b  = data_a.get(name, zero), data_b.get(name, zero)
         delta = b["avg_dur_ms"] - a["avg_dur_ms"]
+        delta_cnt = b["avg_count"] - a["avg_count"]
         rows.append({
             name_field:     name,
             "avg_dur_ms_A": fmt3(a["avg_dur_ms"]),
@@ -673,10 +674,13 @@ def _write_cmp_avg_csv(path, data_a, data_b, name_field):
             "pct_change":   pct(a["avg_dur_ms"], b["avg_dur_ms"]),
             "avg_count_A":  fmt3(a["avg_count"]),
             "avg_count_B":  fmt3(b["avg_count"]),
+            "delta_count":  fmt3(delta_cnt),
+            "count_pct_change": pct(a["avg_count"], b["avg_count"]),
             "_sort":        abs(delta),
         })
     rows.sort(key=lambda r: -r["_sort"])
-    fields = [name_field, "avg_dur_ms_A", "avg_dur_ms_B", "delta_dur_ms", "pct_change", "avg_count_A", "avg_count_B"]
+    fields = [name_field, "avg_dur_ms_A", "avg_dur_ms_B", "delta_dur_ms", "pct_change",
+              "avg_count_A", "avg_count_B", "delta_count", "count_pct_change"]
     with open(path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
         writer.writeheader()
