@@ -35,6 +35,9 @@ GPU 性能分析工具，解析 PyTorch Profiler 生成的 Chrome Trace JSON 文
 ```bash
 # 命令行分析
 python analyze_trace.py trace.json -o ./output
+# 或安装为命令
+pip install -e .
+analyze-trace trace.json -o ./output
 
 # Web 界面
 cd web && pip install -r requirements.txt && python server.py
