@@ -10,7 +10,10 @@ GPU 性能分析工具，解析 PyTorch Profiler 生成的 Chrome Trace JSON 文
 
 ```
 .
-├── analyze_trace.py       # 核心分析脚本（命令行入口）
+├── analyze_trace.py       # 命令行入口兼容包装
+├── trace_analyzer/
+│   ├── __init__.py        # Python 包导出
+│   └── core.py            # 核心分析逻辑
 ├── web/
 │   ├── server.py          # Web 服务器（FastAPI）
 │   ├── db.py              # SQLite 数据库操作

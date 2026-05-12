@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from analyze_trace import compute_avgs, parse_trace, run_triton_code_and_get_efficiency  # noqa: E402
+from trace_analyzer import compute_avgs, parse_trace, run_triton_code_and_get_efficiency  # noqa: E402
 
 from db import get_db, init_db, row_to_dict  # noqa: E402
 
@@ -164,9 +164,9 @@ def collect_results(jid: str) -> dict:
 
 def _run_sync_analysis(job, kernel_types, rdir, path_a, path_b, name_a, name_b):
     """All blocking I/O lives here so the event loop stays free."""
-    from analyze_trace import (compute_avgs, parse_trace,
-                               print_step_summary, print_kernel_type_breakdown, print_top_kernels,
-                               write_single, print_comparison, write_comparison)
+    from trace_analyzer import (compute_avgs, parse_trace,
+                                print_step_summary, print_kernel_type_breakdown, print_top_kernels,
+                                write_single, print_comparison, write_comparison)
 
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
