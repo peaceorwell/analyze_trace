@@ -319,45 +319,63 @@
           <section class="guide-section">
             <h3>1. 提交分析</h3>
             <ul>
-              <li>在左侧上传区拖拽或点击上传 <code>.json</code> 或 <code>.json.gz</code> 文件（PyTorch Profiler 导出的 Chrome Trace 格式）</li>
-              <li>选择所属项目（可选，用于分类管理）</li>
-              <li>Kernel 类型由系统<strong>自动分类</strong>：基于 kernel 名称语义聚类（triton / gemm / conv / embedding / collective 等），collective 类型单独统计，不计入 compute 分析</li>
-              <li>点击"提交分析"，等待完成</li>
+              <li>在主区域上传区拖拽或点击上传 <code>.json</code> 或 <code>.json.gz</code> 文件（PyTorch Profiler 导出的 Chrome Trace 格式）</li>
+              <li>选择所属项目（可选），填写备注（可选）</li>
+              <li>勾选 <strong>Triton CSV 详情</strong>：输出逐 step 的 Triton kernel 详情表格</li>
+              <li>勾选 <strong>Triton 代码保存</strong>：保存每个 Triton kernel 的生成源码，可在结果中查看和执行</li>
+              <li>点击"提交分析"，后台异步处理，实时显示上传进度和运行状态</li>
             </ul>
           </section>
           <section class="guide-section">
             <h3>2. 查看结果</h3>
             <ul>
-              <li><strong>控制台</strong>：原始文本输出，含 Top 10 热点 kernel、Kernel 类型分布</li>
-              <li><strong>图表</strong>：Kernel 类型耗时柱状图（横向）和占比饼图，collective 类型不计入</li>
-              <li><strong>CSV 表格</strong>：支持搜索、列筛选、排序、列宽拖拽调整</li>
+              <li><strong>控制台</strong>：原始文本输出，含 Per-Step 摘要、Top 10 热点 kernel、Kernel 类型分布</li>
+              <li><strong>图表</strong>：Kernel 类型耗时柱状图（横向）和占比饼图，collective 类型不计入 compute 分析</li>
+              <li><strong>CSV 表格</strong>：支持搜索、列排序、列宽拖拽调整、超长内容截断并 hover 显示全文</li>
+              <li><strong>下载 CSV</strong>：表格右上角一键下载当前视图的 CSV 文件</li>
             </ul>
           </section>
           <section class="guide-section">
-            <h3>3. 项目管理</h3>
+            <h3>3. 侧栏与历史管理</h3>
             <ul>
-              <li>点击"+ 新建项目"创建项目，用于分类管理分析任务</li>
-              <li>选择历史记录后可移动到其他项目或删除</li>
+              <li>左侧侧栏可<strong>拖拽调整宽度</strong>，点击箭头按钮可<strong>折叠/展开</strong></li>
+              <li>侧栏包含两个标签页：<strong>历史</strong>（单文件任务）和<strong>对比</strong>（对比任务）</li>
+              <li>历史按<strong>项目分组</strong>显示，点击项目标题可折叠/展开该组</li>
+              <li>顶部可<strong>选择项目过滤器</strong>，筛选特定项目的历史记录</li>
+              <li>支持<strong>分页浏览</strong>，底部有分页控件</li>
+              <li>点击任务行可查看分析详情</li>
             </ul>
           </section>
           <section class="guide-section">
-            <h3>4. 历史对比</h3>
+            <h3>4. 项目管理</h3>
             <ul>
-              <li>在左侧"对比"标签页选择两个已完成的单文件任务</li>
-              <li>可选填备注，发起对比分析（Kernel 类型自动分类）</li>
-              <li>无需重新上传文件，直接复用已有数据</li>
+              <li>点击"+ 新建项目"创建项目，用于归类管理分析任务</li>
+              <li>支持<strong>重命名项目</strong>、<strong>移动任务</strong>到其他项目</li>
+              <li><strong>删除项目</strong>：项目及其下的所有任务保存到回收站（10 天内可恢复）</li>
+              <li><strong>找回项目</strong>：在"找回项目"中可恢复近 10 天内删除的项目，任务会一起恢复</li>
+              <li>超过 10 天的已删除项目会显示"已过期"标签，只能永久删除</li>
             </ul>
           </section>
           <section class="guide-section">
-            <h3>5. 其他功能</h3>
+            <h3>5. 历史对比</h3>
             <ul>
-              <li><strong>Perfetto</strong>：点击按钮在 Perfetto UI 中打开 trace 文件</li>
-              <li><strong>下载 CSV</strong>：在表格右上角可下载当前视图数据</li>
-              <li><strong>查看代码</strong>：Triton 表格中点击"查看代码"可查看生成的 kernel 代码</li>
+              <li>在侧栏"对比"标签页选择两个已完成的单文件任务</li>
+              <li>可选填备注和所属项目</li>
+              <li>点击"发起对比"，系统直接复用已有数据，无需重新上传文件</li>
+              <li>对比结果含 Kernel 对比、Triton 对比、Aten 对比、类型对比、CNCL 对比等多个维度</li>
+              <li>源文件被删除后对应任务将标记"已删除"标签，无法参与对比</li>
             </ul>
           </section>
           <section class="guide-section">
-            <h3>6. 运行 Triton 代码</h3>
+            <h3>6. 文件操作</h3>
+            <ul>
+              <li><strong>下载</strong>：可下载原始 trace 文件（受服务器 <code>--no-download</code> 参数控制）</li>
+              <li><strong>Perfetto</strong>：点击"Perfetto ↗"按钮在 Perfetto UI 中打开 trace 文件进行深入分析</li>
+              <li><strong>删除文件</strong>：删除原始 trace 文件后，对应任务会标记"已删除"，无法再参与对比</li>
+            </ul>
+          </section>
+          <section class="guide-section">
+            <h3>7. 运行 Triton 代码</h3>
             <ul>
               <li>在 <strong>Triton</strong> 或 <strong>Triton Step N</strong> 表格中，每行有"运行"按钮</li>
               <li>点击运行后会执行对应的 Triton kernel 代码，弹出执行结果</li>
@@ -368,6 +386,14 @@
               <strong>注意</strong>：此功能依赖 MLU（寒武纪）硬件环境。需要已安装 <code>torch_mlu</code> 驱动并有物理 MLU 加速卡。
               在非 MLU 环境下执行会报 ImportError，这是正常现象，不代表程序出错。
             </p>
+          </section>
+          <section class="guide-section">
+            <h3>8. 其他功能</h3>
+            <ul>
+              <li><strong>深色/浅色模式</strong>：右上角切换按钮，自动记忆偏好</li>
+              <li><strong>侧栏可拖拽调整宽度</strong>，可折叠以扩大主区域可视范围</li>
+              <li>点击标题栏可返回上传页面</li>
+            </ul>
           </section>
         </div>
         <div class="modal-actions">
