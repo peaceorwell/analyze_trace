@@ -15,7 +15,7 @@ from typing import Optional
 
 import aiofiles
 from fastapi import BackgroundTasks, Cookie, FastAPI, Form, Header, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
 from werkzeug.security import check_password_hash
@@ -140,6 +140,13 @@ async def save_and_extract(upload: UploadFile, dest_json: str, gzip_path: list):
         await save_upload(upload, dest_json)
 
 
+def _compress_json_to_gz(json_path: str, gz_path: str):
+    """Compress a JSON file to .json.gz format."""
+    with open(json_path, "rb") as src:
+        with gzip.open(gz_path, "wb") as dst:
+            shutil.copyfileobj(src, dst)
+
+
 def csv_to_rows(path: str) -> dict:
     """Read a CSV file and return {fields, rows}."""
     if not os.path.exists(path):
@@ -240,6 +247,24 @@ async def run_analysis(job_id: str):
         console_out = await asyncio.to_thread(
             _run_sync_analysis, job, kernel_types, rdir, path_a, path_b, name_a, name_b
         )
+
+        # Post-analysis: keep only .json.gz files to save storage space
+        for slot in ("a", "b"):
+            json_path = job.get(f"file_{slot}_path")
+            gzip_path = job.get(f"file_{slot}_gzip_path")
+            if not json_path:
+                continue
+            if not gzip_path:
+                # Uploaded as uncompressed JSON — compress to .gz
+                gzip_path = json_path + ".gz"
+                await asyncio.to_thread(_compress_json_to_gz, json_path, gzip_path)
+            # Delete the uncompressed JSON file (keep only .gz)
+            if os.path.exists(json_path):
+                os.remove(json_path)
+            await db.execute(
+                f"UPDATE jobs SET file_{slot}_path=NULL, file_{slot}_gzip_path=? WHERE id=?",
+                (gzip_path, job_id),
+            )
 
         await db.execute(
             "UPDATE jobs SET status='done', console_out=?, result_dir=? WHERE id=?",
@@ -1151,8 +1176,12 @@ except Exception as e:
 
 
 @app.get("/api/jobs/{jid}/files/{slot}")
-async def get_job_file(jid: str, slot: str, token: Optional[str] = None, user_token: Optional[str] = Cookie(None), x_user_token: Optional[str] = Header(None)):
-    """Serve trace file (a or b) for Perfetto/download. Returns the raw file content."""
+async def get_job_file(jid: str, slot: str, format: Optional[str] = None, token: Optional[str] = None, user_token: Optional[str] = Cookie(None), x_user_token: Optional[str] = Header(None)):
+    """Serve trace file (a or b) for Perfetto/download.
+
+    Query params:
+      format=json  — decompress .gz content on the fly and serve as raw JSON
+    """
     await get_or_create_user(user_token, token or x_user_token)
     db = await get_db()
     cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
@@ -1186,6 +1215,16 @@ async def get_job_file(jid: str, slot: str, token: Optional[str] = None, user_to
 
     if not file_path or not os.path.exists(file_path):
         raise HTTPException(404, "File not found")
+
+    # If the client requests raw JSON and we only have .gz, decompress on the fly
+    if format == "json" and file_path.endswith(".gz"):
+        buf = io.BytesIO()
+        with gzip.open(file_path, "rb") as gz:
+            shutil.copyfileobj(gz, buf)
+        buf.seek(0)
+        filename = row.get(f"file_{slot}_name") or f"trace_{slot}.json"
+        return StreamingResponse(buf, media_type="application/json",
+                                 headers={"Content-Disposition": f'inline; filename="{filename}"'})
 
     # Stream file directly — avoids loading entire file into memory
     media_type = "application/gzip" if file_path.endswith(".gz") else "application/json"

@@ -977,7 +977,7 @@ const openInPerfetto = async (slot) => {
   if (!win) { alert('请允许浏览器弹出窗口后重试'); return; }
 
   const token = localStorage.getItem("user_token");
-  const resp = await fetch(`/api/jobs/${selectedJobId.value}/files/${slot}`, {
+  const resp = await fetch(`/api/jobs/${selectedJobId.value}/files/${slot}?format=json`, {
     credentials: "include",
     headers: token ? { "X-User-Token": token } : {},
   });
