@@ -27,6 +27,7 @@ STORAGE_DIR = os.path.join(os.path.dirname(__file__), "storage")
 
 # Configured at startup via CLI; read-only after that
 ALLOW_FILE_DOWNLOAD = os.environ.get("TRACE_NO_DOWNLOAD", "") == ""
+ALLOW_CODE_EXECUTION = os.environ.get("TRACE_ENABLE_CODE_EXEC", "") == "1"
 
 # ── App lifecycle ─────────────────────────────────────────────────────────────
 
@@ -61,6 +62,11 @@ def job_dir(job_id: str) -> str:
 
 def result_dir(job_id: str) -> str:
     return os.path.join(job_dir(job_id), "results")
+
+
+def require_code_execution_enabled():
+    if not ALLOW_CODE_EXECUTION:
+        raise HTTPException(403, "Code execution is disabled")
 
 
 async def save_upload(upload: UploadFile, dest: str):
@@ -268,7 +274,10 @@ async def index():
 
 @app.get("/api/config")
 async def get_config():
-    return {"allow_file_download": ALLOW_FILE_DOWNLOAD}
+    return {
+        "allow_file_download": ALLOW_FILE_DOWNLOAD,
+        "allow_code_execution": ALLOW_CODE_EXECUTION,
+    }
 
 
 # ── Routes: projects ──────────────────────────────────────────────────────────
@@ -745,6 +754,7 @@ async def delete_job(jid: str):
 @app.post("/api/jobs/{jid}/run-triton")
 async def run_job_triton(jid: str):
     """Run triton code files and append local efficiency to CSV."""
+    require_code_execution_enabled()
     db = await get_db()
     cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
     row = await row_to_dict(await cursor.fetchone())
@@ -867,6 +877,7 @@ async def run_job_triton(jid: str):
 @app.post("/api/jobs/{jid}/clear-inductor-cache")
 async def clear_inductor_cache(jid: str):
     """Clear the torchinductor cache for a job's triton runs."""
+    require_code_execution_enabled()
     import shutil, glob
 
     db = await get_db()
@@ -896,6 +907,7 @@ async def clear_inductor_cache(jid: str):
 @app.post("/api/jobs/{jid}/run-triton-single")
 async def run_single_triton(jid: str, body: dict):
     """Run a single triton code file and return its efficiency."""
+    require_code_execution_enabled()
     db = await get_db()
     cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
     row = await row_to_dict(await cursor.fetchone())
@@ -995,6 +1007,7 @@ except Exception as e:
 @app.post("/api/jobs/{jid}/run-triton-custom")
 async def run_custom_triton(jid: str, body: dict):
     """Run a custom triton code string and return its efficiency."""
+    require_code_execution_enabled()
     db = await get_db()
     cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
     row = await row_to_dict(await cursor.fetchone())

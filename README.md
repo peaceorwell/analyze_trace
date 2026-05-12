@@ -75,6 +75,11 @@ docker run -d -p 8181:8181 --name trace-analyzer -v trace_data:/app/storage trac
 TRACE_NO_DOWNLOAD=1 docker-compose up -d
 ```
 
+**启用本地代码执行**：Triton 代码运行和清除 cache 默认关闭；在可信本机环境中设置环境变量 `TRACE_ENABLE_CODE_EXEC=1`：
+```bash
+TRACE_ENABLE_CODE_EXEC=1 docker-compose up -d
+```
+
 ### CLI 参数
 
 | 参数 | 默认值 | 说明 |
@@ -95,8 +100,8 @@ TRACE_NO_DOWNLOAD=1 docker-compose up -d
 - **图表**：Kernel 类型耗时柱状图（横向）和占比饼图，collective 类型不计入 compute 分析
 - **CSV 表格**：支持搜索、列排序、列宽拖拽调整、超长内容截断并 hover 显示全文
 - **下载 CSV**：表格右上角一键下载当前视图的 CSV 文件
-- **Triton 代码执行**：在 Triton 或 Triton Step N 表格中点击"运行"执行 kernel 代码，显示效率（GB/s）
-- **清除 Cache**：Triton Step N 表格中可清除 `/tmp/torchinductor_*` 缓存目录
+- **Triton 代码执行**：设置 `TRACE_ENABLE_CODE_EXEC=1` 后，在 Triton 或 Triton Step N 表格中点击"运行"执行 kernel 代码，显示效率（GB/s）
+- **清除 Cache**：设置 `TRACE_ENABLE_CODE_EXEC=1` 后，Triton Step N 表格中可清除 `/tmp/torchinductor_*` 缓存目录
 
 #### 历史管理
 - 侧栏按项目分组显示历史任务，支持折叠/展开

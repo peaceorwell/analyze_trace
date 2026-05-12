@@ -280,7 +280,7 @@
           <span v-if="!tritonCodeEditing">{{ tritonCodeFilename }} - 代码查看</span>
           <span v-else>{{ tritonCodeFilename }} - 代码编辑</span>
           <button v-if="!tritonCodeEditing" class="btn btn-sm btn-outline ml-2" @click="copyTritonCode">复制代码</button>
-          <button v-if="!tritonCodeEditing" class="btn btn-sm btn-perfetto ml-1" @click="editTritonCode">编辑代码</button>
+          <button v-if="!tritonCodeEditing && allowCodeExecution" class="btn btn-sm btn-perfetto ml-1" @click="editTritonCode">编辑代码</button>
         </div>
         <!-- View mode -->
         <pre v-if="!tritonCodeEditing" class="code-viewer"><code class="language-python">{{ tritonCodeContent }}</code></pre>
@@ -290,7 +290,7 @@
           <button v-if="tritonCodeEditing && customRunStatus === 'running'" class="btn btn-success" disabled>
             <span class="spinner-small"></span> 运行中...
           </button>
-          <button v-else-if="tritonCodeEditing" class="btn btn-success" @click="runCustomTriton">运行修改</button>
+          <button v-else-if="tritonCodeEditing && allowCodeExecution" class="btn btn-success" @click="runCustomTriton">运行修改</button>
           <button v-if="tritonCodeEditing" class="btn btn-outline" @click="cancelEditTritonCode">取消</button>
           <button v-if="!tritonCodeEditing" class="btn btn-outline" @click="showTritonCode=false">关闭</button>
         </div>
