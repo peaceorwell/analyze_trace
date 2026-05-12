@@ -64,6 +64,7 @@ const ktPieChartInstB = ref(null);
 const ktPieChartB     = ref(null);
 
 const allowFileDownload = ref(true);
+const allowCodeExecution = ref(false);
 
 // ── Triton ──────────────────────────────────────────────────────────────
 const tritonStatus = ref({});
@@ -372,6 +373,7 @@ const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
   allowFileDownload.value = cfg.allow_file_download ?? true;
+  allowCodeExecution.value = cfg.allow_code_execution ?? false;
 };
 
 const loadProjects = async () => {
@@ -811,6 +813,7 @@ const downloadCsv = filename => {
 };
 
 const runSingleTriton = async (codePath) => {
+  if (!allowCodeExecution.value) return;
   if (!selectedJobId.value || !codePath) return;
   tritonStatus.value = { ...tritonStatus.value, [codePath]: { status: 'running' } };
   try {
@@ -844,6 +847,7 @@ const runSingleTriton = async (codePath) => {
 };
 
 const runCustomTriton = async () => {
+  if (!allowCodeExecution.value) return;
   if (!selectedJobId.value || !tritonCodeEditContent.value) return;
   customRunStatus.value = "running";
   try {
@@ -891,6 +895,7 @@ const runCustomTriton = async () => {
 };
 
 const editTritonCode = () => {
+  if (!allowCodeExecution.value) return;
   tritonCodeEditContent.value = tritonCodeContent.value;
   tritonCodeEditing.value = true;
 };
@@ -901,6 +906,7 @@ const cancelEditTritonCode = () => {
 };
 
 const clearInductorCache = async () => {
+  if (!allowCodeExecution.value) return;
   if (!selectedJobId.value) return;
   try {
     const resp = await fetch(`/api/jobs/${selectedJobId.value}/clear-inductor-cache`, {
@@ -1271,7 +1277,7 @@ const JobDetail = {
               <button class="btn-clear-filter" @click="clearColFilters()">✕ 清除</button>
             </span>
             <button class="btn btn-sm btn-outline" @click="downloadCsv(resultTab)">下载 CSV</button>
-            <button v-if="isTritonStepTab" class="btn btn-sm btn-outline" @click="clearInductorCache()">清除 Cache</button>
+            <button v-if="isTritonStepTab && allowCodeExecution" class="btn btn-sm btn-outline" @click="clearInductorCache()">清除 Cache</button>
           </div>
           <div class="table-scroll">
             <div class="csv-table-wrap">
@@ -1329,14 +1335,14 @@ const JobDetail = {
                         查看代码
                       </button>
                       <br />
-                      <button v-if="!tritonStatus[row[f]] || tritonStatus[row[f]].status === 'idle' || tritonStatus[row[f]].status === 'failed'"
+                      <button v-if="allowCodeExecution && (!tritonStatus[row[f]] || tritonStatus[row[f]].status === 'idle' || tritonStatus[row[f]].status === 'failed')"
                               class="btn btn-xs btn-run"
                               @click.stop="runSingleTriton(row[f])">
                         运行
                       </button>
-                      <span v-else-if="tritonStatus[row[f]].status === 'running'"
+                      <span v-else-if="allowCodeExecution && tritonStatus[row[f]].status === 'running'"
                             class="status-running">运行中...</span>
-                      <template v-else-if="tritonStatus[row[f]].status === 'success'">
+                      <template v-else-if="allowCodeExecution && tritonStatus[row[f]].status === 'success'">
                         <span class="eff-value" :class="tritonStatus[row[f]].custom ? 'eff-custom' : 'btn-success'"
                               :title="'点击重新运行\\n' + tritonStatus[row[f]].output"
                               @click.stop="runSingleTriton(row[f])">
@@ -1387,7 +1393,7 @@ const JobDetail = {
       selectedJob, selectedJobId, resultTab, availableTabs, currentTable,
       filteredRows, tableSearch, sortCol, sortAsc, colWidths, colFilters,
       colFilterOps, hasColFilters, colSums,
-      isTritonStepTab, tritonStatus, allowFileDownload,
+      isTritonStepTab, tritonStatus, allowFileDownload, allowCodeExecution,
       switchTab,
       statusIcon,
       editLabel, moveProject, deleteJob, deleteFile,
@@ -1542,7 +1548,7 @@ const App = {
       showTritonCode, tritonCodeContent, tritonCodeFilename,
       tritonCodeEditing, tritonCodeEditContent,
       runCustomTriton, editTritonCode, cancelEditTritonCode,
-      customRunStatus,
+      customRunStatus, allowCodeExecution,
       showGuide, showErrorModal, errorModalMsg, errorModalTitle,
       copyTritonCode, copyErrorModal,
 
