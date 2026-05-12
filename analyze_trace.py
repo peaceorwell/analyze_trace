@@ -581,12 +581,12 @@ def print_comparison(data_a, data_b, label_a, label_b):
     ]
     la, lb = label_a[:16], label_b[:16]
     print(f"\n=== Avg Comparison ({label_a} vs {label_b}) ===")
-    hdr = f"{'metric':<26} {la:<18} {lb:<18} {'delta':<14} {'pct_change':<12}"
+    hdr = f"{'metric':<26} {la:<18} {lb:<18} {'delta':<14}"
     print(hdr)
     print("-" * len(hdr))
     for i, metric in enumerate(METRICS):
         va, vb = data_a["avg_row"][i], data_b["avg_row"][i]
-        print(f"{metric:<26} {va:<18.3f} {vb:<18.3f} {vb - va:<+14.3f} {pct(va, vb):<12}")
+        print(f"{metric:<26} {va:<18.3f} {vb:<18.3f} {vb - va:<+14.3f}")
 
     # Kernel type comparison — union of both auto-classified type lists
     all_types = list(dict.fromkeys(
@@ -671,16 +671,14 @@ def _write_cmp_avg_csv(path, data_a, data_b, name_field):
             "avg_dur_ms_A": fmt3(a["avg_dur_ms"]),
             "avg_dur_ms_B": fmt3(b["avg_dur_ms"]),
             "delta_dur_ms": fmt3(delta),
-            "pct_change":   pct(a["avg_dur_ms"], b["avg_dur_ms"]),
             "avg_count_A":  fmt3(a["avg_count"]),
             "avg_count_B":  fmt3(b["avg_count"]),
             "delta_count":  fmt3(delta_cnt),
-            "count_pct_change": pct(a["avg_count"], b["avg_count"]),
             "_sort":        abs(delta),
         })
     rows.sort(key=lambda r: -r["_sort"])
-    fields = [name_field, "avg_dur_ms_A", "avg_dur_ms_B", "delta_dur_ms", "pct_change",
-              "avg_count_A", "avg_count_B", "delta_count", "count_pct_change"]
+    fields = [name_field, "avg_dur_ms_A", "avg_dur_ms_B", "delta_dur_ms",
+              "avg_count_A", "avg_count_B", "delta_count"]
     with open(path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
         writer.writeheader()
@@ -699,7 +697,6 @@ def _write_triton_cmp_csv(path, avg_triton_a, avg_triton_b):
             "avg_dur_ms_A": fmt3(a["avg_dur_ms"]),
             "avg_dur_ms_B": fmt3(b["avg_dur_ms"]),
             "delta_dur_ms": fmt3(delta),
-            "pct_change":   pct(a["avg_dur_ms"], b["avg_dur_ms"]),
             "avg_count_A":  fmt3(a["avg_count"]),
             "avg_count_B":  fmt3(b["avg_count"]),
             "avg_io_gb_A":  fmt3(a["avg_io_gb"]),
@@ -707,7 +704,7 @@ def _write_triton_cmp_csv(path, avg_triton_a, avg_triton_b):
             "_sort":        abs(delta),
         })
     rows.sort(key=lambda r: -r["_sort"])
-    fields = ["kernel_name", "avg_dur_ms_A", "avg_dur_ms_B", "delta_dur_ms", "pct_change",
+    fields = ["kernel_name", "avg_dur_ms_A", "avg_dur_ms_B", "delta_dur_ms",
               "avg_count_A", "avg_count_B", "avg_io_gb_A", "avg_io_gb_B"]
     with open(path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
@@ -743,14 +740,13 @@ def _write_kernel_types_cmp_csv(path, data_a, data_b):
             "dur_pct_B":    f"{ad_b / compute_b * 100:.1f}%",
             "avg_dur_ms_B": fmt3(ad_b),
             "delta_dur_ms": fmt3(ad_b - ad_a),
-            "pct_change":   pct(ad_a, ad_b),
             "avg_count_A":  fmt3(ac_a),
             "avg_count_B":  fmt3(ac_b),
         })
     with open(path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=[
             "type", "dur_pct_A", "avg_dur_ms_A", "dur_pct_B", "avg_dur_ms_B",
-            "delta_dur_ms", "pct_change", "avg_count_A", "avg_count_B",
+            "delta_dur_ms", "avg_count_A", "avg_count_B",
         ])
         writer.writeheader()
         writer.writerows(rows)

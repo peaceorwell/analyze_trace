@@ -383,7 +383,7 @@ const toggleGroup = label => {
 };
 
 const deltaCellClass = (field, value) => {
-  if (!field.includes("delta") && !field.endsWith("pct_change")) return "";
+  if (!field.includes("delta")) return "";
   const n = parseFloat(value);
   if (isNaN(n)) return "";
   return n > 0 ? "cell-neg" : n < 0 ? "cell-pos" : "";
