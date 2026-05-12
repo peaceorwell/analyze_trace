@@ -14,11 +14,9 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 import aiofiles
-from fastapi import BackgroundTasks, Cookie, FastAPI, Form, Header, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi import BackgroundTasks, FastAPI, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from starlette.requests import Request
-from werkzeug.security import check_password_hash
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from analyze_trace import compute_avgs, parse_trace, run_triton_code_and_get_efficiency  # noqa: E402
@@ -30,15 +28,6 @@ STORAGE_DIR = os.path.join(os.path.dirname(__file__), "storage")
 # Configured at startup via CLI; read-only after that
 ALLOW_FILE_DOWNLOAD = os.environ.get("TRACE_NO_DOWNLOAD", "") == ""
 
-# Cookie security settings
-# Set FORCE_SECURE=1 or USE_HTTPS=1 to enforce secure cookies (for HTTPS deployments)
-_is_https = os.environ.get("FORCE_SECURE", "") or os.environ.get("USE_HTTPS", "") or os.environ.get("HTTPS", "")
-_is_production = os.environ.get("PRODUCTION", "") == "1"
-COOKIE_SECURE = _is_https.lower() in ("1", "true", "yes") or (_is_production and not os.environ.get("DEV_MODE"))
-COOKIE_SAMESITE = os.environ.get("COOKIE_SAMESITE", "lax")  # 'strict', 'lax', or 'none'
-COOKIE_MAX_AGE = 365 * 24 * 60 * 60  # 1 year in seconds
-
-
 # ── App lifecycle ─────────────────────────────────────────────────────────────
 
 @asynccontextmanager
@@ -48,34 +37,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
-
-
-# ── User token helpers ─────────────────────────────────────────────────────────
-
-async def get_or_create_user(user_token: Optional[str] = None, x_user_token: Optional[str] = None) -> str:
-    """Get existing user or create new one. Returns user_token.
-
-    Accepts token from cookie or X-User-Token header (localStorage fallback).
-    Cookie takes precedence over X-User-Token header.
-
-    If no valid token is provided, creates a new user in both cookie and header context.
-    """
-    # Prefer cookie token, fall back to header token
-    token = user_token if user_token else x_user_token
-    db = await get_db()
-    try:
-        if token:
-            # Token provided: ensure it exists in DB
-            await db.execute("INSERT OR IGNORE INTO users(user_token) VALUES(?)", (token,))
-            await db.commit()
-            return token
-        # No token provided: create new one (instead of returning a random user)
-        new_token = str(uuid.uuid4())
-        await db.execute("INSERT INTO users(user_token) VALUES(?)", (new_token,))
-        await db.commit()
-        return new_token
-    finally:
-        await db.close()
 
 
 def job_dir(job_id: str) -> str:
@@ -294,31 +255,10 @@ async def get_config():
     return {"allow_file_download": ALLOW_FILE_DOWNLOAD}
 
 
-# ── Routes: auth ──────────────────────────────────────────────────────────────
-
-@app.post("/api/auth/guest", response_model=dict)
-async def guest_login(response: JSONResponse, user_token: Optional[str] = Cookie(None), x_user_token: Optional[str] = Header(None)):
-    """Get existing user token or create new one. Sets HttpOnly cookie."""
-    token = await get_or_create_user(user_token, x_user_token)
-    response.set_cookie(
-        key="user_token",
-        value=token,
-        httponly=True,                    # Prevents XSS from accessing cookie
-        samesite=COOKIE_SAMESITE,         # CSRF protection
-        secure=COOKIE_SECURE,             # Requires HTTPS
-        max_age=COOKIE_MAX_AGE,
-        path="/",
-        # __Host- prefix requires secure=True and provides additional security
-        # (commented out to maintain compatibility with HTTP dev environments)
-        # cookie_prefix="__Host-" if COOKIE_SECURE else "",
-    )
-    return {"user_token": token}
-
 # ── Routes: projects ──────────────────────────────────────────────────────────
 
 @app.get("/api/projects")
 async def list_projects():
-    # No account system - all projects are public, return everything
     db = await get_db()
     rows = await (await db.execute("""
         SELECT * FROM projects
@@ -329,13 +269,12 @@ async def list_projects():
 
 
 @app.post("/api/projects", status_code=201)
-async def create_project(body: dict, user_token: Optional[str] = Cookie(None)):
+async def create_project(body: dict):
     pid = str(uuid.uuid4())
-    token = await get_or_create_user(user_token)
     db = await get_db()
     await db.execute(
-        "INSERT INTO projects(id, user_token, name, description, is_public) VALUES(?,?,?,?,?)",
-        (pid, token, body.get("name", "新项目"), body.get("description", ""), 1),
+        "INSERT INTO projects(id, name, description, is_public) VALUES(?,?,?,?)",
+        (pid, body.get("name", "新项目"), body.get("description", ""), 1),
     )
     await db.commit()
     cursor = await db.execute("SELECT * FROM projects WHERE id=?", (pid,))
@@ -345,19 +284,14 @@ async def create_project(body: dict, user_token: Optional[str] = Cookie(None)):
 
 
 @app.put("/api/projects/{pid}")
-async def update_project(pid: str, body: dict, user_token: Optional[str] = Cookie(None)):
-    token = await get_or_create_user(user_token)
+async def update_project(pid: str, body: dict):
     db = await get_db()
 
-    # Verify ownership
     cursor = await db.execute("SELECT * FROM projects WHERE id=?", (pid,))
     row = await row_to_dict(await cursor.fetchone())
     if not row:
         await db.close()
         raise HTTPException(404)
-    if row.get("user_token") != token:
-        await db.close()
-        raise HTTPException(403, "Not the project owner")
 
     await db.execute(
         "UPDATE projects SET name=?, description=? WHERE id=?",
@@ -371,8 +305,7 @@ async def update_project(pid: str, body: dict, user_token: Optional[str] = Cooki
 
 
 @app.delete("/api/projects/{pid}", status_code=204)
-async def delete_project(pid: str, user_token: Optional[str] = Cookie(None)):
-    await get_or_create_user(user_token)  # Ensure user exists, but no ownership check (public system)
+async def delete_project(pid: str):
     db = await get_db()
 
     cursor = await db.execute("SELECT * FROM projects WHERE id=?", (pid,))
@@ -420,9 +353,8 @@ async def delete_project(pid: str, user_token: Optional[str] = Cookie(None)):
 # ── Routes: deleted projects (recovery) ───────────────────────────────────────
 
 @app.get("/api/deleted-projects")
-async def list_deleted_projects(user_token: Optional[str] = Cookie(None)):
+async def list_deleted_projects():
     """List recoverable projects deleted within the last 10 days."""
-    await get_or_create_user(user_token)  # Ensure user exists, but no ownership check (public system)
     db = await get_db()
     rows = await (await db.execute("""
         SELECT * FROM deleted_projects
@@ -434,9 +366,8 @@ async def list_deleted_projects(user_token: Optional[str] = Cookie(None)):
 
 
 @app.post("/api/deleted-projects/{pid}/restore", status_code=200)
-async def restore_project(pid: str, user_token: Optional[str] = Cookie(None)):
+async def restore_project(pid: str):
     """Restore a project deleted within the last 10 days."""
-    await get_or_create_user(user_token)  # Ensure user exists, but no ownership check (public system)
     db = await get_db()
 
     # Get deleted project info
@@ -451,11 +382,6 @@ async def restore_project(pid: str, user_token: Optional[str] = Cookie(None)):
     if await cursor.fetchone():
         await db.close()
         raise HTTPException(409, "Project with this ID already exists")
-
-    # Restore the project - first ensure user exists
-    token = row.get("user_token")
-    if token:
-        await db.execute("INSERT OR IGNORE INTO users(user_token) VALUES(?)", (token,))
 
     created_at = row.get("created_at") or "CURRENT_TIMESTAMP"
     try:
@@ -511,9 +437,8 @@ async def restore_project(pid: str, user_token: Optional[str] = Cookie(None)):
 
 
 @app.delete("/api/deleted-projects/{pid}", status_code=204)
-async def permanently_delete_project(pid: str, user_token: Optional[str] = Cookie(None)):
+async def permanently_delete_project(pid: str):
     """Permanently delete a project from recovery list (without restoring)."""
-    await get_or_create_user(user_token)  # Ensure user exists, but no ownership check (public system)
     db = await get_db()
 
     cursor = await db.execute("SELECT * FROM deleted_projects WHERE id=?", (pid,))
@@ -547,7 +472,6 @@ async def list_jobs(
     limit: int = 50,
     offset: int = 0,
 ):
-    # No account system - all jobs are visible to everyone
     db = await get_db()
 
     # Count query
@@ -633,9 +557,7 @@ async def create_job(
     save_triton_code: bool = Form(False),
     label: str = Form(""),
     project_id: Optional[str] = Form(None),
-    user_token: Optional[str] = Cookie(None),
 ):
-    token = await get_or_create_user(user_token)
     jid = str(uuid.uuid4())
     jdir = job_dir(jid)
 
@@ -657,11 +579,11 @@ async def create_job(
 
     db = await get_db()
     await db.execute(
-        """INSERT INTO jobs(id, project_id, user_token, label, mode,
+        """INSERT INTO jobs(id, project_id, label, mode,
                file_a_name, file_a_path, file_a_gzip_path, file_b_name, file_b_path, file_b_gzip_path,
                kernel_types, save_triton_csv, save_triton_code)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (jid, project_id or None, token, eff_label, mode,
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (jid, project_id or None, eff_label, mode,
          file_a.filename, path_a, gzip_path_a[0], name_b, path_b, gzip_path_b[0],
          kernel_types, int(save_triton_csv), int(save_triton_code)),
     )
@@ -675,8 +597,7 @@ async def create_job(
 
 
 @app.post("/api/jobs/compare", status_code=201)
-async def compare_jobs(body: dict, background_tasks: BackgroundTasks, user_token: Optional[str] = Cookie(None)):
-    token = await get_or_create_user(user_token)
+async def compare_jobs(body: dict, background_tasks: BackgroundTasks):
     job_id_a = body.get("job_id_a")
     job_id_b = body.get("job_id_b")
     if not job_id_a or not job_id_b:
@@ -684,7 +605,6 @@ async def compare_jobs(body: dict, background_tasks: BackgroundTasks, user_token
 
     db = await get_db()
 
-    # Check user has access to both source jobs
     cursor_a = await db.execute("SELECT * FROM jobs WHERE id=?", (job_id_a,))
     src_a = await row_to_dict(await cursor_a.fetchone())
     cursor_b = await db.execute("SELECT * FROM jobs WHERE id=?", (job_id_b,))
@@ -693,11 +613,6 @@ async def compare_jobs(body: dict, background_tasks: BackgroundTasks, user_token
     if not src_a or not src_b:
         await db.close()
         raise HTTPException(404, "Source job not found")
-
-    # Verify user owns both source jobs
-    if src_a.get("user_token") != token or src_b.get("user_token") != token:
-        await db.close()
-        raise HTTPException(403, "No access to source job")
 
     # Verify actual file existence on disk (DB flag may be stale)
     path_a = src_a.get("file_a_gzip_path") or src_a.get("file_a_path")
@@ -714,12 +629,12 @@ async def compare_jobs(body: dict, background_tasks: BackgroundTasks, user_token
     eff_label = body.get("label") or f"{src_a['label']} vs {src_b['label']}"
 
     await db.execute(
-        """INSERT INTO jobs(id, project_id, user_token, label, mode,
+        """INSERT INTO jobs(id, project_id, label, mode,
                file_a_name, file_b_name,
                source_job_a, source_job_b,
                kernel_types, save_triton_csv, save_triton_code)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (jid, body.get("project_id"), token, eff_label, "compare",
+           VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+        (jid, body.get("project_id"), eff_label, "compare",
          src_a["file_a_name"], src_b["file_a_name"],
          job_id_a, job_id_b,
          kernel_types, 0, 0),
@@ -734,7 +649,7 @@ async def compare_jobs(body: dict, background_tasks: BackgroundTasks, user_token
 
 
 @app.get("/api/jobs/{jid}")
-async def get_job(jid: str, user_token: Optional[str] = Cookie(None)):
+async def get_job(jid: str):
     db = await get_db()
     cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
     row = await row_to_dict(await cursor.fetchone())
@@ -743,7 +658,6 @@ async def get_job(jid: str, user_token: Optional[str] = Cookie(None)):
     if row is None:
         raise HTTPException(404)
 
-    # No account system - all jobs are public
     job = dict(row)
     # Verify actual file existence on disk (DB flag may be stale)
     # For compare jobs, resolve via source jobs
@@ -771,8 +685,7 @@ async def get_job(jid: str, user_token: Optional[str] = Cookie(None)):
 
 
 @app.patch("/api/jobs/{jid}")
-async def patch_job(jid: str, body: dict, user_token: Optional[str] = Cookie(None), x_user_token: Optional[str] = Header(None)):
-    token = await get_or_create_user(user_token, x_user_token)
+async def patch_job(jid: str, body: dict):
     db = await get_db()
 
     cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
@@ -780,11 +693,6 @@ async def patch_job(jid: str, body: dict, user_token: Optional[str] = Cookie(Non
     if not row:
         await db.close()
         raise HTTPException(404)
-
-    # Only owner can update
-    if row.get("user_token") != token:
-        await db.close()
-        raise HTTPException(403, "Not the job owner")
 
     if "label" in body:
         await db.execute("UPDATE jobs SET label=? WHERE id=?", (body["label"], jid))
@@ -799,8 +707,7 @@ async def patch_job(jid: str, body: dict, user_token: Optional[str] = Cookie(Non
 
 
 @app.delete("/api/jobs/{jid}", status_code=204)
-async def delete_job(jid: str, user_token: Optional[str] = Cookie(None)):
-    await get_or_create_user(user_token)  # Ensure user exists, but no ownership check (public system)
+async def delete_job(jid: str):
     db = await get_db()
 
     cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
@@ -820,9 +727,8 @@ async def delete_job(jid: str, user_token: Optional[str] = Cookie(None)):
 
 
 @app.post("/api/jobs/{jid}/run-triton")
-async def run_job_triton(jid: str, user_token: Optional[str] = Cookie(None)):
+async def run_job_triton(jid: str):
     """Run triton code files and append local efficiency to CSV."""
-    token = await get_or_create_user(user_token)
     db = await get_db()
     cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
     row = await row_to_dict(await cursor.fetchone())
@@ -830,9 +736,6 @@ async def run_job_triton(jid: str, user_token: Optional[str] = Cookie(None)):
 
     if row is None:
         raise HTTPException(404)
-
-    if row.get("user_token") != token:
-        raise HTTPException(403, "Not the job owner")
 
     if row.get("status") != "done":
         raise HTTPException(400, "Job not completed")
@@ -946,11 +849,10 @@ async def run_job_triton(jid: str, user_token: Optional[str] = Cookie(None)):
 
 
 @app.post("/api/jobs/{jid}/clear-inductor-cache")
-async def clear_inductor_cache(jid: str, user_token: Optional[str] = Cookie(None), x_user_token: Optional[str] = Header(None)):
+async def clear_inductor_cache(jid: str):
     """Clear the torchinductor cache for a job's triton runs."""
     import shutil, glob
 
-    await get_or_create_user(user_token, x_user_token)  # Ensure user exists, but no ownership check (public system)
     db = await get_db()
     cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
     row = await row_to_dict(await cursor.fetchone())
@@ -976,7 +878,7 @@ async def clear_inductor_cache(jid: str, user_token: Optional[str] = Cookie(None
 
 
 @app.post("/api/jobs/{jid}/run-triton-single")
-async def run_single_triton(jid: str, body: dict, user_token: Optional[str] = Cookie(None)):
+async def run_single_triton(jid: str, body: dict):
     """Run a single triton code file and return its efficiency."""
     db = await get_db()
     cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
@@ -1075,7 +977,7 @@ except Exception as e:
 
 
 @app.post("/api/jobs/{jid}/run-triton-custom")
-async def run_custom_triton(jid: str, body: dict, user_token: Optional[str] = Cookie(None)):
+async def run_custom_triton(jid: str, body: dict):
     """Run a custom triton code string and return its efficiency."""
     db = await get_db()
     cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
@@ -1176,13 +1078,12 @@ except Exception as e:
 
 
 @app.get("/api/jobs/{jid}/files/{slot}")
-async def get_job_file(jid: str, slot: str, format: Optional[str] = None, token: Optional[str] = None, user_token: Optional[str] = Cookie(None), x_user_token: Optional[str] = Header(None)):
+async def get_job_file(jid: str, slot: str, format: Optional[str] = None):
     """Serve trace file (a or b) for Perfetto/download.
 
     Query params:
       format=json  — decompress .gz content on the fly and serve as raw JSON
     """
-    await get_or_create_user(user_token, token or x_user_token)
     db = await get_db()
     cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
     row = await row_to_dict(await cursor.fetchone())
@@ -1233,18 +1134,14 @@ async def get_job_file(jid: str, slot: str, format: Optional[str] = None, token:
 
 
 @app.delete("/api/jobs/{jid}/files/{slot}", status_code=204)
-async def delete_job_file(jid: str, slot: str, user_token: Optional[str] = Cookie(None), x_user_token: Optional[str] = Header(None)):
+async def delete_job_file(jid: str, slot: str):
     """Delete the stored trace file (a or b) for a job."""
-    token = await get_or_create_user(user_token, x_user_token)
     db = await get_db()
     cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
     row = await row_to_dict(await cursor.fetchone())
     if not row:
         await db.close()
         raise HTTPException(404)
-    if row.get("user_token") != token:
-        await db.close()
-        raise HTTPException(403, "Not the job owner")
     if slot not in ("a", "b"):
         await db.close()
         raise HTTPException(400, "slot must be 'a' or 'b'")
@@ -1261,34 +1158,18 @@ async def delete_job_file(jid: str, slot: str, user_token: Optional[str] = Cooki
 
 
 @app.get("/api/jobs/{jid}/triton-code/{path:path}")
-async def get_triton_code(jid: str, path: str, user_token: Optional[str] = Cookie(None)):
+async def get_triton_code(jid: str, path: str):
     """Serve triton code file for display in browser."""
     if not ALLOW_FILE_DOWNLOAD:
         raise HTTPException(403, "File download is disabled")
 
-    token = await get_or_create_user(user_token)
     db = await get_db()
-    cursor = await db.execute("""
-        SELECT j.*, p.user_token as proj_owner, p.is_public, p.password_hash
-        FROM jobs j
-        LEFT JOIN projects p ON j.project_id = p.id
-        WHERE j.id=?
-    """, (jid,))
+    cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
     row = await row_to_dict(await cursor.fetchone())
     await db.close()
 
     if not row:
         raise HTTPException(404)
-
-    def can_access_job(job):
-        if job.get("user_token") == token:
-            return True
-        is_public = job.get("is_public")
-        has_password = job.get("password_hash")
-        return bool(is_public) and not has_password
-
-    if not can_access_job(row):
-        raise HTTPException(403, "No access to this file")
 
     # Prevent path traversal - ensure path is within result_dir
     full_path = os.path.normpath(os.path.join(result_dir(jid), path))
