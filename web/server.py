@@ -33,10 +33,26 @@ ALLOW_FILE_DOWNLOAD = os.environ.get("TRACE_NO_DOWNLOAD", "") == ""
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    await mark_interrupted_jobs()
     yield
 
 app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
+
+
+async def mark_interrupted_jobs():
+    """Fail jobs that were left in-flight by a previous server process."""
+    db = await get_db()
+    try:
+        await db.execute("""
+            UPDATE jobs
+            SET status='error',
+                error_msg='Server restarted before this analysis completed'
+            WHERE status IN ('pending', 'running')
+        """)
+        await db.commit()
+    finally:
+        await db.close()
 
 
 def job_dir(job_id: str) -> str:
@@ -1084,6 +1100,9 @@ async def get_job_file(jid: str, slot: str, format: Optional[str] = None):
     Query params:
       format=json  — decompress .gz content on the fly and serve as raw JSON
     """
+    if not ALLOW_FILE_DOWNLOAD:
+        raise HTTPException(403, "File download is disabled")
+
     db = await get_db()
     cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
     row = await row_to_dict(await cursor.fetchone())
