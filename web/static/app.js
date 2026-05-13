@@ -346,6 +346,162 @@ const fmtSum = v => {
   return parseFloat(s).toString();
 };
 
+const toNum = v => {
+  const n = parseFloat(String(v ?? '').replace('%', ''));
+  return Number.isFinite(n) ? n : null;
+};
+
+const fmtMs = v => {
+  const n = toNum(v);
+  if (n === null) return '-';
+  if (Math.abs(n) >= 100) return n.toFixed(1) + ' ms';
+  if (Math.abs(n) >= 10) return n.toFixed(2) + ' ms';
+  return n.toFixed(3).replace(/\.?0+$/, '') + ' ms';
+};
+
+const fmtCount = v => {
+  const n = toNum(v);
+  if (n === null) return '-';
+  return n.toFixed(n >= 10 ? 1 : 2).replace(/\.?0+$/, '');
+};
+
+const fmtSignedMs = v => {
+  const n = toNum(v);
+  if (n === null) return '-';
+  const sign = n > 0 ? '+' : '';
+  return sign + fmtMs(n);
+};
+
+const pctChange = (a, b) => {
+  const av = toNum(a);
+  const bv = toNum(b);
+  if (!av || bv === null) return '';
+  const pct = (bv - av) / av * 100;
+  return `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%`;
+};
+
+const parseAvgConsoleRow = output => {
+  const line = String(output || '').split('\n').find(l => l.trim().startsWith('avg '));
+  if (!line) return {};
+  const parts = line.trim().split(/\s+/);
+  return {
+    stepDurMs: toNum(parts[1]),
+    kernelCount: toNum(parts[2]),
+    computeKernelDurMs: toNum(parts[3]),
+    tritonCount: toNum(parts[4]),
+    tritonDurMs: toNum(parts[5]),
+    atenCount: toNum(parts[6]),
+    atenDurMs: toNum(parts[7]),
+    cnclCount: toNum(parts[8]),
+    cnclDurMs: toNum(parts[9]),
+  };
+};
+
+const resultSummaryCards = computed(() => {
+  const job = selectedJob.value;
+  const res = job?.results;
+  if (!res || job.status !== 'done') return [];
+  if (job.mode === 'compare') {
+    const cmpRows = res['kernel_types_cmp.csv']?.rows || [];
+    const totalA = cmpRows.reduce((s, r) => s + (toNum(r.avg_dur_ms_A) || 0), 0);
+    const totalB = cmpRows.reduce((s, r) => s + (toNum(r.avg_dur_ms_B) || 0), 0);
+    const kernelRows = res['all_kernels_cmp.csv']?.rows || [];
+    const regressions = kernelRows.map(r => ({ row: r, delta: toNum(r.delta_dur_ms) || 0 }))
+      .filter(x => x.delta > 0).sort((a, b) => b.delta - a.delta);
+    const improvements = kernelRows.map(r => ({ row: r, delta: toNum(r.delta_dur_ms) || 0 }))
+      .filter(x => x.delta < 0).sort((a, b) => a.delta - b.delta);
+    return [
+      {
+        label: 'Compute Delta',
+        value: fmtSignedMs(totalB - totalA),
+        sub: pctChange(totalA, totalB) || 'B vs A',
+        tone: totalB > totalA ? 'bad' : totalB < totalA ? 'good' : '',
+      },
+      { label: 'A Compute', value: fmtMs(totalA), sub: 'baseline' },
+      { label: 'B Compute', value: fmtMs(totalB), sub: 'candidate' },
+      regressions[0] ? {
+        label: 'Worst Kernel',
+        value: fmtSignedMs(regressions[0].delta),
+        sub: regressions[0].row.kernel_name,
+        tone: 'bad',
+      } : null,
+      improvements[0] ? {
+        label: 'Best Kernel',
+        value: fmtSignedMs(improvements[0].delta),
+        sub: improvements[0].row.kernel_name,
+        tone: 'good',
+      } : null,
+      { label: 'Compared Types', value: String(cmpRows.length), sub: 'kernel families' },
+    ].filter(Boolean);
+  }
+
+  const avg = parseAvgConsoleRow(job.console_out);
+  const cards = [];
+
+  if (avg.stepDurMs !== null && avg.stepDurMs !== undefined) {
+    cards.push({ label: 'Avg Step', value: fmtMs(avg.stepDurMs), sub: `${fmtCount(avg.kernelCount)} kernels` });
+  }
+  if (avg.computeKernelDurMs !== null && avg.computeKernelDurMs !== undefined) {
+    cards.push({ label: 'Compute Kernel', value: fmtMs(avg.computeKernelDurMs), sub: `ATen ${fmtMs(avg.atenDurMs)}` });
+  }
+  if (avg.tritonDurMs !== null && avg.tritonDurMs !== undefined) {
+    cards.push({ label: 'Triton', value: fmtMs(avg.tritonDurMs), sub: `${fmtCount(avg.tritonCount)} calls` });
+  }
+  if (avg.cnclDurMs !== null && avg.cnclDurMs !== undefined) {
+    cards.push({ label: 'Collective', value: fmtMs(avg.cnclDurMs), sub: `${fmtCount(avg.cnclCount)} ops` });
+  }
+
+  const typeRows = res['kernel_types_avg.csv']?.rows || [];
+  if (typeRows[0]) {
+    cards.push({ label: 'Top Type', value: typeRows[0].type, sub: `${fmtMs(typeRows[0].avg_dur_ms)} / ${typeRows[0].dur_pct || '-'}` });
+  }
+
+  const kernelRows = res['all_kernels_avg.csv']?.rows || [];
+  if (kernelRows[0]) {
+    cards.push({ label: 'Top Kernel', value: kernelRows[0].kernel_name, sub: `${kernelRows[0].family || 'kernel'} / ${fmtMs(kernelRows[0].avg_dur_ms)} / ${kernelRows[0].dur_pct || '-'}` });
+  }
+
+  return cards.slice(0, 6);
+});
+
+const comparisonInsights = computed(() => {
+  const res = selectedJob.value?.results;
+  if (selectedJob.value?.mode !== 'compare' || !res) return null;
+
+  const build = (tableName, labelField, label) => {
+    const rows = res[tableName]?.rows || [];
+    const items = rows.map(row => {
+      const delta = toNum(row.delta_dur_ms);
+      if (delta === null || delta === 0) return null;
+      const a = row.avg_dur_ms_A ?? row.dur_A_ms;
+      const b = row.avg_dur_ms_B ?? row.dur_B_ms;
+      return {
+        label: row[labelField] || row.type || row.op_name || row.kernel_name,
+        delta,
+        deltaText: fmtSignedMs(delta),
+        pctText: pctChange(a, b),
+        aText: fmtMs(a),
+        bText: fmtMs(b),
+        source: label,
+      };
+    }).filter(Boolean);
+    return {
+      regressions: [...items].filter(i => i.delta > 0).sort((a, b) => b.delta - a.delta),
+      improvements: [...items].filter(i => i.delta < 0).sort((a, b) => a.delta - b.delta),
+    };
+  };
+
+  const kernels = build('all_kernels_cmp.csv', 'kernel_name', 'Kernel');
+  const types = build('kernel_types_cmp.csv', 'type', 'Type');
+  const aten = build('aten_ops_cmp.csv', 'op_name', 'ATen');
+  return {
+    regressions: [...kernels.regressions, ...types.regressions, ...aten.regressions]
+      .sort((a, b) => b.delta - a.delta).slice(0, 5),
+    improvements: [...kernels.improvements, ...types.improvements, ...aten.improvements]
+      .sort((a, b) => a.delta - b.delta).slice(0, 5),
+  };
+});
+
 // ══════════════════════════════════════════════════════════════════════════════
 // Helpers
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1240,6 +1396,45 @@ const JobDetail = {
 
       <!-- Done: tabs -->
       <div v-else-if="selectedJob.status==='done'">
+        <div v-if="resultSummaryCards.length" class="summary-grid">
+          <div v-for="card in resultSummaryCards" :key="card.label" class="summary-card" :class="card.tone ? 'tone-' + card.tone : ''">
+            <div class="summary-label">{{ card.label }}</div>
+            <div class="summary-value" :title="card.value">{{ card.value }}</div>
+            <div class="summary-sub" :title="card.sub">{{ card.sub }}</div>
+          </div>
+        </div>
+
+        <div v-if="comparisonInsights && (comparisonInsights.regressions.length || comparisonInsights.improvements.length)" class="compare-insights">
+          <div class="insight-column">
+            <div class="insight-title bad">Top Regressions</div>
+            <div v-if="!comparisonInsights.regressions.length" class="insight-empty">无明显变慢项</div>
+            <div v-for="item in comparisonInsights.regressions" :key="'reg-'+item.source+'-'+item.label" class="insight-row">
+              <div class="insight-main">
+                <span class="insight-source">{{ item.source }}</span>
+                <span class="insight-name" :title="item.label">{{ item.label }}</span>
+              </div>
+              <div class="insight-metrics">
+                <span class="cell-neg">{{ item.deltaText }}</span>
+                <span>{{ item.pctText || item.aText + ' -> ' + item.bText }}</span>
+              </div>
+            </div>
+          </div>
+          <div class="insight-column">
+            <div class="insight-title good">Top Improvements</div>
+            <div v-if="!comparisonInsights.improvements.length" class="insight-empty">无明显变快项</div>
+            <div v-for="item in comparisonInsights.improvements" :key="'imp-'+item.source+'-'+item.label" class="insight-row">
+              <div class="insight-main">
+                <span class="insight-source">{{ item.source }}</span>
+                <span class="insight-name" :title="item.label">{{ item.label }}</span>
+              </div>
+              <div class="insight-metrics">
+                <span class="cell-pos">{{ item.deltaText }}</span>
+                <span>{{ item.pctText || item.aText + ' -> ' + item.bText }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div class="result-tabs">
           <button v-for="t in availableTabs" :key="t.key"
                   :class="['tab', resultTab===t.key?'active':'']"
@@ -1393,6 +1588,7 @@ const JobDetail = {
       selectedJob, selectedJobId, resultTab, availableTabs, currentTable,
       filteredRows, tableSearch, sortCol, sortAsc, colWidths, colFilters,
       colFilterOps, hasColFilters, colSums,
+      resultSummaryCards, comparisonInsights,
       isTritonStepTab, tritonStatus, allowFileDownload, allowCodeExecution,
       switchTab,
       statusIcon,
