@@ -65,9 +65,9 @@ class TestClassifyKernel:
         )
         assert result == "collective"
 
-    def test_other(self):
+    def test_fallback_family(self):
         result = classify_kernel("random_kernel", {}, ["gemm"])
-        assert result == "other"
+        assert result == "random_kernel"
 
     def test_case_insensitive(self):
         result = classify_kernel("GEMM_CUDA", {}, ["gemm"])
