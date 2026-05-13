@@ -45,6 +45,17 @@ cd web && pip install -r requirements.txt && python server.py
 
 浏览器访问 `http://127.0.0.1:8181`。
 
+使用 `uv`：
+
+```bash
+uv sync --extra web
+uv run python web/server.py
+
+# 启用测试依赖
+uv sync --extra web --extra dev
+uv run pytest -q
+```
+
 ---
 
 ## Web 界面
@@ -60,6 +71,13 @@ pip install -r requirements.txt
 python server.py                        # 默认 127.0.0.1:8181
 python server.py --host 0.0.0.0 --port 8080
 python server.py --no-download          # 禁止用户下载原始 trace 文件
+```
+
+`uv` 启动：
+
+```bash
+uv sync --extra web
+uv run python web/server.py
 ```
 
 ### Docker 部署
