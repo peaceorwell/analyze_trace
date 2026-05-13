@@ -440,6 +440,71 @@ select.input { appearance: none; cursor: pointer; }
   border: 1px solid var(--border); border-radius: 6px;
 }
 
+/* summary */
+.summary-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(135px, 1fr));
+  gap: 8px; margin-bottom: 8px; flex-shrink: 0;
+}
+.summary-card {
+  min-width: 0; padding: 8px 10px; background: var(--bg);
+  border: 1px solid var(--border); border-radius: 6px;
+}
+.summary-card.tone-good { border-color: rgba(16,163,74,.35); background: rgba(16,163,74,.08); }
+.summary-card.tone-bad { border-color: rgba(220,38,38,.35); background: rgba(220,38,38,.08); }
+.summary-label {
+  font-size: 10px; color: var(--text3); font-family: var(--mono);
+  text-transform: uppercase; letter-spacing: .04em; margin-bottom: 4px;
+}
+.summary-value {
+  font-size: 15px; font-weight: 700; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.summary-sub {
+  margin-top: 3px; font-size: 11px; color: var(--text3);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.compare-insights {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px; margin-bottom: 8px; flex-shrink: 0;
+}
+.insight-column {
+  min-width: 0; padding: 8px 10px; background: var(--bg);
+  border: 1px solid var(--border); border-radius: 6px;
+}
+.insight-title {
+  font-size: 11px; font-weight: 700; margin-bottom: 6px;
+  font-family: var(--mono); letter-spacing: .02em;
+}
+.insight-title.good { color: var(--green); }
+.insight-title.bad { color: var(--red); }
+.insight-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center; gap: 8px; padding: 4px 0;
+  border-top: 1px solid var(--border);
+}
+.insight-row:first-of-type { border-top: none; }
+.insight-main { min-width: 0; display: flex; align-items: center; gap: 6px; }
+.insight-source {
+  flex-shrink: 0; font-size: 9px; padding: 1px 4px; border-radius: 4px;
+  background: var(--card2); color: var(--text3); font-family: var(--mono);
+}
+.insight-name {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 11px; color: var(--text2);
+}
+.insight-metrics {
+  display: flex; align-items: baseline; gap: 7px; font-size: 11px;
+  color: var(--text3); font-family: var(--mono); white-space: nowrap;
+}
+.insight-empty { color: var(--text3); font-size: 11px; padding: 6px 0; }
+
+@media (max-width: 780px) {
+  .compare-insights { grid-template-columns: 1fr; }
+  .insight-row { grid-template-columns: minmax(0, 1fr); gap: 3px; }
+  .insight-metrics { justify-content: flex-start; }
+}
+
 /* result tabs */
 .result-tabs { display: flex; gap: 2px; flex-wrap: wrap; margin-bottom: 8px; flex-shrink: 0; }
 .result-tabs .tab {
