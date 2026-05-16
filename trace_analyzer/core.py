@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+import tarfile
 from collections import defaultdict
 from decimal import Decimal
 
@@ -266,6 +267,26 @@ def _write_kernels_avg_csv(path, avg_kernels):
     print(f"Wrote {path} ({len(avg_kernels)} rows)")
 
 
+def _load_trace_json(trace_file):
+    """Load trace JSON from plain JSON, gzip JSON, or a tar.gz archive."""
+    if not str(trace_file).endswith(".gz"):
+        with open(trace_file) as f:
+            return json.load(f)
+
+    if tarfile.is_tarfile(trace_file):
+        with tarfile.open(trace_file, "r:*") as tar:
+            for member in tar.getmembers():
+                if member.isfile() and member.name.endswith(".json"):
+                    extracted = tar.extractfile(member)
+                    if extracted is not None:
+                        with extracted:
+                            return json.load(extracted)
+        raise ValueError(f"No JSON trace found in archive: {trace_file}")
+
+    with gzip.open(trace_file, "rt", encoding="utf-8") as f:
+        return json.load(f)
+
+
 def parse_trace(trace_file, kernel_types):
     """Parse a PyTorch profiler trace JSON.
 
@@ -279,12 +300,7 @@ def parse_trace(trace_file, kernel_types):
         step_to_cncl:         step -> {op_name -> {"count": int, "dur_ms": float}}
         step_durations:       step -> wall-clock duration in ms (from ProfilerStep# event)
     """
-    if str(trace_file).endswith(".gz"):
-        with gzip.open(trace_file, "rt", encoding="utf-8") as f:
-            trace = json.load(f)
-    else:
-        with open(trace_file) as f:
-            trace = json.load(f)
+    trace = _load_trace_json(trace_file)
 
     events = trace["traceEvents"]
 

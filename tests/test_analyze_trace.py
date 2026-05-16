@@ -105,6 +105,14 @@ class TestParseTrace:
         result = parse_trace(sample_trace_file, [])
         assert "step_to_kernel_types" in result
 
+    def test_gzip_trace(self, sample_trace_file_gz):
+        result = parse_trace(sample_trace_file_gz, ["gemm"])
+        assert result["step_durations"][0] == 100.0
+
+    def test_tar_gzip_trace(self, sample_trace_file_tar_gz):
+        result = parse_trace(sample_trace_file_tar_gz, ["gemm"])
+        assert result["step_durations"][0] == 100.0
+
 
 class TestComputeAvgs:
     def test_compute_avgs(self, sample_trace_file):

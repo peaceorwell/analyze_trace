@@ -2,6 +2,7 @@ import asyncio
 import os
 import sys
 from pathlib import Path
+import shutil
 
 import aiosqlite
 import pytest
@@ -141,3 +142,44 @@ def test_startup_marks_interrupted_jobs_error(isolated_server):
     row = asyncio.run(fetch_job())
     assert row["status"] == "error"
     assert "Server restarted" in row["error_msg"]
+
+
+def test_compare_from_history_accepts_tar_gzip_sources(
+    client,
+    sample_trace_file_tar_gz,
+    tmp_path,
+):
+    stored_a = tmp_path / "a.tar.gz"
+    stored_b = tmp_path / "b.tar.gz"
+    shutil.copyfile(sample_trace_file_tar_gz, stored_a)
+    shutil.copyfile(sample_trace_file_tar_gz, stored_b)
+
+    async def insert_jobs():
+        db = await web_db.get_db()
+        try:
+            await db.executemany(
+                """
+                INSERT INTO jobs(
+                    id, label, mode, status, file_a_name, file_a_gzip_path, file_a_exists
+                ) VALUES(?,?,?,?,?,?,?)
+                """,
+                [
+                    ("source-a", "a", "single", "done", "a.tar.gz", str(stored_a), 1),
+                    ("source-b", "b", "single", "done", "b.tar.gz", str(stored_b), 1),
+                ],
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_jobs())
+
+    created = client.post(
+        "/api/jobs/compare",
+        json={"job_id_a": "source-a", "job_id_b": "source-b"},
+    )
+
+    assert created.status_code == 201
+    compare_job = created.json()
+    assert compare_job["mode"] == "compare"
+    assert compare_job["status"] in {"pending", "running", "done"}
