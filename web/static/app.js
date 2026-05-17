@@ -30,6 +30,10 @@ const jobs          = ref([]);
 const jobsTotal     = ref(0);
 const jobsLimit     = ref(100);
 const jobsOffset    = ref(0);
+const historyGroups = ref([]);
+const historyGroupsTotal = ref(0);
+const historyGroupsLimit = ref(100);
+const historyGroupsOffset = ref(0);
 const filterProject = ref("");
 const sidebarTab    = ref("jobs");
 const selectedJobId = ref(null);
@@ -172,17 +176,6 @@ const compareProjectId  = ref("");
 
 let pollTimer = null;
 
-// ── Memoization cache for groupedJobs ────────────────────────────────────
-let groupedJobsCache = null;
-let groupedJobsCacheKey = null;
-const invalidateGroupedJobsCache = () => {
-  groupedJobsCache = null;
-  groupedJobsCacheKey = null;
-};
-
-const getGroupedJobsCacheKey = () =>
-  `${filterProject.value}-${jobs.value.length}-${projects.value.length}`;
-
 // ══════════════════════════════════════════════════════════════════════════════
 // Computed properties
 // ══════════════════════════════════════════════════════════════════════════════
@@ -197,45 +190,7 @@ const singleJobs = computed(() => {
   return filtered;
 });
 
-const groupedJobs = computed(() => {
-  const cacheKey = getGroupedJobsCacheKey();
-  if (groupedJobsCache && groupedJobsCacheKey === cacheKey) {
-    return groupedJobsCache;
-  }
-
-  const filtered = filterProject.value
-    ? filterProject.value === "__none__"
-      ? jobs.value.filter(j => !j.project_id)
-      : jobs.value.filter(j => j.project_id === filterProject.value)
-    : jobs.value;
-
-  const map = {};
-  for (const job of filtered) {
-    const p = projects.value.find(p => p.id === job.project_id);
-    const projectId = p?.id || "__none__";
-    const projectName = p ? p.name : "未分组";
-
-    if (!map[projectId]) {
-      map[projectId] = {
-        type: "project",
-        id: projectId,
-        label: projectName,
-        jobs: []
-      };
-    }
-    map[projectId].jobs.push(job);
-  }
-
-  const result = Object.values(map).sort((a, b) => {
-    if (a.id === "__none__") return 1;
-    if (b.id === "__none__") return -1;
-    return a.label.localeCompare(b.label);
-  });
-
-  groupedJobsCacheKey = cacheKey;
-  groupedJobsCache = result;
-  return result;
-});
+const groupedJobs = computed(() => historyGroups.value);
 
 const availableTabs = computed(() => {
   if (!selectedJob.value?.results) return [];
@@ -395,6 +350,18 @@ const loadJobs = async () => {
   const data = await r.json();
   jobs.value = data.data || [];
   jobsTotal.value = data.total || 0;
+  await loadHistoryGroups();
+};
+
+const loadHistoryGroups = async () => {
+  const params = new URLSearchParams();
+  if (filterProject.value) params.set("project_id", filterProject.value);
+  params.set("limit", String(historyGroupsLimit.value));
+  params.set("offset", String(historyGroupsOffset.value));
+  const r = await fetch(`/api/job-groups?${params}`, { credentials: "include" });
+  const data = await r.json();
+  historyGroups.value = data.data || [];
+  historyGroupsTotal.value = data.total || 0;
 };
 
 const loadJob = async id => {
@@ -675,7 +642,6 @@ const editLabel = async () => {
     body: JSON.stringify({ label: newLabel }),
   });
   await loadJob(selectedJobId.value);
-  invalidateGroupedJobsCache();
   await loadJobs();
 };
 
@@ -707,7 +673,6 @@ const confirmMoveProject = async () => {
   }
   showMoveProject.value = false;
   await loadJob(selectedJobId.value);
-  invalidateGroupedJobsCache();
   await loadJobs();
 };
 
@@ -743,10 +708,7 @@ const confirmRenameProject = async () => {
   }
   showRenameProject.value = false;
   await loadProjects();
-  invalidateGroupedJobsCache();
-  if (filterProject.value === pid) {
-    await loadJobs();
-  }
+  await loadJobs();
 };
 
 const deleteProject = async (projectId) => {
@@ -763,7 +725,6 @@ const deleteProject = async (projectId) => {
   filterProject.value = "";
   router.push({ path: "/" });
   await loadProjects();
-  invalidateGroupedJobsCache();
   await loadJobs();
 };
 
@@ -1077,20 +1038,19 @@ const createProject = async () => {
   newProjectName.value = "";
   newProjectDesc.value = "";
   await loadProjects();
-  invalidateGroupedJobsCache();
   await loadJobs();
 };
 
 const prevPage = () => {
-  if (jobsOffset.value > 0) {
-    jobsOffset.value = Math.max(0, jobsOffset.value - jobsLimit.value);
+  if (historyGroupsOffset.value > 0) {
+    historyGroupsOffset.value = Math.max(0, historyGroupsOffset.value - historyGroupsLimit.value);
     loadJobs();
   }
 };
 
 const nextPage = () => {
-  if (jobsOffset.value + jobsLimit.value < jobsTotal.value) {
-    jobsOffset.value += jobsLimit.value;
+  if (historyGroupsOffset.value + historyGroupsLimit.value < historyGroupsTotal.value) {
+    historyGroupsOffset.value += historyGroupsLimit.value;
     loadJobs();
   }
 };
@@ -1504,6 +1464,7 @@ const App = {
 
     watch(filterProject, () => {
       jobsOffset.value = 0;
+      historyGroupsOffset.value = 0;
       if (filterProject.value) {
         collapsedGroups.value[filterProject.value] = true;
       }
@@ -1530,6 +1491,7 @@ const App = {
 
       // Sidebar data
       projects, jobs, jobsTotal, jobsLimit, jobsOffset,
+      historyGroupsTotal, historyGroupsLimit, historyGroupsOffset,
       filterProject, sidebarTab, selectedJobId, selectedJob,
       collapsedGroups, groupedJobs, singleJobs,
       prevPage, nextPage, navigateToJob,

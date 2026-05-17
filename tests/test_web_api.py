@@ -88,6 +88,40 @@ def test_job_patch_does_not_require_auth(client):
     assert patched.json()["label"] == "after"
 
 
+def test_job_groups_paginate_by_visible_groups(client):
+    async def insert_rows():
+        db = await web_db.get_db()
+        try:
+            await db.executemany(
+                "INSERT INTO projects(id, name) VALUES(?,?)",
+                [("project-b", "Beta"), ("project-a", "Alpha")],
+            )
+            await db.executemany(
+                "INSERT INTO jobs(id, project_id, label, mode, status) VALUES(?,?,?,?,?)",
+                [
+                    ("job-a1", "project-a", "a1", "single", "done"),
+                    ("job-a2", "project-a", "a2", "single", "done"),
+                    ("job-b1", "project-b", "b1", "single", "done"),
+                    ("job-none", None, "none", "single", "done"),
+                ],
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_rows())
+
+    first_page = client.get("/api/job-groups?limit=2&offset=0")
+    assert first_page.status_code == 200
+    assert first_page.json()["total"] == 3
+    assert [group["id"] for group in first_page.json()["data"]] == ["project-a", "project-b"]
+    assert [len(group["jobs"]) for group in first_page.json()["data"]] == [2, 1]
+
+    second_page = client.get("/api/job-groups?limit=2&offset=2")
+    assert second_page.status_code == 200
+    assert [group["id"] for group in second_page.json()["data"]] == ["__none__"]
+
+
 def test_file_download_can_be_disabled(isolated_server, monkeypatch):
     monkeypatch.setattr(isolated_server, "ALLOW_FILE_DOWNLOAD", False)
 

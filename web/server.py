@@ -10,6 +10,7 @@ import sys
 import tarfile
 import types
 import uuid
+from collections import defaultdict
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -491,6 +492,47 @@ async def permanently_delete_project(pid: str):
 
 # ── Routes: jobs ──────────────────────────────────────────────────────────────
 
+async def _with_file_exists(rows):
+    # Verify actual file existence on disk (DB flag may be stale)
+    # Resolve source jobs for compare jobs in batch
+    src_ids = set()
+    for r in rows:
+        d = dict(r)
+        for slot in ("a", "b"):
+            if not (d.get(f"file_{slot}_gzip_path") or d.get(f"file_{slot}_path")):
+                src = d.get(f"source_job_{slot}")
+                if src:
+                    src_ids.add(src)
+
+    src_paths = {}
+    if src_ids:
+        db2 = await get_db()
+        placeholders = ",".join("?" * len(src_ids))
+        cur = await db2.execute(
+            f"SELECT id, file_a_path, file_a_gzip_path FROM jobs WHERE id IN ({placeholders})",
+            tuple(src_ids))
+        async for src_row in cur:
+            s = dict(src_row)
+            src_paths[s["id"]] = s.get("file_a_gzip_path") or s.get("file_a_path")
+        await db2.close()
+
+    data = []
+    for r in rows:
+        d = dict(r)
+        for slot in ("a", "b"):
+            path = d.get(f"file_{slot}_gzip_path") or d.get(f"file_{slot}_path")
+            if path:
+                d[f"file_{slot}_exists"] = 1 if os.path.exists(path) else 0
+            else:
+                src_jid = d.get(f"source_job_{slot}")
+                if src_jid and src_paths.get(src_jid):
+                    d[f"file_{slot}_exists"] = 1 if os.path.exists(src_paths[src_jid]) else 0
+                else:
+                    d[f"file_{slot}_exists"] = 0
+        data.append(d)
+    return data
+
+
 @app.get("/api/jobs")
 async def list_jobs(
     project_id: Optional[str] = None,
@@ -532,43 +574,100 @@ async def list_jobs(
 
     await db.close()
 
-    # Verify actual file existence on disk (DB flag may be stale)
-    # Resolve source jobs for compare jobs in batch
-    src_ids = set()
-    for r in rows:
-        d = dict(r)
-        for slot in ("a", "b"):
-            if not (d.get(f"file_{slot}_gzip_path") or d.get(f"file_{slot}_path")):
-                src = d.get(f"source_job_{slot}")
-                if src:
-                    src_ids.add(src)
+    data = await _with_file_exists(rows)
+    return {"data": data, "total": total, "limit": limit, "offset": offset}
 
-    src_paths = {}
-    if src_ids:
-        db2 = await get_db()
-        placeholders = ",".join("?" * len(src_ids))
-        cur = await db2.execute(
-            f"SELECT id, file_a_path, file_a_gzip_path FROM jobs WHERE id IN ({placeholders})",
-            tuple(src_ids))
-        async for src_row in cur:
-            s = dict(src_row)
-            src_paths[s["id"]] = s.get("file_a_gzip_path") or s.get("file_a_path")
-        await db2.close()
+
+@app.get("/api/job-groups")
+async def list_job_groups(
+    project_id: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    db = await get_db()
+
+    where_sql = ""
+    where_params = []
+    if project_id == "__none__":
+        where_sql = "WHERE j.project_id IS NULL"
+    elif project_id:
+        where_sql = "WHERE j.project_id = ?"
+        where_params = [project_id]
+
+    count_cursor = await db.execute(
+        f"""
+        SELECT COUNT(*) FROM (
+            SELECT j.project_id
+            FROM jobs j
+            {where_sql}
+            GROUP BY j.project_id
+        )
+        """,
+        where_params,
+    )
+    total = (await count_cursor.fetchone())[0]
+
+    group_rows = await (
+        await db.execute(
+            f"""
+            SELECT
+                j.project_id,
+                COALESCE(p.name, '未分组') AS label
+            FROM jobs j
+            LEFT JOIN projects p ON p.id = j.project_id
+            {where_sql}
+            GROUP BY j.project_id
+            ORDER BY
+                CASE WHEN j.project_id IS NULL THEN 1 ELSE 0 END,
+                p.name COLLATE NOCASE
+            LIMIT ? OFFSET ?
+            """,
+            (*where_params, limit, offset),
+        )
+    ).fetchall()
+
+    if not group_rows:
+        await db.close()
+        return {"data": [], "total": total, "limit": limit, "offset": offset}
+
+    non_null_ids = [row["project_id"] for row in group_rows if row["project_id"] is not None]
+    has_ungrouped = any(row["project_id"] is None for row in group_rows)
+    clauses = []
+    job_params = []
+    if non_null_ids:
+        clauses.append(f"project_id IN ({','.join('?' * len(non_null_ids))})")
+        job_params.extend(non_null_ids)
+    if has_ungrouped:
+        clauses.append("project_id IS NULL")
+
+    jobs_rows = await (
+        await db.execute(
+            f"""
+            SELECT * FROM jobs
+            WHERE {' OR '.join(clauses)}
+            ORDER BY created_at DESC
+            """,
+            job_params,
+        )
+    ).fetchall()
+    await db.close()
+
+    jobs = await _with_file_exists(jobs_rows)
+    jobs_by_group = defaultdict(list)
+    for job in jobs:
+        jobs_by_group[job.get("project_id") or "__none__"].append(job)
 
     data = []
-    for r in rows:
-        d = dict(r)
-        for slot in ("a", "b"):
-            path = d.get(f"file_{slot}_gzip_path") or d.get(f"file_{slot}_path")
-            if path:
-                d[f"file_{slot}_exists"] = 1 if os.path.exists(path) else 0
-            else:
-                src_jid = d.get(f"source_job_{slot}")
-                if src_jid and src_paths.get(src_jid):
-                    d[f"file_{slot}_exists"] = 1 if os.path.exists(src_paths[src_jid]) else 0
-                else:
-                    d[f"file_{slot}_exists"] = 0
-        data.append(d)
+    for row in group_rows:
+        group_id = row["project_id"] or "__none__"
+        data.append(
+            {
+                "id": group_id,
+                "label": row["label"],
+                "jobs": jobs_by_group[group_id],
+            }
+        )
+
     return {"data": data, "total": total, "limit": limit, "offset": offset}
 
 
