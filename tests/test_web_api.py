@@ -1,5 +1,4 @@
 import asyncio
-import json
 import os
 import sys
 from pathlib import Path
@@ -255,17 +254,6 @@ def test_perfetto_json_download_extracts_tar_gzip_source(
 def test_done_job_exposes_perfetto_context(client, sample_trace_file):
     result_dir = Path(web_server.result_dir("done-job"))
     result_dir.mkdir(parents=True)
-    context = {
-        "a": {
-            "step": 2,
-            "step_name": "ProfilerStep#2",
-            "ts_ns": 1200000000,
-            "dur_ns": 100000000,
-            "vis_start_ns": 1190000000,
-            "vis_end_ns": 1310000000,
-        }
-    }
-    (result_dir / "perfetto_context.json").write_text(json.dumps(context))
 
     async def insert_job():
         db = await web_db.get_db()
@@ -287,4 +275,14 @@ def test_done_job_exposes_perfetto_context(client, sample_trace_file):
     r = client.get("/api/jobs/done-job")
 
     assert r.status_code == 200
-    assert r.json()["perfetto_context"] == context
+    assert r.json()["perfetto_context"] == {
+        "a": {
+            "step": 0,
+            "step_name": "ProfilerStep#0",
+            "ts_ns": 1000000000,
+            "dur_ns": 100000000,
+            "vis_start_ns": 990000000,
+            "vis_end_ns": 1110000000,
+        }
+    }
+    assert (result_dir / "perfetto_context.json").exists()
