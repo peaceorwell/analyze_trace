@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import sys
 from pathlib import Path
@@ -254,6 +255,17 @@ def test_perfetto_json_download_extracts_tar_gzip_source(
 def test_done_job_exposes_perfetto_context(client, sample_trace_file):
     result_dir = Path(web_server.result_dir("done-job"))
     result_dir.mkdir(parents=True)
+    context = {
+        "a": {
+            "step": 0,
+            "step_name": "ProfilerStep#0",
+            "ts_ns": 1000000000,
+            "dur_ns": 100000000,
+            "vis_start_ns": 990000000,
+            "vis_end_ns": 1110000000,
+        }
+    }
+    (result_dir / "perfetto_context.json").write_text(json.dumps(context))
 
     async def insert_job():
         db = await web_db.get_db()
@@ -275,23 +287,11 @@ def test_done_job_exposes_perfetto_context(client, sample_trace_file):
     r = client.get("/api/jobs/done-job")
 
     assert r.status_code == 200
-    assert r.json()["perfetto_context"] == {
-        "a": {
-            "step": 0,
-            "step_name": "ProfilerStep#0",
-            "ts_ns": 1000000000,
-            "dur_ns": 100000000,
-            "vis_start_ns": 990000000,
-            "vis_end_ns": 1110000000,
-        }
-    }
+    assert r.json()["perfetto_context"] == context
     assert (result_dir / "perfetto_context.json").exists()
 
 
-def test_done_job_still_loads_when_perfetto_backfill_fails(client, tmp_path):
-    broken_trace = tmp_path / "broken.json"
-    broken_trace.write_text("not-json")
-
+def test_done_job_without_perfetto_context_still_loads(client, sample_trace_file):
     async def insert_job():
         db = await web_db.get_db()
         try:
@@ -301,7 +301,7 @@ def test_done_job_still_loads_when_perfetto_backfill_fails(client, tmp_path):
                     id, label, mode, status, file_a_name, file_a_path
                 ) VALUES(?,?,?,?,?,?)
                 """,
-                ("broken-old-job", "broken", "single", "done", "broken.json", str(broken_trace)),
+                ("old-job", "old", "single", "done", "trace.json", sample_trace_file),
             )
             await db.commit()
         finally:
@@ -309,8 +309,8 @@ def test_done_job_still_loads_when_perfetto_backfill_fails(client, tmp_path):
 
     asyncio.run(insert_job())
 
-    r = client.get("/api/jobs/broken-old-job")
+    r = client.get("/api/jobs/old-job")
 
     assert r.status_code == 200
-    assert r.json()["id"] == "broken-old-job"
+    assert r.json()["id"] == "old-job"
     assert r.json()["perfetto_context"] == {}

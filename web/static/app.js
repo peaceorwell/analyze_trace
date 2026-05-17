@@ -370,8 +370,12 @@ const refreshSidebarData = async () => {
 
 const loadJob = async id => {
   const r = await fetch(`/api/jobs/${id}`, { credentials: "include" });
-  if (!r.ok) return;
+  if (!r.ok) {
+    selectedJob.value = null;
+    return false;
+  }
   selectedJob.value = await r.json();
+  return true;
 };
 
 const startPoll = () => {
@@ -1504,9 +1508,10 @@ router.beforeEach(async (to, from) => {
   sortCol.value = "";
   clearColFilters();
 
-  await loadJob(newJobId);
+  const loaded = await loadJob(newJobId);
 
-  if (!selectedJob.value) {
+  if (!loaded) {
+    selectedJobId.value = null;
     return { path: "/" };
   }
 

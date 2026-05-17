@@ -217,31 +217,6 @@ async def _resolve_job_trace_path(job: dict, slot: str):
     return src.get("file_a_gzip_path") or src.get("file_a_path")
 
 
-async def ensure_perfetto_context(job: dict) -> dict:
-    context = collect_perfetto_context(job["id"])
-    if context:
-        return context
-
-    rebuilt = {}
-    for slot in ("a", "b"):
-        path = await _resolve_job_trace_path(job, slot)
-        if path and os.path.exists(path):
-            try:
-                value = await asyncio.to_thread(_perfetto_context_from_trace, path)
-            except Exception:
-                # Perfetto focus is optional; older traces should still load even
-                # when they cannot be reparsed for context backfill.
-                continue
-            if value:
-                rebuilt[slot] = value
-
-    if rebuilt:
-        os.makedirs(result_dir(job["id"]), exist_ok=True)
-        with open(os.path.join(result_dir(job["id"]), "perfetto_context.json"), "w") as f:
-            json.dump(rebuilt, f)
-    return rebuilt
-
-
 # ── Synchronous analysis (runs in thread pool, must not await) ────────────────
 
 def _run_sync_analysis(job, kernel_types, rdir, path_a, path_b, name_a, name_b):
@@ -895,7 +870,7 @@ async def get_job(jid: str):
                 job[f"file_{slot}_exists"] = 0
     if job["status"] == "done":
         job["results"] = collect_results(jid)
-        job["perfetto_context"] = await ensure_perfetto_context(job)
+        job["perfetto_context"] = collect_perfetto_context(jid)
     return job
 
 
