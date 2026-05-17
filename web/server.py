@@ -226,7 +226,12 @@ async def ensure_perfetto_context(job: dict) -> dict:
     for slot in ("a", "b"):
         path = await _resolve_job_trace_path(job, slot)
         if path and os.path.exists(path):
-            value = await asyncio.to_thread(_perfetto_context_from_trace, path)
+            try:
+                value = await asyncio.to_thread(_perfetto_context_from_trace, path)
+            except Exception:
+                # Perfetto focus is optional; older traces should still load even
+                # when they cannot be reparsed for context backfill.
+                continue
             if value:
                 rebuilt[slot] = value
 

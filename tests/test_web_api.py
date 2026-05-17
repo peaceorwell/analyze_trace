@@ -286,3 +286,31 @@ def test_done_job_exposes_perfetto_context(client, sample_trace_file):
         }
     }
     assert (result_dir / "perfetto_context.json").exists()
+
+
+def test_done_job_still_loads_when_perfetto_backfill_fails(client, tmp_path):
+    broken_trace = tmp_path / "broken.json"
+    broken_trace.write_text("not-json")
+
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO jobs(
+                    id, label, mode, status, file_a_name, file_a_path
+                ) VALUES(?,?,?,?,?,?)
+                """,
+                ("broken-old-job", "broken", "single", "done", "broken.json", str(broken_trace)),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+
+    r = client.get("/api/jobs/broken-old-job")
+
+    assert r.status_code == 200
+    assert r.json()["id"] == "broken-old-job"
+    assert r.json()["perfetto_context"] == {}
