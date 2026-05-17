@@ -4,6 +4,7 @@ import contextlib
 import csv
 import gzip
 import io
+import json
 import os
 import shutil
 import sys
@@ -161,6 +162,31 @@ def collect_results(jid: str) -> dict:
     return files
 
 
+def collect_perfetto_context(jid: str) -> dict:
+    path = os.path.join(result_dir(jid), "perfetto_context.json")
+    if not os.path.exists(path):
+        return {}
+    with open(path) as f:
+        return json.load(f)
+
+
+def _perfetto_context(data):
+    if not data["step_stats"] or not data["step_ranges"]:
+        return None
+    step = max(data["step_stats"], key=lambda s: data["step_stats"][s][0])
+    start_us, end_us = data["step_ranges"][step]
+    dur_us = max(0, end_us - start_us)
+    padding_us = max(int(dur_us * 0.1), 1)
+    return {
+        "step": step,
+        "step_name": f"ProfilerStep#{step}",
+        "ts_ns": start_us * 1000,
+        "dur_ns": dur_us * 1000,
+        "vis_start_ns": max(0, start_us - padding_us) * 1000,
+        "vis_end_ns": (end_us + padding_us) * 1000,
+    }
+
+
 # ── Synchronous analysis (runs in thread pool, must not await) ────────────────
 
 def _run_sync_analysis(job, kernel_types, rdir, path_a, path_b, name_a, name_b):
@@ -170,6 +196,7 @@ def _run_sync_analysis(job, kernel_types, rdir, path_a, path_b, name_a, name_b):
                                 write_single, print_comparison, write_comparison)
 
     buf = io.StringIO()
+    perfetto_context = {}
     with contextlib.redirect_stdout(buf):
         if job["mode"] == "single":
             data = compute_avgs(parse_trace(path_a, kernel_types), kernel_types)
@@ -182,6 +209,7 @@ def _run_sync_analysis(job, kernel_types, rdir, path_a, path_b, name_a, name_b):
             print_kernel_type_breakdown(data)
             print_top_kernels(data)
             write_single(data, fake_args)
+            perfetto_context["a"] = _perfetto_context(data)
         else:
             data_a = compute_avgs(parse_trace(path_a, kernel_types), kernel_types)
             data_b = compute_avgs(parse_trace(path_b, kernel_types), kernel_types)
@@ -192,6 +220,13 @@ def _run_sync_analysis(job, kernel_types, rdir, path_a, path_b, name_a, name_b):
             print_top_kernels(data_a, label=label_a)
             print_top_kernels(data_b, label=label_b)
             write_comparison(data_a, data_b, fake_args)
+            perfetto_context["a"] = _perfetto_context(data_a)
+            perfetto_context["b"] = _perfetto_context(data_b)
+
+    perfetto_context = {k: v for k, v in perfetto_context.items() if v}
+    if perfetto_context:
+        with open(os.path.join(rdir, "perfetto_context.json"), "w") as f:
+            json.dump(perfetto_context, f)
 
     return buf.getvalue()
 
@@ -805,6 +840,7 @@ async def get_job(jid: str):
                 job[f"file_{slot}_exists"] = 0
     if job["status"] == "done":
         job["results"] = collect_results(jid)
+        job["perfetto_context"] = collect_perfetto_context(jid)
     return job
 
 

@@ -405,6 +405,7 @@ def parse_trace(trace_file, kernel_types):
         "step_to_aten":         step_to_aten,
         "step_to_cncl":         step_to_cncl,
         "step_durations":       step_durations,
+        "step_ranges":          step_ranges,
     }
 
 
@@ -440,8 +441,10 @@ def compute_avgs(parsed, kernel_types):
         step_to_aten         = parsed["step_to_aten"]
         step_to_cncl         = parsed["step_to_cncl"]
         step_durations       = parsed["step_durations"]
+        step_ranges          = parsed.get("step_ranges", {})
     else:
         step_to_triton, step_to_kernels, step_to_kernel_types, step_to_aten, step_to_cncl, step_durations = parsed
+        step_ranges = {}
     all_steps = sorted(set(step_durations) | set(step_to_kernels) | set(step_to_aten) | set(step_to_cncl))
     n_steps   = len(all_steps)
     mean      = lambda vals: sum(vals) / n_steps if n_steps else 0.0
@@ -503,6 +506,7 @@ def compute_avgs(parsed, kernel_types):
         "avg_cncl":       avg_stats(step_to_cncl, all_steps),
         "avg_triton":     avg_triton,
         "step_to_triton": step_to_triton,
+        "step_ranges":    step_ranges,
     }
 
 

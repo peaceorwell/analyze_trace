@@ -908,6 +908,18 @@ const perfettoButtonLabel = (slot) => {
   return perfettoOpening.value[slot] ? "打开中..." : "Perfetto ↗";
 };
 
+const buildPerfettoUrl = (slot) => {
+  const context = selectedJob.value?.perfetto_context?.[slot];
+  if (!context) return 'https://ui.perfetto.dev';
+  const params = new URLSearchParams({
+    visStart: String(context.vis_start_ns),
+    visEnd: String(context.vis_end_ns),
+    ts: String(context.ts_ns),
+    dur: String(context.dur_ns),
+  });
+  return `https://ui.perfetto.dev/#!/?${params}`;
+};
+
 const showPerfettoError = (message) => {
   errorModalTitle.value = "Perfetto";
   errorModalMsg.value = message;
@@ -921,7 +933,7 @@ const openInPerfetto = async (slot) => {
   const PERFETTO = 'https://ui.perfetto.dev';
 
   perfettoOpening.value[slot] = true;
-  const win = window.open(PERFETTO);
+  const win = window.open(buildPerfettoUrl(slot));
   if (!win) {
     perfettoOpening.value[slot] = false;
     showPerfettoError('请允许浏览器弹出窗口后重试');

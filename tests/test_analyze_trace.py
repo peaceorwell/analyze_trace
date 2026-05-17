@@ -104,6 +104,7 @@ class TestParseTrace:
         # Should not raise an error with empty kernel types
         result = parse_trace(sample_trace_file, [])
         assert "step_to_kernel_types" in result
+        assert result["step_ranges"][0] == (1000000, 1100000)
 
     def test_gzip_trace(self, sample_trace_file_gz):
         result = parse_trace(sample_trace_file_gz, ["gemm"])
