@@ -143,7 +143,7 @@ const restoreProject = async (projectId) => {
     }
     await loadDeletedProjects();
     await loadProjects();
-    await loadJobs();
+    await refreshSidebarData();
   } catch (e) {
     alert("恢复出错: " + e.message);
   }
@@ -350,7 +350,6 @@ const loadJobs = async () => {
   const data = await r.json();
   jobs.value = data.data || [];
   jobsTotal.value = data.total || 0;
-  await loadHistoryGroups();
 };
 
 const loadHistoryGroups = async () => {
@@ -362,6 +361,10 @@ const loadHistoryGroups = async () => {
   const data = await r.json();
   historyGroups.value = data.data || [];
   historyGroupsTotal.value = data.total || 0;
+};
+
+const refreshSidebarData = async () => {
+  await Promise.all([loadJobs(), loadHistoryGroups()]);
 };
 
 const loadJob = async id => {
@@ -382,7 +385,7 @@ const startPoll = () => {
     if (selectedJob.value?.status === "done" || selectedJob.value?.status === "error") {
       clearInterval(pollTimer);
       resultTab.value = "console";
-      loadJobs();
+      refreshSidebarData();
       return;
     }
   }, 2000);
@@ -582,7 +585,7 @@ const submitJob = () => {
         return;
       }
       const job = JSON.parse(xhr.responseText);
-      await loadJobs();
+      await refreshSidebarData();
       fileA.value = null; fileAName.value = "";
       form.value.label = "";
       sidebarTab.value = "jobs";
@@ -618,7 +621,7 @@ const deleteJob = async () => {
       return;
     }
     router.push({ path: "/" });
-    await loadJobs();
+    await refreshSidebarData();
   } catch (error) {
     alert("删除出错: " + error.message);
   }
@@ -630,6 +633,7 @@ const deleteFile = async slot => {
     method: "DELETE", credentials: "include",
   });
   await loadJob(selectedJobId.value);
+  await refreshSidebarData();
 };
 
 const editLabel = async () => {
@@ -642,7 +646,7 @@ const editLabel = async () => {
     body: JSON.stringify({ label: newLabel }),
   });
   await loadJob(selectedJobId.value);
-  await loadJobs();
+  await refreshSidebarData();
 };
 
 const moveProject = () => {
@@ -673,7 +677,7 @@ const confirmMoveProject = async () => {
   }
   showMoveProject.value = false;
   await loadJob(selectedJobId.value);
-  await loadJobs();
+  await refreshSidebarData();
 };
 
 const openRenameModal = (project) => {
@@ -708,7 +712,7 @@ const confirmRenameProject = async () => {
   }
   showRenameProject.value = false;
   await loadProjects();
-  await loadJobs();
+  await refreshSidebarData();
 };
 
 const deleteProject = async (projectId) => {
@@ -725,7 +729,7 @@ const deleteProject = async (projectId) => {
   filterProject.value = "";
   router.push({ path: "/" });
   await loadProjects();
-  await loadJobs();
+  await refreshSidebarData();
 };
 
 const setSort = col => {
@@ -1015,7 +1019,7 @@ const submitCompare = async () => {
   compareSelection.value = [];
   compareLabel.value = "";
   sidebarTab.value = "jobs";
-  await loadJobs();
+  await refreshSidebarData();
   router.push({ path: `/job/${job.id}` });
 };
 
@@ -1038,20 +1042,20 @@ const createProject = async () => {
   newProjectName.value = "";
   newProjectDesc.value = "";
   await loadProjects();
-  await loadJobs();
+  await refreshSidebarData();
 };
 
 const prevPage = () => {
   if (historyGroupsOffset.value > 0) {
     historyGroupsOffset.value = Math.max(0, historyGroupsOffset.value - historyGroupsLimit.value);
-    loadJobs();
+    loadHistoryGroups();
   }
 };
 
 const nextPage = () => {
   if (historyGroupsOffset.value + historyGroupsLimit.value < historyGroupsTotal.value) {
     historyGroupsOffset.value += historyGroupsLimit.value;
-    loadJobs();
+    loadHistoryGroups();
   }
 };
 
@@ -1388,7 +1392,7 @@ router.beforeEach(async (to, from) => {
   if (!appInitialized) {
     await loadConfig();
     await loadProjects();
-    await loadJobs();
+    await refreshSidebarData();
     appInitialized = true;
   }
 
@@ -1468,7 +1472,7 @@ const App = {
       if (filterProject.value) {
         collapsedGroups.value[filterProject.value] = true;
       }
-      loadJobs();
+      refreshSidebarData();
     });
 
     watch(compareSelection, () => {
