@@ -969,7 +969,7 @@ const openInPerfetto = async (slot) => {
   };
 
   const handler = (e) => {
-    if (e.origin !== PERFETTO || e.source !== win || e.data !== 'PONG') return;
+    if (e.origin !== PERFETTO || e.data !== 'PONG') return;
     if (sent || win.closed) return;
     sent = true;
     win.postMessage({ perfetto: { buffer, title: fname, fileName: fname } }, PERFETTO);
