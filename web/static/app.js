@@ -1440,7 +1440,9 @@ router.beforeEach(async (to, from) => {
   }
 
   resultTab.value = tab;
-  startPoll();
+  if (selectedJob.value.status === "pending" || selectedJob.value.status === "running") {
+    startPoll();
+  }
   sidebarTab.value = "jobs";
 });
 
