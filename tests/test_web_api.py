@@ -217,3 +217,35 @@ def test_compare_from_history_accepts_tar_gzip_sources(
     compare_job = created.json()
     assert compare_job["mode"] == "compare"
     assert compare_job["status"] in {"pending", "running", "done"}
+
+
+def test_perfetto_json_download_extracts_tar_gzip_source(
+    client,
+    sample_trace_file_tar_gz,
+    tmp_path,
+):
+    stored = tmp_path / "trace.tar.gz"
+    shutil.copyfile(sample_trace_file_tar_gz, stored)
+
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO jobs(
+                    id, label, mode, status, file_a_name, file_a_gzip_path, file_a_exists
+                ) VALUES(?,?,?,?,?,?,?)
+                """,
+                ("source-tar", "tar", "single", "done", "trace.tar.gz", str(stored), 1),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+
+    r = client.get("/api/jobs/source-tar/files/a?format=json")
+
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/json")
+    assert r.json()["traceEvents"]

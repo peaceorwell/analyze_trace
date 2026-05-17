@@ -918,19 +918,40 @@ const openInPerfetto = async (slot) => {
   if (!resp.ok) { win.close(); alert("获取 trace 文件失败 (" + resp.status + ")"); return; }
   const buffer = await resp.arrayBuffer();
 
-  const send = () => {
-    if (!win.closed)
-      win.postMessage({ perfetto: { buffer, title: fname, fileName: fname } }, PERFETTO);
+  let sent = false;
+  let pingTimer = null;
+
+  const cleanup = () => {
+    window.removeEventListener('message', handler);
+    if (pingTimer) clearInterval(pingTimer);
   };
 
   const handler = (e) => {
-    if (e.origin !== PERFETTO || !e.data?.perfetto) return;
-    window.removeEventListener('message', handler);
-    send();
+    if (e.origin !== PERFETTO || e.source !== win || e.data !== 'PONG') return;
+    if (sent || win.closed) return;
+    sent = true;
+    win.postMessage({ perfetto: { buffer, title: fname, fileName: fname } }, PERFETTO);
+    cleanup();
   };
+
   window.addEventListener('message', handler);
-  setTimeout(send, 2000);
-  setTimeout(() => { window.removeEventListener('message', handler); send(); }, 8000);
+
+  const ping = () => {
+    if (sent || win.closed) {
+      cleanup();
+      return;
+    }
+    win.postMessage('PING', PERFETTO);
+  };
+
+  ping();
+  pingTimer = setInterval(ping, 500);
+  setTimeout(() => {
+    if (!sent) {
+      cleanup();
+      alert('Perfetto 页面未响应，请稍后重试');
+    }
+  }, 10000);
 };
 
 const viewTritonCode = async (codePath) => {

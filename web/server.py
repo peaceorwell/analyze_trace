@@ -1248,11 +1248,22 @@ async def get_job_file(jid: str, slot: str, format: Optional[str] = None):
     if not file_path or not os.path.exists(file_path):
         raise HTTPException(404, "File not found")
 
-    # If the client requests raw JSON and we only have .gz, decompress on the fly
+    # If the client requests raw JSON and we only have .gz, extract on the fly.
     if format == "json" and file_path.endswith(".gz"):
         buf = io.BytesIO()
-        with gzip.open(file_path, "rb") as gz:
-            shutil.copyfileobj(gz, buf)
+        if tarfile.is_tarfile(file_path):
+            with tarfile.open(file_path, "r:*") as tar:
+                members = [m for m in tar.getmembers() if m.isfile() and m.name.endswith(".json")]
+                if not members:
+                    raise HTTPException(400, "Archive does not contain a JSON trace")
+                member = max(members, key=lambda m: m.size)
+                extracted = tar.extractfile(member)
+                if extracted is None:
+                    raise HTTPException(400, "Unable to read JSON trace from archive")
+                shutil.copyfileobj(extracted, buf)
+        else:
+            with gzip.open(file_path, "rb") as gz:
+                shutil.copyfileobj(gz, buf)
         buf.seek(0)
         filename = row.get(f"file_{slot}_name") or f"trace_{slot}.json"
         return StreamingResponse(buf, media_type="application/json",
