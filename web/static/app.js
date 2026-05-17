@@ -905,7 +905,8 @@ const downloadTraceFile = (slot) => {
 };
 
 const perfettoButtonLabel = (slot) => {
-  return perfettoOpening.value[slot] ? "打开中..." : "Perfetto ↗";
+  const prefix = selectedJob.value?.mode === "compare" ? `Perfetto ${slot.toUpperCase()}` : "Perfetto";
+  return perfettoOpening.value[slot] ? `${prefix} 打开中...` : `${prefix} ↗`;
 };
 
 const buildPerfettoUrl = (slot) => {
@@ -1240,6 +1241,7 @@ const JobDetail = {
       <!-- File info -->
       <div class="file-info">
         <span v-if="selectedJob.file_a_name">
+          <strong v-if="selectedJob.mode==='compare'">A:</strong>
           📄 {{ selectedJob.file_a_name }}
           <span v-if="!selectedJob.file_a_exists" class="tag-deleted">已删除</span>
           <template v-else>
@@ -1251,6 +1253,7 @@ const JobDetail = {
           </template>
         </span>
         <span v-if="selectedJob.file_b_name" class="ml-4">
+          <strong v-if="selectedJob.mode==='compare'">B:</strong>
           📄 {{ selectedJob.file_b_name }}
           <span v-if="!selectedJob.file_b_exists" class="tag-deleted">已删除</span>
           <template v-else>
