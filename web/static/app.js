@@ -69,6 +69,7 @@ const ktPieChartB     = ref(null);
 
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
+const perfettoOpening = ref({});
 
 // ── Triton ──────────────────────────────────────────────────────────────
 const tritonStatus = ref({});
@@ -903,19 +904,47 @@ const downloadTraceFile = (slot) => {
   a.click();
 };
 
+const perfettoButtonLabel = (slot) => {
+  return perfettoOpening.value[slot] ? "打开中..." : "Perfetto ↗";
+};
+
+const showPerfettoError = (message) => {
+  errorModalTitle.value = "Perfetto";
+  errorModalMsg.value = message;
+  showErrorModal.value = true;
+};
+
 const openInPerfetto = async (slot) => {
   const job = selectedJob.value;
-  if (!job) return;
+  if (!job || perfettoOpening.value[slot]) return;
   const fname = (slot === 'a' ? job.file_a_name : job.file_b_name) || `trace_${slot}.json`;
   const PERFETTO = 'https://ui.perfetto.dev';
 
+  perfettoOpening.value[slot] = true;
   const win = window.open(PERFETTO);
-  if (!win) { alert('请允许浏览器弹出窗口后重试'); return; }
+  if (!win) {
+    perfettoOpening.value[slot] = false;
+    showPerfettoError('请允许浏览器弹出窗口后重试');
+    return;
+  }
 
-  const resp = await fetch(`/api/jobs/${selectedJobId.value}/files/${slot}?format=json`, {
-    credentials: "include",
-  });
-  if (!resp.ok) { win.close(); alert("获取 trace 文件失败 (" + resp.status + ")"); return; }
+  let resp;
+  try {
+    resp = await fetch(`/api/jobs/${selectedJobId.value}/files/${slot}?format=json`, {
+      credentials: "include",
+    });
+  } catch (e) {
+    perfettoOpening.value[slot] = false;
+    win.close();
+    showPerfettoError('获取 trace 文件失败');
+    return;
+  }
+  if (!resp.ok) {
+    perfettoOpening.value[slot] = false;
+    win.close();
+    showPerfettoError("获取 trace 文件失败 (" + resp.status + ")");
+    return;
+  }
   const buffer = await resp.arrayBuffer();
 
   let sent = false;
@@ -931,6 +960,7 @@ const openInPerfetto = async (slot) => {
     if (sent || win.closed) return;
     sent = true;
     win.postMessage({ perfetto: { buffer, title: fname, fileName: fname } }, PERFETTO);
+    perfettoOpening.value[slot] = false;
     cleanup();
   };
 
@@ -949,7 +979,8 @@ const openInPerfetto = async (slot) => {
   setTimeout(() => {
     if (!sent) {
       cleanup();
-      alert('Perfetto 页面未响应，请稍后重试');
+      perfettoOpening.value[slot] = false;
+      showPerfettoError('Perfetto 页面未响应，请稍后重试');
     }
   }, 10000);
 };
@@ -1201,7 +1232,9 @@ const JobDetail = {
           <span v-if="!selectedJob.file_a_exists" class="tag-deleted">已删除</span>
           <template v-else>
             <button v-if="allowFileDownload" class="btn btn-xs btn-outline" @click="downloadTraceFile('a')">下载</button>
-            <button v-if="allowFileDownload" class="btn btn-xs btn-perfetto" @click="openInPerfetto('a')">Perfetto ↗</button>
+            <button v-if="allowFileDownload" class="btn btn-xs btn-perfetto"
+                    :disabled="perfettoOpening.a"
+                    @click="openInPerfetto('a')">{{ perfettoButtonLabel('a') }}</button>
             <button class="btn btn-xs btn-danger" @click="deleteFile('a')">删除文件</button>
           </template>
         </span>
@@ -1210,7 +1243,9 @@ const JobDetail = {
           <span v-if="!selectedJob.file_b_exists" class="tag-deleted">已删除</span>
           <template v-else>
             <button v-if="allowFileDownload" class="btn btn-xs btn-outline" @click="downloadTraceFile('b')">下载</button>
-            <button v-if="allowFileDownload" class="btn btn-xs btn-perfetto" @click="openInPerfetto('b')">Perfetto ↗</button>
+            <button v-if="allowFileDownload" class="btn btn-xs btn-perfetto"
+                    :disabled="perfettoOpening.b"
+                    @click="openInPerfetto('b')">{{ perfettoButtonLabel('b') }}</button>
             <button class="btn btn-xs btn-danger" @click="deleteFile('b')">删除文件</button>
           </template>
         </span>
@@ -1382,7 +1417,7 @@ const JobDetail = {
       switchTab,
       statusIcon,
       editLabel, moveProject, deleteJob, deleteFile,
-      downloadTraceFile, openInPerfetto,
+      downloadTraceFile, openInPerfetto, perfettoOpening, perfettoButtonLabel,
       setSort, startResize, downloadCsv,
       viewTritonCode, runSingleTriton, clearInductorCache,
       fmtSum, deltaCellClass, clearColFilters,
