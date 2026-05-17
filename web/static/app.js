@@ -28,7 +28,7 @@ const toggleTheme = () => {
 const projects      = ref([]);
 const jobs          = ref([]);
 const jobsTotal     = ref(0);
-const jobsLimit     = ref(50);
+const jobsLimit     = ref(100);
 const jobsOffset    = ref(0);
 const filterProject = ref("");
 const sidebarTab    = ref("jobs");
