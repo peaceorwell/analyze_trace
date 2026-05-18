@@ -143,15 +143,6 @@ body {
   box-shadow: 0 1px 8px rgba(249,115,22,.3);
 }
 .header-actions .btn-primary:hover:not(:disabled) { background: var(--orange-d); opacity: 1; }
-.header-status-btn { gap: 5px; }
-.header-status-dot {
-  min-width: 16px; height: 16px; border-radius: 10px;
-  display: inline-flex; align-items: center; justify-content: center;
-  padding: 0 5px; font-size: 10px; font-family: var(--mono); font-weight: 600;
-}
-.header-status-dot.running { background: rgba(234,179,8,.14); color: var(--yellow); }
-.header-status-dot.pending { background: var(--purple-bg); color: var(--purple-l); }
-.header-status-dot.error { background: var(--red-bg); color: var(--red); }
 
 /* ── Theme toggle button ── */
 .theme-toggle {
@@ -731,7 +722,6 @@ select.input { appearance: none; cursor: pointer; }
   box-shadow: var(--shadow);
 }
 .modal-wide { min-width: 700px; max-width: 95vw; width: 1200px; }
-.modal-medium { min-width: 420px; width: min(560px, 95vw); }
 .modal-title { font-size: 14px; font-weight: 600; margin-bottom: 14px; color: var(--text); display: flex; align-items: center; gap: 8px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 .confirm-message { color: var(--text2); line-height: 1.6; }
@@ -754,38 +744,16 @@ select.input { appearance: none; cursor: pointer; }
 .deleted-project-name { font-weight: 500; color: var(--text); }
 .deleted-project-meta { font-size: 11px; color: var(--text3); margin-top: 2px; }
 .deleted-project-actions { display: flex; gap: 6px; }
-.status-summary-grid,
 .storage-total-grid {
   display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px;
 }
-.status-summary-card,
 .storage-stat {
   display: flex; flex-direction: column; gap: 4px;
   padding: 10px 11px; border-radius: 8px;
   border: 1px solid var(--border); background: var(--bg);
 }
-.status-summary-card span,
 .storage-stat span { color: var(--text3); font-size: 11px; }
-.status-summary-card strong,
 .storage-stat strong { color: var(--text); font-size: 18px; font-family: var(--mono); }
-.status-summary-card.danger strong { color: var(--red); }
-.status-job-list {
-  display: flex; flex-direction: column; gap: 5px;
-  max-height: 48vh; overflow: auto;
-}
-.status-job-item {
-  width: 100%; display: flex; align-items: center; gap: 7px;
-  padding: 8px 9px; border-radius: 7px; border: 1px solid var(--border);
-  background: var(--bg); color: var(--text2); cursor: pointer;
-}
-.status-job-item:hover { background: var(--card2); }
-.status-job-label {
-  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  text-align: left;
-}
-.status-job-time {
-  color: var(--text3); font-size: 10px; font-family: var(--mono); flex-shrink: 0;
-}
 .storage-project-list {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 6px; margin-bottom: 12px;

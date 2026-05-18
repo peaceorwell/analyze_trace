@@ -1,4 +1,4 @@
-const { createApp, ref, computed, watch, nextTick, onMounted } = Vue;
+const { createApp, ref, computed, watch, nextTick } = Vue;
 const { createRouter, createWebHashHistory } = VueRouter;
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -219,12 +219,9 @@ const renameJobName = ref("");
 
 const showDeletedProjects = ref(false);
 const deletedProjects = ref([]);
-const showStatusCenter = ref(false);
-const statusSummary = ref({ counts: { pending: 0, running: 0, error: 0 }, jobs: [] });
 const showStorageManager = ref(false);
 const storageSummary = ref({ totals: {}, projects: [], jobs: [] });
 const storageSelection = ref([]);
-let statusRefreshTimer = null;
 
 const loadDeletedProjects = async () => {
   const r = await fetch("/api/deleted-projects", { credentials: "include" });
@@ -539,12 +536,6 @@ const loadProjects = async () => {
   }
 };
 
-const loadStatusSummary = async () => {
-  const r = await fetch("/api/job-status-summary", { credentials: "include" });
-  if (!r.ok) return;
-  statusSummary.value = await r.json();
-};
-
 const loadStorageSummary = async () => {
   const r = await fetch("/api/storage/summary", { credentials: "include" });
   if (!r.ok) {
@@ -554,11 +545,6 @@ const loadStorageSummary = async () => {
   storageSummary.value = await r.json();
   const valid = new Set(storageJobsWithTrace.value.map(job => job.id));
   storageSelection.value = storageSelection.value.filter(id => valid.has(id));
-};
-
-const openStatusCenter = async () => {
-  await loadStatusSummary();
-  showStatusCenter.value = true;
 };
 
 const openStorageManager = async () => {
@@ -750,7 +736,7 @@ const loadCompareJobs = async () => {
 };
 
 const refreshSidebarData = async () => {
-  await Promise.all([loadHistoryGroups(), loadCompareJobs(), loadStatusSummary()]);
+  await Promise.all([loadHistoryGroups(), loadCompareJobs()]);
 };
 
 const loadJob = async id => {
@@ -2345,12 +2331,6 @@ const App = {
       visibleColumns.value = valid.length ? valid : [...fields];
     });
 
-    onMounted(() => {
-      if (!statusRefreshTimer) {
-        statusRefreshTimer = setInterval(() => loadStatusSummary(), 5000);
-      }
-    });
-
     // Return everything the root template (index.html) needs
     return {
       // Layout/theme
@@ -2382,7 +2362,6 @@ const App = {
       showRenameJob, renameJobName, confirmRenameJob,
       showDeletedProjects, deletedProjects, loadDeletedProjects,
       isDeletedOver10Days, restoreProject, permanentlyDeleteProject,
-      showStatusCenter, statusSummary, openStatusCenter,
       showStorageManager, storageSummary, storageSelection, storageJobsWithTrace,
       openStorageManager, toggleStorageSelection, toggleAllStorageSelection,
       deleteSelectedStorageFiles, fmtBytes,

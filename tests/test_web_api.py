@@ -521,7 +521,7 @@ def test_compare_job_exposes_source_summaries_and_delete_impact(client, sample_t
     assert impact.json()["dependent_compare_jobs"][0]["id"] == "compare-job"
 
 
-def test_status_and_storage_summaries(client, tmp_path):
+def test_storage_summary(client, tmp_path):
     trace_a = tmp_path / "a.json"
     trace_b = tmp_path / "b.json"
     trace_a.write_text("a" * 10)
@@ -553,11 +553,6 @@ def test_status_and_storage_summaries(client, tmp_path):
             await db.close()
 
     asyncio.run(insert_jobs())
-
-    status = client.get("/api/job-status-summary")
-    assert status.status_code == 200
-    assert status.json()["counts"] == {"pending": 0, "running": 1, "error": 1}
-    assert [job["id"] for job in status.json()["jobs"][:2]] == ["running-job", "error-job"]
 
     storage = client.get("/api/storage/summary")
     assert storage.status_code == 200

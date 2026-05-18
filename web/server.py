@@ -881,34 +881,6 @@ async def bulk_delete_job_files(body: dict):
     return {"updated": len(job_ids), "files_deleted": files_deleted}
 
 
-@app.get("/api/job-status-summary")
-async def job_status_summary():
-    db = await get_db()
-    try:
-        counts = {}
-        for status in ("pending", "running", "error"):
-            row = await (
-                await db.execute("SELECT COUNT(*) FROM jobs WHERE status=?", (status,))
-            ).fetchone()
-            counts[status] = row[0]
-        rows = await (
-            await db.execute(
-                """
-                SELECT id, label, mode, status, created_at
-                FROM jobs
-                WHERE status IN ('pending', 'running', 'error')
-                ORDER BY
-                    CASE status WHEN 'running' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END,
-                    created_at DESC
-                LIMIT 12
-                """
-            )
-        ).fetchall()
-    finally:
-        await db.close()
-    return {"counts": counts, "jobs": [dict(row) for row in rows]}
-
-
 @app.get("/api/storage/summary")
 async def storage_summary():
     db = await get_db()

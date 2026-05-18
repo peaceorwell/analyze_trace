@@ -83,12 +83,6 @@
         <span class="header-title">Torch Profiler Analyzer</span>
       </div>
       <div class="header-actions">
-        <button class="btn btn-sm btn-outline header-status-btn" @click="openStatusCenter">
-          任务
-          <span v-if="statusSummary.counts.running" class="header-status-dot running">{{ statusSummary.counts.running }}</span>
-          <span v-if="statusSummary.counts.pending" class="header-status-dot pending">{{ statusSummary.counts.pending }}</span>
-          <span v-if="statusSummary.counts.error" class="header-status-dot error">{{ statusSummary.counts.error }}</span>
-        </button>
         <button class="btn btn-sm btn-outline" @click="openStorageManager">存储</button>
         <button class="btn btn-sm btn-outline" @click="showGuide=true">使用指南</button>
         <button class="btn btn-sm btn-outline" @click="showDeletedProjects=true; loadDeletedProjects()">找回项目</button>
@@ -349,40 +343,6 @@
       </div>
     </div>
 
-    <!-- ── Task status center modal ── -->
-    <div v-if="showStatusCenter" class="modal-mask" @click.self="showStatusCenter=false">
-      <div class="modal modal-medium">
-        <div class="modal-title">任务中心</div>
-        <div class="status-summary-grid">
-          <div class="status-summary-card">
-            <span>运行中</span>
-            <strong>{{ statusSummary.counts.running || 0 }}</strong>
-          </div>
-          <div class="status-summary-card">
-            <span>等待中</span>
-            <strong>{{ statusSummary.counts.pending || 0 }}</strong>
-          </div>
-          <div class="status-summary-card danger">
-            <span>失败</span>
-            <strong>{{ statusSummary.counts.error || 0 }}</strong>
-          </div>
-        </div>
-        <div v-if="statusSummary.jobs.length===0" class="empty-tip mt-4">暂无运行中、等待中或失败任务</div>
-        <div v-else class="status-job-list">
-          <button v-for="job in statusSummary.jobs" :key="job.id" class="status-job-item"
-                  @click="showStatusCenter=false; navigateToJob(job.id)">
-            <span class="job-status" :class="'status-'+job.status">{{ statusIcon(job.status) }}</span>
-            <span class="status-job-label">{{ job.label || job.id.slice(0,8) }}</span>
-            <span class="job-mode-badge" :class="'mode-'+job.mode">{{ job.mode==='compare'?'对比':'单文件' }}</span>
-            <span class="status-job-time">{{ fmtDate(job.created_at) }}</span>
-          </button>
-        </div>
-        <div class="modal-actions">
-          <button class="btn btn-outline" @click="showStatusCenter=false">关闭</button>
-        </div>
-      </div>
-    </div>
-
     <!-- ── Storage manager modal ── -->
     <div v-if="showStorageManager" class="modal-mask" @click.self="showStorageManager=false">
       <div class="modal modal-wide">
@@ -573,7 +533,6 @@
             <h3>8. 其他功能</h3>
             <ul>
               <li><strong>深色/浅色模式</strong>：右上角切换按钮，自动记忆偏好</li>
-              <li><strong>任务中心</strong>：右上角查看运行中、等待中和失败任务</li>
               <li><strong>存储管理</strong>：查看原始 trace / 结果文件占用，并集中清理原始文件</li>
               <li><strong>侧栏可拖拽调整宽度</strong>，可折叠以扩大主区域可视范围</li>
               <li>点击标题栏可返回上传页面</li>
@@ -593,6 +552,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=4"></script>
+  <script src="/static/app.js?v=5"></script>
 </body>
 </html>
