@@ -1032,6 +1032,16 @@ const submitJob = async () => {
   if (successCount) {
     form.value.label = "";
     showToast(`已提交 ${successCount}/${queue.length} 个任务`, successCount === queue.length ? "success" : "info");
+    if (successCount === queue.length) {
+      clearFile();
+    } else {
+      const failedItems = uploadQueue.value.filter(item => item.status === "error");
+      uploadQueue.value = failedItems;
+      fileA.value = failedItems[0]?.file || null;
+      fileAName.value = failedItems.length === 1
+        ? failedItems[0].name
+        : (failedItems.length ? `${failedItems.length} 个文件` : "");
+    }
     if (lastJob) router.push({ path: `/job/${lastJob.id}` });
   } else {
     showToast("提交失败，请检查上传队列", "error");
