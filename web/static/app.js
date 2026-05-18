@@ -62,6 +62,7 @@ let preSearchExpandedGroups = null;
 // ── Upload form ─────────────────────────────────────────────────────────
 const fileA    = ref(null);
 const fileAName = ref("");
+const uploadQueue = ref([]);
 const submitting = ref(false);
 const uploadProgress = ref(0);
 const form = ref({
@@ -79,6 +80,8 @@ const sortAsc     = ref(true);
 const colWidths     = ref({});
 const colFilters    = ref({});
 const colFilterOps  = ref({});
+const visibleColumns = ref([]);
+const showColumnMenu = ref(false);
 const ktChartInst     = ref(null);
 const ktChart         = ref(null);
 const ktPieChartInst  = ref(null);
@@ -110,6 +113,7 @@ const saveResultViewState = (jobId = selectedJobId.value, tab = resultTab.value)
       colWidths: colWidths.value,
       colFilters: colFilters.value,
       colFilterOps: colFilterOps.value,
+      visibleColumns: visibleColumns.value,
     };
   }
   writeResultMemory(jobId, memory);
@@ -123,6 +127,7 @@ const restoreResultViewState = (jobId, tab) => {
   colWidths.value = state.colWidths || {};
   colFilters.value = state.colFilters || {};
   colFilterOps.value = state.colFilterOps || {};
+  visibleColumns.value = state.visibleColumns || [];
 };
 const rememberedResultTab = jobId => readResultMemory(jobId).lastTab || "console";
 
@@ -214,6 +219,12 @@ const renameJobName = ref("");
 
 const showDeletedProjects = ref(false);
 const deletedProjects = ref([]);
+const showStatusCenter = ref(false);
+const statusSummary = ref({ counts: { pending: 0, running: 0, error: 0 }, jobs: [] });
+const showStorageManager = ref(false);
+const storageSummary = ref({ totals: {}, projects: [], jobs: [] });
+const storageSelection = ref([]);
+let statusRefreshTimer = null;
 
 const loadDeletedProjects = async () => {
   const r = await fetch("/api/deleted-projects", { credentials: "include" });
@@ -349,6 +360,21 @@ const currentTable = computed(() => {
   return res[resultTab.value] || { fields: [], rows: [] };
 });
 
+const displayedFields = computed(() => {
+  const fields = currentTable.value.fields || [];
+  if (!visibleColumns.value.length) return fields;
+  const visible = new Set(visibleColumns.value);
+  return fields.filter(field => visible.has(field));
+});
+
+const hiddenColumnCount = computed(() =>
+  Math.max(0, currentTable.value.fields.length - displayedFields.value.length)
+);
+
+const storageJobsWithTrace = computed(() =>
+  storageSummary.value.jobs.filter(job => job.has_original_trace)
+);
+
 const hasColFilters = computed(() =>
   Object.values(colFilters.value).some(v => v)
 );
@@ -398,7 +424,7 @@ const filteredRows = computed(() => {
 });
 
 const colSums = computed(() => {
-  const fields = currentTable.value.fields;
+  const fields = displayedFields.value;
   const rows   = filteredRows.value;
   const result = {};
   for (const f of fields) {
@@ -417,6 +443,48 @@ const fmtSum = v => {
   if (Number.isInteger(v)) return String(v);
   const s = v.toFixed(3);
   return parseFloat(s).toString();
+};
+
+const fmtBytes = bytes => {
+  const n = Number(bytes || 0);
+  if (n < 1024) return `${n} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = n;
+  let unit = "B";
+  for (const nextUnit of units) {
+    value /= 1024;
+    unit = nextUnit;
+    if (value < 1024) break;
+  }
+  return `${value >= 10 ? value.toFixed(1) : value.toFixed(2)} ${unit}`;
+};
+
+const isColumnVisible = field =>
+  !visibleColumns.value.length || visibleColumns.value.includes(field);
+
+const resetVisibleColumns = () => {
+  visibleColumns.value = [...currentTable.value.fields];
+};
+
+const applyCoreColumnPreset = () => {
+  const fields = currentTable.value.fields;
+  if (!fields.length) return;
+  const keep = fields.filter((field, index) =>
+    index === 0 || /(name|kernel|op|type|avg|mean|total|time|duration|delta|count|calls|efficiency)/i.test(field)
+  );
+  visibleColumns.value = keep.length ? keep : fields.slice(0, Math.min(fields.length, 6));
+};
+
+const toggleColumnVisibility = field => {
+  if (!visibleColumns.value.length) {
+    visibleColumns.value = [...currentTable.value.fields];
+  }
+  if (visibleColumns.value.includes(field)) {
+    if (visibleColumns.value.length === 1) return;
+    visibleColumns.value = visibleColumns.value.filter(item => item !== field);
+    return;
+  }
+  visibleColumns.value = [...visibleColumns.value, field];
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -469,6 +537,80 @@ const loadProjects = async () => {
   } catch (e) {
     console.error("loadProjects error:", e);
   }
+};
+
+const loadStatusSummary = async () => {
+  const r = await fetch("/api/job-status-summary", { credentials: "include" });
+  if (!r.ok) return;
+  statusSummary.value = await r.json();
+};
+
+const loadStorageSummary = async () => {
+  const r = await fetch("/api/storage/summary", { credentials: "include" });
+  if (!r.ok) {
+    showToast("加载存储统计失败", "error");
+    return;
+  }
+  storageSummary.value = await r.json();
+  const valid = new Set(storageJobsWithTrace.value.map(job => job.id));
+  storageSelection.value = storageSelection.value.filter(id => valid.has(id));
+};
+
+const openStatusCenter = async () => {
+  await loadStatusSummary();
+  showStatusCenter.value = true;
+};
+
+const openStorageManager = async () => {
+  await loadStorageSummary();
+  showStorageManager.value = true;
+};
+
+const toggleStorageSelection = jobId => {
+  const idx = storageSelection.value.indexOf(jobId);
+  if (idx >= 0) storageSelection.value.splice(idx, 1);
+  else storageSelection.value.push(jobId);
+};
+
+const toggleAllStorageSelection = () => {
+  const ids = storageJobsWithTrace.value.map(job => job.id);
+  const selected = new Set(storageSelection.value);
+  if (ids.length && ids.every(id => selected.has(id))) {
+    storageSelection.value = [];
+    return;
+  }
+  storageSelection.value = ids;
+};
+
+const deleteSelectedStorageFiles = async () => {
+  if (!storageSelection.value.length) return;
+  const selected = storageSummary.value.jobs.filter(job => storageSelection.value.includes(job.id));
+  const affectedCompareCount = selected.reduce((sum, job) => sum + (job.used_by_compare_count || 0), 0);
+  const message = affectedCompareCount
+    ? `确定删除选中的 ${selected.length} 个任务的原始 trace 文件？其中 ${affectedCompareCount} 个历史对比依赖这些源文件，删除后将无法重新打开对应源 trace。`
+    : `确定删除选中的 ${selected.length} 个任务的原始 trace 文件？`;
+  if (!await askConfirm(message, {
+    title: "删除原始文件",
+    confirmText: "删除",
+    tone: "danger",
+  })) return;
+
+  const ids = [...storageSelection.value];
+  const r = await fetch("/api/jobs/bulk/delete-files", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ job_ids: ids }),
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    showToast("批量删除文件失败: " + (err.detail || err.message || "未知错误"), "error");
+    return;
+  }
+  storageSelection.value = [];
+  await Promise.all([loadStorageSummary(), refreshSidebarData()]);
+  if (selectedJobId.value && ids.includes(selectedJobId.value)) await loadJob(selectedJobId.value);
+  showToast(`已清理 ${ids.length} 个任务的原始文件`, "success");
 };
 
 let historyGroupsController = null;
@@ -608,7 +750,7 @@ const loadCompareJobs = async () => {
 };
 
 const refreshSidebarData = async () => {
-  await Promise.all([loadHistoryGroups(), loadCompareJobs()]);
+  await Promise.all([loadHistoryGroups(), loadCompareJobs(), loadStatusSummary()]);
 };
 
 const loadJob = async id => {
@@ -788,69 +930,112 @@ const buildChart = async () => {
 // Uploads
 // ══════════════════════════════════════════════════════════════════════════════
 
+const setUploadFiles = files => {
+  const picked = Array.from(files || []);
+  if (!picked.length) return;
+  uploadQueue.value = picked.map((file, index) => ({
+    id: `${Date.now()}-${index}-${file.name}`,
+    file,
+    name: file.name,
+    status: "ready",
+    progress: 0,
+    error: "",
+    jobId: "",
+  }));
+  fileA.value = picked[0];
+  fileAName.value = picked.length === 1 ? picked[0].name : `${picked.length} 个文件`;
+};
+
+const patchUploadQueueItem = (id, patch) => {
+  uploadQueue.value = uploadQueue.value.map(item =>
+    item.id === id ? { ...item, ...patch } : item
+  );
+};
+
 const onFileChange = (e) => {
-  const f = e.target.files[0];
-  if (!f) return;
-  fileA.value = f;
-  fileAName.value = f.name;
+  setUploadFiles(e.target.files);
 };
 
 const onDrop = (e) => {
-  const f = e.dataTransfer.files[0];
-  if (!f) return;
-  fileA.value = f;
-  fileAName.value = f.name;
+  setUploadFiles(e.dataTransfer.files);
 };
 
 const clearFile = () => {
   fileA.value = null;
   fileAName.value = "";
+  uploadQueue.value = [];
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Submit job
 // ══════════════════════════════════════════════════════════════════════════════
 
-const submitJob = () => {
-  if (!fileA.value || submitting.value) return;
-  submitting.value = true;
-  uploadProgress.value = 0;
+const uploadSingleJob = (queueItem, index, total) => new Promise(resolve => {
   const fd = new FormData();
-  fd.append("file_a", fileA.value);
-  fd.append("label", form.value.label);
+  const baseLabel = form.value.label.trim();
+  const label = total === 1
+    ? baseLabel
+    : (baseLabel ? `${baseLabel} - ${queueItem.name}` : queueItem.name);
+  fd.append("file_a", queueItem.file);
+  fd.append("label", label);
   fd.append("project_id", form.value.projectId);
   fd.append("save_triton_csv", form.value.saveTritonCsv);
   fd.append("save_triton_code", form.value.saveTritonCode);
 
   const xhr = new XMLHttpRequest();
   xhr.upload.onprogress = e => {
-    if (e.lengthComputable) uploadProgress.value = Math.round(e.loaded / e.total * 100);
+    if (!e.lengthComputable) return;
+    const progress = Math.round(e.loaded / e.total * 100);
+    patchUploadQueueItem(queueItem.id, { status: "uploading", progress });
+    uploadProgress.value = Math.round(((index + progress / 100) / total) * 100);
   };
-  xhr.onload = async () => {
-    try {
-      if (xhr.status < 200 || xhr.status >= 300) {
-        showToast("提交失败: " + (JSON.parse(xhr.responseText).detail || "服务器错误"), "error");
-        return;
-      }
-      const job = JSON.parse(xhr.responseText);
-      await refreshSidebarData();
-      fileA.value = null; fileAName.value = "";
-      form.value.label = "";
-      sidebarTab.value = "jobs";
-      router.push({ path: `/job/${job.id}` });
-    } finally {
-      submitting.value = false;
-      uploadProgress.value = 0;
+  xhr.onload = () => {
+    if (xhr.status < 200 || xhr.status >= 300) {
+      let detail = "服务器错误";
+      try { detail = JSON.parse(xhr.responseText).detail || detail; } catch (e) {}
+      patchUploadQueueItem(queueItem.id, { status: "error", error: detail });
+      resolve(null);
+      return;
     }
+    const job = JSON.parse(xhr.responseText);
+    patchUploadQueueItem(queueItem.id, { status: "submitted", progress: 100, jobId: job.id });
+    resolve(job);
   };
   xhr.onerror = () => {
-    submitting.value = false;
-    uploadProgress.value = 0;
-    showToast("提交失败: 网络错误", "error");
+    patchUploadQueueItem(queueItem.id, { status: "error", error: "网络错误" });
+    resolve(null);
   };
   xhr.open("POST", "/api/jobs");
   xhr.withCredentials = true;
   xhr.send(fd);
+});
+
+const submitJob = async () => {
+  if (!uploadQueue.value.length || submitting.value) return;
+  submitting.value = true;
+  uploadProgress.value = 0;
+  const queue = [...uploadQueue.value];
+  let lastJob = null;
+  let successCount = 0;
+  for (let i = 0; i < queue.length; i += 1) {
+    patchUploadQueueItem(queue[i].id, { status: "uploading", progress: 0, error: "" });
+    const job = await uploadSingleJob(queue[i], i, queue.length);
+    if (job) {
+      lastJob = job;
+      successCount += 1;
+    }
+  }
+  submitting.value = false;
+  uploadProgress.value = 0;
+  await refreshSidebarData();
+  sidebarTab.value = "jobs";
+  if (successCount) {
+    form.value.label = "";
+    showToast(`已提交 ${successCount}/${queue.length} 个任务`, successCount === queue.length ? "success" : "info");
+    if (lastJob) router.push({ path: `/job/${lastJob.id}` });
+  } else {
+    showToast("提交失败，请检查上传队列", "error");
+  }
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -885,7 +1070,21 @@ const deleteJob = async () => {
 };
 
 const deleteFile = async slot => {
-  if (!await askConfirm("确定删除原始 trace 文件？删除后该文件无法参与历史对比。", {
+  let impact = { count: 0, dependent_compare_jobs: [] };
+  try {
+    const impactResp = await fetch(`/api/jobs/${selectedJobId.value}/files/${slot}/delete-impact`, {
+      credentials: "include",
+    });
+    if (impactResp.ok) impact = await impactResp.json();
+  } catch (e) {}
+  const examples = (impact.dependent_compare_jobs || [])
+    .slice(0, 3)
+    .map(job => job.label || job.id.slice(0, 8))
+    .join("、");
+  const impactMessage = impact.count
+    ? ` 当前有 ${impact.count} 个历史对比依赖它${examples ? `，例如：${examples}` : ""}。`
+    : "";
+  if (!await askConfirm(`确定删除原始 trace 文件？删除后该文件无法参与历史对比。${impactMessage}`, {
     title: "删除文件",
     confirmText: "删除",
     tone: "danger",
@@ -1051,7 +1250,13 @@ const bulkDeleteJobs = async () => {
 
 const bulkDeleteFiles = async () => {
   if (!historySelection.value.length) return;
-  if (!await askConfirm(`确定删除选中的 ${historySelection.value.length} 个任务的原始 trace 文件？`, {
+  await loadStorageSummary();
+  const selected = storageSummary.value.jobs.filter(job => historySelection.value.includes(job.id));
+  const affectedCompareCount = selected.reduce((sum, job) => sum + (job.used_by_compare_count || 0), 0);
+  const impactMessage = affectedCompareCount
+    ? ` 其中 ${affectedCompareCount} 个历史对比依赖这些源文件。`
+    : "";
+  if (!await askConfirm(`确定删除选中的 ${historySelection.value.length} 个任务的原始 trace 文件？${impactMessage}`, {
     title: "批量删除文件",
     confirmText: "删除",
     tone: "danger",
@@ -1155,7 +1360,7 @@ const startResize = (field, e) => {
 };
 
 const downloadCsv = filename => {
-  const fields = currentTable.value.fields;
+  const fields = displayedFields.value;
   const rows   = filteredRows.value;
   if (!fields.length) return;
   const escape = v => {
@@ -1500,6 +1705,39 @@ const submitCompare = async () => {
   router.push({ path: `/job/${job.id}` });
 };
 
+const openCompareSource = source => {
+  if (!source?.id) return;
+  router.push({ path: `/job/${source.id}` });
+};
+
+const rerunCompareSwapped = async () => {
+  const sourceA = selectedJob.value?.compare_sources?.a;
+  const sourceB = selectedJob.value?.compare_sources?.b;
+  if (!sourceA?.id || !sourceB?.id) return;
+  if (!sourceA.file_a_exists || !sourceB.file_a_exists) {
+    showToast("源文件已删除，无法重新对比", "error");
+    return;
+  }
+  const r = await fetch("/api/jobs/compare", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({
+      job_id_a: sourceB.id,
+      job_id_b: sourceA.id,
+      label: `${sourceB.label || sourceB.id.slice(0, 8)} vs ${sourceA.label || sourceA.id.slice(0, 8)}`,
+      project_id: selectedJob.value.project_id || null,
+    }),
+  });
+  const job = await r.json();
+  if (!r.ok) {
+    showToast("重新对比失败: " + (job.detail || "服务器错误"), "error");
+    return;
+  }
+  await refreshSidebarData();
+  router.push({ path: `/job/${job.id}` });
+};
+
 // ══════════════════════════════════════════════════════════════════════════════
 // Projects
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1593,7 +1831,7 @@ const Home = {
       <div class="card-title">提交分析</div>
       <div class="submit-cols">
         <div class="upload-box upload-box-sm" @dragover.prevent @drop.prevent="onDrop">
-          <input type="file" ref="fileInputA" accept=".json,.json.gz,.gz" @change="onFileChange" hidden />
+          <input type="file" ref="fileInputA" accept=".json,.json.gz,.gz" multiple @change="onFileChange" hidden />
           <div @click="$refs.fileInputA.click()" class="upload-inner">
             <div class="upload-icon">📂</div>
             <div class="upload-label">{{ fileAName || '选择文件' }}</div>
@@ -1611,12 +1849,23 @@ const Home = {
           <label>备注</label>
           <input v-model="form.label" class="input" placeholder="可选" />
         </div>
-        <button class="btn btn-primary" :disabled="!fileA || submitting" @click="submitJob">
-          {{ submitting ? (uploadProgress < 100 ? '上传中 ' + uploadProgress + '%' : '分析中...') : '提交分析' }}
+        <button class="btn btn-primary" :disabled="uploadQueue.length===0 || submitting" @click="submitJob">
+          {{ submitting ? '提交中 ' + uploadProgress + '%' : (uploadQueue.length > 1 ? '批量提交' : '提交分析') }}
         </button>
       </div>
+      <div v-if="uploadQueue.length" class="upload-queue">
+        <div v-for="item in uploadQueue" :key="item.id" class="upload-queue-item">
+          <span class="upload-queue-name" :title="item.name">{{ item.name }}</span>
+          <span :class="['upload-queue-status', 'queue-' + item.status]">
+            <template v-if="item.status==='ready'">待提交</template>
+            <template v-else-if="item.status==='uploading'">上传中 {{ item.progress }}%</template>
+            <template v-else-if="item.status==='submitted'">已提交</template>
+            <template v-else>{{ item.error || '失败' }}</template>
+          </span>
+        </div>
+      </div>
       <div v-if="submitting && uploadProgress < 100" class="upload-progress">
-        <div class="upload-progress-label">上传进度 {{ uploadProgress }}%</div>
+        <div class="upload-progress-label">总进度 {{ uploadProgress }}%</div>
         <div class="progress-track">
           <div class="progress-fill" :style="{ width: uploadProgress + '%' }"></div>
         </div>
@@ -1636,7 +1885,7 @@ const Home = {
   setup() {
     const fileInputA = ref(null);
     return {
-      fileInputA, fileAName, fileA, submitting, uploadProgress,
+      fileInputA, fileAName, fileA, uploadQueue, submitting, uploadProgress,
       form, projects, selectedJob,
       onDrop, onFileChange, clearFile, submitJob,
     };
@@ -1698,6 +1947,28 @@ const JobDetail = {
         </span>
       </div>
 
+      <div v-if="selectedJob.mode==='compare' && selectedJob.compare_sources" class="compare-source-panel">
+        <div class="compare-source-head">
+          <span>对比来源</span>
+          <button class="btn btn-xs btn-outline" @click="rerunCompareSwapped">交换 A/B 重新对比</button>
+        </div>
+        <div class="compare-source-grid">
+          <div v-for="slot in ['a','b']" :key="slot" class="compare-source-item">
+            <div class="compare-source-slot">{{ slot.toUpperCase() }}</div>
+            <div class="compare-source-main">
+              <div class="compare-source-title">{{ selectedJob.compare_sources[slot]?.label || '源任务缺失' }}</div>
+              <div class="compare-source-meta">
+                {{ selectedJob.compare_sources[slot]?.project_name || '未分组' }}
+                · {{ fmtDate(selectedJob.compare_sources[slot]?.created_at) }}
+              </div>
+            </div>
+            <span v-if="selectedJob.compare_sources[slot] && !selectedJob.compare_sources[slot].file_a_exists" class="tag-deleted">源文件已删除</span>
+            <button v-if="selectedJob.compare_sources[slot]" class="btn btn-xs btn-outline"
+                    @click="openCompareSource(selectedJob.compare_sources[slot])">查看源任务</button>
+          </div>
+        </div>
+      </div>
+
       <div v-if="selectedJob.status==='running' || selectedJob.status==='pending'" class="loading">
         <span class="spinner"></span> 分析中...
       </div>
@@ -1743,6 +2014,21 @@ const JobDetail = {
               列筛选已启用
               <button class="btn-clear-filter" @click="clearColFilters()">✕ 清除</button>
             </span>
+            <div class="column-menu-wrap">
+              <button class="btn btn-sm btn-outline" @click="showColumnMenu=!showColumnMenu">
+                列{{ hiddenColumnCount ? ' (' + hiddenColumnCount + ' 已隐藏)' : '' }}
+              </button>
+              <div v-if="showColumnMenu" class="column-menu">
+                <div class="column-menu-actions">
+                  <button class="btn btn-xs btn-outline" @click="resetVisibleColumns">全部列</button>
+                  <button class="btn btn-xs btn-outline" @click="applyCoreColumnPreset">核心列</button>
+                </div>
+                <label v-for="f in currentTable.fields" :key="f" class="column-menu-item">
+                  <input type="checkbox" :checked="isColumnVisible(f)" @change="toggleColumnVisibility(f)" />
+                  <span>{{ f }}</span>
+                </label>
+              </div>
+            </div>
             <button class="btn btn-sm btn-outline" @click="downloadCsv(resultTab)">下载 CSV</button>
             <button v-if="isTritonStepTab && allowCodeExecution" class="btn btn-sm btn-outline" @click="clearInductorCache()">清除 Cache</button>
           </div>
@@ -1750,12 +2036,12 @@ const JobDetail = {
             <div class="csv-table-wrap">
             <table class="data-table">
               <colgroup>
-                <col v-for="f in currentTable.fields" :key="f"
+                <col v-for="f in displayedFields" :key="f"
                      :style="colWidths[f] ? { width: colWidths[f] + 'px' } : {}" />
               </colgroup>
               <thead>
                 <tr>
-                  <th v-for="f in currentTable.fields" :key="f"
+                  <th v-for="f in displayedFields" :key="f"
                       @click="setSort(f)" class="th-sortable"
                       :style="colWidths[f] ? { width: colWidths[f] + 'px' } : {}">
                     <span class="th-label">{{ f }}</span>
@@ -1766,7 +2052,7 @@ const JobDetail = {
                   </th>
                 </tr>
                 <tr class="filter-row">
-                  <th v-for="f in currentTable.fields" :key="f"
+                  <th v-for="f in displayedFields" :key="f"
                       :style="colWidths[f] ? { width: colWidths[f] + 'px' } : {}">
                     <div class="col-filter-wrap">
                       <select v-model="colFilterOps[f]" class="col-filter-op"
@@ -1793,7 +2079,7 @@ const JobDetail = {
               </thead>
               <tbody>
                 <tr v-for="(row,i) in filteredRows" :key="i">
-                  <td v-for="f in currentTable.fields" :key="f"
+                  <td v-for="f in displayedFields" :key="f"
                       :class="deltaCellClass(f, row[f])"
                       :title="row[f]">
                     <template v-if="f === 'triton_code_file' && row[f]">
@@ -1827,7 +2113,7 @@ const JobDetail = {
               </tbody>
               <tfoot v-if="filteredRows.length > 0">
                 <tr class="sum-row">
-                  <td v-for="(f, i) in currentTable.fields" :key="f" class="sum-cell">
+                  <td v-for="(f, i) in displayedFields" :key="f" class="sum-cell">
                     <template v-if="i === 0">Σ 合计</template>
                     <template v-else-if="colSums[f] !== null">{{ fmtSum(colSums[f]) }}</template>
                   </td>
@@ -1858,16 +2144,19 @@ const JobDetail = {
     return {
       ktChart: ktChartRef, ktPieChart: ktPieChartRef, ktPieChartB: ktPieChartBRef,
       selectedJob, selectedJobId, resultTab, availableTabs, currentTable,
-      filteredRows, tableSearch, sortCol, sortAsc, colWidths, colFilters,
-      colFilterOps, hasColFilters, colSums,
+      displayedFields, filteredRows, tableSearch, sortCol, sortAsc, colWidths, colFilters,
+      colFilterOps, visibleColumns, showColumnMenu, hiddenColumnCount,
+      hasColFilters, colSums,
       isTritonStepTab, tritonStatus, allowFileDownload, allowCodeExecution,
       switchTab,
       statusIcon,
       editLabel, moveProject, deleteJob, deleteFile,
+      openCompareSource, rerunCompareSwapped,
       downloadTraceFile, openInPerfetto, perfettoOpening, perfettoButtonLabel,
       setSort, startResize, downloadCsv,
       viewTritonCode, runSingleTriton, clearInductorCache,
-      fmtSum, deltaCellClass, clearColFilters,
+      fmtDate, fmtSum, deltaCellClass, clearColFilters,
+      isColumnVisible, resetVisibleColumns, applyCoreColumnPreset, toggleColumnVisibility,
       formatConsole,
     };
   },
@@ -1966,6 +2255,7 @@ const App = {
     watch(resultTab, (v, previousTab) => {
       if (previousTab) saveResultViewState(activeResultStateJobId, previousTab);
       restoreResultViewState(selectedJobId.value, v);
+      showColumnMenu.value = false;
       if (v === "chart" && selectedJob.value?.status === "done") {
         nextTick(() => buildChart());
       }
@@ -2034,10 +2324,22 @@ const App = {
     }, { deep: true });
 
     watch(
-      [tableSearch, sortCol, sortAsc, colWidths, colFilters, colFilterOps],
+      [tableSearch, sortCol, sortAsc, colWidths, colFilters, colFilterOps, visibleColumns],
       () => saveResultViewState(activeResultStateJobId),
       { deep: true },
     );
+
+    watch(() => currentTable.value.fields, fields => {
+      if (!fields.length || !visibleColumns.value.length) return;
+      const valid = visibleColumns.value.filter(field => fields.includes(field));
+      visibleColumns.value = valid.length ? valid : [...fields];
+    });
+
+    onMounted(() => {
+      if (!statusRefreshTimer) {
+        statusRefreshTimer = setInterval(() => loadStatusSummary(), 5000);
+      }
+    });
 
     // Return everything the root template (index.html) needs
     return {
@@ -2070,6 +2372,10 @@ const App = {
       showRenameJob, renameJobName, confirmRenameJob,
       showDeletedProjects, deletedProjects, loadDeletedProjects,
       isDeletedOver10Days, restoreProject, permanentlyDeleteProject,
+      showStatusCenter, statusSummary, openStatusCenter,
+      showStorageManager, storageSummary, storageSelection, storageJobsWithTrace,
+      openStorageManager, toggleStorageSelection, toggleAllStorageSelection,
+      deleteSelectedStorageFiles, fmtBytes,
       showTritonCode, tritonCodeContent, tritonCodeFilename,
       tritonCodeEditing, tritonCodeEditContent,
       runCustomTriton, editTritonCode, cancelEditTritonCode,
