@@ -643,27 +643,106 @@ async def list_jobs(
     return {"data": data, "total": total, "limit": limit, "offset": offset}
 
 
-@app.get("/api/job-groups")
-async def list_job_groups(
+def _job_search_clause(alias: str, q: Optional[str], include_project_name: bool = False):
+    q = (q or "").strip()
+    if not q:
+        return "", []
+
+    terms = [
+        f"LOWER(COALESCE({alias}.label, '')) LIKE ?",
+        f"LOWER(COALESCE({alias}.file_a_name, '')) LIKE ?",
+        f"LOWER(COALESCE({alias}.file_b_name, '')) LIKE ?",
+    ]
+    params = [f"%{q.lower()}%"] * 3
+    if include_project_name:
+        terms.append("LOWER(COALESCE(p.name, '')) LIKE ?")
+        params.append(f"%{q.lower()}%")
+    return f"({' OR '.join(terms)})", params
+
+
+@app.get("/api/compare-candidates")
+async def list_compare_candidates(
     project_id: Optional[str] = None,
+    q: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
 ):
     db = await get_db()
 
-    where_sql = ""
+    clauses = ["j.mode='single'", "j.status='done'"]
+    params = []
+    if project_id == "__none__":
+        clauses.append("j.project_id IS NULL")
+    elif project_id:
+        clauses.append("j.project_id = ?")
+        params.append(project_id)
+
+    search_sql, search_params = _job_search_clause("j", q, include_project_name=True)
+    if search_sql:
+        clauses.append(search_sql)
+        params.extend(search_params)
+
+    where_sql = " AND ".join(clauses)
+    count_cursor = await db.execute(
+        f"""
+        SELECT COUNT(*)
+        FROM jobs j
+        LEFT JOIN projects p ON p.id = j.project_id
+        WHERE {where_sql}
+        """,
+        params,
+    )
+    total = (await count_cursor.fetchone())[0]
+
+    rows = await (
+        await db.execute(
+            f"""
+            SELECT j.*
+            FROM jobs j
+            LEFT JOIN projects p ON p.id = j.project_id
+            WHERE {where_sql}
+            ORDER BY j.created_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            (*params, limit, offset),
+        )
+    ).fetchall()
+    await db.close()
+
+    data = await _with_file_exists(rows)
+    return {"data": data, "total": total, "limit": limit, "offset": offset}
+
+
+@app.get("/api/job-groups")
+async def list_job_groups(
+    project_id: Optional[str] = None,
+    q: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    db = await get_db()
+
+    clauses = []
     where_params = []
     if project_id == "__none__":
-        where_sql = "WHERE j.project_id IS NULL"
+        clauses.append("j.project_id IS NULL")
     elif project_id:
-        where_sql = "WHERE j.project_id = ?"
-        where_params = [project_id]
+        clauses.append("j.project_id = ?")
+        where_params.append(project_id)
+
+    search_sql, search_params = _job_search_clause("j", q, include_project_name=True)
+    if search_sql:
+        clauses.append(search_sql)
+        where_params.extend(search_params)
+
+    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
 
     count_cursor = await db.execute(
         f"""
         SELECT COUNT(*) FROM (
             SELECT j.project_id
             FROM jobs j
+            LEFT JOIN projects p ON p.id = j.project_id
             {where_sql}
             GROUP BY j.project_id
         )
@@ -700,17 +779,25 @@ async def list_job_groups(
     clauses = []
     job_params = []
     if non_null_ids:
-        clauses.append(f"project_id IN ({','.join('?' * len(non_null_ids))})")
+        clauses.append(f"j.project_id IN ({','.join('?' * len(non_null_ids))})")
         job_params.extend(non_null_ids)
     if has_ungrouped:
-        clauses.append("project_id IS NULL")
+        clauses.append("j.project_id IS NULL")
+    job_group_sql = f"({' OR '.join(clauses)})"
+
+    job_search_sql, job_search_params = _job_search_clause("j", q, include_project_name=True)
+    if job_search_sql:
+        job_group_sql = f"{job_group_sql} AND {job_search_sql}"
+        job_params.extend(job_search_params)
 
     jobs_rows = await (
         await db.execute(
             f"""
-            SELECT * FROM jobs
-            WHERE {' OR '.join(clauses)}
-            ORDER BY created_at DESC
+            SELECT j.*
+            FROM jobs j
+            LEFT JOIN projects p ON p.id = j.project_id
+            WHERE {job_group_sql}
+            ORDER BY j.created_at DESC
             """,
             job_params,
         )

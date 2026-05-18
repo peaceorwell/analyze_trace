@@ -123,6 +123,83 @@ def test_job_groups_paginate_by_visible_groups(client):
     assert [group["id"] for group in second_page.json()["data"]] == ["__none__"]
 
 
+def test_job_groups_search_returns_matching_visible_groups(client):
+    async def insert_rows():
+        db = await web_db.get_db()
+        try:
+            await db.executemany(
+                "INSERT INTO projects(id, name) VALUES(?,?)",
+                [("project-a", "Alpha"), ("project-b", "Beta")],
+            )
+            await db.executemany(
+                "INSERT INTO jobs(id, project_id, label, mode, status, file_a_name) VALUES(?,?,?,?,?,?)",
+                [
+                    ("job-a1", "project-a", "baseline", "single", "done", "trace-a.json"),
+                    ("job-b1", "project-b", "target needle", "single", "done", "trace-b.json"),
+                    ("job-none", None, "needle ungrouped", "single", "done", "trace-none.json"),
+                ],
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_rows())
+
+    response = client.get("/api/job-groups?q=needle")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 2
+    assert [group["id"] for group in payload["data"]] == ["project-b", "__none__"]
+    assert [[job["id"] for job in group["jobs"]] for group in payload["data"]] == [
+        ["job-b1"],
+        ["job-none"],
+    ]
+
+
+def test_compare_candidates_have_independent_search_and_pagination(client):
+    async def insert_rows():
+        db = await web_db.get_db()
+        try:
+            await db.executemany(
+                "INSERT INTO projects(id, name) VALUES(?,?)",
+                [("project-a", "Alpha"), ("project-b", "Beta")],
+            )
+            await db.executemany(
+                """
+                INSERT INTO jobs(id, project_id, label, mode, status, file_a_name, created_at)
+                VALUES(?,?,?,?,?,?,?)
+                """,
+                [
+                    ("job-a1", "project-a", "alpha one", "single", "done", "alpha-1.json", "2026-05-18 10:00:00"),
+                    ("job-a2", "project-a", "alpha two", "single", "done", "alpha-2.json", "2026-05-18 11:00:00"),
+                    ("job-b1", "project-b", "beta needle", "single", "done", "beta.json", "2026-05-18 12:00:00"),
+                    ("job-cmp", "project-b", "needle compare", "compare", "done", "cmp.json", "2026-05-18 13:00:00"),
+                    ("job-run", "project-b", "needle running", "single", "running", "run.json", "2026-05-18 14:00:00"),
+                ],
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_rows())
+
+    first_page = client.get("/api/compare-candidates?limit=2&offset=0")
+    assert first_page.status_code == 200
+    assert first_page.json()["total"] == 3
+    assert len(first_page.json()["data"]) == 2
+
+    search = client.get("/api/compare-candidates?q=needle")
+    assert search.status_code == 200
+    assert search.json()["total"] == 1
+    assert [job["id"] for job in search.json()["data"]] == ["job-b1"]
+
+    filtered = client.get("/api/compare-candidates?project_id=project-a")
+    assert filtered.status_code == 200
+    assert filtered.json()["total"] == 2
+    assert [job["id"] for job in filtered.json()["data"]] == ["job-a2", "job-a1"]
+
+
 def test_file_download_can_be_disabled(isolated_server, monkeypatch):
     monkeypatch.setattr(isolated_server, "ALLOW_FILE_DOWNLOAD", False)
 
