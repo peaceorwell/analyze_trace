@@ -186,6 +186,84 @@ def _perfetto_context(data):
     }
 
 
+def _path_size(path: Optional[str]) -> int:
+    return os.path.getsize(path) if path and os.path.exists(path) else 0
+
+
+def _dir_size(path: str) -> int:
+    if not path or not os.path.isdir(path):
+        return 0
+    total = 0
+    for root, _, files in os.walk(path):
+        for name in files:
+            total += _path_size(os.path.join(root, name))
+    return total
+
+
+def _owned_trace_bytes(job: dict) -> int:
+    return sum(
+        _path_size(job.get(col))
+        for col in ("file_a_path", "file_a_gzip_path", "file_b_path", "file_b_gzip_path")
+    )
+
+
+async def _compare_dependents(db, source_job_id: str):
+    rows = await (
+        await db.execute(
+            """
+            SELECT id, label, created_at, project_id
+            FROM jobs
+            WHERE mode='compare' AND (source_job_a=? OR source_job_b=?)
+            ORDER BY created_at DESC
+            """,
+            (source_job_id, source_job_id),
+        )
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+async def _compare_source_summaries(job: dict):
+    source_ids = [job.get("source_job_a"), job.get("source_job_b")]
+    source_ids = [jid for jid in source_ids if jid]
+    if not source_ids:
+        return {}
+
+    db = await get_db()
+    try:
+        placeholders = ",".join("?" * len(source_ids))
+        rows = await (
+            await db.execute(
+                f"""
+                SELECT j.id, j.label, j.project_id, j.created_at, j.file_a_name,
+                       p.name AS project_name,
+                       j.file_a_path, j.file_a_gzip_path
+                FROM jobs j
+                LEFT JOIN projects p ON p.id = j.project_id
+                WHERE j.id IN ({placeholders})
+                """,
+                tuple(source_ids),
+            )
+        ).fetchall()
+    finally:
+        await db.close()
+
+    by_id = {}
+    for row in rows:
+        data = dict(row)
+        path = data.get("file_a_gzip_path") or data.get("file_a_path")
+        data["file_a_exists"] = 1 if path and os.path.exists(path) else 0
+        data.pop("file_a_path", None)
+        data.pop("file_a_gzip_path", None)
+        by_id[data["id"]] = data
+
+    result = {}
+    for slot in ("a", "b"):
+        source_id = job.get(f"source_job_{slot}")
+        if source_id and source_id in by_id:
+            result[slot] = by_id[source_id]
+    return result
+
+
 def _perfetto_context_from_trace(path):
     from trace_analyzer import compute_avgs, parse_trace
 
@@ -803,6 +881,115 @@ async def bulk_delete_job_files(body: dict):
     return {"updated": len(job_ids), "files_deleted": files_deleted}
 
 
+@app.get("/api/job-status-summary")
+async def job_status_summary():
+    db = await get_db()
+    try:
+        counts = {}
+        for status in ("pending", "running", "error"):
+            row = await (
+                await db.execute("SELECT COUNT(*) FROM jobs WHERE status=?", (status,))
+            ).fetchone()
+            counts[status] = row[0]
+        rows = await (
+            await db.execute(
+                """
+                SELECT id, label, mode, status, created_at
+                FROM jobs
+                WHERE status IN ('pending', 'running', 'error')
+                ORDER BY
+                    CASE status WHEN 'running' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END,
+                    created_at DESC
+                LIMIT 12
+                """
+            )
+        ).fetchall()
+    finally:
+        await db.close()
+    return {"counts": counts, "jobs": [dict(row) for row in rows]}
+
+
+@app.get("/api/storage/summary")
+async def storage_summary():
+    db = await get_db()
+    try:
+        rows = await (
+            await db.execute(
+                """
+                SELECT j.*, p.name AS project_name
+                FROM jobs j
+                LEFT JOIN projects p ON p.id = j.project_id
+                ORDER BY j.created_at DESC
+                """
+            )
+        ).fetchall()
+        compare_counts_rows = await (
+            await db.execute(
+                """
+                SELECT source_id, COUNT(*) AS count
+                FROM (
+                    SELECT source_job_a AS source_id FROM jobs WHERE source_job_a IS NOT NULL
+                    UNION ALL
+                    SELECT source_job_b AS source_id FROM jobs WHERE source_job_b IS NOT NULL
+                )
+                GROUP BY source_id
+                """
+            )
+        ).fetchall()
+    finally:
+        await db.close()
+
+    compare_counts = {row["source_id"]: row["count"] for row in compare_counts_rows}
+    jobs = []
+    projects = {}
+    for row in rows:
+        job = dict(row)
+        owned_bytes = _dir_size(job_dir(job["id"]))
+        result_bytes = _dir_size(result_dir(job["id"]))
+        original_trace_bytes = _owned_trace_bytes(job)
+        item = {
+            "id": job["id"],
+            "label": job["label"],
+            "project_id": job.get("project_id"),
+            "project_name": job.get("project_name") or "未分组",
+            "mode": job["mode"],
+            "status": job["status"],
+            "created_at": job["created_at"],
+            "owned_bytes": owned_bytes,
+            "result_bytes": result_bytes,
+            "original_trace_bytes": original_trace_bytes,
+            "has_original_trace": original_trace_bytes > 0,
+            "used_by_compare_count": compare_counts.get(job["id"], 0),
+        }
+        jobs.append(item)
+        project_key = job.get("project_id") or "__none__"
+        project = projects.setdefault(
+            project_key,
+            {
+                "id": project_key,
+                "name": job.get("project_name") or "未分组",
+                "owned_bytes": 0,
+                "original_trace_bytes": 0,
+                "job_count": 0,
+            },
+        )
+        project["owned_bytes"] += owned_bytes
+        project["original_trace_bytes"] += original_trace_bytes
+        project["job_count"] += 1
+
+    jobs.sort(key=lambda item: (item["original_trace_bytes"], item["owned_bytes"]), reverse=True)
+    project_list = sorted(projects.values(), key=lambda item: item["owned_bytes"], reverse=True)
+    return {
+        "totals": {
+            "owned_bytes": sum(item["owned_bytes"] for item in jobs),
+            "original_trace_bytes": sum(item["original_trace_bytes"] for item in jobs),
+            "result_bytes": sum(item["result_bytes"] for item in jobs),
+        },
+        "projects": project_list,
+        "jobs": jobs,
+    }
+
+
 @app.get("/api/job-groups")
 async def list_job_groups(
     project_id: Optional[str] = None,
@@ -1069,6 +1256,8 @@ async def get_job(jid: str):
     if job["status"] == "done":
         job["results"] = collect_results(jid)
         job["perfetto_context"] = collect_perfetto_context(jid)
+    if job["mode"] == "compare":
+        job["compare_sources"] = await _compare_source_summaries(job)
     return job
 
 
@@ -1553,6 +1742,24 @@ async def delete_job_file(jid: str, slot: str):
     await _delete_trace_files(db, row, slots=(slot,))
     await db.commit()
     await db.close()
+
+
+@app.get("/api/jobs/{jid}/files/{slot}/delete-impact")
+async def get_delete_file_impact(jid: str, slot: str):
+    if slot not in ("a", "b"):
+        raise HTTPException(400, "slot must be 'a' or 'b'")
+
+    db = await get_db()
+    try:
+        row = await row_to_dict(
+            await (await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))).fetchone()
+        )
+        if not row:
+            raise HTTPException(404)
+        dependents = await _compare_dependents(db, jid) if slot == "a" else []
+    finally:
+        await db.close()
+    return {"dependent_compare_jobs": dependents, "count": len(dependents)}
 
 
 @app.get("/api/jobs/{jid}/triton-code/{path:path}")

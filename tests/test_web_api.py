@@ -483,3 +483,86 @@ def test_done_job_without_perfetto_context_still_loads(client, sample_trace_file
     assert r.status_code == 200
     assert r.json()["id"] == "old-job"
     assert r.json()["perfetto_context"] == {}
+
+
+def test_compare_job_exposes_source_summaries_and_delete_impact(client, sample_trace_file):
+    async def insert_jobs():
+        db = await web_db.get_db()
+        try:
+            await db.execute("INSERT INTO projects(id, name) VALUES(?,?)", ("project-a", "Alpha"))
+            await db.executemany(
+                """
+                INSERT INTO jobs(
+                    id, project_id, label, mode, status, file_a_name, file_a_path,
+                    source_job_a, source_job_b
+                ) VALUES(?,?,?,?,?,?,?,?,?)
+                """,
+                [
+                    ("source-a", "project-a", "base", "single", "done", "a.json", sample_trace_file, None, None),
+                    ("source-b", None, "target", "single", "done", "b.json", sample_trace_file, None, None),
+                    ("compare-job", None, "cmp", "compare", "done", "a.json", None, "source-a", "source-b"),
+                ],
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_jobs())
+
+    detail = client.get("/api/jobs/compare-job")
+    assert detail.status_code == 200
+    assert detail.json()["compare_sources"]["a"]["label"] == "base"
+    assert detail.json()["compare_sources"]["a"]["project_name"] == "Alpha"
+    assert detail.json()["compare_sources"]["b"]["label"] == "target"
+
+    impact = client.get("/api/jobs/source-a/files/a/delete-impact")
+    assert impact.status_code == 200
+    assert impact.json()["count"] == 1
+    assert impact.json()["dependent_compare_jobs"][0]["id"] == "compare-job"
+
+
+def test_status_and_storage_summaries(client, tmp_path):
+    trace_a = tmp_path / "a.json"
+    trace_b = tmp_path / "b.json"
+    trace_a.write_text("a" * 10)
+    trace_b.write_text("b" * 20)
+    result_dir = Path(web_server.result_dir("done-job"))
+    result_dir.mkdir(parents=True)
+    (result_dir / "out.csv").write_text("x" * 5)
+
+    async def insert_jobs():
+        db = await web_db.get_db()
+        try:
+            await db.execute("INSERT INTO projects(id, name) VALUES(?,?)", ("project-a", "Alpha"))
+            await db.executemany(
+                """
+                INSERT INTO jobs(
+                    id, project_id, label, mode, status, file_a_path, result_dir,
+                    source_job_a, source_job_b
+                ) VALUES(?,?,?,?,?,?,?,?,?)
+                """,
+                [
+                    ("done-job", "project-a", "done", "single", "done", str(trace_a), str(result_dir), None, None),
+                    ("running-job", "project-a", "running", "single", "running", str(trace_b), "", None, None),
+                    ("error-job", None, "error", "single", "error", None, "", None, None),
+                    ("compare-job", None, "cmp", "compare", "done", None, "", "done-job", "running-job"),
+                ],
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_jobs())
+
+    status = client.get("/api/job-status-summary")
+    assert status.status_code == 200
+    assert status.json()["counts"] == {"pending": 0, "running": 1, "error": 1}
+    assert [job["id"] for job in status.json()["jobs"][:2]] == ["running-job", "error-job"]
+
+    storage = client.get("/api/storage/summary")
+    assert storage.status_code == 200
+    payload = storage.json()
+    assert payload["totals"]["original_trace_bytes"] == 30
+    assert payload["projects"][0]["name"] == "Alpha"
+    done_job = next(job for job in payload["jobs"] if job["id"] == "done-job")
+    assert done_job["used_by_compare_count"] == 1
