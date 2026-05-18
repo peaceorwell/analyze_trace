@@ -11,7 +11,6 @@ import sys
 import tarfile
 import types
 import uuid
-from collections import defaultdict
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -660,6 +659,49 @@ def _job_search_clause(alias: str, q: Optional[str], include_project_name: bool 
     return f"({' OR '.join(terms)})", params
 
 
+def _unique_job_ids(body: dict) -> list[str]:
+    job_ids = []
+    for job_id in body.get("job_ids") or []:
+        if job_id and job_id not in job_ids:
+            job_ids.append(job_id)
+    if not job_ids:
+        raise HTTPException(400, "job_ids are required")
+    return job_ids
+
+
+async def _load_jobs_by_ids(db, job_ids: list[str]) -> list[dict]:
+    placeholders = ",".join("?" * len(job_ids))
+    rows = await (
+        await db.execute(
+            f"SELECT * FROM jobs WHERE id IN ({placeholders})",
+            tuple(job_ids),
+        )
+    ).fetchall()
+    jobs = [dict(row) for row in rows]
+    if len(jobs) != len(job_ids):
+        raise HTTPException(404, "Some jobs were not found")
+    return jobs
+
+
+def _remove_job_dir(jid: str):
+    jdir = job_dir(jid)
+    if os.path.exists(jdir):
+        shutil.rmtree(jdir)
+
+
+async def _delete_trace_files(db, row: dict, slots=("a", "b")) -> int:
+    removed = 0
+    for slot in slots:
+        for col in (f"file_{slot}_path", f"file_{slot}_gzip_path"):
+            path = row.get(col)
+            if path and os.path.exists(path):
+                os.remove(path)
+                removed += 1
+            await db.execute(f"UPDATE jobs SET {col}=NULL WHERE id=?", (row["id"],))
+        await db.execute(f"UPDATE jobs SET file_{slot}_exists=0 WHERE id=?", (row["id"],))
+    return removed
+
+
 @app.get("/api/compare-candidates")
 async def list_compare_candidates(
     project_id: Optional[str] = None,
@@ -713,6 +755,54 @@ async def list_compare_candidates(
     return {"data": data, "total": total, "limit": limit, "offset": offset}
 
 
+@app.patch("/api/jobs/bulk/project")
+async def bulk_move_jobs(body: dict):
+    job_ids = _unique_job_ids(body)
+    db = await get_db()
+    try:
+        await _load_jobs_by_ids(db, job_ids)
+        placeholders = ",".join("?" * len(job_ids))
+        await db.execute(
+            f"UPDATE jobs SET project_id=? WHERE id IN ({placeholders})",
+            (body.get("project_id") or None, *job_ids),
+        )
+        await db.commit()
+    finally:
+        await db.close()
+    return {"updated": len(job_ids)}
+
+
+@app.post("/api/jobs/bulk/delete")
+async def bulk_delete_jobs(body: dict):
+    job_ids = _unique_job_ids(body)
+    db = await get_db()
+    try:
+        await _load_jobs_by_ids(db, job_ids)
+        for job_id in job_ids:
+            _remove_job_dir(job_id)
+        placeholders = ",".join("?" * len(job_ids))
+        await db.execute(f"DELETE FROM jobs WHERE id IN ({placeholders})", tuple(job_ids))
+        await db.commit()
+    finally:
+        await db.close()
+    return {"deleted": len(job_ids)}
+
+
+@app.post("/api/jobs/bulk/delete-files")
+async def bulk_delete_job_files(body: dict):
+    job_ids = _unique_job_ids(body)
+    db = await get_db()
+    try:
+        jobs = await _load_jobs_by_ids(db, job_ids)
+        files_deleted = 0
+        for job in jobs:
+            files_deleted += await _delete_trace_files(db, job)
+        await db.commit()
+    finally:
+        await db.close()
+    return {"updated": len(job_ids), "files_deleted": files_deleted}
+
+
 @app.get("/api/job-groups")
 async def list_job_groups(
     project_id: Optional[str] = None,
@@ -756,7 +846,8 @@ async def list_job_groups(
             f"""
             SELECT
                 j.project_id,
-                COALESCE(p.name, '未分组') AS label
+                COALESCE(p.name, '未分组') AS label,
+                COUNT(*) AS job_count
             FROM jobs j
             LEFT JOIN projects p ON p.id = j.project_id
             {where_sql}
@@ -774,40 +865,7 @@ async def list_job_groups(
         await db.close()
         return {"data": [], "total": total, "limit": limit, "offset": offset}
 
-    non_null_ids = [row["project_id"] for row in group_rows if row["project_id"] is not None]
-    has_ungrouped = any(row["project_id"] is None for row in group_rows)
-    clauses = []
-    job_params = []
-    if non_null_ids:
-        clauses.append(f"j.project_id IN ({','.join('?' * len(non_null_ids))})")
-        job_params.extend(non_null_ids)
-    if has_ungrouped:
-        clauses.append("j.project_id IS NULL")
-    job_group_sql = f"({' OR '.join(clauses)})"
-
-    job_search_sql, job_search_params = _job_search_clause("j", q, include_project_name=True)
-    if job_search_sql:
-        job_group_sql = f"{job_group_sql} AND {job_search_sql}"
-        job_params.extend(job_search_params)
-
-    jobs_rows = await (
-        await db.execute(
-            f"""
-            SELECT j.*
-            FROM jobs j
-            LEFT JOIN projects p ON p.id = j.project_id
-            WHERE {job_group_sql}
-            ORDER BY j.created_at DESC
-            """,
-            job_params,
-        )
-    ).fetchall()
     await db.close()
-
-    jobs = await _with_file_exists(jobs_rows)
-    jobs_by_group = defaultdict(list)
-    for job in jobs:
-        jobs_by_group[job.get("project_id") or "__none__"].append(job)
 
     data = []
     for row in group_rows:
@@ -816,10 +874,63 @@ async def list_job_groups(
             {
                 "id": group_id,
                 "label": row["label"],
-                "jobs": jobs_by_group[group_id],
+                "job_count": row["job_count"],
             }
         )
 
+    return {"data": data, "total": total, "limit": limit, "offset": offset}
+
+
+@app.get("/api/job-groups/{group_id}/jobs")
+async def list_group_jobs(
+    group_id: str,
+    q: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    db = await get_db()
+
+    clauses = []
+    params = []
+    if group_id == "__none__":
+        clauses.append("j.project_id IS NULL")
+    else:
+        clauses.append("j.project_id = ?")
+        params.append(group_id)
+
+    search_sql, search_params = _job_search_clause("j", q, include_project_name=True)
+    if search_sql:
+        clauses.append(search_sql)
+        params.extend(search_params)
+
+    where_sql = " AND ".join(clauses)
+    count_cursor = await db.execute(
+        f"""
+        SELECT COUNT(*)
+        FROM jobs j
+        LEFT JOIN projects p ON p.id = j.project_id
+        WHERE {where_sql}
+        """,
+        params,
+    )
+    total = (await count_cursor.fetchone())[0]
+
+    rows = await (
+        await db.execute(
+            f"""
+            SELECT j.*
+            FROM jobs j
+            LEFT JOIN projects p ON p.id = j.project_id
+            WHERE {where_sql}
+            ORDER BY j.created_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            (*params, limit, offset),
+        )
+    ).fetchall()
+    await db.close()
+
+    data = await _with_file_exists(rows)
     return {"data": data, "total": total, "limit": limit, "offset": offset}
 
 
@@ -994,13 +1105,11 @@ async def delete_job(jid: str):
         raise HTTPException(404)
 
 
-    # Remove all files on disk
-    jdir = job_dir(jid)
-    if os.path.exists(jdir):
-        shutil.rmtree(jdir)
+    _remove_job_dir(jid)
 
     await db.execute("DELETE FROM jobs WHERE id=?", (jid,))
     await db.commit()
+    await db.close()
 
 
 @app.post("/api/jobs/{jid}/run-triton")
@@ -1441,13 +1550,7 @@ async def delete_job_file(jid: str, slot: str):
         await db.close()
         raise HTTPException(400, "slot must be 'a' or 'b'")
 
-    for col in (f"file_{slot}_path", f"file_{slot}_gzip_path"):
-        path = row.get(col)
-        if path and os.path.exists(path):
-            os.remove(path)
-        await db.execute(f"UPDATE jobs SET {col}=NULL WHERE id=?", (jid,))
-
-    await db.execute(f"UPDATE jobs SET file_{slot}_exists=0 WHERE id=?", (jid,))
+    await _delete_trace_files(db, row, slots=(slot,))
     await db.commit()
     await db.close()
 

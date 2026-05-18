@@ -116,7 +116,7 @@ def test_job_groups_paginate_by_visible_groups(client):
     assert first_page.status_code == 200
     assert first_page.json()["total"] == 3
     assert [group["id"] for group in first_page.json()["data"]] == ["project-a", "project-b"]
-    assert [len(group["jobs"]) for group in first_page.json()["data"]] == [2, 1]
+    assert [group["job_count"] for group in first_page.json()["data"]] == [2, 1]
 
     second_page = client.get("/api/job-groups?limit=2&offset=2")
     assert second_page.status_code == 200
@@ -151,10 +151,39 @@ def test_job_groups_search_returns_matching_visible_groups(client):
     payload = response.json()
     assert payload["total"] == 2
     assert [group["id"] for group in payload["data"]] == ["project-b", "__none__"]
-    assert [[job["id"] for job in group["jobs"]] for group in payload["data"]] == [
-        ["job-b1"],
-        ["job-none"],
-    ]
+    assert [group["job_count"] for group in payload["data"]] == [1, 1]
+
+
+def test_group_jobs_load_lazily_with_search_and_pagination(client):
+    async def insert_rows():
+        db = await web_db.get_db()
+        try:
+            await db.execute("INSERT INTO projects(id, name) VALUES(?,?)", ("project-a", "Alpha"))
+            await db.executemany(
+                """
+                INSERT INTO jobs(id, project_id, label, mode, status, file_a_name, created_at)
+                VALUES(?,?,?,?,?,?,?)
+                """,
+                [
+                    ("job-a1", "project-a", "baseline", "single", "done", "trace-a.json", "2026-05-18 10:00:00"),
+                    ("job-a2", "project-a", "needle two", "single", "done", "trace-b.json", "2026-05-18 11:00:00"),
+                    ("job-a3", "project-a", "needle three", "single", "done", "trace-c.json", "2026-05-18 12:00:00"),
+                ],
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_rows())
+
+    first_page = client.get("/api/job-groups/project-a/jobs?q=needle&limit=1&offset=0")
+    assert first_page.status_code == 200
+    assert first_page.json()["total"] == 2
+    assert [job["id"] for job in first_page.json()["data"]] == ["job-a3"]
+
+    second_page = client.get("/api/job-groups/project-a/jobs?q=needle&limit=1&offset=1")
+    assert second_page.status_code == 200
+    assert [job["id"] for job in second_page.json()["data"]] == ["job-a2"]
 
 
 def test_compare_candidates_have_independent_search_and_pagination(client):
@@ -198,6 +227,69 @@ def test_compare_candidates_have_independent_search_and_pagination(client):
     assert filtered.status_code == 200
     assert filtered.json()["total"] == 2
     assert [job["id"] for job in filtered.json()["data"]] == ["job-a2", "job-a1"]
+
+
+def test_bulk_job_actions_move_delete_files_and_delete_jobs(client, tmp_path):
+    trace_a = tmp_path / "a.json"
+    trace_b = tmp_path / "b.json"
+    trace_a.write_text("{}")
+    trace_b.write_text("{}")
+
+    async def insert_rows():
+        db = await web_db.get_db()
+        try:
+            await db.executemany(
+                "INSERT INTO projects(id, name) VALUES(?,?)",
+                [("project-a", "Alpha"), ("project-b", "Beta")],
+            )
+            await db.executemany(
+                """
+                INSERT INTO jobs(id, project_id, label, mode, status, file_a_path, file_a_exists)
+                VALUES(?,?,?,?,?,?,?)
+                """,
+                [
+                    ("job-a", "project-a", "a", "single", "done", str(trace_a), 1),
+                    ("job-b", "project-a", "b", "single", "done", str(trace_b), 1),
+                ],
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_rows())
+
+    moved = client.patch(
+        "/api/jobs/bulk/project",
+        json={"job_ids": ["job-a", "job-b"], "project_id": "project-b"},
+    )
+    assert moved.status_code == 200
+    assert moved.json() == {"updated": 2}
+
+    deleted_files = client.post(
+        "/api/jobs/bulk/delete-files",
+        json={"job_ids": ["job-a", "job-b"]},
+    )
+    assert deleted_files.status_code == 200
+    assert deleted_files.json() == {"updated": 2, "files_deleted": 2}
+    assert not trace_a.exists()
+    assert not trace_b.exists()
+
+    deleted_jobs = client.post(
+        "/api/jobs/bulk/delete",
+        json={"job_ids": ["job-a", "job-b"]},
+    )
+    assert deleted_jobs.status_code == 200
+    assert deleted_jobs.json() == {"deleted": 2}
+
+    async def fetch_rows():
+        db = await web_db.get_db()
+        try:
+            rows = await (await db.execute("SELECT id FROM jobs")).fetchall()
+            return [row["id"] for row in rows]
+        finally:
+            await db.close()
+
+    assert asyncio.run(fetch_rows()) == []
 
 
 def test_file_download_can_be_disabled(isolated_server, monkeypatch):
