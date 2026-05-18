@@ -45,14 +45,12 @@ const toggleTheme = () => {
 
 // ── Data ────────────────────────────────────────────────────────────────
 const projects      = ref([]);
-const jobs          = ref([]);
-const jobsTotal     = ref(0);
-const jobsLimit     = ref(100);
-const jobsOffset    = ref(0);
 const historyGroups = ref([]);
 const historyGroupsTotal = ref(0);
 const historyGroupsLimit = ref(100);
 const historyGroupsOffset = ref(0);
+const historyGroupsLoading = ref(false);
+const historyGroupJobsLimit = 50;
 const historySearch = ref("");
 const filterProject = ref(localStorage.getItem("tpa-filter-project") || "");
 const sidebarTab    = ref(localStorage.getItem("tpa-sidebar-tab") || "jobs");
@@ -90,6 +88,42 @@ const ktPieChartB     = ref(null);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const perfettoOpening = ref({});
+let activeResultStateJobId = null;
+
+const resultStateKey = jobId => `tpa-result-state:${jobId}`;
+const readResultMemory = jobId =>
+  jobId ? readStoredJson(resultStateKey(jobId), { lastTab: "console", tabs: {} }) : { lastTab: "console", tabs: {} };
+const writeResultMemory = (jobId, memory) => {
+  if (!jobId) return;
+  localStorage.setItem(resultStateKey(jobId), JSON.stringify(memory));
+};
+const saveResultViewState = (jobId = selectedJobId.value, tab = resultTab.value) => {
+  if (!jobId || !tab) return;
+  const memory = readResultMemory(jobId);
+  memory.lastTab = tab;
+  if (tab.endsWith(".csv")) {
+    memory.tabs[tab] = {
+      tableSearch: tableSearch.value,
+      sortCol: sortCol.value,
+      sortAsc: sortAsc.value,
+      colWidths: colWidths.value,
+      colFilters: colFilters.value,
+      colFilterOps: colFilterOps.value,
+    };
+  }
+  writeResultMemory(jobId, memory);
+};
+const restoreResultViewState = (jobId, tab) => {
+  const memory = readResultMemory(jobId);
+  const state = memory.tabs?.[tab] || {};
+  tableSearch.value = state.tableSearch || "";
+  sortCol.value = state.sortCol || "";
+  sortAsc.value = state.sortAsc ?? true;
+  colWidths.value = state.colWidths || {};
+  colFilters.value = state.colFilters || {};
+  colFilterOps.value = state.colFilterOps || {};
+};
+const rememberedResultTab = jobId => readResultMemory(jobId).lastTab || "console";
 
 // ── Triton ──────────────────────────────────────────────────────────────
 const tritonStatus = ref({});
@@ -168,6 +202,11 @@ const renameProjectName = ref("");
 
 const showMoveProject = ref(false);
 const moveProjectTarget = ref("");
+
+const historyBulkMode = ref(false);
+const historySelection = ref([]);
+const showBulkMoveProject = ref(false);
+const bulkMoveProjectTarget = ref("");
 
 const showRenameJob = ref(false);
 const renameJobName = ref("");
@@ -248,6 +287,7 @@ const compareJobs       = ref([]);
 const compareJobsTotal  = ref(0);
 const compareJobsLimit  = ref(50);
 const compareJobsOffset = ref(0);
+const compareJobsLoading = ref(false);
 const compareSearch     = ref("");
 
 let pollTimer = null;
@@ -257,6 +297,12 @@ let pollTimer = null;
 // ══════════════════════════════════════════════════════════════════════════════
 
 const groupedJobs = computed(() => historyGroups.value);
+const loadedHistoryJobs = computed(() =>
+  historyGroups.value.flatMap(group => group.jobs || [])
+);
+const loadedHistoryJobIds = computed(() =>
+  loadedHistoryJobs.value.map(job => job.id)
+);
 const selectedCompareJobs = computed(() =>
   compareSelection.value
     .map(id => compareSelectionDetails.value[id])
@@ -380,8 +426,13 @@ const fmtDate = iso => iso ? iso.replace("T", " ").slice(0, 16) : "";
 
 const statusIcon = s => ({ pending: "⏳", running: "⟳", done: "✓", error: "✗" }[s] || s);
 
-const toggleGroup = label => {
-  collapsedGroups.value[label] = !collapsedGroups.value[label];
+const toggleGroup = async label => {
+  const opening = !collapsedGroups.value[label];
+  collapsedGroups.value[label] = opening;
+  if (opening) {
+    const group = historyGroups.value.find(item => item.id === label);
+    if (group && !group.jobs_loaded) await loadHistoryGroupJobs(label, true);
+  }
 };
 
 const deltaCellClass = (field, value) => {
@@ -419,54 +470,144 @@ const loadProjects = async () => {
   }
 };
 
-const loadJobs = async () => {
-  const params = new URLSearchParams();
-  if (filterProject.value) params.set("project_id", filterProject.value);
-  params.set("limit", String(jobsLimit.value));
-  params.set("offset", String(jobsOffset.value));
-  const r = await fetch(`/api/jobs?${params}`, { credentials: "include" });
-  const data = await r.json();
-  jobs.value = data.data || [];
-  jobsTotal.value = data.total || 0;
-};
+let historyGroupsController = null;
+let compareJobsController = null;
+const historyGroupControllers = {};
 
 const loadHistoryGroups = async () => {
+  if (historyGroupsController) historyGroupsController.abort();
+  for (const [groupId, controller] of Object.entries(historyGroupControllers)) {
+    controller.abort();
+    delete historyGroupControllers[groupId];
+  }
+  const controller = new AbortController();
+  historyGroupsController = controller;
+  historyGroupsLoading.value = true;
   const params = new URLSearchParams();
   if (filterProject.value) params.set("project_id", filterProject.value);
   if (historySearch.value.trim()) params.set("q", historySearch.value.trim());
   params.set("limit", String(historyGroupsLimit.value));
   params.set("offset", String(historyGroupsOffset.value));
-  const r = await fetch(`/api/job-groups?${params}`, { credentials: "include" });
-  const data = await r.json();
-  historyGroups.value = data.data || [];
-  historyGroupsTotal.value = data.total || 0;
-  if (historySearch.value.trim()) {
-    const expanded = { ...collapsedGroups.value };
-    for (const group of historyGroups.value) expanded[group.id] = true;
-    collapsedGroups.value = expanded;
+  try {
+    const r = await fetch(`/api/job-groups?${params}`, {
+      credentials: "include",
+      signal: controller.signal,
+    });
+    const data = await r.json();
+    if (historyGroupsController !== controller) return;
+    historyGroups.value = (data.data || []).map(group => ({
+      ...group,
+      jobs: [],
+      jobs_total: 0,
+      jobs_offset: 0,
+      jobs_loaded: false,
+      jobs_loading: false,
+    }));
+    historyGroupsTotal.value = data.total || 0;
+
+    if (historySearch.value.trim()) {
+      const expanded = { ...collapsedGroups.value };
+      for (const group of historyGroups.value) expanded[group.id] = true;
+      collapsedGroups.value = expanded;
+    }
+    const expandedGroups = historyGroups.value.filter(group => collapsedGroups.value[group.id]);
+    await Promise.all(expandedGroups.map(group => loadHistoryGroupJobs(group.id, true)));
+  } catch (e) {
+    if (e.name !== "AbortError") showToast("加载历史记录失败", "error");
+  } finally {
+    if (historyGroupsController === controller) {
+      historyGroupsLoading.value = false;
+      historyGroupsController = null;
+    }
+  }
+};
+
+const updateHistoryGroup = (groupId, patch) => {
+  historyGroups.value = historyGroups.value.map(group =>
+    group.id === groupId ? { ...group, ...patch } : group
+  );
+};
+
+const loadHistoryGroupJobs = async (groupId, reset = false) => {
+  const group = historyGroups.value.find(item => item.id === groupId);
+  if (!group) return;
+
+  if (historyGroupControllers[groupId]) historyGroupControllers[groupId].abort();
+  const controller = new AbortController();
+  historyGroupControllers[groupId] = controller;
+
+  const offset = reset ? 0 : group.jobs_offset;
+  updateHistoryGroup(groupId, { jobs_loading: true });
+  const params = new URLSearchParams();
+  if (historySearch.value.trim()) params.set("q", historySearch.value.trim());
+  params.set("limit", String(historyGroupJobsLimit));
+  params.set("offset", String(offset));
+  try {
+    const r = await fetch(`/api/job-groups/${groupId}/jobs?${params}`, {
+      credentials: "include",
+      signal: controller.signal,
+    });
+    const data = await r.json();
+    if (historyGroupControllers[groupId] !== controller) return;
+    const latest = historyGroups.value.find(item => item.id === groupId);
+    if (!latest) return;
+    const jobs = reset ? (data.data || []) : [...latest.jobs, ...(data.data || [])];
+    updateHistoryGroup(groupId, {
+      jobs,
+      jobs_total: data.total || 0,
+      jobs_offset: jobs.length,
+      jobs_loaded: true,
+      jobs_loading: false,
+    });
+  } catch (e) {
+    if (e.name !== "AbortError") {
+      updateHistoryGroup(groupId, { jobs_loading: false });
+      showToast("加载项目任务失败", "error");
+    }
+  } finally {
+    if (historyGroupControllers[groupId] === controller) {
+      delete historyGroupControllers[groupId];
+    }
   }
 };
 
 const loadCompareJobs = async () => {
+  if (compareJobsController) compareJobsController.abort();
+  const controller = new AbortController();
+  compareJobsController = controller;
+  compareJobsLoading.value = true;
   const params = new URLSearchParams();
   if (filterProject.value) params.set("project_id", filterProject.value);
   if (compareSearch.value.trim()) params.set("q", compareSearch.value.trim());
   params.set("limit", String(compareJobsLimit.value));
   params.set("offset", String(compareJobsOffset.value));
-  const r = await fetch(`/api/compare-candidates?${params}`, { credentials: "include" });
-  const data = await r.json();
-  compareJobs.value = data.data || [];
-  compareJobsTotal.value = data.total || 0;
+  try {
+    const r = await fetch(`/api/compare-candidates?${params}`, {
+      credentials: "include",
+      signal: controller.signal,
+    });
+    const data = await r.json();
+    if (compareJobsController !== controller) return;
+    compareJobs.value = data.data || [];
+    compareJobsTotal.value = data.total || 0;
 
-  const details = { ...compareSelectionDetails.value };
-  for (const job of compareJobs.value) {
-    if (compareSelection.value.includes(job.id)) details[job.id] = job;
+    const details = { ...compareSelectionDetails.value };
+    for (const job of compareJobs.value) {
+      if (compareSelection.value.includes(job.id)) details[job.id] = job;
+    }
+    compareSelectionDetails.value = details;
+  } catch (e) {
+    if (e.name !== "AbortError") showToast("加载对比候选失败", "error");
+  } finally {
+    if (compareJobsController === controller) {
+      compareJobsLoading.value = false;
+      compareJobsController = null;
+    }
   }
-  compareSelectionDetails.value = details;
 };
 
 const refreshSidebarData = async () => {
-  await Promise.all([loadJobs(), loadHistoryGroups(), loadCompareJobs()]);
+  await Promise.all([loadHistoryGroups(), loadCompareJobs()]);
 };
 
 const loadJob = async id => {
@@ -815,6 +956,120 @@ const confirmMoveProject = async () => {
   await loadJob(selectedJobId.value);
   await refreshSidebarData();
   showToast("任务已移动", "success");
+};
+
+const toggleHistoryBulkMode = () => {
+  historyBulkMode.value = !historyBulkMode.value;
+  if (!historyBulkMode.value) historySelection.value = [];
+};
+
+const toggleHistorySelection = job => {
+  const idx = historySelection.value.indexOf(job.id);
+  if (idx >= 0) historySelection.value.splice(idx, 1);
+  else historySelection.value.push(job.id);
+};
+
+const handleHistoryJobClick = job => {
+  if (historyBulkMode.value) {
+    toggleHistorySelection(job);
+    return;
+  }
+  navigateToJob(job.id);
+};
+
+const toggleSelectLoadedHistoryJobs = () => {
+  const loadedIds = loadedHistoryJobIds.value;
+  const selected = new Set(historySelection.value);
+  const allLoadedSelected = loadedIds.length > 0 && loadedIds.every(id => selected.has(id));
+  if (allLoadedSelected) {
+    historySelection.value = historySelection.value.filter(id => !loadedIds.includes(id));
+    return;
+  }
+  historySelection.value = [...new Set([...historySelection.value, ...loadedIds])];
+};
+
+const clearHistorySelection = () => {
+  historySelection.value = [];
+};
+
+const openBulkMoveProject = () => {
+  if (!historySelection.value.length) return;
+  bulkMoveProjectTarget.value = "";
+  showBulkMoveProject.value = true;
+};
+
+const confirmBulkMoveProject = async () => {
+  if (!historySelection.value.length) return;
+  const r = await fetch("/api/jobs/bulk/project", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({
+      job_ids: historySelection.value,
+      project_id: bulkMoveProjectTarget.value || null,
+    }),
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    showToast("批量移动失败: " + (err.detail || err.message || "未知错误"), "error");
+    return;
+  }
+  showBulkMoveProject.value = false;
+  const ids = [...historySelection.value];
+  const moved = ids.length;
+  historySelection.value = [];
+  await refreshSidebarData();
+  if (selectedJobId.value && ids.includes(selectedJobId.value)) await loadJob(selectedJobId.value);
+  showToast(`已移动 ${moved} 个任务`, "success");
+};
+
+const bulkDeleteJobs = async () => {
+  if (!historySelection.value.length) return;
+  if (!await askConfirm(`确定删除选中的 ${historySelection.value.length} 个任务及其关联文件？`, {
+    title: "批量删除任务",
+    confirmText: "删除",
+    tone: "danger",
+  })) return;
+  const ids = [...historySelection.value];
+  const r = await fetch("/api/jobs/bulk/delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ job_ids: ids }),
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    showToast("批量删除失败: " + (err.detail || err.message || "未知错误"), "error");
+    return;
+  }
+  if (selectedJobId.value && ids.includes(selectedJobId.value)) router.push({ path: "/" });
+  historySelection.value = [];
+  await refreshSidebarData();
+  showToast(`已删除 ${ids.length} 个任务`, "success");
+};
+
+const bulkDeleteFiles = async () => {
+  if (!historySelection.value.length) return;
+  if (!await askConfirm(`确定删除选中的 ${historySelection.value.length} 个任务的原始 trace 文件？`, {
+    title: "批量删除文件",
+    confirmText: "删除",
+    tone: "danger",
+  })) return;
+  const ids = [...historySelection.value];
+  const r = await fetch("/api/jobs/bulk/delete-files", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ job_ids: ids }),
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    showToast("批量删除文件失败: " + (err.detail || err.message || "未知错误"), "error");
+    return;
+  }
+  await refreshSidebarData();
+  if (selectedJobId.value && ids.includes(selectedJobId.value)) await loadJob(selectedJobId.value);
+  showToast(`已处理 ${ids.length} 个任务`, "success");
 };
 
 const openRenameModal = (project) => {
@@ -1647,6 +1902,7 @@ router.beforeEach(async (to, from) => {
 
   if (!newJobId) {
     // Navigated to home -- clean up
+    saveResultViewState();
     if (ktChartInst.value)     { ktChartInst.value.destroy();     ktChartInst.value = null; }
     if (ktPieChartInst.value)  { ktPieChartInst.value.destroy();  ktPieChartInst.value = null; }
     if (ktPieChartInstB.value) { ktPieChartInstB.value.destroy(); ktPieChartInstB.value = null; }
@@ -1655,10 +1911,11 @@ router.beforeEach(async (to, from) => {
     selectedJobId.value = null;
     selectedJob.value = null;
     resultTab.value = "console";
+    activeResultStateJobId = null;
     return;
   }
 
-  const tab = to.params?.tab || "console";
+  const tab = to.params?.tab || resultTab.value || "console";
 
   // Same job, just switch tab
   if (newJobId === selectedJobId.value) {
@@ -1670,16 +1927,13 @@ router.beforeEach(async (to, from) => {
   }
 
   // Different job -- full load
+  saveResultViewState();
   if (ktChartInst.value)     { ktChartInst.value.destroy();     ktChartInst.value = null; }
   if (ktPieChartInst.value)  { ktPieChartInst.value.destroy();  ktPieChartInst.value = null; }
   if (ktPieChartInstB.value) { ktPieChartInstB.value.destroy(); ktPieChartInstB.value = null; }
 
   selectedJobId.value = newJobId;
   selectedJob.value = null;
-  tableSearch.value = "";
-  sortCol.value = "";
-  clearColFilters();
-
   const loaded = await loadJob(newJobId);
 
   if (!loaded) {
@@ -1687,7 +1941,11 @@ router.beforeEach(async (to, from) => {
     return { path: "/" };
   }
 
-  resultTab.value = tab;
+  const requestedTab = to.params?.tab || rememberedResultTab(newJobId);
+  const validTabs = availableTabs.value.map(t => t.key);
+  resultTab.value = validTabs.includes(requestedTab) ? requestedTab : "console";
+  restoreResultViewState(newJobId, resultTab.value);
+  activeResultStateJobId = newJobId;
   if (selectedJob.value.status === "pending" || selectedJob.value.status === "running") {
     startPoll();
   }
@@ -1700,11 +1958,13 @@ router.beforeEach(async (to, from) => {
 
 const App = {
   setup() {
+    let historySearchTimer = null;
+    let compareSearchTimer = null;
+
     // Watchers that need to live at the root level
-    watch(resultTab, v => {
-      colWidths.value = {};
-      colFilters.value = {};
-      colFilterOps.value = {};
+    watch(resultTab, (v, previousTab) => {
+      if (previousTab) saveResultViewState(activeResultStateJobId, previousTab);
+      restoreResultViewState(selectedJobId.value, v);
       if (v === "chart" && selectedJob.value?.status === "done") {
         nextTick(() => buildChart());
       }
@@ -1717,9 +1977,9 @@ const App = {
     }, { deep: true });
 
     watch(filterProject, () => {
-      jobsOffset.value = 0;
       historyGroupsOffset.value = 0;
       compareJobsOffset.value = 0;
+      historySelection.value = [];
       if (filterProject.value) {
         collapsedGroups.value[filterProject.value] = true;
       }
@@ -1728,13 +1988,20 @@ const App = {
     });
 
     watch(historySearch, () => {
-      historyGroupsOffset.value = 0;
-      loadHistoryGroups();
+      clearTimeout(historySearchTimer);
+      historySearchTimer = setTimeout(() => {
+        historyGroupsOffset.value = 0;
+        historySelection.value = [];
+        loadHistoryGroups();
+      }, 250);
     });
 
     watch(compareSearch, () => {
-      compareJobsOffset.value = 0;
-      loadCompareJobs();
+      clearTimeout(compareSearchTimer);
+      compareSearchTimer = setTimeout(() => {
+        compareJobsOffset.value = 0;
+        loadCompareJobs();
+      }, 250);
     });
 
     watch(compareSelection, () => {
@@ -1755,6 +2022,12 @@ const App = {
       localStorage.setItem("tpa-expanded-groups", JSON.stringify(value));
     }, { deep: true });
 
+    watch(
+      [tableSearch, sortCol, sortAsc, colWidths, colFilters, colFilterOps],
+      () => saveResultViewState(activeResultStateJobId),
+      { deep: true },
+    );
+
     // Return everything the root template (index.html) needs
     return {
       // Layout/theme
@@ -1762,15 +2035,18 @@ const App = {
       toggleSidebar, startSidebarResize,
 
       // Sidebar data
-      projects, jobs, jobsTotal, jobsLimit, jobsOffset,
-      historyGroupsTotal, historyGroupsLimit, historyGroupsOffset,
+      projects,
+      historyGroupsTotal, historyGroupsLimit, historyGroupsOffset, historyGroupsLoading,
       historySearch, filterProject, sidebarTab, selectedJobId, selectedJob,
-      collapsedGroups, groupedJobs,
-      prevPage, nextPage, navigateToJob,
+      collapsedGroups, groupedJobs, loadedHistoryJobIds,
+      prevPage, nextPage, navigateToJob, loadHistoryGroupJobs,
+      historyBulkMode, historySelection, toggleHistoryBulkMode,
+      toggleSelectLoadedHistoryJobs, clearHistorySelection,
+      handleHistoryJobClick, openBulkMoveProject, bulkDeleteFiles, bulkDeleteJobs,
 
       // Compare
       compareSelection, selectedCompareJobs, compareLabel, compareProjectId,
-      compareJobs, compareJobsTotal, compareJobsLimit, compareJobsOffset, compareSearch,
+      compareJobs, compareJobsTotal, compareJobsLimit, compareJobsOffset, compareJobsLoading, compareSearch,
       toggleCompareSelect, removeCompareSelection, submitCompare,
       prevComparePage, nextComparePage,
 
@@ -1779,6 +2055,7 @@ const App = {
       showRenameProject, renameProjectName, openRenameModal,
       confirmRenameProject, deleteProject,
       showMoveProject, moveProjectTarget, confirmMoveProject,
+      showBulkMoveProject, bulkMoveProjectTarget, confirmBulkMoveProject,
       showRenameJob, renameJobName, confirmRenameJob,
       showDeletedProjects, deletedProjects, loadDeletedProjects,
       isDeletedOver10Days, restoreProject, permanentlyDeleteProject,

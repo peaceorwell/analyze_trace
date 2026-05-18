@@ -229,6 +229,7 @@ body {
 }
 .job-item:hover { background: var(--card2); border-left-color: var(--border2); }
 .job-item.selected { background: var(--card2); border-left-color: var(--purple); }
+.job-item.bulk-selected { background: var(--purple-bg); border-left-color: var(--purple); }
 .job-item.compare-selected { background: rgba(234,179,8,.08); border-left-color: var(--yellow); }
 .job-item.file-deleted { opacity: .45; }
 .job-item-top { display: flex; align-items: center; gap: 5px; }
@@ -238,6 +239,15 @@ body {
 }
 .job-item.selected .job-label { color: var(--text); font-weight: 500; }
 .job-item-meta { font-size: 10px; color: var(--text3); margin-top: 2px; padding-left: 17px; font-family: var(--mono); }
+.group-loading,
+.sidebar-loading {
+  color: var(--text3); font-size: 11px;
+  padding: 8px 10px;
+}
+.sidebar-loading { text-align: center; }
+.group-load-more {
+  margin: 4px 0 6px 12px;
+}
 
 .job-mode-badge { font-size: 9px; padding: 1px 5px; border-radius: 10px; font-weight: 600; flex-shrink: 0; }
 .mode-single  { background: var(--purple-bg); color: var(--purple-l); }
@@ -281,6 +291,15 @@ body {
 .pagination { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 8px 0; }
 .page-info { font-size: 11px; color: var(--text3); }
 .project-actions { padding: 2px 0; }
+.bulk-toolbar,
+.bulk-actions {
+  display: flex; align-items: center; gap: 5px;
+  margin-bottom: 8px;
+}
+.bulk-actions {
+  justify-content: space-between;
+  color: var(--text3); font-size: 11px;
+}
 
 /* ═══════════════════════════════════════════════
    MAIN

@@ -123,6 +123,7 @@ TRACE_ENABLE_CODE_EXEC=1 docker-compose up -d
 - **控制台**：原始文本输出，含 Per-Step 摘要、Top 10 热点 kernel、Kernel 类型分布
 - **图表**：Kernel 类型耗时柱状图（横向）和占比饼图，collective 类型不计入 compute 分析
 - **CSV 表格**：支持搜索、列排序、列宽拖拽调整、超长内容截断并 hover 显示全文
+- **结果记忆**：按任务记住上次打开的结果页签，以及各表格的搜索、排序、列宽和列筛选
 - **下载 CSV**：表格右上角一键下载当前视图的 CSV 文件
 - **Triton 代码执行**：设置 `TRACE_ENABLE_CODE_EXEC=1` 后，在 Triton 或 Triton Step N 表格中点击"运行"执行 kernel 代码，显示效率（GB/s）
 - **清除 Cache**：设置 `TRACE_ENABLE_CODE_EXEC=1` 后，Triton Step N 表格中可清除 `/tmp/torchinductor_*` 缓存目录
@@ -130,6 +131,9 @@ TRACE_ENABLE_CODE_EXEC=1 docker-compose up -d
 #### 历史管理
 - 侧栏按项目分组显示历史任务，支持折叠/展开
 - 可选择项目过滤器筛选特定项目的历史记录
+- 支持按任务、文件或项目搜索历史记录
+- 展开项目后按需加载任务，较大的项目支持继续加载
+- 支持批量移动任务、删除任务、删除原始文件
 - 支持分页浏览
 - 点击任务可查看详情
 

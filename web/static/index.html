@@ -122,30 +122,57 @@
               <button class="btn btn-xs btn-danger mt-1 w-full" @click="deleteProject(filterProject)">删除项目</button>
             </div>
           </div>
+          <div class="bulk-toolbar">
+            <button :class="['btn', 'btn-xs', historyBulkMode ? 'btn-primary' : 'btn-outline']" @click="toggleHistoryBulkMode">
+              {{ historyBulkMode ? '退出多选' : '多选' }}
+            </button>
+            <template v-if="historyBulkMode">
+              <button class="btn btn-xs btn-outline" @click="toggleSelectLoadedHistoryJobs" :disabled="loadedHistoryJobIds.length===0">选择已加载</button>
+              <button class="btn btn-xs btn-outline" @click="clearHistorySelection" :disabled="historySelection.length===0">清空</button>
+            </template>
+          </div>
+          <div v-if="historyBulkMode" class="bulk-actions">
+            <span>已选 {{ historySelection.length }}</span>
+            <button class="btn btn-xs btn-outline" @click="openBulkMoveProject" :disabled="historySelection.length===0">移动</button>
+            <button class="btn btn-xs btn-outline" @click="bulkDeleteFiles" :disabled="historySelection.length===0">删文件</button>
+            <button class="btn btn-xs btn-danger" @click="bulkDeleteJobs" :disabled="historySelection.length===0">删任务</button>
+          </div>
 
           <!-- Group by project -->
           <div v-for="group in groupedJobs" :key="group.id || group.label" class="job-group">
             <div class="folder-header" @click="toggleGroup(group.id)">
               <span class="group-caret">{{ collapsedGroups[group.id] ? '▼' : '▶' }}</span>
               <span class="group-name">{{ group.label }}</span>
-              <span class="group-count">{{ group.jobs.length }}</span>
+              <span class="group-count">{{ group.job_count }}</span>
             </div>
             <div v-if="collapsedGroups[group.id]">
+              <div v-if="group.jobs_loading && !group.jobs_loaded" class="group-loading">加载中...</div>
               <div
                 v-for="job in group.jobs" :key="job.id"
-                :class="['job-item', selectedJobId===job.id ? 'selected' : '']"
-                @click="navigateToJob(job.id)"
+                :class="['job-item', selectedJobId===job.id ? 'selected' : '',
+                         historySelection.includes(job.id) ? 'bulk-selected' : '']"
+                @click="handleHistoryJobClick(job)"
               >
                 <div class="job-item-top">
+                  <input v-if="historyBulkMode" type="checkbox" :checked="historySelection.includes(job.id)" readonly />
                   <span class="job-status" :class="'status-'+job.status">{{ statusIcon(job.status) }}</span>
                   <span class="job-label">{{ job.label || job.id.slice(0,8) }}</span>
                   <span class="job-mode-badge" :class="'mode-'+job.mode">{{ job.mode==='compare'?'对比':'单文件' }}</span>
                 </div>
                 <div class="job-item-meta">{{ fmtDate(job.created_at) }}</div>
               </div>
+              <button
+                v-if="group.jobs_loaded && group.jobs_offset < group.jobs_total"
+                class="btn btn-xs btn-outline group-load-more"
+                :disabled="group.jobs_loading"
+                @click.stop="loadHistoryGroupJobs(group.id)"
+              >
+                {{ group.jobs_loading ? '加载中...' : '加载更多' }}
+              </button>
             </div>
           </div>
-          <div v-if="groupedJobs.length===0" class="empty-tip">{{ historySearch ? '暂无匹配记录' : '暂无历史记录' }}</div>
+          <div v-if="historyGroupsLoading" class="sidebar-loading">加载中...</div>
+          <div v-else-if="groupedJobs.length===0" class="empty-tip">{{ historySearch ? '暂无匹配记录' : '暂无历史记录' }}</div>
           <div v-if="historyGroupsTotal > historyGroupsLimit" class="pagination">
             <button class="btn btn-xs btn-outline" @click="prevPage" :disabled="historyGroupsOffset === 0">上一页</button>
             <span class="page-info">{{ historyGroupsOffset + 1 }}-{{ Math.min(historyGroupsOffset + historyGroupsLimit, historyGroupsTotal) }} / {{ historyGroupsTotal }}</span>
@@ -170,6 +197,7 @@
               <button class="selected-compare-remove" @click.stop="removeCompareSelection(job.id)" title="移除">✕</button>
             </div>
           </div>
+          <div v-if="compareJobsLoading" class="sidebar-loading">加载中...</div>
           <div v-for="job in compareJobs" :key="job.id"
                :class="['job-item', compareSelection.includes(job.id)?'compare-selected':'',
                         !job.file_a_exists ? 'file-deleted' : '']"
@@ -187,7 +215,7 @@
               <span v-if="!job.file_a_exists" class="tag-deleted">文件已删除</span>
             </div>
           </div>
-          <div v-if="compareJobs.length===0" class="empty-tip">{{ compareSearch ? '暂无匹配记录' : '暂无可对比记录' }}</div>
+          <div v-if="!compareJobsLoading && compareJobs.length===0" class="empty-tip">{{ compareSearch ? '暂无匹配记录' : '暂无可对比记录' }}</div>
           <div v-if="compareJobsTotal > compareJobsLimit" class="pagination">
             <button class="btn btn-xs btn-outline" @click="prevComparePage" :disabled="compareJobsOffset === 0">上一页</button>
             <span class="page-info">{{ compareJobsOffset + 1 }}-{{ Math.min(compareJobsOffset + compareJobsLimit, compareJobsTotal) }} / {{ compareJobsTotal }}</span>
@@ -232,6 +260,21 @@
         <div class="modal-actions">
           <button class="btn btn-outline" @click="showMoveProject=false">取消</button>
           <button class="btn btn-primary" @click="confirmMoveProject">确认</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Bulk move project modal ── -->
+    <div v-if="showBulkMoveProject" class="modal-mask" @click.self="showBulkMoveProject=false">
+      <div class="modal">
+        <div class="modal-title">批量移动到项目</div>
+        <select v-model="bulkMoveProjectTarget" class="input w-full">
+          <option value="">未分组</option>
+          <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
+        </select>
+        <div class="modal-actions">
+          <button class="btn btn-outline" @click="showBulkMoveProject=false">取消</button>
+          <button class="btn btn-primary" @click="confirmBulkMoveProject">确认</button>
         </div>
       </div>
     </div>
@@ -371,6 +414,7 @@
               <li><strong>控制台</strong>：原始文本输出，含 Per-Step 摘要、Top 10 热点 kernel、Kernel 类型分布</li>
               <li><strong>图表</strong>：Kernel 类型耗时柱状图（横向）和占比饼图，collective 类型不计入 compute 分析</li>
               <li><strong>CSV 表格</strong>：支持搜索、列排序、列宽拖拽调整、超长内容截断并 hover 显示全文</li>
+              <li>会按任务记住上次打开的结果页签，以及各表格的搜索、排序、列宽和列筛选</li>
               <li><strong>下载 CSV</strong>：表格右上角一键下载当前视图的 CSV 文件</li>
             </ul>
           </section>
@@ -382,6 +426,8 @@
               <li>历史按<strong>项目分组</strong>显示，点击项目标题可折叠/展开该组</li>
               <li>顶部可<strong>选择项目过滤器</strong>，筛选特定项目的历史记录</li>
               <li>支持按<strong>任务、文件或项目</strong>搜索历史记录</li>
+              <li>展开项目后按需加载任务，较大的项目可继续点击“加载更多”</li>
+              <li>进入<strong>多选</strong>后，可批量移动任务、删除任务或删除原始文件</li>
               <li>支持<strong>分页浏览</strong>，底部有分页控件</li>
               <li>点击任务行可查看分析详情</li>
             </ul>
