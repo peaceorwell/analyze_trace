@@ -2,6 +2,7 @@ import argparse
 import bisect
 import csv
 import gzip
+import hashlib
 import json
 import os
 import re
@@ -170,7 +171,16 @@ def auto_classify_kernels(avg_kernels: dict) -> tuple:
 def write_triton_code_file(code_dir, idx, kernel):
     """Write kernel["triton_output_code"] to a .py file; return the filename."""
     safe_name = kernel["kernel_name"].replace("/", "_").replace(" ", "_")
-    code_filename = f"kernel_{idx}_{safe_name}.py"
+    prefix = f"kernel_{idx}_"
+    suffix = ".py"
+    code_filename = f"{prefix}{safe_name}{suffix}"
+    max_filename_bytes = 240
+    if len(code_filename.encode("utf-8")) > max_filename_bytes:
+        digest = hashlib.sha1(kernel["kernel_name"].encode("utf-8")).hexdigest()[:10]
+        reserved_bytes = len(prefix.encode("utf-8")) + len(suffix.encode("utf-8")) + len(digest) + 1
+        name_bytes = safe_name.encode("utf-8")[: max_filename_bytes - reserved_bytes]
+        short_name = name_bytes.decode("utf-8", "ignore")
+        code_filename = f"{prefix}{short_name}_{digest}{suffix}"
     with open(os.path.join(code_dir, code_filename), "w") as cf:
         cf.write(kernel["triton_output_code"])
     return code_filename

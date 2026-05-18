@@ -11,6 +11,7 @@ from trace_analyzer import (
     parse_trace,
     compute_avgs,
     write_avg_csv,
+    write_triton_code_file,
 )
 
 
@@ -158,6 +159,21 @@ class TestWriteAvgCsv:
         assert rows[0]["kernel_name"] == "kernel_a"
         assert rows[0]["avg_count"] == "10"
         assert rows[1]["kernel_name"] == "kernel_b"
+
+
+class TestWriteTritonCodeFile:
+    def test_long_kernel_name_is_truncated(self, temp_output_dir):
+        kernel = {
+            "kernel_name": "triton_tem_fused_" + ("very_long_segment_" * 40),
+            "triton_output_code": "print('ok')\n",
+        }
+
+        filename = write_triton_code_file(temp_output_dir, 204, kernel)
+
+        assert len(filename.encode("utf-8")) <= 240
+        assert filename.startswith("kernel_204_triton_tem_fused_")
+        assert filename.endswith(".py")
+        assert os.path.exists(os.path.join(temp_output_dir, filename))
 
 
 class TestEndToEnd:
