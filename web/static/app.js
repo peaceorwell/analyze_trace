@@ -57,6 +57,7 @@ const sidebarTab    = ref(localStorage.getItem("tpa-sidebar-tab") || "jobs");
 const selectedJobId = ref(null);
 const selectedJob   = ref(null);
 const collapsedGroups = ref(readStoredJson("tpa-expanded-groups", {}));
+let preSearchExpandedGroups = null;
 
 // ── Upload form ─────────────────────────────────────────────────────────
 const fileA    = ref(null);
@@ -506,9 +507,9 @@ const loadHistoryGroups = async () => {
     historyGroupsTotal.value = data.total || 0;
 
     if (historySearch.value.trim()) {
-      const expanded = { ...collapsedGroups.value };
-      for (const group of historyGroups.value) expanded[group.id] = true;
-      collapsedGroups.value = expanded;
+      collapsedGroups.value = Object.fromEntries(
+        historyGroups.value.map(group => [group.id, true])
+      );
     }
     const expandedGroups = historyGroups.value.filter(group => collapsedGroups.value[group.id]);
     await Promise.all(expandedGroups.map(group => loadHistoryGroupJobs(group.id, true)));
@@ -1990,6 +1991,14 @@ const App = {
     watch(historySearch, () => {
       clearTimeout(historySearchTimer);
       historySearchTimer = setTimeout(() => {
+        const searching = Boolean(historySearch.value.trim());
+        if (searching && preSearchExpandedGroups === null) {
+          preSearchExpandedGroups = { ...collapsedGroups.value };
+        }
+        if (!searching && preSearchExpandedGroups !== null) {
+          collapsedGroups.value = preSearchExpandedGroups;
+          preSearchExpandedGroups = null;
+        }
         historyGroupsOffset.value = 0;
         historySelection.value = [];
         loadHistoryGroups();
@@ -2019,7 +2028,9 @@ const App = {
     watch(sidebarCollapsed, value => localStorage.setItem("tpa-sidebar-collapsed", String(value)));
     watch(sidebarTab, value => localStorage.setItem("tpa-sidebar-tab", value));
     watch(collapsedGroups, value => {
-      localStorage.setItem("tpa-expanded-groups", JSON.stringify(value));
+      if (!historySearch.value.trim()) {
+        localStorage.setItem("tpa-expanded-groups", JSON.stringify(value));
+      }
     }, { deep: true });
 
     watch(
