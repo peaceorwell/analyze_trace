@@ -7,6 +7,25 @@ const { createRouter, createWebHashHistory } = VueRouter;
 
 let appInitialized = false;
 
+const readStoredJson = (key, fallback) => {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch (e) {
+    return fallback;
+  }
+};
+
+const readStoredBool = (key, fallback) => {
+  const raw = localStorage.getItem(key);
+  return raw === null ? fallback : raw === "true";
+};
+
+const readStoredNumber = (key, fallback) => {
+  const raw = Number(localStorage.getItem(key));
+  return Number.isFinite(raw) && raw > 0 ? raw : fallback;
+};
+
 // ── Theme ──────────────────────────────────────────────────────────────
 const getInitialTheme = () => {
   const saved = localStorage.getItem('tpa-theme');
@@ -34,11 +53,12 @@ const historyGroups = ref([]);
 const historyGroupsTotal = ref(0);
 const historyGroupsLimit = ref(100);
 const historyGroupsOffset = ref(0);
-const filterProject = ref("");
-const sidebarTab    = ref("jobs");
+const historySearch = ref("");
+const filterProject = ref(localStorage.getItem("tpa-filter-project") || "");
+const sidebarTab    = ref(localStorage.getItem("tpa-sidebar-tab") || "jobs");
 const selectedJobId = ref(null);
 const selectedJob   = ref(null);
-const collapsedGroups = ref({});
+const collapsedGroups = ref(readStoredJson("tpa-expanded-groups", {}));
 
 // ── Upload form ─────────────────────────────────────────────────────────
 const fileA    = ref(null);
@@ -80,8 +100,43 @@ const errorModalMsg = ref("");
 const errorModalTitle = ref("错误信息");
 
 // ── Layout / Modals ─────────────────────────────────────────────────────
-const sidebarWidth     = ref(240);
-const sidebarCollapsed = ref(false);
+const sidebarWidth     = ref(readStoredNumber("tpa-sidebar-width", 240));
+const sidebarCollapsed = ref(readStoredBool("tpa-sidebar-collapsed", false));
+
+const toasts = ref([]);
+let toastSeq = 0;
+const showToast = (message, kind = "info", duration = 2600) => {
+  const id = ++toastSeq;
+  toasts.value.push({ id, message, kind });
+  setTimeout(() => {
+    toasts.value = toasts.value.filter(toast => toast.id !== id);
+  }, duration);
+};
+
+const showConfirmModal = ref(false);
+const confirmModal = ref({
+  title: "确认操作",
+  message: "",
+  confirmText: "确认",
+  tone: "primary",
+});
+let confirmResolver = null;
+const askConfirm = (message, options = {}) => new Promise(resolve => {
+  confirmModal.value = {
+    title: options.title || "确认操作",
+    message,
+    confirmText: options.confirmText || "确认",
+    tone: options.tone || "primary",
+  };
+  confirmResolver = resolve;
+  showConfirmModal.value = true;
+});
+const resolveConfirm = (value) => {
+  showConfirmModal.value = false;
+  const resolve = confirmResolver;
+  confirmResolver = null;
+  if (resolve) resolve(value);
+};
 
 const toggleSidebar = () => { sidebarCollapsed.value = !sidebarCollapsed.value; };
 
@@ -114,6 +169,9 @@ const renameProjectName = ref("");
 const showMoveProject = ref(false);
 const moveProjectTarget = ref("");
 
+const showRenameJob = ref(false);
+const renameJobName = ref("");
+
 const showDeletedProjects = ref(false);
 const deletedProjects = ref([]);
 
@@ -131,7 +189,7 @@ const isDeletedOver10Days = (deletedAt) => {
 };
 
 const restoreProject = async (projectId) => {
-  if (!confirm("确定恢复该项目？")) return;
+  if (!await askConfirm("确定恢复该项目？", { confirmText: "恢复" })) return;
   try {
     const r = await fetch(`/api/deleted-projects/${projectId}/restore`, {
       method: "POST",
@@ -139,24 +197,35 @@ const restoreProject = async (projectId) => {
     });
     if (!r.ok) {
       const err = await r.json().catch(() => ({}));
-      alert("恢复失败: " + (err.detail || err.message || "未知错误"));
+      showToast("恢复失败: " + (err.detail || err.message || "未知错误"), "error");
       return;
     }
     await loadDeletedProjects();
     await loadProjects();
     await refreshSidebarData();
+    showToast("项目已恢复", "success");
   } catch (e) {
-    alert("恢复出错: " + e.message);
+    showToast("恢复出错: " + e.message, "error");
   }
 };
 
 const permanentlyDeleteProject = async (projectId) => {
-  if (!confirm("确定永久删除？此操作不可恢复。")) return;
-  await fetch(`/api/deleted-projects/${projectId}`, {
+  if (!await askConfirm("确定永久删除？此操作不可恢复。", {
+    title: "永久删除项目",
+    confirmText: "永久删除",
+    tone: "danger",
+  })) return;
+  const r = await fetch(`/api/deleted-projects/${projectId}`, {
     method: "DELETE",
     credentials: "include",
   });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    showToast("永久删除失败: " + (err.detail || err.message || "未知错误"), "error");
+    return;
+  }
   await loadDeletedProjects();
+  showToast("项目已永久删除", "success");
 };
 
 // ── Triton code viewer ──────────────────────────────────────────────────
@@ -172,8 +241,14 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 
 const compareSelection  = ref([]);
+const compareSelectionDetails = ref({});
 const compareLabel      = ref("");
 const compareProjectId  = ref("");
+const compareJobs       = ref([]);
+const compareJobsTotal  = ref(0);
+const compareJobsLimit  = ref(50);
+const compareJobsOffset = ref(0);
+const compareSearch     = ref("");
 
 let pollTimer = null;
 
@@ -181,17 +256,12 @@ let pollTimer = null;
 // Computed properties
 // ══════════════════════════════════════════════════════════════════════════════
 
-const singleJobs = computed(() => {
-  let filtered = jobs.value.filter(j => j.mode === "single" && j.status === "done");
-  if (filterProject.value) {
-    filtered = filterProject.value === "__none__"
-      ? filtered.filter(j => !j.project_id)
-      : filtered.filter(j => j.project_id === filterProject.value);
-  }
-  return filtered;
-});
-
 const groupedJobs = computed(() => historyGroups.value);
+const selectedCompareJobs = computed(() =>
+  compareSelection.value
+    .map(id => compareSelectionDetails.value[id])
+    .filter(Boolean)
+);
 
 const availableTabs = computed(() => {
   if (!selectedJob.value?.results) return [];
@@ -337,6 +407,13 @@ const loadProjects = async () => {
     const r = await fetch("/api/projects", { credentials: "include" });
     if (!r.ok) throw new Error("加载项目失败: HTTP " + r.status);
     projects.value = await r.json();
+    if (
+      filterProject.value &&
+      filterProject.value !== "__none__" &&
+      !projects.value.some(project => project.id === filterProject.value)
+    ) {
+      filterProject.value = "";
+    }
   } catch (e) {
     console.error("loadProjects error:", e);
   }
@@ -356,16 +433,40 @@ const loadJobs = async () => {
 const loadHistoryGroups = async () => {
   const params = new URLSearchParams();
   if (filterProject.value) params.set("project_id", filterProject.value);
+  if (historySearch.value.trim()) params.set("q", historySearch.value.trim());
   params.set("limit", String(historyGroupsLimit.value));
   params.set("offset", String(historyGroupsOffset.value));
   const r = await fetch(`/api/job-groups?${params}`, { credentials: "include" });
   const data = await r.json();
   historyGroups.value = data.data || [];
   historyGroupsTotal.value = data.total || 0;
+  if (historySearch.value.trim()) {
+    const expanded = { ...collapsedGroups.value };
+    for (const group of historyGroups.value) expanded[group.id] = true;
+    collapsedGroups.value = expanded;
+  }
+};
+
+const loadCompareJobs = async () => {
+  const params = new URLSearchParams();
+  if (filterProject.value) params.set("project_id", filterProject.value);
+  if (compareSearch.value.trim()) params.set("q", compareSearch.value.trim());
+  params.set("limit", String(compareJobsLimit.value));
+  params.set("offset", String(compareJobsOffset.value));
+  const r = await fetch(`/api/compare-candidates?${params}`, { credentials: "include" });
+  const data = await r.json();
+  compareJobs.value = data.data || [];
+  compareJobsTotal.value = data.total || 0;
+
+  const details = { ...compareSelectionDetails.value };
+  for (const job of compareJobs.value) {
+    if (compareSelection.value.includes(job.id)) details[job.id] = job;
+  }
+  compareSelectionDetails.value = details;
 };
 
 const refreshSidebarData = async () => {
-  await Promise.all([loadJobs(), loadHistoryGroups()]);
+  await Promise.all([loadJobs(), loadHistoryGroups(), loadCompareJobs()]);
 };
 
 const loadJob = async id => {
@@ -586,7 +687,7 @@ const submitJob = () => {
   xhr.onload = async () => {
     try {
       if (xhr.status < 200 || xhr.status >= 300) {
-        alert("提交失败: " + (JSON.parse(xhr.responseText).detail || "服务器错误"));
+        showToast("提交失败: " + (JSON.parse(xhr.responseText).detail || "服务器错误"), "error");
         return;
       }
       const job = JSON.parse(xhr.responseText);
@@ -600,7 +701,11 @@ const submitJob = () => {
       uploadProgress.value = 0;
     }
   };
-  xhr.onerror = () => { submitting.value = false; uploadProgress.value = 0; };
+  xhr.onerror = () => {
+    submitting.value = false;
+    uploadProgress.value = 0;
+    showToast("提交失败: 网络错误", "error");
+  };
   xhr.open("POST", "/api/jobs");
   xhr.withCredentials = true;
   xhr.send(fd);
@@ -612,46 +717,72 @@ const submitJob = () => {
 
 const deleteJob = async () => {
   if (!selectedJobId.value) {
-    alert("未选中任务，无法删除");
+    showToast("未选中任务，无法删除", "error");
     return;
   }
-  if (!confirm("确定删除该任务及所有关联文件？")) return;
+  if (!await askConfirm("确定删除该任务及所有关联文件？", {
+    title: "删除任务",
+    confirmText: "删除",
+    tone: "danger",
+  })) return;
   try {
     const response = await fetch(`/api/jobs/${selectedJobId.value}`, {
       method: "DELETE", credentials: "include",
     });
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
-      alert("删除失败: " + (errorData.detail || errorData.message || "未知错误"));
+      showToast("删除失败: " + (errorData.detail || errorData.message || "未知错误"), "error");
       return;
     }
     router.push({ path: "/" });
     await refreshSidebarData();
+    showToast("任务已删除", "success");
   } catch (error) {
-    alert("删除出错: " + error.message);
+    showToast("删除出错: " + error.message, "error");
   }
 };
 
 const deleteFile = async slot => {
-  if (!confirm("确定删除原始 trace 文件？删除后该文件无法参与历史对比。")) return;
-  await fetch(`/api/jobs/${selectedJobId.value}/files/${slot}`, {
+  if (!await askConfirm("确定删除原始 trace 文件？删除后该文件无法参与历史对比。", {
+    title: "删除文件",
+    confirmText: "删除",
+    tone: "danger",
+  })) return;
+  const r = await fetch(`/api/jobs/${selectedJobId.value}/files/${slot}`, {
     method: "DELETE", credentials: "include",
   });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    showToast("删除文件失败: " + (err.detail || err.message || "未知错误"), "error");
+    return;
+  }
   await loadJob(selectedJobId.value);
   await refreshSidebarData();
+  showToast("文件已删除", "success");
 };
 
-const editLabel = async () => {
-  const newLabel = prompt("新备注名称：", selectedJob.value?.label || "");
-  if (newLabel === null) return;
-  await fetch(`/api/jobs/${selectedJobId.value}`, {
+const editLabel = () => {
+  renameJobName.value = selectedJob.value?.label || "";
+  showRenameJob.value = true;
+};
+
+const confirmRenameJob = async () => {
+  if (!selectedJobId.value) return;
+  const r = await fetch(`/api/jobs/${selectedJobId.value}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
-    body: JSON.stringify({ label: newLabel }),
+    body: JSON.stringify({ label: renameJobName.value }),
   });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    showToast("重命名失败: " + (err.detail || err.message || "未知错误"), "error");
+    return;
+  }
+  showRenameJob.value = false;
   await loadJob(selectedJobId.value);
   await refreshSidebarData();
+  showToast("任务已重命名", "success");
 };
 
 const moveProject = () => {
@@ -661,7 +792,7 @@ const moveProject = () => {
 
 const confirmMoveProject = async () => {
   if (!selectedJobId.value) {
-    alert("未选中任务");
+    showToast("未选中任务", "error");
     return;
   }
   try {
@@ -673,16 +804,17 @@ const confirmMoveProject = async () => {
     });
     if (!r.ok) {
       const err = await r.json().catch(() => ({}));
-      alert("移动项目失败: " + (err.detail || r.status));
+      showToast("移动项目失败: " + (err.detail || r.status), "error");
       return;
     }
   } catch (e) {
-    alert("移动项目失败: " + e.message);
+    showToast("移动项目失败: " + e.message, "error");
     return;
   }
   showMoveProject.value = false;
   await loadJob(selectedJobId.value);
   await refreshSidebarData();
+  showToast("任务已移动", "success");
 };
 
 const openRenameModal = (project) => {
@@ -696,7 +828,7 @@ const confirmRenameProject = async () => {
   const newName = renameProjectName.value.trim();
   if (!newName) return;
   const pid = renameProjectId.value;
-  if (!pid) { alert("项目ID无效"); return; }
+  if (!pid) { showToast("项目ID无效", "error"); return; }
   const proj = projects.value.find(p => p.id === pid);
   if (proj) proj.name = newName;
   try {
@@ -712,29 +844,35 @@ const confirmRenameProject = async () => {
     }
   } catch (e) {
     if (proj) await loadProjects();
-    alert("重命名失败: " + e.message);
+    showToast("重命名失败: " + e.message, "error");
     return;
   }
   showRenameProject.value = false;
   await loadProjects();
   await refreshSidebarData();
+  showToast("项目已重命名", "success");
 };
 
 const deleteProject = async (projectId) => {
-  if (!confirm("确定删除该项目？项目内的任务将同时被删除。删除后10天内可以找回。")) return;
+  if (!await askConfirm("确定删除该项目？项目内的任务将同时被删除。删除后10天内可以找回。", {
+    title: "删除项目",
+    confirmText: "删除",
+    tone: "danger",
+  })) return;
   const r = await fetch(`/api/projects/${projectId}`, {
     method: "DELETE",
     credentials: "include",
   });
   if (!r.ok) {
     const err = await r.json().catch(() => ({}));
-    alert("删除失败: " + (err.detail || err.message || `HTTP ${r.status}`));
+    showToast("删除失败: " + (err.detail || err.message || `HTTP ${r.status}`), "error");
     return;
   }
   filterProject.value = "";
   router.push({ path: "/" });
   await loadProjects();
   await refreshSidebarData();
+  showToast("项目已删除，可在 10 天内找回", "success");
 };
 
 const setSort = col => {
@@ -1006,7 +1144,7 @@ const viewTritonCode = async (codePath) => {
   if (!selectedJobId.value || !codePath) return;
   currentTritonCodePath.value = codePath;
   const resp = await fetch(`/api/jobs/${selectedJobId.value}/triton-code/${codePath}`, { credentials: "include" });
-  if (!resp.ok) { alert("无法加载代码文件"); return; }
+  if (!resp.ok) { showToast("无法加载代码文件", "error"); return; }
   const data = await resp.json();
   tritonCodeContent.value = data.content;
   tritonCodeFilename.value = data.filename;
@@ -1024,7 +1162,7 @@ const copyTritonCode = async () => {
   if (!tritonCodeContent.value) return;
   try {
     await navigator.clipboard.writeText(tritonCodeContent.value);
-    alert("已复制到剪贴板");
+    showToast("已复制到剪贴板", "success");
   } catch (e) {
     const textarea = document.createElement("textarea");
     textarea.value = tritonCodeContent.value;
@@ -1032,7 +1170,7 @@ const copyTritonCode = async () => {
     textarea.select();
     document.execCommand("copy");
     document.body.removeChild(textarea);
-    alert("已复制到剪贴板");
+    showToast("已复制到剪贴板", "success");
   }
 };
 
@@ -1040,7 +1178,7 @@ const copyErrorModal = async () => {
   if (!errorModalMsg.value) return;
   try {
     await navigator.clipboard.writeText(errorModalMsg.value);
-    alert("已复制到剪贴板");
+    showToast("已复制到剪贴板", "success");
   } catch (e) {
     const textarea = document.createElement("textarea");
     textarea.value = errorModalMsg.value;
@@ -1048,7 +1186,7 @@ const copyErrorModal = async () => {
     textarea.select();
     document.execCommand("copy");
     document.body.removeChild(textarea);
-    alert("已复制到剪贴板");
+    showToast("已复制到剪贴板", "success");
   }
 };
 
@@ -1059,13 +1197,26 @@ const copyErrorModal = async () => {
 const toggleCompareSelect = job => {
   if (!job.file_a_exists) return;
   const idx = compareSelection.value.indexOf(job.id);
+  const details = { ...compareSelectionDetails.value };
   if (idx >= 0) {
     compareSelection.value.splice(idx, 1);
+    delete details[job.id];
   } else if (compareSelection.value.length < 2) {
     compareSelection.value.push(job.id);
+    details[job.id] = job;
   } else {
+    delete details[compareSelection.value[0]];
     compareSelection.value = [compareSelection.value[1], job.id];
+    details[job.id] = job;
   }
+  compareSelectionDetails.value = details;
+};
+
+const removeCompareSelection = (id) => {
+  compareSelection.value = compareSelection.value.filter(selectedId => selectedId !== id);
+  const details = { ...compareSelectionDetails.value };
+  delete details[id];
+  compareSelectionDetails.value = details;
 };
 
 const submitCompare = async () => {
@@ -1082,10 +1233,11 @@ const submitCompare = async () => {
   });
   const job = await r.json();
   if (!r.ok) {
-    alert("对比失败: " + (job.detail || "服务器错误"));
+    showToast("对比失败: " + (job.detail || "服务器错误"), "error");
     return;
   }
   compareSelection.value = [];
+  compareSelectionDetails.value = {};
   compareLabel.value = "";
   sidebarTab.value = "jobs";
   await refreshSidebarData();
@@ -1098,7 +1250,7 @@ const submitCompare = async () => {
 
 const createProject = async () => {
   if (!newProjectName.value.trim()) return;
-  await fetch("/api/projects", {
+  const r = await fetch("/api/projects", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
@@ -1107,11 +1259,17 @@ const createProject = async () => {
       description: newProjectDesc.value,
     }),
   });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    showToast("创建项目失败: " + (err.detail || err.message || "未知错误"), "error");
+    return;
+  }
   showNewProject.value = false;
   newProjectName.value = "";
   newProjectDesc.value = "";
   await loadProjects();
   await refreshSidebarData();
+  showToast("项目已创建", "success");
 };
 
 const prevPage = () => {
@@ -1125,6 +1283,20 @@ const nextPage = () => {
   if (historyGroupsOffset.value + historyGroupsLimit.value < historyGroupsTotal.value) {
     historyGroupsOffset.value += historyGroupsLimit.value;
     loadHistoryGroups();
+  }
+};
+
+const prevComparePage = () => {
+  if (compareJobsOffset.value > 0) {
+    compareJobsOffset.value = Math.max(0, compareJobsOffset.value - compareJobsLimit.value);
+    loadCompareJobs();
+  }
+};
+
+const nextComparePage = () => {
+  if (compareJobsOffset.value + compareJobsLimit.value < compareJobsTotal.value) {
+    compareJobsOffset.value += compareJobsLimit.value;
+    loadCompareJobs();
   }
 };
 
@@ -1547,16 +1719,27 @@ const App = {
     watch(filterProject, () => {
       jobsOffset.value = 0;
       historyGroupsOffset.value = 0;
+      compareJobsOffset.value = 0;
       if (filterProject.value) {
         collapsedGroups.value[filterProject.value] = true;
       }
+      localStorage.setItem("tpa-filter-project", filterProject.value);
       refreshSidebarData();
+    });
+
+    watch(historySearch, () => {
+      historyGroupsOffset.value = 0;
+      loadHistoryGroups();
+    });
+
+    watch(compareSearch, () => {
+      compareJobsOffset.value = 0;
+      loadCompareJobs();
     });
 
     watch(compareSelection, () => {
       if (compareSelection.value.length === 2) {
-        const jobA = jobs.value.find(j => j.id === compareSelection.value[0]);
-        const jobB = jobs.value.find(j => j.id === compareSelection.value[1]);
+        const [jobA, jobB] = selectedCompareJobs.value;
         if (jobA?.project_id && jobA.project_id === jobB?.project_id) {
           compareProjectId.value = jobA.project_id;
         } else {
@@ -1564,6 +1747,13 @@ const App = {
         }
       }
     });
+
+    watch(sidebarWidth, value => localStorage.setItem("tpa-sidebar-width", String(value)));
+    watch(sidebarCollapsed, value => localStorage.setItem("tpa-sidebar-collapsed", String(value)));
+    watch(sidebarTab, value => localStorage.setItem("tpa-sidebar-tab", value));
+    watch(collapsedGroups, value => {
+      localStorage.setItem("tpa-expanded-groups", JSON.stringify(value));
+    }, { deep: true });
 
     // Return everything the root template (index.html) needs
     return {
@@ -1574,19 +1764,22 @@ const App = {
       // Sidebar data
       projects, jobs, jobsTotal, jobsLimit, jobsOffset,
       historyGroupsTotal, historyGroupsLimit, historyGroupsOffset,
-      filterProject, sidebarTab, selectedJobId, selectedJob,
-      collapsedGroups, groupedJobs, singleJobs,
+      historySearch, filterProject, sidebarTab, selectedJobId, selectedJob,
+      collapsedGroups, groupedJobs,
       prevPage, nextPage, navigateToJob,
 
       // Compare
-      compareSelection, compareLabel, compareProjectId,
-      toggleCompareSelect, submitCompare,
+      compareSelection, selectedCompareJobs, compareLabel, compareProjectId,
+      compareJobs, compareJobsTotal, compareJobsLimit, compareJobsOffset, compareSearch,
+      toggleCompareSelect, removeCompareSelection, submitCompare,
+      prevComparePage, nextComparePage,
 
       // Modals
       showNewProject, newProjectName, newProjectDesc,
       showRenameProject, renameProjectName, openRenameModal,
       confirmRenameProject, deleteProject,
       showMoveProject, moveProjectTarget, confirmMoveProject,
+      showRenameJob, renameJobName, confirmRenameJob,
       showDeletedProjects, deletedProjects, loadDeletedProjects,
       isDeletedOver10Days, restoreProject, permanentlyDeleteProject,
       showTritonCode, tritonCodeContent, tritonCodeFilename,
@@ -1595,6 +1788,7 @@ const App = {
       customRunStatus, allowCodeExecution,
       showGuide, showErrorModal, errorModalMsg, errorModalTitle,
       copyTritonCode, copyErrorModal,
+      toasts, showConfirmModal, confirmModal, resolveConfirm,
 
       // Misc
       fmtDate, statusIcon, toggleGroup, createProject,

@@ -116,6 +116,7 @@
               <option value="__none__">未分组</option>
               <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
             </select>
+            <input v-model="historySearch" class="input input-sm mt-1" placeholder="搜索任务、文件或项目..." />
             <div v-if="filterProject && filterProject !== '__none__'" class="project-actions">
               <button class="btn btn-xs btn-outline mt-1 w-full" @click="openRenameModal(projects.find(p => p.id === filterProject))">重命名</button>
               <button class="btn btn-xs btn-danger mt-1 w-full" @click="deleteProject(filterProject)">删除项目</button>
@@ -144,7 +145,7 @@
               </div>
             </div>
           </div>
-          <div v-if="groupedJobs.length===0" class="empty-tip">暂无历史记录</div>
+          <div v-if="groupedJobs.length===0" class="empty-tip">{{ historySearch ? '暂无匹配记录' : '暂无历史记录' }}</div>
           <div v-if="historyGroupsTotal > historyGroupsLimit" class="pagination">
             <button class="btn btn-xs btn-outline" @click="prevPage" :disabled="historyGroupsOffset === 0">上一页</button>
             <span class="page-info">{{ historyGroupsOffset + 1 }}-{{ Math.min(historyGroupsOffset + historyGroupsLimit, historyGroupsTotal) }} / {{ historyGroupsTotal }}</span>
@@ -160,9 +161,16 @@
               <option value="__none__">未分组</option>
               <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
             </select>
+            <input v-model="compareSearch" class="input input-sm mt-1" placeholder="搜索任务、文件或项目..." />
           </div>
           <p class="tip-text">选择两个单文件历史记录进行对比</p>
-          <div v-for="job in singleJobs" :key="job.id"
+          <div v-if="selectedCompareJobs.length" class="selected-compare-list">
+            <div v-for="job in selectedCompareJobs" :key="job.id" class="selected-compare-item">
+              <span>{{ job.label || job.id.slice(0,8) }}</span>
+              <button class="selected-compare-remove" @click.stop="removeCompareSelection(job.id)" title="移除">✕</button>
+            </div>
+          </div>
+          <div v-for="job in compareJobs" :key="job.id"
                :class="['job-item', compareSelection.includes(job.id)?'compare-selected':'',
                         !job.file_a_exists ? 'file-deleted' : '']"
                @click="toggleCompareSelect(job)">
@@ -178,6 +186,12 @@
               {{ fmtDate(job.created_at) }}
               <span v-if="!job.file_a_exists" class="tag-deleted">文件已删除</span>
             </div>
+          </div>
+          <div v-if="compareJobs.length===0" class="empty-tip">{{ compareSearch ? '暂无匹配记录' : '暂无可对比记录' }}</div>
+          <div v-if="compareJobsTotal > compareJobsLimit" class="pagination">
+            <button class="btn btn-xs btn-outline" @click="prevComparePage" :disabled="compareJobsOffset === 0">上一页</button>
+            <span class="page-info">{{ compareJobsOffset + 1 }}-{{ Math.min(compareJobsOffset + compareJobsLimit, compareJobsTotal) }} / {{ compareJobsTotal }}</span>
+            <button class="btn btn-xs btn-outline" @click="nextComparePage" :disabled="compareJobsOffset + compareJobsLimit >= compareJobsTotal">下一页</button>
           </div>
 
           <div v-if="compareSelection.length===2" class="compare-form">
@@ -218,6 +232,18 @@
         <div class="modal-actions">
           <button class="btn btn-outline" @click="showMoveProject=false">取消</button>
           <button class="btn btn-primary" @click="confirmMoveProject">确认</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Rename job modal ── -->
+    <div v-if="showRenameJob" class="modal-mask" @click.self="showRenameJob=false">
+      <div class="modal">
+        <div class="modal-title">重命名任务</div>
+        <input v-model="renameJobName" class="input w-full" placeholder="任务备注" @keyup.enter="confirmRenameJob" />
+        <div class="modal-actions">
+          <button class="btn btn-outline" @click="showRenameJob=false">取消</button>
+          <button class="btn btn-primary" @click="confirmRenameJob">保存</button>
         </div>
       </div>
     </div>
@@ -311,6 +337,19 @@
       </div>
     </div>
 
+    <!-- ── Generic confirm modal ── -->
+    <div v-if="showConfirmModal" class="modal-mask" @click.self="resolveConfirm(false)">
+      <div class="modal">
+        <div class="modal-title">{{ confirmModal.title }}</div>
+        <div class="confirm-message">{{ confirmModal.message }}</div>
+        <div class="modal-actions">
+          <button class="btn btn-outline" @click="resolveConfirm(false)">取消</button>
+          <button :class="['btn', confirmModal.tone==='danger' ? 'btn-danger' : 'btn-primary']"
+                  @click="resolveConfirm(true)">{{ confirmModal.confirmText }}</button>
+        </div>
+      </div>
+    </div>
+
     <!-- ── 使用指南 modal ── -->
     <div v-if="showGuide" class="modal-mask" @click.self="showGuide=false">
       <div class="modal modal-wide">
@@ -342,6 +381,7 @@
               <li>侧栏包含两个标签页：<strong>历史</strong>（单文件任务）和<strong>对比</strong>（对比任务）</li>
               <li>历史按<strong>项目分组</strong>显示，点击项目标题可折叠/展开该组</li>
               <li>顶部可<strong>选择项目过滤器</strong>，筛选特定项目的历史记录</li>
+              <li>支持按<strong>任务、文件或项目</strong>搜索历史记录</li>
               <li>支持<strong>分页浏览</strong>，底部有分页控件</li>
               <li>点击任务行可查看分析详情</li>
             </ul>
@@ -360,6 +400,7 @@
             <h3>5. 历史对比</h3>
             <ul>
               <li>在侧栏"对比"标签页选择两个已完成的单文件任务</li>
+              <li>候选任务支持独立搜索和分页，已选任务会固定显示在列表上方</li>
               <li>可选填备注和所属项目</li>
               <li>点击"发起对比"，系统直接复用已有数据，无需重新上传文件</li>
               <li>对比结果含 Kernel 对比、Triton 对比、Aten 对比、类型对比、CNCL 对比等多个维度</li>
@@ -401,8 +442,14 @@
         </div>
       </div>
     </div>
+
+    <div class="toast-stack">
+      <div v-for="toast in toasts" :key="toast.id" :class="['toast', 'toast-' + toast.kind]">
+        {{ toast.message }}
+      </div>
+    </div>
   </div>
 
-  <script src="/static/app.js?v=2"></script>
+  <script src="/static/app.js?v=3"></script>
 </body>
 </html>

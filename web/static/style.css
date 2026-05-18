@@ -261,6 +261,21 @@ body {
 }
 
 .compare-form { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+.selected-compare-list {
+  display: flex; flex-direction: column; gap: 4px;
+  margin: 4px 0 8px;
+}
+.selected-compare-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 5px 8px; border-radius: 6px;
+  border: 1px solid rgba(234,179,8,.28); background: rgba(234,179,8,.08);
+  color: var(--text2); font-size: 11px;
+}
+.selected-compare-remove {
+  border: none; background: transparent; color: var(--text3);
+  cursor: pointer; line-height: 1; padding: 0;
+}
+.selected-compare-remove:hover { color: var(--red); }
 .tip-text { font-size: 11px; color: var(--text3); padding: 4px 2px; line-height: 1.5; }
 .empty-tip { text-align: center; color: var(--text3); padding: 24px 0; font-size: 12px; }
 .pagination { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 8px 0; }
@@ -629,6 +644,7 @@ select.input { appearance: none; cursor: pointer; }
 .modal-wide { min-width: 700px; max-width: 95vw; width: 1200px; }
 .modal-title { font-size: 14px; font-weight: 600; margin-bottom: 14px; color: var(--text); display: flex; align-items: center; gap: 8px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.confirm-message { color: var(--text2); line-height: 1.6; }
 
 .error-modal-content {
   background: var(--bg); border: 1px solid var(--border);
@@ -648,6 +664,20 @@ select.input { appearance: none; cursor: pointer; }
 .deleted-project-name { font-weight: 500; color: var(--text); }
 .deleted-project-meta { font-size: 11px; color: var(--text3); margin-top: 2px; }
 .deleted-project-actions { display: flex; gap: 6px; }
+
+.toast-stack {
+  position: fixed; top: 60px; right: 14px; z-index: 120;
+  display: flex; flex-direction: column; gap: 8px;
+  width: min(320px, calc(100vw - 28px));
+}
+.toast {
+  border-radius: 7px; padding: 10px 12px;
+  background: var(--card); border: 1px solid var(--border2);
+  color: var(--text2); box-shadow: var(--shadow);
+  font-size: 12px; line-height: 1.45;
+}
+.toast-success { border-color: rgba(34,197,94,.35); color: var(--green); }
+.toast-error { border-color: rgba(239,68,68,.35); color: var(--red); }
 
 /* ═══════════════════════════════════════════════
    CODE VIEWER
