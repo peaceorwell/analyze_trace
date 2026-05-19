@@ -518,14 +518,23 @@ select.input { appearance: none; cursor: pointer; }
 .compare-source-meta { color: var(--text3); font-size: 10px; margin-top: 1px; }
 
 /* result tabs */
+.result-body { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .result-tabs { display: flex; gap: 2px; flex-wrap: wrap; margin-bottom: 8px; flex-shrink: 0; }
 .result-tabs .tab {
   padding: 4px 10px; border-radius: 5px; border: none; background: none;
-  font-size: 11px; color: var(--text3); cursor: pointer; font-family: var(--sans); transition: all .12s;
+  font-size: 11px; font-weight: 600; color: var(--text3); cursor: pointer;
+  font-family: var(--sans); transition: background-color .12s, color .12s, opacity .12s;
+  position: relative;
 }
-.result-tabs .tab.active { background: var(--purple-bg); color: var(--purple-l); font-weight: 600; }
+.result-tabs .tab.active { background: var(--purple-bg); color: var(--purple-l); }
 .result-tabs .tab:hover:not(.active) { background: var(--card2); color: var(--text2); }
 .result-tabs .tab:disabled { cursor: wait; opacity: .72; }
+.result-tabs .tab.preparing::after {
+  content: "";
+  position: absolute; right: 3px; top: 3px;
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--purple-l);
+}
 
 /* console */
 .console-out {
@@ -573,11 +582,15 @@ select.input { appearance: none; cursor: pointer; }
 /* ═══════════════════════════════════════════════
    TABLE
    ═══════════════════════════════════════════════ */
+.table-wrap { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .table-toolbar { display: flex; gap: 6px; margin-bottom: 8px; align-items: center; flex-shrink: 0; }
 .table-loading {
+  position: absolute; right: 10px; top: 8px; z-index: 3;
   display: flex; align-items: center; gap: 6px;
+  padding: 4px 8px; border-radius: 999px;
+  background: var(--card); border: 1px solid var(--border2);
+  box-shadow: var(--shadow);
   color: var(--text3); font-size: 11px;
-  margin-bottom: 8px;
 }
 .column-menu-wrap { position: relative; }
 .column-menu {
@@ -598,6 +611,7 @@ select.input { appearance: none; cursor: pointer; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .table-scroll {
+  position: relative;
   overflow: auto; flex: 1; min-height: 0;
   border: 1px solid var(--border); border-radius: 8px;
 }
@@ -632,7 +646,7 @@ select.input { appearance: none; cursor: pointer; }
 
 /* All CSV tables - scrollable container */
 .csv-table-wrap {
-  max-height: 520px;
+  height: 100%;
   overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: var(--border2) transparent;

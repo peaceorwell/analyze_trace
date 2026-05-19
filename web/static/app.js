@@ -2237,13 +2237,13 @@ const JobDetail = {
       </div>
 
       <!-- Done: tabs -->
-      <div v-else-if="selectedJob.status==='done'">
+      <div v-else-if="selectedJob.status==='done'" class="result-body">
         <div class="result-tabs">
           <button v-for="t in availableTabs" :key="t.key"
-                  :class="['tab', resultTab===t.key?'active':'']"
+                  :class="['tab', resultTab===t.key?'active':'', preparingResultTab===t.key?'preparing':'']"
                   :disabled="preparingResultTab===t.key"
                   @click="switchTab(t.key)">
-            {{ preparingResultTab===t.key ? t.label + '...' : t.label }}
+            {{ t.label }}
           </button>
         </div>
 
@@ -2296,10 +2296,10 @@ const JobDetail = {
             <button v-if="isTritonStepTab && allowCodeExecution" class="btn btn-sm btn-outline" @click="clearInductorCache()">清除 Cache</button>
           </div>
           <div v-if="resultTableError" class="error-box mb-2">{{ resultTableError }}</div>
-          <div v-if="resultTableLoading" class="table-loading">
-            <span class="spinner-small"></span> 加载表格...
-          </div>
           <div class="table-scroll">
+            <div v-if="resultTableLoading" class="table-loading">
+              <span class="spinner-small"></span> 加载表格...
+            </div>
             <div class="csv-table-wrap">
             <table class="data-table">
               <colgroup>
