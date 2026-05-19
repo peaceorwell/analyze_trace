@@ -80,6 +80,7 @@ const sortAsc     = ref(true);
 const tableLimit  = ref(100);
 const tableOffset = ref(0);
 const resultTable = ref({ fields: [], rows: [], total: 0, filtered_total: 0, limit: 100, offset: 0 });
+const resultTableFile = ref("");
 const resultTableLoading = ref(false);
 const resultTableError = ref("");
 const chartTables = ref({});
@@ -361,10 +362,24 @@ const isTritonStepTab = computed(() => {
   return resultTab.value && resultTab.value.match(/^step_\d+_triton_kernels\.csv$/);
 });
 
+const emptyResultTableForTab = filename => {
+  const meta = selectedJob.value?.result_files?.[filename];
+  return {
+    fields: meta?.fields || [],
+    rows: [],
+    total: 0,
+    filtered_total: 0,
+    limit: tableLimit.value,
+    offset: tableOffset.value,
+  };
+};
+
 const currentTable = computed(() => {
   if (!resultTab.value.endsWith(".csv")) return { fields: [], rows: [] };
   const eager = selectedJob.value?.results?.[resultTab.value];
-  return eager || resultTable.value || { fields: [], rows: [] };
+  if (eager) return eager;
+  if (resultTableFile.value === resultTab.value) return resultTable.value;
+  return emptyResultTableForTab(resultTab.value);
 });
 
 const tableTotalRows = computed(() =>
@@ -771,6 +786,7 @@ const loadJob = async id => {
   }
   selectedJob.value = await r.json();
   resultTable.value = { fields: [], rows: [], total: 0, filtered_total: 0, limit: tableLimit.value, offset: tableOffset.value };
+  resultTableFile.value = "";
   chartTables.value = {};
   return true;
 };
@@ -827,21 +843,16 @@ const loadResultTable = async ({ resetOffset = false } = {}) => {
   if (resetOffset) tableOffset.value = 0;
   if (resultTableController) resultTableController.abort();
   const controller = new AbortController();
+  const filename = resultTab.value;
   resultTableController = controller;
   resultTableLoading.value = true;
   resultTableError.value = "";
-  const meta = selectedJob.value?.result_files?.[resultTab.value];
-  resultTable.value = {
-    fields: meta?.fields || [],
-    rows: [],
-    total: 0,
-    filtered_total: 0,
-    limit: tableLimit.value,
-    offset: tableOffset.value,
-  };
+  resultTableFile.value = filename;
+  resultTable.value = emptyResultTableForTab(filename);
   try {
-    const data = await fetchResultTable(resultTab.value, { signal: controller.signal });
+    const data = await fetchResultTable(filename, { signal: controller.signal });
     if (resultTableController !== controller) return;
+    if (resultTableFile.value !== filename) return;
     resultTable.value = data;
     tableLimit.value = data.limit || tableLimit.value;
     tableOffset.value = data.offset || 0;
@@ -2337,6 +2348,7 @@ router.beforeEach(async (to, from) => {
     selectedJobId.value = null;
     selectedJob.value = null;
     resultTab.value = "console";
+    resultTableFile.value = "";
     activeResultStateJobId = null;
     return;
   }
@@ -2360,6 +2372,7 @@ router.beforeEach(async (to, from) => {
 
   selectedJobId.value = newJobId;
   selectedJob.value = null;
+  resultTableFile.value = "";
   const loaded = await loadJob(newJobId);
 
   if (!loaded) {
