@@ -466,9 +466,9 @@
             <ul>
               <li><strong>控制台</strong>：原始文本输出，含 Per-Step 摘要、Top 10 热点 kernel、Kernel 类型分布</li>
               <li><strong>图表</strong>：Kernel 类型耗时柱状图（横向）和占比饼图，collective 类型不计入 compute 分析</li>
-              <li><strong>CSV 表格</strong>：支持搜索、列排序、列宽拖拽、列显隐、超长内容截断并 hover 显示全文</li>
+              <li><strong>CSV 表格</strong>：按页加载，支持搜索、列排序、列宽拖拽、列显隐、超长内容截断并 hover 显示全文</li>
               <li>会按任务记住上次打开的结果页签，以及各表格的搜索、排序、列宽、列筛选和列显隐</li>
-              <li><strong>下载 CSV</strong>：表格右上角一键下载当前视图的 CSV 文件</li>
+              <li><strong>下载当前页 CSV</strong>：表格右上角可下载当前分页中的 CSV 内容</li>
             </ul>
           </section>
           <section class="guide-section">
@@ -552,6 +552,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=5"></script>
+  <script src="/static/app.js?v=6"></script>
 </body>
 </html>

@@ -573,6 +573,11 @@ select.input { appearance: none; cursor: pointer; }
    TABLE
    ═══════════════════════════════════════════════ */
 .table-toolbar { display: flex; gap: 6px; margin-bottom: 8px; align-items: center; flex-shrink: 0; }
+.table-loading {
+  display: flex; align-items: center; gap: 6px;
+  color: var(--text3); font-size: 11px;
+  margin-bottom: 8px;
+}
 .column-menu-wrap { position: relative; }
 .column-menu {
   position: absolute; right: 0; top: calc(100% + 5px); z-index: 12;
@@ -651,6 +656,10 @@ select.input { appearance: none; cursor: pointer; }
   color: var(--text3); font-family: var(--mono); font-size: 10.5px;
 }
 .table-footer { font-size: 10px; color: var(--text3); padding: 5px 3px; text-align: right; font-family: var(--mono); }
+.table-footer-paged {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+.table-pagination { display: flex; align-items: center; gap: 5px; }
 
 .filter-row th {
   background-color: var(--filter-row-bg); padding: 3px 6px 4px;

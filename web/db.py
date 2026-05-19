@@ -87,7 +87,11 @@ async def init_db():
                                      DEFAULT 'pending',
                 console_out      TEXT DEFAULT '',
                 error_msg        TEXT DEFAULT '',
-                result_dir       TEXT DEFAULT ''
+                result_dir       TEXT DEFAULT '',
+
+                owned_bytes          INTEGER,
+                result_bytes         INTEGER,
+                original_trace_bytes INTEGER
             );
 
             CREATE TABLE IF NOT EXISTS deleted_projects (
@@ -116,6 +120,9 @@ async def init_db():
         await add_column_if_missing(db, "projects", "created_at", "DATETIME")
         await add_column_if_missing(db, "projects", "folder_id", "TEXT")
         await add_column_if_missing(db, "jobs", "user_token", "TEXT")
+        await add_column_if_missing(db, "jobs", "owned_bytes", "INTEGER")
+        await add_column_if_missing(db, "jobs", "result_bytes", "INTEGER")
+        await add_column_if_missing(db, "jobs", "original_trace_bytes", "INTEGER")
         await add_column_if_missing(db, "folders", "password_hash", "TEXT DEFAULT NULL")
 
         await db.executescript("""
@@ -156,6 +163,10 @@ async def init_db():
             CREATE INDEX IF NOT EXISTS idx_deleted_jobs_deleted_at ON deleted_jobs(deleted_at);
             CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_token);
             CREATE INDEX IF NOT EXISTS idx_jobs_user ON jobs(user_token);
+            CREATE INDEX IF NOT EXISTS idx_jobs_project_created ON jobs(project_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_jobs_mode_status_created ON jobs(mode, status, created_at);
+            CREATE INDEX IF NOT EXISTS idx_jobs_source_a ON jobs(source_job_a);
+            CREATE INDEX IF NOT EXISTS idx_jobs_source_b ON jobs(source_job_b);
             CREATE INDEX IF NOT EXISTS idx_folders_user ON folders(user_token);
             CREATE INDEX IF NOT EXISTS idx_projects_folder ON projects(folder_id);
         """)

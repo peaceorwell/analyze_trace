@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 from pathlib import Path
 import shutil
 
@@ -348,6 +349,36 @@ def test_startup_marks_interrupted_jobs_error(isolated_server):
     assert "Server restarted" in row["error_msg"]
 
 
+def test_startup_enqueues_pending_jobs(isolated_server, monkeypatch):
+    seen = []
+
+    async def fake_run_analysis(job_id):
+        seen.append(job_id)
+
+    async def seed_db():
+        await web_db.init_db()
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                "INSERT INTO jobs(id, label, mode, status) VALUES(?,?,?,?)",
+                ("pending-job", "pending", "single", "pending"),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(seed_db())
+    monkeypatch.setattr(web_server, "run_analysis", fake_run_analysis)
+
+    with TestClient(isolated_server.app):
+        for _ in range(50):
+            if seen:
+                break
+            time.sleep(0.01)
+
+    assert seen == ["pending-job"]
+
+
 def test_compare_from_history_accepts_tar_gzip_sources(
     client,
     sample_trace_file_tar_gz,
@@ -460,6 +491,55 @@ def test_done_job_exposes_perfetto_context(client, sample_trace_file):
     assert (result_dir / "perfetto_context.json").exists()
 
 
+def test_done_job_lists_result_files_and_paginates_tables(client):
+    result_dir = Path(web_server.result_dir("table-job"))
+    result_dir.mkdir(parents=True)
+    (result_dir / "all_kernels_avg.csv").write_text(
+        "kernel_name,avg_dur_ms,family\n"
+        "slow_kernel,30,gemm\n"
+        "medium_kernel,20,gemm\n"
+        "fast_kernel,10,other\n"
+    )
+
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                "INSERT INTO jobs(id, label, mode, status, result_dir) VALUES(?,?,?,?,?)",
+                ("table-job", "table", "single", "done", str(result_dir)),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+
+    detail = client.get("/api/jobs/table-job")
+    assert detail.status_code == 200
+    assert "results" not in detail.json()
+    assert detail.json()["result_files"]["all_kernels_avg.csv"]["fields"] == [
+        "kernel_name", "avg_dur_ms", "family"
+    ]
+
+    page = client.get(
+        "/api/jobs/table-job/results/all_kernels_avg.csv",
+        params={"limit": 2, "offset": 0, "sort_col": "avg_dur_ms", "sort_dir": "desc"},
+    )
+    assert page.status_code == 200
+    payload = page.json()
+    assert payload["total"] == 3
+    assert payload["filtered_total"] == 3
+    assert [row["kernel_name"] for row in payload["rows"]] == ["slow_kernel", "medium_kernel"]
+
+    filtered = client.get(
+        "/api/jobs/table-job/results/all_kernels_avg.csv",
+        params={"q": "fast", "limit": 10},
+    )
+    assert filtered.status_code == 200
+    assert filtered.json()["filtered_total"] == 1
+    assert filtered.json()["rows"][0]["kernel_name"] == "fast_kernel"
+
+
 def test_done_job_without_perfetto_context_still_loads(client, sample_trace_file):
     async def insert_job():
         db = await web_db.get_db()
@@ -561,3 +641,31 @@ def test_storage_summary(client, tmp_path):
     assert payload["projects"][0]["name"] == "Alpha"
     done_job = next(job for job in payload["jobs"] if job["id"] == "done-job")
     assert done_job["used_by_compare_count"] == 1
+
+
+def test_storage_summary_uses_cached_sizes(client):
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO jobs(
+                    id, label, mode, status,
+                    owned_bytes, result_bytes, original_trace_bytes
+                ) VALUES(?,?,?,?,?,?,?)
+                """,
+                ("cached-job", "cached", "single", "done", 123, 45, 78),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+
+    storage = client.get("/api/storage/summary")
+    assert storage.status_code == 200
+    payload = storage.json()
+    assert payload["totals"]["owned_bytes"] == 123
+    assert payload["totals"]["result_bytes"] == 45
+    assert payload["totals"]["original_trace_bytes"] == 78
+    assert payload["jobs"][0]["id"] == "cached-job"

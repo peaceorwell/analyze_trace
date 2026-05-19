@@ -110,6 +110,7 @@ TRACE_ENABLE_CODE_EXEC=1 docker-compose up -d
 |------|--------|------|
 | `--host` | `127.0.0.1` | 监听地址 |
 | `--port` | `8181` | 监听端口 |
+| `--analysis-concurrency` | `1` | 同时运行的分析任务数 |
 | `--no-download` | off | 禁止下载上传的原始 trace 文件 |
 
 ### 功能特性
@@ -117,14 +118,14 @@ TRACE_ENABLE_CODE_EXEC=1 docker-compose up -d
 #### 提交分析
 - 拖拽或点击上传 `.json` 或 `.json.gz` 文件（PyTorch Profiler 导出的 Chrome Trace 格式）
 - 选择所属项目（可选）、填写备注（可选）
-- 点击"提交分析"，后台异步处理，实时显示上传进度和运行状态
+- 点击"提交分析"，任务进入分析队列，实时显示上传进度和运行状态
 
 #### 结果查看
 - **控制台**：原始文本输出，含 Per-Step 摘要、Top 10 热点 kernel、Kernel 类型分布
 - **图表**：Kernel 类型耗时柱状图（横向）和占比饼图，collective 类型不计入 compute 分析
-- **CSV 表格**：支持搜索、列排序、列宽拖拽调整、超长内容截断并 hover 显示全文
-- **结果记忆**：按任务记住上次打开的结果页签，以及各表格的搜索、排序、列宽和列筛选
-- **下载 CSV**：表格右上角一键下载当前视图的 CSV 文件
+- **CSV 表格**：按页加载，支持搜索、列排序、列宽拖拽调整、列显隐、超长内容截断并 hover 显示全文
+- **结果记忆**：按任务记住上次打开的结果页签，以及各表格的搜索、排序、列宽、列筛选和列显隐
+- **下载当前页 CSV**：表格右上角可下载当前分页中的 CSV 内容
 - **Triton 代码执行**：设置 `TRACE_ENABLE_CODE_EXEC=1` 后，在 Triton 或 Triton Step N 表格中点击"运行"执行 kernel 代码，显示效率（GB/s）
 - **清除 Cache**：设置 `TRACE_ENABLE_CODE_EXEC=1` 后，Triton Step N 表格中可清除 `/tmp/torchinductor_*` 缓存目录
 

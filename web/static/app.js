@@ -77,6 +77,12 @@ const resultTab   = ref("console");
 const tableSearch = ref("");
 const sortCol     = ref("");
 const sortAsc     = ref(true);
+const tableLimit  = ref(100);
+const tableOffset = ref(0);
+const resultTable = ref({ fields: [], rows: [], total: 0, filtered_total: 0, limit: 100, offset: 0 });
+const resultTableLoading = ref(false);
+const resultTableError = ref("");
+const chartTables = ref({});
 const colWidths     = ref({});
 const colFilters    = ref({});
 const colFilterOps  = ref({});
@@ -110,6 +116,8 @@ const saveResultViewState = (jobId = selectedJobId.value, tab = resultTab.value)
       tableSearch: tableSearch.value,
       sortCol: sortCol.value,
       sortAsc: sortAsc.value,
+      tableLimit: tableLimit.value,
+      tableOffset: tableOffset.value,
       colWidths: colWidths.value,
       colFilters: colFilters.value,
       colFilterOps: colFilterOps.value,
@@ -124,6 +132,8 @@ const restoreResultViewState = (jobId, tab) => {
   tableSearch.value = state.tableSearch || "";
   sortCol.value = state.sortCol || "";
   sortAsc.value = state.sortAsc ?? true;
+  tableLimit.value = state.tableLimit || 100;
+  tableOffset.value = state.tableOffset || 0;
   colWidths.value = state.colWidths || {};
   colFilters.value = state.colFilters || {};
   colFilterOps.value = state.colFilterOps || {};
@@ -319,8 +329,8 @@ const selectedCompareJobs = computed(() =>
 );
 
 const availableTabs = computed(() => {
-  if (!selectedJob.value?.results) return [];
-  const res = selectedJob.value.results;
+  const res = selectedJob.value?.result_files || selectedJob.value?.results;
+  if (!res) return [];
   const tabs = [{ key: "console", label: "控制台" }, { key: "chart", label: "图表" }];
   const csvMap = {
     "all_kernels_avg.csv":      "所有 Kernel",
@@ -352,10 +362,22 @@ const isTritonStepTab = computed(() => {
 });
 
 const currentTable = computed(() => {
-  const res = selectedJob.value?.results;
-  if (!res || !resultTab.value.endsWith(".csv")) return { fields: [], rows: [] };
-  return res[resultTab.value] || { fields: [], rows: [] };
+  if (!resultTab.value.endsWith(".csv")) return { fields: [], rows: [] };
+  const eager = selectedJob.value?.results?.[resultTab.value];
+  return eager || resultTable.value || { fields: [], rows: [] };
 });
+
+const tableTotalRows = computed(() =>
+  currentTable.value.filtered_total ?? currentTable.value.total ?? currentTable.value.rows?.length ?? 0
+);
+
+const tablePageStart = computed(() =>
+  tableTotalRows.value ? (currentTable.value.offset || 0) + 1 : 0
+);
+
+const tablePageEnd = computed(() =>
+  Math.min((currentTable.value.offset || 0) + (currentTable.value.rows || []).length, tableTotalRows.value)
+);
 
 const displayedFields = computed(() => {
   const fields = currentTable.value.fields || [];
@@ -383,6 +405,7 @@ const clearColFilters = () => {
 
 const filteredRows = computed(() => {
   let rows = currentTable.value.rows || [];
+  if (!selectedJob.value?.results?.[resultTab.value]) return rows;
   if (tableSearch.value) {
     const q = tableSearch.value.toLowerCase();
     rows = rows.filter(r => Object.values(r).some(v => String(v).toLowerCase().includes(q)));
@@ -601,6 +624,7 @@ const deleteSelectedStorageFiles = async () => {
 
 let historyGroupsController = null;
 let compareJobsController = null;
+let resultTableController = null;
 const historyGroupControllers = {};
 
 const loadHistoryGroups = async () => {
@@ -746,7 +770,100 @@ const loadJob = async id => {
     return false;
   }
   selectedJob.value = await r.json();
+  resultTable.value = { fields: [], rows: [], total: 0, filtered_total: 0, limit: tableLimit.value, offset: tableOffset.value };
+  chartTables.value = {};
   return true;
+};
+
+const activeColumnFilters = () => {
+  const filters = {};
+  const ops = {};
+  for (const [field, value] of Object.entries(colFilters.value)) {
+    if (value === undefined || value === null || value === "") continue;
+    filters[field] = value;
+    ops[field] = colFilterOps.value[field] || "~";
+  }
+  return { filters, ops };
+};
+
+const buildResultTableParams = (overrides = {}) => {
+  const params = new URLSearchParams();
+  const useViewState = !overrides.ignoreViewState;
+  const search = overrides.q ?? (useViewState ? tableSearch.value.trim() : "");
+  const limit = overrides.limit ?? tableLimit.value;
+  const offset = overrides.offset ?? tableOffset.value;
+  params.set("limit", String(limit));
+  params.set("offset", String(Math.max(0, offset)));
+  if (search) params.set("q", search);
+  if (useViewState && sortCol.value) {
+    params.set("sort_col", sortCol.value);
+    params.set("sort_dir", sortAsc.value ? "asc" : "desc");
+  }
+  if (useViewState) {
+    const { filters, ops } = activeColumnFilters();
+    if (Object.keys(filters).length) {
+      params.set("filters", JSON.stringify(filters));
+      params.set("filter_ops", JSON.stringify(ops));
+    }
+  }
+  return params;
+};
+
+const fetchResultTable = async (filename, options = {}) => {
+  const params = buildResultTableParams(options);
+  const r = await fetch(
+    `/api/jobs/${selectedJobId.value}/results/${encodeURIComponent(filename)}?${params}`,
+    { credentials: "include", signal: options.signal },
+  );
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    throw new Error(err.detail || "加载表格失败");
+  }
+  return await r.json();
+};
+
+const loadResultTable = async ({ resetOffset = false } = {}) => {
+  if (!selectedJobId.value || !resultTab.value.endsWith(".csv")) return;
+  if (resetOffset) tableOffset.value = 0;
+  if (resultTableController) resultTableController.abort();
+  const controller = new AbortController();
+  resultTableController = controller;
+  resultTableLoading.value = true;
+  resultTableError.value = "";
+  const meta = selectedJob.value?.result_files?.[resultTab.value];
+  resultTable.value = {
+    fields: meta?.fields || [],
+    rows: [],
+    total: 0,
+    filtered_total: 0,
+    limit: tableLimit.value,
+    offset: tableOffset.value,
+  };
+  try {
+    const data = await fetchResultTable(resultTab.value, { signal: controller.signal });
+    if (resultTableController !== controller) return;
+    resultTable.value = data;
+    tableLimit.value = data.limit || tableLimit.value;
+    tableOffset.value = data.offset || 0;
+  } catch (e) {
+    if (e.name !== "AbortError") resultTableError.value = e.message || "加载表格失败";
+  } finally {
+    if (resultTableController === controller) {
+      resultTableController = null;
+      resultTableLoading.value = false;
+    }
+  }
+};
+
+const prevTablePage = () => {
+  tableOffset.value = Math.max(0, tableOffset.value - tableLimit.value);
+  loadResultTable();
+};
+
+const nextTablePage = () => {
+  if (tableOffset.value + tableLimit.value >= tableTotalRows.value) return;
+  tableOffset.value += tableLimit.value;
+  loadResultTable();
 };
 
 const startPoll = () => {
@@ -834,11 +951,22 @@ const buildPie = (canvas, labels, data, title) => {
 
 const buildChart = async () => {
   await nextTick();
-  if (!ktChart.value || !selectedJob.value?.results) return;
-  const res = selectedJob.value.results;
+  if (!ktChart.value || !selectedJob.value?.result_files) return;
+  const res = selectedJob.value.result_files;
   const csvKey = res?.["kernel_types_cmp.csv"]
     ? "kernel_types_cmp.csv" : "kernel_types_avg.csv";
-  const table = res?.[csvKey];
+  if (!res?.[csvKey]) return;
+  if (!chartTables.value[csvKey]) {
+    try {
+      chartTables.value = {
+        ...chartTables.value,
+        [csvKey]: await fetchResultTable(csvKey, { limit: 1000, offset: 0, ignoreViewState: true }),
+      };
+    } catch (e) {
+      return;
+    }
+  }
+  const table = chartTables.value[csvKey];
   if (!table) return;
 
   if (ktChartInst.value)     { ktChartInst.value.destroy();     ktChartInst.value = null; }
@@ -2025,8 +2153,12 @@ const JobDetail = {
                 </label>
               </div>
             </div>
-            <button class="btn btn-sm btn-outline" @click="downloadCsv(resultTab)">下载 CSV</button>
+            <button class="btn btn-sm btn-outline" @click="downloadCsv(resultTab)">下载当前页 CSV</button>
             <button v-if="isTritonStepTab && allowCodeExecution" class="btn btn-sm btn-outline" @click="clearInductorCache()">清除 Cache</button>
+          </div>
+          <div v-if="resultTableError" class="error-box mb-2">{{ resultTableError }}</div>
+          <div v-if="resultTableLoading" class="table-loading">
+            <span class="spinner-small"></span> 加载表格...
           </div>
           <div class="table-scroll">
             <div class="csv-table-wrap">
@@ -2118,7 +2250,13 @@ const JobDetail = {
             </table>
             </div>
           </div>
-          <div class="table-footer">共 {{ filteredRows.length }} 行</div>
+          <div class="table-footer table-footer-paged">
+            <span>第 {{ tablePageStart }}-{{ tablePageEnd }} 行 / 共 {{ tableTotalRows }} 行</span>
+            <div class="table-pagination">
+              <button class="btn btn-xs btn-outline" @click="prevTablePage" :disabled="tableOffset===0 || resultTableLoading">上一页</button>
+              <button class="btn btn-xs btn-outline" @click="nextTablePage" :disabled="tableOffset + tableLimit >= tableTotalRows || resultTableLoading">下一页</button>
+            </div>
+          </div>
         </div>
       </div>
     </section>
@@ -2142,6 +2280,8 @@ const JobDetail = {
       selectedJob, selectedJobId, resultTab, availableTabs, currentTable,
       displayedFields, filteredRows, tableSearch, sortCol, sortAsc, colWidths, colFilters,
       colFilterOps, visibleColumns, showColumnMenu, hiddenColumnCount,
+      tableLimit, tableOffset, tableTotalRows, tablePageStart, tablePageEnd,
+      resultTableLoading, resultTableError, prevTablePage, nextTablePage,
       hasColFilters, colSums,
       isTritonStepTab, tritonStatus, allowFileDownload, allowCodeExecution,
       switchTab,
@@ -2232,6 +2372,7 @@ router.beforeEach(async (to, from) => {
   resultTab.value = validTabs.includes(requestedTab) ? requestedTab : "console";
   restoreResultViewState(newJobId, resultTab.value);
   activeResultStateJobId = newJobId;
+  if (resultTab.value.endsWith(".csv")) await loadResultTable();
   if (selectedJob.value.status === "pending" || selectedJob.value.status === "running") {
     startPoll();
   }
@@ -2246,12 +2387,14 @@ const App = {
   setup() {
     let historySearchTimer = null;
     let compareSearchTimer = null;
+    let resultTableTimer = null;
 
     // Watchers that need to live at the root level
     watch(resultTab, (v, previousTab) => {
       if (previousTab) saveResultViewState(activeResultStateJobId, previousTab);
       restoreResultViewState(selectedJobId.value, v);
       showColumnMenu.value = false;
+      if (v?.endsWith(".csv")) loadResultTable();
       if (v === "chart" && selectedJob.value?.status === "done") {
         nextTick(() => buildChart());
       }
@@ -2324,6 +2467,18 @@ const App = {
       () => saveResultViewState(activeResultStateJobId),
       { deep: true },
     );
+
+    watch([tableSearch, sortCol, sortAsc], () => {
+      if (!resultTab.value.endsWith(".csv")) return;
+      clearTimeout(resultTableTimer);
+      resultTableTimer = setTimeout(() => loadResultTable({ resetOffset: true }), 250);
+    });
+
+    watch([colFilters, colFilterOps], () => {
+      if (!resultTab.value.endsWith(".csv")) return;
+      clearTimeout(resultTableTimer);
+      resultTableTimer = setTimeout(() => loadResultTable({ resetOffset: true }), 250);
+    }, { deep: true });
 
     watch(() => currentTable.value.fields, fields => {
       if (!fields.length || !visibleColumns.value.length) return;
