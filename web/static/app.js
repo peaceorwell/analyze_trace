@@ -56,6 +56,7 @@ const filterProject = ref(localStorage.getItem("tpa-filter-project") || "");
 const sidebarTab    = ref(localStorage.getItem("tpa-sidebar-tab") || "jobs");
 const selectedJobId = ref(null);
 const selectedJob   = ref(null);
+const jobLoading    = ref(false);
 const collapsedGroups = ref(readStoredJson("tpa-expanded-groups", {}));
 let preSearchExpandedGroups = null;
 
@@ -83,6 +84,7 @@ const resultTable = ref({ fields: [], rows: [], total: 0, filtered_total: 0, lim
 const resultTableFile = ref("");
 const resultTableLoading = ref(false);
 const resultTableError = ref("");
+const preparingResultTab = ref("");
 const chartTables = ref({});
 const colWidths     = ref({});
 const colFilters    = ref({});
@@ -108,6 +110,27 @@ const writeResultMemory = (jobId, memory) => {
   if (!jobId) return;
   localStorage.setItem(resultStateKey(jobId), JSON.stringify(memory));
 };
+let restoringResultState = false;
+let restoreResultStateToken = 0;
+let suppressResultTabWatch = false;
+let suppressResultTabToken = 0;
+
+const markRestoringResultState = () => {
+  restoringResultState = true;
+  const token = ++restoreResultStateToken;
+  nextTick(() => {
+    if (restoreResultStateToken === token) restoringResultState = false;
+  });
+};
+
+const skipNextResultTabWatch = () => {
+  suppressResultTabWatch = true;
+  const token = ++suppressResultTabToken;
+  nextTick(() => {
+    if (suppressResultTabToken === token) suppressResultTabWatch = false;
+  });
+};
+
 const saveResultViewState = (jobId = selectedJobId.value, tab = resultTab.value) => {
   if (!jobId || !tab) return;
   const memory = readResultMemory(jobId);
@@ -127,9 +150,31 @@ const saveResultViewState = (jobId = selectedJobId.value, tab = resultTab.value)
   }
   writeResultMemory(jobId, memory);
 };
-const restoreResultViewState = (jobId, tab) => {
+const rememberResultTabSelection = (jobId, tab) => {
+  if (!jobId || !tab) return;
   const memory = readResultMemory(jobId);
-  const state = memory.tabs?.[tab] || {};
+  memory.lastTab = tab;
+  writeResultMemory(jobId, memory);
+};
+const defaultResultViewState = () => ({
+  tableSearch: "",
+  sortCol: "",
+  sortAsc: true,
+  tableLimit: 100,
+  tableOffset: 0,
+  colWidths: {},
+  colFilters: {},
+  colFilterOps: {},
+  visibleColumns: [],
+});
+
+const resultViewStateFor = (jobId, tab) => {
+  const memory = readResultMemory(jobId);
+  return { ...defaultResultViewState(), ...(memory.tabs?.[tab] || {}) };
+};
+
+const applyResultViewState = state => {
+  markRestoringResultState();
   tableSearch.value = state.tableSearch || "";
   sortCol.value = state.sortCol || "";
   sortAsc.value = state.sortAsc ?? true;
@@ -139,6 +184,9 @@ const restoreResultViewState = (jobId, tab) => {
   colFilters.value = state.colFilters || {};
   colFilterOps.value = state.colFilterOps || {};
   visibleColumns.value = state.visibleColumns || [];
+};
+const restoreResultViewState = (jobId, tab) => {
+  applyResultViewState(resultViewStateFor(jobId, tab));
 };
 const rememberedResultTab = jobId => readResultMemory(jobId).lastTab || "console";
 
@@ -642,6 +690,15 @@ let compareJobsController = null;
 let resultTableController = null;
 const historyGroupControllers = {};
 
+const cancelResultTableRequest = () => {
+  if (resultTableController) {
+    resultTableController.abort();
+    resultTableController = null;
+  }
+  preparingResultTab.value = "";
+  resultTableLoading.value = false;
+};
+
 const loadHistoryGroups = async () => {
   if (historyGroupsController) historyGroupsController.abort();
   for (const [groupId, controller] of Object.entries(historyGroupControllers)) {
@@ -791,13 +848,15 @@ const loadJob = async id => {
   return true;
 };
 
-const activeColumnFilters = () => {
+const activeColumnFilters = (state = null) => {
+  const sourceFilters = state?.colFilters || colFilters.value;
+  const sourceOps = state?.colFilterOps || colFilterOps.value;
   const filters = {};
   const ops = {};
-  for (const [field, value] of Object.entries(colFilters.value)) {
+  for (const [field, value] of Object.entries(sourceFilters)) {
     if (value === undefined || value === null || value === "") continue;
     filters[field] = value;
-    ops[field] = colFilterOps.value[field] || "~";
+    ops[field] = sourceOps[field] || "~";
   }
   return { filters, ops };
 };
@@ -805,18 +864,22 @@ const activeColumnFilters = () => {
 const buildResultTableParams = (overrides = {}) => {
   const params = new URLSearchParams();
   const useViewState = !overrides.ignoreViewState;
-  const search = overrides.q ?? (useViewState ? tableSearch.value.trim() : "");
-  const limit = overrides.limit ?? tableLimit.value;
-  const offset = overrides.offset ?? tableOffset.value;
+  const state = overrides.viewState || null;
+  const searchSource = state ? state.tableSearch || "" : tableSearch.value;
+  const sortSource = state ? state.sortCol || "" : sortCol.value;
+  const sortAscSource = state ? state.sortAsc ?? true : sortAsc.value;
+  const search = overrides.q ?? (useViewState ? String(searchSource).trim() : "");
+  const limit = overrides.limit ?? state?.tableLimit ?? tableLimit.value;
+  const offset = overrides.offset ?? state?.tableOffset ?? tableOffset.value;
   params.set("limit", String(limit));
   params.set("offset", String(Math.max(0, offset)));
   if (search) params.set("q", search);
-  if (useViewState && sortCol.value) {
-    params.set("sort_col", sortCol.value);
-    params.set("sort_dir", sortAsc.value ? "asc" : "desc");
+  if (useViewState && sortSource) {
+    params.set("sort_col", sortSource);
+    params.set("sort_dir", sortAscSource ? "asc" : "desc");
   }
   if (useViewState) {
-    const { filters, ops } = activeColumnFilters();
+    const { filters, ops } = activeColumnFilters(state);
     if (Object.keys(filters).length) {
       params.set("filters", JSON.stringify(filters));
       params.set("filter_ops", JSON.stringify(ops));
@@ -838,21 +901,27 @@ const fetchResultTable = async (filename, options = {}) => {
   return await r.json();
 };
 
-const loadResultTable = async ({ resetOffset = false } = {}) => {
-  if (!selectedJobId.value || !resultTab.value.endsWith(".csv")) return;
-  if (resetOffset) tableOffset.value = 0;
+const loadResultTable = async ({ resetOffset = false, filename = resultTab.value, viewState = null } = {}) => {
+  if (!selectedJobId.value || !filename?.endsWith(".csv")) return;
+  if (resetOffset) {
+    if (viewState) viewState = { ...viewState, tableOffset: 0 };
+    else tableOffset.value = 0;
+  }
   if (resultTableController) resultTableController.abort();
   const controller = new AbortController();
-  const filename = resultTab.value;
   resultTableController = controller;
   resultTableLoading.value = true;
   resultTableError.value = "";
+  const shouldClearTable = resultTableFile.value !== filename;
   resultTableFile.value = filename;
-  resultTable.value = emptyResultTableForTab(filename);
+  if (shouldClearTable) {
+    resultTable.value = emptyResultTableForTab(filename);
+  }
   try {
-    const data = await fetchResultTable(filename, { signal: controller.signal });
+    const data = await fetchResultTable(filename, { signal: controller.signal, viewState });
     if (resultTableController !== controller) return;
     if (resultTableFile.value !== filename) return;
+    if (resultTab.value !== filename) return;
     resultTable.value = data;
     tableLimit.value = data.limit || tableLimit.value;
     tableOffset.value = data.offset || 0;
@@ -862,6 +931,56 @@ const loadResultTable = async ({ resetOffset = false } = {}) => {
     if (resultTableController === controller) {
       resultTableController = null;
       resultTableLoading.value = false;
+    }
+  }
+};
+
+const activateCsvTab = async (filename, { updateRoute = true, savePrevious = true } = {}) => {
+  const jobId = selectedJobId.value;
+  if (!jobId || !filename?.endsWith(".csv")) return;
+  if (savePrevious) saveResultViewState(activeResultStateJobId, resultTab.value);
+  if (resultTableController) resultTableController.abort();
+
+  const controller = new AbortController();
+  const state = resultViewStateFor(jobId, filename);
+  resultTableController = controller;
+  preparingResultTab.value = filename;
+  resultTableLoading.value = false;
+  resultTableError.value = "";
+
+  try {
+    const data = await fetchResultTable(filename, { signal: controller.signal, viewState: state });
+    if (resultTableController !== controller) return;
+    if (selectedJobId.value !== jobId) return;
+    applyResultViewState(state);
+    resultTableFile.value = filename;
+    resultTable.value = data;
+    tableLimit.value = data.limit || state.tableLimit || tableLimit.value;
+    tableOffset.value = data.offset || state.tableOffset || 0;
+    resultTableLoading.value = false;
+    resultTableError.value = "";
+    showColumnMenu.value = false;
+    skipNextResultTabWatch();
+    resultTab.value = filename;
+    saveResultViewState(jobId, filename);
+    if (updateRoute) router.push({ path: `/job/${jobId}/${filename}` });
+  } catch (e) {
+    if (e.name === "AbortError") return;
+    if (selectedJobId.value !== jobId) return;
+    applyResultViewState(state);
+    resultTableFile.value = filename;
+    resultTable.value = emptyResultTableForTab(filename);
+    resultTableLoading.value = false;
+    resultTableError.value = e.message || "加载表格失败";
+    showColumnMenu.value = false;
+    skipNextResultTabWatch();
+    resultTab.value = filename;
+    saveResultViewState(jobId, filename);
+    if (updateRoute) router.push({ path: `/job/${jobId}/${filename}` });
+  } finally {
+    if (resultTableController === controller) {
+      resultTableController = null;
+      preparingResultTab.value = "";
     }
   }
 };
@@ -2029,14 +2148,20 @@ const Home = {
 
 const JobDetail = {
   template: `
+    <!-- Loading state -->
+    <div v-if="jobLoading && selectedJobId" class="empty-main">
+      <div class="empty-main-icon">⟳</div>
+      <div class="empty-main-title">加载任务...</div>
+    </div>
+
     <!-- 404 state -->
-    <div v-if="!selectedJob && selectedJobId" class="empty-main">
+    <div v-else-if="!selectedJob && selectedJobId" class="empty-main">
       <div class="empty-main-icon">🔍</div>
       <div class="empty-main-title">任务未找到</div>
     </div>
 
     <!-- Result panel -->
-    <section v-if="selectedJob" class="card result-card">
+    <section v-if="!jobLoading && selectedJob" class="card result-card">
       <div class="result-header">
         <div>
           <span class="job-status lg" :class="'status-'+selectedJob.status">
@@ -2116,7 +2241,10 @@ const JobDetail = {
         <div class="result-tabs">
           <button v-for="t in availableTabs" :key="t.key"
                   :class="['tab', resultTab===t.key?'active':'']"
-                  @click="switchTab(t.key)">{{ t.label }}</button>
+                  :disabled="preparingResultTab===t.key"
+                  @click="switchTab(t.key)">
+            {{ preparingResultTab===t.key ? t.label + '...' : t.label }}
+          </button>
         </div>
 
         <!-- Console output -->
@@ -2282,17 +2410,27 @@ const JobDetail = {
     watch(ktPieChartRef, (el) => { ktPieChart.value = el; });
     watch(ktPieChartBRef, (el) => { ktPieChartB.value = el; });
 
-    const switchTab = (key) => {
+    const switchTab = async (key) => {
+      if (key === resultTab.value) {
+        if (preparingResultTab.value) cancelResultTableRequest();
+        return;
+      }
+      if (preparingResultTab.value === key) return;
+      if (key.endsWith(".csv")) {
+        await activateCsvTab(key);
+        return;
+      }
+      cancelResultTableRequest();
       router.push({ path: `/job/${selectedJobId.value}/${key}` });
     };
 
     return {
       ktChart: ktChartRef, ktPieChart: ktPieChartRef, ktPieChartB: ktPieChartBRef,
-      selectedJob, selectedJobId, resultTab, availableTabs, currentTable,
+      selectedJob, selectedJobId, jobLoading, resultTab, availableTabs, currentTable,
       displayedFields, filteredRows, tableSearch, sortCol, sortAsc, colWidths, colFilters,
       colFilterOps, visibleColumns, showColumnMenu, hiddenColumnCount,
       tableLimit, tableOffset, tableTotalRows, tablePageStart, tablePageEnd,
-      resultTableLoading, resultTableError, prevTablePage, nextTablePage,
+      resultTableLoading, resultTableError, preparingResultTab, prevTablePage, nextTablePage,
       hasColFilters, colSums,
       isTritonStepTab, tritonStatus, allowFileDownload, allowCodeExecution,
       switchTab,
@@ -2345,8 +2483,10 @@ router.beforeEach(async (to, from) => {
     if (ktPieChartInstB.value) { ktPieChartInstB.value.destroy(); ktPieChartInstB.value = null; }
     clearInterval(pollTimer);
     pollTimer = null;
+    cancelResultTableRequest();
     selectedJobId.value = null;
     selectedJob.value = null;
+    jobLoading.value = false;
     resultTab.value = "console";
     resultTableFile.value = "";
     activeResultStateJobId = null;
@@ -2357,9 +2497,15 @@ router.beforeEach(async (to, from) => {
 
   // Same job, just switch tab
   if (newJobId === selectedJobId.value) {
-    if (tab !== resultTab.value) {
-      const validTabs = availableTabs.value.map(t => t.key);
-      resultTab.value = validTabs.includes(tab) ? tab : "console";
+    const validTabs = availableTabs.value.map(t => t.key);
+    const targetTab = validTabs.includes(tab) ? tab : "console";
+    if (targetTab !== resultTab.value) {
+      if (targetTab.endsWith(".csv")) {
+        await activateCsvTab(targetTab, { updateRoute: false });
+      } else {
+        cancelResultTableRequest();
+        resultTab.value = targetTab;
+      }
     }
     return;
   }
@@ -2369,27 +2515,40 @@ router.beforeEach(async (to, from) => {
   if (ktChartInst.value)     { ktChartInst.value.destroy();     ktChartInst.value = null; }
   if (ktPieChartInst.value)  { ktPieChartInst.value.destroy();  ktPieChartInst.value = null; }
   if (ktPieChartInstB.value) { ktPieChartInstB.value.destroy(); ktPieChartInstB.value = null; }
+  cancelResultTableRequest();
 
   selectedJobId.value = newJobId;
   selectedJob.value = null;
+  jobLoading.value = true;
   resultTableFile.value = "";
   const loaded = await loadJob(newJobId);
 
   if (!loaded) {
     selectedJobId.value = null;
+    jobLoading.value = false;
     return { path: "/" };
   }
 
   const requestedTab = to.params?.tab || rememberedResultTab(newJobId);
   const validTabs = availableTabs.value.map(t => t.key);
-  resultTab.value = validTabs.includes(requestedTab) ? requestedTab : "console";
-  restoreResultViewState(newJobId, resultTab.value);
+  const targetTab = validTabs.includes(requestedTab) ? requestedTab : "console";
   activeResultStateJobId = newJobId;
-  if (resultTab.value.endsWith(".csv")) await loadResultTable();
+  if (targetTab.endsWith(".csv")) {
+    await activateCsvTab(targetTab, { updateRoute: false, savePrevious: false });
+  } else {
+    skipNextResultTabWatch();
+    resultTab.value = targetTab;
+    restoreResultViewState(newJobId, targetTab);
+    rememberResultTabSelection(newJobId, targetTab);
+  }
+  if (targetTab === "chart" && selectedJob.value.status === "done") {
+    nextTick(() => buildChart());
+  }
   if (selectedJob.value.status === "pending" || selectedJob.value.status === "running") {
     startPoll();
   }
   sidebarTab.value = "jobs";
+  jobLoading.value = false;
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -2404,8 +2563,10 @@ const App = {
 
     // Watchers that need to live at the root level
     watch(resultTab, (v, previousTab) => {
+      if (suppressResultTabWatch) return;
       if (previousTab) saveResultViewState(activeResultStateJobId, previousTab);
       restoreResultViewState(selectedJobId.value, v);
+      rememberResultTabSelection(selectedJobId.value, v);
       showColumnMenu.value = false;
       if (v?.endsWith(".csv")) loadResultTable();
       if (v === "chart" && selectedJob.value?.status === "done") {
@@ -2477,17 +2638,22 @@ const App = {
 
     watch(
       [tableSearch, sortCol, sortAsc, colWidths, colFilters, colFilterOps, visibleColumns],
-      () => saveResultViewState(activeResultStateJobId),
+      () => {
+        if (restoringResultState) return;
+        saveResultViewState(activeResultStateJobId);
+      },
       { deep: true },
     );
 
     watch([tableSearch, sortCol, sortAsc], () => {
+      if (restoringResultState) return;
       if (!resultTab.value.endsWith(".csv")) return;
       clearTimeout(resultTableTimer);
       resultTableTimer = setTimeout(() => loadResultTable({ resetOffset: true }), 250);
     });
 
     watch([colFilters, colFilterOps], () => {
+      if (restoringResultState) return;
       if (!resultTab.value.endsWith(".csv")) return;
       clearTimeout(resultTableTimer);
       resultTableTimer = setTimeout(() => loadResultTable({ resetOffset: true }), 250);

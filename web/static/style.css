@@ -525,6 +525,7 @@ select.input { appearance: none; cursor: pointer; }
 }
 .result-tabs .tab.active { background: var(--purple-bg); color: var(--purple-l); font-weight: 600; }
 .result-tabs .tab:hover:not(.active) { background: var(--card2); color: var(--text2); }
+.result-tabs .tab:disabled { cursor: wait; opacity: .72; }
 
 /* console */
 .console-out {
