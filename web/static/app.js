@@ -1761,6 +1761,12 @@ const downloadTraceFile = (slot) => {
   a.click();
 };
 
+const escapeHtml = value => String(value ?? "")
+  .replace(/&/g, "&amp;")
+  .replace(/</g, "&lt;")
+  .replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;");
+
 const perfettoButtonLabel = (slot) => {
   const prefix = selectedJob.value?.mode === "compare" ? `Perfetto ${slot.toUpperCase()}` : "Perfetto";
   return perfettoOpening.value[slot] ? `${prefix} 打开中...` : `${prefix} ↗`;
@@ -1784,6 +1790,154 @@ const showPerfettoError = (message) => {
   showErrorModal.value = true;
 };
 
+const renderPerfettoLoadingPage = (win, filename) => {
+  try {
+    win.document.open();
+    win.document.write(`<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>Preparing Perfetto</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f5f7fb;
+      color: #243047;
+    }
+    .panel {
+      width: min(520px, calc(100vw - 48px));
+      padding: 28px 30px;
+      border-radius: 14px;
+      background: #fff;
+      box-shadow: 0 18px 60px rgba(40, 52, 92, .18);
+      border: 1px solid #e2e8f3;
+    }
+    .eyebrow {
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      color: #6c63ff;
+      text-transform: uppercase;
+      margin-bottom: 10px;
+    }
+    h1 { font-size: 22px; line-height: 1.25; margin: 0 0 10px; }
+    .file {
+      margin: 0 0 20px;
+      font-size: 13px;
+      color: #66728a;
+      overflow-wrap: anywhere;
+    }
+    .status { font-size: 15px; font-weight: 650; margin-bottom: 6px; }
+    .detail { min-height: 20px; font-size: 13px; color: #66728a; margin-bottom: 14px; }
+    .track {
+      height: 8px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: #e7ebf4;
+    }
+    .bar {
+      width: 20%;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #6c63ff, #20a4f3);
+      transition: width .18s ease;
+    }
+    .track.indeterminate .bar {
+      width: 38%;
+      animation: slide 1.1s ease-in-out infinite;
+    }
+    @keyframes slide {
+      0% { transform: translateX(-105%); }
+      100% { transform: translateX(265%); }
+    }
+    @media (prefers-color-scheme: dark) {
+      body { background: #111827; color: #e8edf7; }
+      .panel { background: #182235; border-color: #2a3750; box-shadow: 0 18px 60px rgba(0, 0, 0, .35); }
+      .file, .detail { color: #9aa6bd; }
+      .track { background: #2a3750; }
+    }
+  </style>
+</head>
+<body>
+  <main class="panel">
+    <div class="eyebrow">Perfetto</div>
+    <h1>正在准备 trace</h1>
+    <p class="file">${escapeHtml(filename)}</p>
+    <div id="status" class="status">正在启动...</div>
+    <div id="detail" class="detail">请保持这个窗口打开</div>
+    <div id="track" class="track indeterminate"><div id="bar" class="bar"></div></div>
+  </main>
+</body>
+</html>`);
+    win.document.close();
+  } catch (e) {
+    // The window may already have navigated cross-origin.
+  }
+};
+
+const updatePerfettoLoadingPage = (win, status, detail = "", progress = null) => {
+  try {
+    if (!win || win.closed) return;
+    const doc = win.document;
+    const statusEl = doc.getElementById("status");
+    const detailEl = doc.getElementById("detail");
+    const trackEl = doc.getElementById("track");
+    const barEl = doc.getElementById("bar");
+    if (statusEl) statusEl.textContent = status;
+    if (detailEl) detailEl.textContent = detail;
+    if (trackEl && barEl) {
+      if (progress === null) {
+        trackEl.classList.add("indeterminate");
+        barEl.style.width = "";
+      } else {
+        trackEl.classList.remove("indeterminate");
+        barEl.style.width = `${Math.max(3, Math.min(100, progress))}%`;
+      }
+    }
+  } catch (e) {
+    // Ignore once Perfetto has taken over the popup.
+  }
+};
+
+const readResponseArrayBuffer = async (resp, onProgress) => {
+  const total = Number(resp.headers.get("content-length")) || 0;
+  if (!resp.body?.getReader) {
+    const buffer = await resp.arrayBuffer();
+    onProgress(buffer.byteLength, total || buffer.byteLength);
+    return buffer;
+  }
+
+  const reader = resp.body.getReader();
+  const chunks = [];
+  let received = 0;
+  let lastUpdate = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    received += value.byteLength;
+    const now = performance.now();
+    if (now - lastUpdate > 180) {
+      onProgress(received, total);
+      lastUpdate = now;
+    }
+  }
+  onProgress(received, total || received);
+
+  const bytes = new Uint8Array(received);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes.buffer;
+};
+
 const openInPerfetto = async (slot) => {
   const job = selectedJob.value;
   if (!job || perfettoOpening.value[slot]) return;
@@ -1791,12 +1945,19 @@ const openInPerfetto = async (slot) => {
   const PERFETTO = 'https://ui.perfetto.dev';
 
   perfettoOpening.value[slot] = true;
-  const win = window.open(buildPerfettoUrl(slot));
+  const win = window.open("", "_blank");
   if (!win) {
     perfettoOpening.value[slot] = false;
     showPerfettoError('请允许浏览器弹出窗口后重试');
     return;
   }
+  renderPerfettoLoadingPage(win, fname);
+
+  const setPerfettoStatus = (status, detail = "", progress = null) => {
+    updatePerfettoLoadingPage(win, status, detail, progress);
+  };
+
+  setPerfettoStatus("正在准备文件...", "正在解压并读取 trace 数据");
 
   let resp;
   try {
@@ -1815,7 +1976,30 @@ const openInPerfetto = async (slot) => {
     showPerfettoError("获取 trace 文件失败 (" + resp.status + ")");
     return;
   }
-  const buffer = await resp.arrayBuffer();
+
+  let buffer;
+  try {
+    buffer = await readResponseArrayBuffer(resp, (loaded, total) => {
+      if (total) {
+        const pct = Math.round((loaded / total) * 100);
+        setPerfettoStatus(`读取中 ${pct}%`, `${fmtBytes(loaded)} / ${fmtBytes(total)}`, pct);
+      } else {
+        setPerfettoStatus("读取中...", `已读取 ${fmtBytes(loaded)}`);
+      }
+    });
+  } catch (e) {
+    perfettoOpening.value[slot] = false;
+    win.close();
+    showPerfettoError('读取 trace 文件失败');
+    return;
+  }
+
+  if (win.closed) {
+    perfettoOpening.value[slot] = false;
+    return;
+  }
+
+  setPerfettoStatus("正在打开 Perfetto...", "正在加载 Perfetto UI 并传输 trace", 100);
 
   let sent = false;
   let pingTimer = null;
@@ -1829,15 +2013,24 @@ const openInPerfetto = async (slot) => {
     if (e.origin !== PERFETTO || e.data !== 'PONG') return;
     if (sent || win.closed) return;
     sent = true;
-    win.postMessage({ perfetto: { buffer, title: fname, fileName: fname } }, PERFETTO);
+    const message = { perfetto: { buffer, title: fname, fileName: fname } };
+    try {
+      win.postMessage(message, PERFETTO, [buffer]);
+    } catch (err) {
+      win.postMessage(message, PERFETTO);
+    }
     perfettoOpening.value[slot] = false;
     cleanup();
   };
 
   window.addEventListener('message', handler);
+  win.location.href = buildPerfettoUrl(slot);
 
   const ping = () => {
     if (sent || win.closed) {
+      if (win.closed) {
+        perfettoOpening.value[slot] = false;
+      }
       cleanup();
       return;
     }
@@ -1852,7 +2045,7 @@ const openInPerfetto = async (slot) => {
       perfettoOpening.value[slot] = false;
       showPerfettoError('Perfetto 页面未响应，请稍后重试');
     }
-  }, 10000);
+  }, 30000);
 };
 
 const viewTritonCode = async (codePath) => {
