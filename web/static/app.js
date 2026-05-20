@@ -1757,7 +1757,7 @@ const clearInductorCache = async () => {
 const downloadTraceFile = (slot) => {
   if (!selectedJobId.value) return;
   const a = document.createElement('a');
-  a.href = `/api/jobs/${selectedJobId.value}/files/${slot}?format=json`;
+  a.href = `/api/jobs/${selectedJobId.value}/files/${slot}`;
   a.click();
 };
 
