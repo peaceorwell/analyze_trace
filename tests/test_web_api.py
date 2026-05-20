@@ -452,6 +452,44 @@ def test_perfetto_json_download_extracts_tar_gzip_source(
     assert r.json()["traceEvents"]
 
 
+def test_json_download_decompresses_gzip_with_json_name(
+    client,
+    sample_trace_file_gz,
+    tmp_path,
+):
+    stored = tmp_path / "trace.json.gz"
+    shutil.copyfile(sample_trace_file_gz, stored)
+
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO jobs(
+                    id, label, mode, status, file_a_name, file_a_gzip_path, file_a_exists
+                ) VALUES(?,?,?,?,?,?,?)
+                """,
+                ("compressed-json", "compressed", "single", "done", "trace.json", str(stored), 1),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+
+    json_resp = client.get("/api/jobs/compressed-json/files/a?format=json")
+    assert json_resp.status_code == 200
+    assert json_resp.headers["content-type"].startswith("application/json")
+    assert 'filename="trace.json"' in json_resp.headers["content-disposition"]
+    assert json_resp.json()["traceEvents"]
+
+    stored_resp = client.get("/api/jobs/compressed-json/files/a")
+    assert stored_resp.status_code == 200
+    assert stored_resp.headers["content-type"].startswith("application/gzip")
+    assert 'filename="trace.json.gz"' in stored_resp.headers["content-disposition"]
+    assert stored_resp.content.startswith(b"\x1f\x8b")
+
+
 def test_done_job_exposes_perfetto_context(client, sample_trace_file):
     result_dir = Path(web_server.result_dir("done-job"))
     result_dir.mkdir(parents=True)

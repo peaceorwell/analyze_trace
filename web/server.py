@@ -186,6 +186,38 @@ def _compress_json_to_gz(json_path: str, gz_path: str):
             shutil.copyfileobj(src, dst)
 
 
+def _safe_download_name(filename: Optional[str], fallback: str) -> str:
+    name = os.path.basename(filename or fallback).replace('"', "")
+    return name or fallback
+
+
+def _json_download_name(filename: Optional[str], slot: str) -> str:
+    name = _safe_download_name(filename, f"trace_{slot}.json")
+    lower = name.lower()
+    if lower.endswith(".tar.gz"):
+        return name[:-7] + ".json"
+    if lower.endswith(".tgz"):
+        return name[:-4] + ".json"
+    if lower.endswith(".json.gz"):
+        return name[:-3]
+    if lower.endswith(".gz"):
+        base = name[:-3]
+        return base if base.lower().endswith(".json") else base + ".json"
+    return name if lower.endswith(".json") else name + ".json"
+
+
+def _stored_download_name(filename: Optional[str], file_path: str, slot: str) -> str:
+    name = _safe_download_name(filename, f"trace_{slot}.json")
+    lower = name.lower()
+    if file_path.endswith(".gz") and not (lower.endswith(".gz") or lower.endswith(".tgz")):
+        return name + ".gz"
+    return name
+
+
+def _content_disposition(filename: str, disposition: str = "attachment") -> str:
+    return f'{disposition}; filename="{filename}"'
+
+
 def csv_to_rows(path: str) -> dict:
     """Read a CSV file and return {fields, rows}."""
     if not os.path.exists(path):
@@ -2005,23 +2037,28 @@ async def get_job_file(jid: str, slot: str, format: Optional[str] = None):
     if not file_path or not os.path.exists(file_path):
         raise HTTPException(404, "File not found")
 
-    # If the client requests raw JSON and we only have .gz, extract on the fly.
-    if format == "json" and file_path.endswith(".gz"):
-        filename = row.get(f"file_{slot}_name") or f"trace_{slot}.json"
-        try:
-            chunks = _iter_tar_json(file_path) if tarfile.is_tarfile(file_path) else _iter_gzip_json(file_path)
-        except ValueError as exc:
-            raise HTTPException(400, str(exc))
-        return StreamingResponse(
-            chunks,
-            media_type="application/json",
-            headers={"Content-Disposition": f'inline; filename="{filename}"'},
-        )
+    filename = row.get(f"file_{slot}_name")
+
+    # If the client requests raw JSON, return parseable JSON even when storage
+    # keeps only a compressed copy after analysis.
+    if format == "json":
+        json_filename = _json_download_name(filename, slot)
+        if file_path.endswith(".gz"):
+            try:
+                chunks = _iter_tar_json(file_path) if tarfile.is_tarfile(file_path) else _iter_gzip_json(file_path)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc))
+            return StreamingResponse(
+                chunks,
+                media_type="application/json",
+                headers={"Content-Disposition": _content_disposition(json_filename)},
+            )
+        return FileResponse(file_path, media_type="application/json", filename=json_filename)
 
     # Stream file directly — avoids loading entire file into memory
     media_type = "application/gzip" if file_path.endswith(".gz") else "application/json"
-    filename = row.get(f"file_{slot}_name") or f"trace_{slot}.json"
-    return FileResponse(file_path, media_type=media_type, filename=filename)
+    stored_filename = _stored_download_name(filename, file_path, slot)
+    return FileResponse(file_path, media_type=media_type, filename=stored_filename)
 
 
 @app.delete("/api/jobs/{jid}/files/{slot}", status_code=204)
