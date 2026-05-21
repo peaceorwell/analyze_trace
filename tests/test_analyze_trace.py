@@ -1,4 +1,5 @@
 import csv
+import json
 import os
 import sys
 
@@ -114,6 +115,27 @@ class TestParseTrace:
     def test_tar_gzip_trace(self, sample_trace_file_tar_gz):
         result = parse_trace(sample_trace_file_tar_gz, ["gemm"])
         assert result["step_durations"][0] == 100.0
+
+    def test_step_underscore_markers(self, tmp_path):
+        trace_path = tmp_path / "step_underscore.json"
+        trace_path.write_text(json.dumps({
+            "traceEvents": [
+                {"name": "step_0", "cat": "python_function", "ts": 1000, "dur": 1000},
+                {"name": "step_0", "cat": "gpu_user_annotation", "ts": 1100, "dur": 1400},
+                {"name": "step_1", "cat": "python_function", "ts": 3000, "dur": 1000},
+                {"name": "triton_poi_fused_add", "cat": "kernel", "ts": 1200, "dur": 100, "args": {}},
+                {"name": "gemm_cuda_kernel", "cat": "kernel", "ts": 3200, "dur": 200, "args": {}},
+                {"name": "aten::linear", "cat": "cpu_op", "ts": 1250, "dur": 50, "args": {}},
+            ],
+        }))
+
+        result = parse_trace(str(trace_path), ["gemm"])
+
+        assert result["step_ranges"][0] == (1000, 2500)
+        assert result["step_durations"][0] == 1.5
+        assert result["step_to_kernels"][0]["triton_poi_fused_add"]["count"] == 1
+        assert result["step_to_kernels"][1]["gemm_cuda_kernel"]["count"] == 1
+        assert result["step_to_aten"][0]["aten::linear"]["count"] == 1
 
 
 class TestComputeAvgs:

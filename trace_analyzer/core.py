@@ -69,6 +69,22 @@ _FAMILY_PATTERNS = [
 # Pre-compiled regex for stripping leading "void " and C++ namespace prefixes (used in fallback)
 _STRIP_LEADING_RE  = re.compile(r'^(void\s+|at::native::|\w+::)+', re.IGNORECASE)
 
+_STEP_NAME_PATTERNS = [
+    re.compile(r"^ProfilerStep#\s*(\d+)$", re.IGNORECASE),
+    re.compile(r"^ProfilerStep\s*#?\s*(\d+)$", re.IGNORECASE),
+    re.compile(r"^step[_\s#:-]*(\d+)$", re.IGNORECASE),
+]
+
+
+def extract_step_number(name: str):
+    """Return a numeric step id for common profiler step marker names."""
+    text = (name or "").strip()
+    for pattern in _STEP_NAME_PATTERNS:
+        match = pattern.match(text)
+        if match:
+            return int(match.group(1))
+    return None
+
 
 def extract_kernel_family(name: str) -> str:
     """Map a GPU kernel name to a semantic family label.
@@ -308,7 +324,7 @@ def parse_trace(trace_file, kernel_types):
                               types: triton, gemm, embedding, pooling, other
         step_to_aten:         step -> {op_name -> {"count": int, "dur_ms": float}}
         step_to_cncl:         step -> {op_name -> {"count": int, "dur_ms": float}}
-        step_durations:       step -> wall-clock duration in ms (from ProfilerStep# event)
+        step_durations:       step -> wall-clock duration in ms (from ProfilerStep#/step_N event)
     """
     trace = _load_trace_json(trace_file)
 
@@ -321,15 +337,24 @@ def parse_trace(trace_file, kernel_types):
     aten_events       = []
     cncl_events       = []
 
+    def add_step_range(step_num, ts, dur):
+        start = ts
+        end = ts + dur
+        if step_num in step_ranges:
+            old_start, old_end = step_ranges[step_num]
+            start = min(old_start, start)
+            end = max(old_end, end)
+        step_ranges[step_num] = (start, end)
+        step_durations[step_num] = (end - start) / 1000
+
     for e in events:
         name = e.get("name", "")
         cat  = e.get("cat", "")
-        if name.startswith("ProfilerStep#") and cat == "user_annotation":
+        step_num = extract_step_number(name)
+        if step_num is not None and cat != "kernel":
             ts  = e.get("ts", 0)
             dur = e.get("dur", 0)
-            step_num = int(name.split("#")[-1])
-            step_ranges[step_num]    = (ts, ts + dur)
-            step_durations[step_num] = dur / 1000
+            add_step_range(step_num, ts, dur)
         elif cat == "kernel":
             all_kernel_events.append(e)
         elif name.startswith("aten::"):
