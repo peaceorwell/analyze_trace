@@ -586,7 +586,7 @@ select.input { appearance: none; cursor: pointer; }
 
 /* result tabs */
 .result-body { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-.result-tabs { display: flex; gap: 2px; flex-wrap: wrap; margin-bottom: 8px; flex-shrink: 0; }
+.result-tabs { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; margin-bottom: 8px; flex-shrink: 0; }
 .result-tabs .tab {
   padding: 4px 10px; border-radius: 5px; border: none; background: none;
   font-size: 11px; font-weight: 600; color: var(--text3); cursor: pointer;
@@ -602,6 +602,32 @@ select.input { appearance: none; cursor: pointer; }
   width: 5px; height: 5px; border-radius: 50%;
   background: var(--purple-l);
 }
+.result-tabs-spacer { flex: 1 1 auto; min-width: 8px; }
+.reading-toggle {
+  border: 1px solid var(--border2) !important;
+  background: var(--card2) !important;
+  color: var(--text2) !important;
+}
+.reading-toggle:hover { border-color: var(--purple-l) !important; color: var(--purple-l) !important; }
+body.result-reading-active { overflow: hidden; }
+.result-body.reading-mode {
+  position: fixed; inset: 0; z-index: 4000;
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: 0 24px 80px rgba(0,0,0,.45);
+}
+.result-body.reading-mode .result-tabs {
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.result-body.reading-mode > .console-out,
+.result-body.reading-mode > .chart-wrap,
+.result-body.reading-mode > .table-wrap {
+  flex: 1; min-height: 0;
+}
+.result-body.reading-mode > .chart-wrap { overflow: auto; }
 
 /* console */
 .console-out {

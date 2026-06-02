@@ -92,6 +92,7 @@ const resultTableFile = ref("");
 const resultTableLoading = ref(false);
 const resultTableError = ref("");
 const preparingResultTab = ref("");
+const isReadingMode = ref(false);
 const chartTables = ref({});
 const colWidths     = ref({});
 const colFilters    = ref({});
@@ -206,6 +207,27 @@ const restoreResultViewState = (jobId, tab) => {
   applyResultViewState(resultViewStateFor(jobId, tab));
 };
 const rememberedResultTab = jobId => readResultMemory(jobId).lastTab || "console";
+
+const refreshReadingLayout = () => {
+  if (resultTab.value === "chart" && selectedJob.value?.status === "done") {
+    nextTick(() => buildChart());
+  }
+};
+
+const toggleReadingMode = () => {
+  isReadingMode.value = !isReadingMode.value;
+  nextTick(refreshReadingLayout);
+};
+
+const exitReadingMode = () => {
+  if (!isReadingMode.value) return;
+  isReadingMode.value = false;
+  nextTick(refreshReadingLayout);
+};
+
+window.addEventListener("keydown", event => {
+  if (event.key === "Escape" && isReadingMode.value) exitReadingMode();
+});
 
 // ── Triton ──────────────────────────────────────────────────────────────
 const tritonStatus = ref({});
@@ -2901,13 +2923,19 @@ const JobDetail = {
       </div>
 
       <!-- Done: tabs -->
-      <div v-else-if="selectedJob.status==='done'" class="result-body">
+      <div v-else-if="selectedJob.status==='done'" :class="['result-body', isReadingMode ? 'reading-mode' : '']">
         <div class="result-tabs">
           <button v-for="t in availableTabs" :key="t.key"
                   :class="['tab', resultTab===t.key?'active':'', preparingResultTab===t.key?'preparing':'']"
                   :disabled="preparingResultTab===t.key"
                   @click="switchTab(t.key)">
             {{ t.label }}
+          </button>
+          <span class="result-tabs-spacer"></span>
+          <button class="tab reading-toggle"
+                  :title="isReadingMode ? '退出阅读模式' : '进入阅读模式'"
+                  @click="toggleReadingMode">
+            {{ isReadingMode ? '退出阅读' : '阅读模式' }}
           </button>
         </div>
 
@@ -3168,6 +3196,7 @@ const JobDetail = {
     return {
       ktChart: ktChartRef, ktPieChart: ktPieChartRef, ktPieChartB: ktPieChartBRef,
       selectedJob, selectedJobId, jobLoading, resultTab, availableTabs, currentTable,
+      isReadingMode, toggleReadingMode,
       chartSource, chartMetric, chartTopN, chartTopNOptions, chartSourceOptions,
       chartMetricOptions, chartLoading, chartError, chartSummaryCards,
       chartSlowdowns, chartSpeedups, buildChart, drillDownChart, fmtDeltaMs,
@@ -3223,6 +3252,7 @@ router.beforeEach(async (to, from) => {
   if (!newJobId) {
     // Navigated to home -- clean up
     saveResultViewState();
+    isReadingMode.value = false;
     if (ktChartInst.value)     { ktChartInst.value.destroy();     ktChartInst.value = null; }
     if (ktPieChartInst.value)  { ktPieChartInst.value.destroy();  ktPieChartInst.value = null; }
     if (ktPieChartInstB.value) { ktPieChartInstB.value.destroy(); ktPieChartInstB.value = null; }
@@ -3257,6 +3287,7 @@ router.beforeEach(async (to, from) => {
 
   // Different job -- full load
   saveResultViewState();
+  isReadingMode.value = false;
   if (ktChartInst.value)     { ktChartInst.value.destroy();     ktChartInst.value = null; }
   if (ktPieChartInst.value)  { ktPieChartInst.value.destroy();  ktPieChartInst.value = null; }
   if (ktPieChartInstB.value) { ktPieChartInstB.value.destroy(); ktPieChartInstB.value = null; }
@@ -3375,6 +3406,9 @@ const App = {
     watch(sidebarWidth, value => localStorage.setItem("tpa-sidebar-width", String(value)));
     watch(sidebarCollapsed, value => localStorage.setItem("tpa-sidebar-collapsed", String(value)));
     watch(sidebarTab, value => localStorage.setItem("tpa-sidebar-tab", value));
+    watch(isReadingMode, value => {
+      document.body.classList.toggle("result-reading-active", value);
+    });
     watch(collapsedGroups, value => {
       if (!historySearch.value.trim()) {
         localStorage.setItem("tpa-expanded-groups", JSON.stringify(value));
