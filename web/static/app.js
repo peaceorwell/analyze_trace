@@ -2395,35 +2395,35 @@ const JobDetail = {
 
       <!-- File info -->
       <div class="file-info">
-        <span v-if="selectedJob.file_a_name">
-          <strong v-if="selectedJob.mode==='compare'">A:</strong>
-          📄 {{ selectedJob.file_a_name }}
+        <div v-if="selectedJob.file_a_name" class="trace-file-row">
+          <span v-if="selectedJob.mode==='compare'" class="trace-slot">A</span>
+          <span class="trace-file-name" :title="selectedJob.file_a_name">📄 {{ selectedJob.file_a_name }}</span>
           <span v-if="!selectedJob.file_a_exists" class="tag-deleted">已删除</span>
-          <template v-else>
+          <div v-else class="trace-file-actions">
             <button v-if="allowFileDownload" class="btn btn-xs btn-outline" @click="downloadTraceFile('a')">下载</button>
             <button v-if="allowFileDownload" class="btn btn-xs btn-perfetto"
                     :disabled="perfettoOpening.a"
                     @click="openInPerfetto('a')">{{ perfettoButtonLabel('a') }}</button>
             <button class="btn btn-xs btn-danger" @click="deleteFile('a')">删除文件</button>
-          </template>
-        </span>
-        <span v-if="selectedJob.file_b_name" class="ml-4">
-          <strong v-if="selectedJob.mode==='compare'">B:</strong>
-          📄 {{ selectedJob.file_b_name }}
+          </div>
+        </div>
+        <div v-if="selectedJob.file_b_name" class="trace-file-row">
+          <span v-if="selectedJob.mode==='compare'" class="trace-slot">B</span>
+          <span class="trace-file-name" :title="selectedJob.file_b_name">📄 {{ selectedJob.file_b_name }}</span>
           <span v-if="!selectedJob.file_b_exists" class="tag-deleted">已删除</span>
-          <template v-else>
+          <div v-else class="trace-file-actions">
             <button v-if="allowFileDownload" class="btn btn-xs btn-outline" @click="downloadTraceFile('b')">下载</button>
             <button v-if="allowFileDownload" class="btn btn-xs btn-perfetto"
                     :disabled="perfettoOpening.b"
                     @click="openInPerfetto('b')">{{ perfettoButtonLabel('b') }}</button>
             <button class="btn btn-xs btn-danger" @click="deleteFile('b')">删除文件</button>
-          </template>
-        </span>
+          </div>
+        </div>
       </div>
 
       <div v-if="selectedJob.mode==='compare' && selectedJob.compare_sources" class="compare-source-panel">
         <div class="compare-source-head">
-          <span>对比来源</span>
+          <span>来源</span>
           <button class="btn btn-xs btn-outline" @click="rerunCompareSwapped">交换 A/B 重新对比</button>
         </div>
         <div class="compare-source-grid">
