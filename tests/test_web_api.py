@@ -9,7 +9,7 @@ import shutil
 
 import aiosqlite
 import pytest
-from fastapi import UploadFile
+from fastapi import HTTPException, UploadFile
 from fastapi.testclient import TestClient
 
 
@@ -313,6 +313,46 @@ def test_code_execution_is_disabled_by_default(client):
 
     assert r.status_code == 403
     assert r.json()["detail"] == "Code execution is disabled"
+
+
+def test_triton_code_paths_reject_sibling_prefix_traversal(isolated_server, monkeypatch):
+    monkeypatch.setattr(isolated_server, "ALLOW_CODE_EXECUTION", True)
+    storage_dir = Path(isolated_server.STORAGE_DIR)
+    job_id = "job"
+    sibling_dir = storage_dir / f"{job_id}-sibling"
+    sibling_dir.mkdir(parents=True)
+    (sibling_dir / "kernel.py").write_text("print('outside')\n")
+
+    async def seed_job():
+        await web_db.init_db()
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                "INSERT INTO jobs(id, label, mode, status, result_dir) VALUES(?,?,?,?,?)",
+                (job_id, "done", "single", "done", str(storage_dir / job_id / "results")),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(seed_job())
+
+    with TestClient(isolated_server.app) as test_client:
+        run_resp = test_client.post(
+            f"/api/jobs/{job_id}/run-triton-single",
+            json={"code_path": "../job-sibling/kernel.py"},
+        )
+
+    assert run_resp.status_code == 400
+    assert run_resp.json()["detail"] == "Invalid code_path"
+    with pytest.raises(HTTPException) as exc_info:
+        web_server._safe_child_path(
+            str(storage_dir / job_id / "results"),
+            "../job-sibling/kernel.py",
+            "Invalid path",
+        )
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "Invalid path"
 
 
 def test_startup_marks_interrupted_jobs_error(isolated_server):
@@ -630,7 +670,7 @@ def test_uploaded_trace_formats_download_as_json_gzip(
         with open(path, "rb") as f:
             created = client.post(
                 "/api/jobs",
-                data={"label": label, "kernel_types": "gemm"},
+                data={"label": label},
                 files={"file_a": (filename, f, "application/octet-stream")},
             )
         assert created.status_code == 201

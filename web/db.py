@@ -79,7 +79,6 @@ async def init_db():
                 source_job_a     TEXT REFERENCES jobs(id) ON DELETE SET NULL,
                 source_job_b     TEXT REFERENCES jobs(id) ON DELETE SET NULL,
 
-                kernel_types     TEXT DEFAULT 'gemm,embedding,pool',
                 save_triton_csv  INTEGER DEFAULT 0,
                 save_triton_code INTEGER DEFAULT 0,
 
@@ -146,7 +145,6 @@ async def init_db():
                 source_job_a     TEXT,
                 source_job_b     TEXT,
 
-                kernel_types     TEXT DEFAULT 'gemm,embedding,pool',
                 save_triton_csv  INTEGER DEFAULT 0,
                 save_triton_code INTEGER DEFAULT 0,
 

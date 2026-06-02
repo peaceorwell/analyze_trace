@@ -28,20 +28,9 @@ def pct(a, b):
     return f"{(b - a) / a * 100:+.1f}%"
 
 
-def classify_kernel(name, args, kernel_types):
-    """Classify a GPU kernel by checking kernel_types patterns in order.
-
-    kernel_types is a list of pattern strings; the first pattern found as a
-    case-insensitive substring of name is returned as the type.
-    Triton kernels (identified via args) are always classified as "triton".
-    Unmatched kernels return "other".
-    """
-    if name.startswith("triton_"):
-        return "triton"
-    nl = name.lower()
-    for pattern in kernel_types:
-        if pattern in nl:
-            return pattern
+def classify_kernel(name, args=None):
+    """Classify a GPU kernel into the automatic family taxonomy."""
+    args = args or {}
     if args.get("Collective name"):
         return "collective"
     return extract_kernel_family(name)
@@ -142,7 +131,25 @@ def extract_kernel_family(name: str) -> str:
     return "other"
 
 
-def auto_classify_kernels(avg_kernels: dict) -> tuple:
+def safe_float(value):
+    """Parse a profiler numeric field, returning None for missing or malformed values."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    match = re.search(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?", text.replace(",", ""))
+    if not match:
+        return None
+    try:
+        return float(match.group(0))
+    except ValueError:
+        return None
+
+
+def auto_classify_kernels(avg_kernels: dict, kernel_families: dict | None = None) -> tuple:
     """Classify kernel families from aggregated per-kernel stats.
 
     Every distinct non-collective family with any duration gets its own category,
@@ -163,8 +170,9 @@ def auto_classify_kernels(avg_kernels: dict) -> tuple:
     # Aggregate per-kernel stats into families
     family_dur   = defaultdict(float)
     family_count = defaultdict(float)
+    kernel_families = kernel_families or {}
     for name, stats in avg_kernels.items():
-        fam = extract_kernel_family(name)
+        fam = kernel_families.get(name) or extract_kernel_family(name)
         family_dur[fam]   += stats["avg_dur_ms"]
         family_count[fam] += stats["avg_count"]
 
@@ -255,14 +263,15 @@ def write_avg_csv(path, data, name_field):
     print(f"Wrote {path} ({len(data)} rows)")
 
 
-def _write_kernels_avg_csv(path, avg_kernels):
+def _write_kernels_avg_csv(path, avg_kernels, kernel_families=None):
     """Write all_kernels_avg.csv with family, dur_pct, count_pct, and avg_us_per_call.
 
     dur_pct / count_pct for compute kernels are relative to the compute total
     (collective excluded).  For collective kernels they are relative to all-kernel total.
     """
     # Pre-compute family for each kernel (avoid calling extract_kernel_family twice)
-    families = {name: extract_kernel_family(name) for name in avg_kernels}
+    kernel_families = kernel_families or {}
+    families = {name: kernel_families.get(name) or extract_kernel_family(name) for name in avg_kernels}
     total_dur     = sum(v["avg_dur_ms"] for v in avg_kernels.values()) or 1.0
     total_count   = sum(v["avg_count"]  for v in avg_kernels.values()) or 1.0
     compute_dur   = sum(v["avg_dur_ms"] for name, v in avg_kernels.items()
@@ -327,18 +336,17 @@ def _load_trace_json(trace_file):
         return json.load(f)
 
 
-def parse_trace(trace_file, kernel_types):
+def parse_trace(trace_file):
     """Parse a PyTorch profiler trace JSON.
 
     Returns:
         step_to_triton:       step -> [{kernel_name, dur(ms), total io(GB), IO efficiency(GB/s),
                                         tiling config, triton_output_code}]
         step_to_kernels:      step -> {kernel_name -> {"count": int, "dur_ms": float}}
-        step_to_kernel_types: step -> {type -> {"count": int, "dur_ms": float}}
-                              types: triton, gemm, embedding, pooling, other
         step_to_aten:         step -> {op_name -> {"count": int, "dur_ms": float}}
-        step_to_cncl:         step -> {op_name -> {"count": int, "dur_ms": float}}
+        step_to_cncl:         step -> {op/kernel_name -> {"count": int, "dur_ms": float}}
         step_durations:       step -> wall-clock duration in ms (from ProfilerStep#/step_N event)
+        kernel_families:      kernel_name -> automatic family label
     """
     trace = _load_trace_json(trace_file)
 
@@ -350,6 +358,7 @@ def parse_trace(trace_file, kernel_types):
     all_kernel_events = []
     aten_events       = []
     cncl_events       = []
+    kernel_families   = {}
 
     def add_step_range(step_num, ts, dur):
         start = ts
@@ -389,7 +398,6 @@ def parse_trace(trace_file, kernel_types):
 
     step_to_triton       = defaultdict(list)
     step_to_kernels      = defaultdict(lambda: defaultdict(lambda: {"count": 0, "dur_ms": 0.0}))
-    step_to_kernel_types = defaultdict(lambda: defaultdict(lambda: {"count": 0, "dur_ms": 0.0}))
     step_to_aten         = defaultdict(lambda: defaultdict(lambda: {"count": 0, "dur_ms": 0.0}))
     step_to_cncl         = defaultdict(lambda: defaultdict(lambda: {"count": 0, "dur_ms": 0.0}))
 
@@ -404,25 +412,19 @@ def parse_trace(trace_file, kernel_types):
         step_to_kernels[step][name]["dur_ms"] += dur_ms
 
         args  = e.get("args", {})
-        ktype = classify_kernel(name, args, kernel_types)
-        step_to_kernel_types[step][ktype]["count"]  += 1
-        step_to_kernel_types[step][ktype]["dur_ms"] += dur_ms
-
-        # For triton kernels, additionally accumulate any matching user patterns
-        # as sub-categories (a kernel can appear in both "triton" and e.g. "triton_red")
-        if ktype == "triton":
-            nl = name.lower()
-            for pattern in kernel_types:
-                if pattern in nl:
-                    step_to_kernel_types[step][pattern]["count"]  += 1
-                    step_to_kernel_types[step][pattern]["dur_ms"] += dur_ms
+        family = classify_kernel(name, args)
+        if name not in kernel_families or family == "collective":
+            kernel_families[name] = family
+        if family == "collective":
+            step_to_cncl[step][name]["count"]  += 1
+            step_to_cncl[step][name]["dur_ms"] += dur_ms
 
         if name.startswith("triton_"):
             step_to_triton[step].append({
                 "kernel_name":         name,
                 "dur(ms)":             dur_ms if raw_dur is not None else None,
-                "total io(GB)":        float(args["kernel num(GB)"])      if "kernel num(GB)" in args else None,
-                "IO efficiency(GB/s)": float(args["IO efficiency(GB/s)"]) if "IO efficiency(GB/s)" in args else None,
+                "total io(GB)":        safe_float(args.get("kernel num(GB)")),
+                "IO efficiency(GB/s)": safe_float(args.get("IO efficiency(GB/s)")),
                 "tiling config":       args.get("kernel kwargs", None),
                 "triton_output_code":  args.get("triton output code"),
             })
@@ -450,11 +452,11 @@ def parse_trace(trace_file, kernel_types):
     return {
         "step_to_triton":       step_to_triton,
         "step_to_kernels":      step_to_kernels,
-        "step_to_kernel_types": step_to_kernel_types,
         "step_to_aten":         step_to_aten,
         "step_to_cncl":         step_to_cncl,
         "step_durations":       step_durations,
         "step_ranges":          step_ranges,
+        "kernel_families":      kernel_families,
     }
 
 
@@ -480,20 +482,24 @@ def avg_stats(step_to_dict, steps):
     return dict(sorted(result.items(), key=lambda x: -x[1]["avg_dur_ms"]))
 
 
-def compute_avgs(parsed, kernel_types):
+def compute_avgs(parsed):
     """Compute all average stats from a parsed trace. Returns a data dict."""
     # Support both dict (new API) and tuple (old API) for backward compatibility
     if isinstance(parsed, dict):
         step_to_triton       = parsed["step_to_triton"]
         step_to_kernels      = parsed["step_to_kernels"]
-        step_to_kernel_types = parsed["step_to_kernel_types"]
         step_to_aten         = parsed["step_to_aten"]
         step_to_cncl         = parsed["step_to_cncl"]
         step_durations       = parsed["step_durations"]
         step_ranges          = parsed.get("step_ranges", {})
+        kernel_families      = parsed.get("kernel_families", {})
     else:
-        step_to_triton, step_to_kernels, step_to_kernel_types, step_to_aten, step_to_cncl, step_durations = parsed
+        if len(parsed) == 6:
+            step_to_triton, step_to_kernels, _, step_to_aten, step_to_cncl, step_durations = parsed
+        else:
+            step_to_triton, step_to_kernels, step_to_aten, step_to_cncl, step_durations = parsed
         step_ranges = {}
+        kernel_families = {}
     all_steps = sorted(set(step_durations) | set(step_to_kernels) | set(step_to_aten) | set(step_to_cncl))
     n_steps   = len(all_steps)
     mean      = lambda vals: sum(vals) / n_steps if n_steps else 0.0
@@ -502,24 +508,37 @@ def compute_avgs(parsed, kernel_types):
     for step in all_steps:
         sd  = step_durations.get(step, 0.0)
         kc  = sum(v["count"]  for v in step_to_kernels[step].values())
-        kd  = sum(v["dur_ms"] for v in step_to_kernels[step].values())
+        collective_names = set(step_to_cncl[step])
+        ckd = sum(
+            v["dur_ms"]
+            for name, v in step_to_kernels[step].items()
+            if (
+                name not in collective_names
+                and (kernel_families.get(name) or extract_kernel_family(name)) != "collective"
+            )
+        )
         tc  = len(step_to_triton[step])
         td  = sum((k["dur(ms)"] or 0.0) for k in step_to_triton[step])
         ac  = sum(v["count"]  for v in step_to_aten[step].values())
         ad  = sum(v["dur_ms"] for v in step_to_aten[step].values())
         cc  = sum(v["count"]  for v in step_to_cncl[step].values())
         cd  = sum(v["dur_ms"] for v in step_to_cncl[step].values())
-        ckd = kd - cd
         step_stats[step] = (sd, kc, ckd, tc, td, ac, ad, cc, cd)
 
     avg_row = tuple(mean([step_stats[s][i] for s in all_steps]) for i in range(9))
 
     # Auto-classify kernel families from aggregated per-kernel stats
     avg_kernels_data = avg_stats(step_to_kernels, all_steps)
-    KERNEL_TYPES, kt_avgs = auto_classify_kernels(avg_kernels_data)
+    KERNEL_TYPES, kt_avgs = auto_classify_kernels(avg_kernels_data, kernel_families)
 
     # Triton aggregation: per step by kernel name
-    step_triton_agg = defaultdict(lambda: defaultdict(lambda: {"count": 0, "dur_ms": 0.0, "io_gb": 0.0, "io_eff": 0.0}))
+    step_triton_agg = defaultdict(lambda: defaultdict(lambda: {
+        "count": 0,
+        "dur_ms": 0.0,
+        "io_gb": 0.0,
+        "io_eff_sum": 0.0,
+        "io_eff_count": 0,
+    }))
     for step, kernels in step_to_triton.items():
         for k in kernels:
             a = step_triton_agg[step][k["kernel_name"]]
@@ -527,7 +546,9 @@ def compute_avgs(parsed, kernel_types):
             a["dur_ms"] += k["dur(ms)"] or 0.0
             if k["total io(GB)"] is not None:
                 a["io_gb"]  += k["total io(GB)"]
-                a["io_eff"] += k["IO efficiency(GB/s)"]
+            if k["IO efficiency(GB/s)"] is not None:
+                a["io_eff_sum"] += k["IO efficiency(GB/s)"]
+                a["io_eff_count"] += 1
 
     all_triton_names = set()
     for s in all_steps:
@@ -535,11 +556,13 @@ def compute_avgs(parsed, kernel_types):
 
     avg_triton = {}
     for name in all_triton_names:
+        io_eff_sum = sum(step_triton_agg[s].get(name, {"io_eff_sum": 0.0})["io_eff_sum"] for s in all_steps)
+        io_eff_count = sum(step_triton_agg[s].get(name, {"io_eff_count": 0})["io_eff_count"] for s in all_steps)
         avg_triton[name] = {
-            "avg_count":  mean([step_triton_agg[s].get(name, {"count": 0})["count"]    for s in all_steps]),
+            "avg_count":  mean([step_triton_agg[s].get(name, {"count": 0})["count"] for s in all_steps]),
             "avg_dur_ms": mean([step_triton_agg[s].get(name, {"dur_ms": 0.0})["dur_ms"] for s in all_steps]),
-            "avg_io_gb":  mean([step_triton_agg[s].get(name, {"io_gb": 0.0})["io_gb"]   for s in all_steps]),
-            "avg_io_eff": mean([step_triton_agg[s].get(name, {"io_eff": 0.0})["io_eff"] for s in all_steps]),
+            "avg_io_gb":  mean([step_triton_agg[s].get(name, {"io_gb": 0.0})["io_gb"] for s in all_steps]),
+            "avg_io_eff": (io_eff_sum / io_eff_count) if io_eff_count else None,
         }
     avg_triton = dict(sorted(avg_triton.items(), key=lambda x: -x[1]["avg_dur_ms"]))
 
@@ -556,6 +579,7 @@ def compute_avgs(parsed, kernel_types):
         "avg_triton":     avg_triton,
         "step_to_triton": step_to_triton,
         "step_ranges":    step_ranges,
+        "kernel_families": kernel_families,
     }
 
 
@@ -612,11 +636,12 @@ def print_top_kernels(data, top_n=10, label=""):
     if not avg_kernels:
         return
 
+    kernel_families = data.get("kernel_families", {})
     # Build compute-only list (exclude collective kernels)
     compute_kernels = [
-        (name, stats, extract_kernel_family(name))
+        (name, stats, kernel_families.get(name) or extract_kernel_family(name))
         for name, stats in avg_kernels.items()
-        if extract_kernel_family(name) != "collective"
+        if (kernel_families.get(name) or extract_kernel_family(name)) != "collective"
     ]
     if not compute_kernels:
         return
@@ -709,7 +734,7 @@ def _write_triton_avg_csv(path, avg_triton):
     print(f"Wrote {path} ({len(avg_triton)} rows)")
 
 
-def _write_kernel_types_csv(path, kernel_types, kt_avgs):
+def _write_kernel_types_csv(path, kernel_type_names, kt_avgs):
     total_dur     = sum(v[1] for v in kt_avgs.values()) or 1.0
     total_count   = sum(v[0] for v in kt_avgs.values()) or 1.0
     coll_dur      = kt_avgs.get("collective", (0.0, 0.0))[1]
@@ -719,8 +744,8 @@ def _write_kernel_types_csv(path, kernel_types, kt_avgs):
     with open(path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=["type", "avg_count", "count_pct", "avg_dur_ms", "dur_pct"])
         writer.writeheader()
-        # kernel_types contains only compute families (no collective)
-        for ktype in kernel_types:
+        # kernel_type_names contains only compute families (no collective)
+        for ktype in kernel_type_names:
             ac, ad = kt_avgs[ktype]
             writer.writerow({
                 "type":       ktype,
@@ -729,7 +754,7 @@ def _write_kernel_types_csv(path, kernel_types, kt_avgs):
                 "avg_dur_ms": fmt3(ad),
                 "dur_pct":    f"{ad / compute_dur   * 100:.1f}%",
             })
-    print(f"Wrote {path} ({len(kernel_types)} rows)")
+    print(f"Wrote {path} ({len(kernel_type_names)} rows)")
 
 
 def _write_cmp_avg_csv(path, data_a, data_b, name_field):
@@ -899,7 +924,11 @@ def write_single(data, args):
                     write_triton_code_file(code_dir, idx, kernel)
                 print(f"Wrote {code_dir}/ ({len(kernels)} files)")
 
-    _write_kernels_avg_csv(os.path.join(args.output_dir, "all_kernels_avg.csv"), data["avg_kernels"])
+    _write_kernels_avg_csv(
+        os.path.join(args.output_dir, "all_kernels_avg.csv"),
+        data["avg_kernels"],
+        data.get("kernel_families", {}),
+    )
     _write_triton_avg_csv(os.path.join(args.output_dir, "triton_kernels_avg.csv"), data["avg_triton"])
     write_avg_csv(os.path.join(args.output_dir, "aten_ops_avg.csv"),    data["avg_aten"],    "op_name")
     _write_kernel_types_csv(os.path.join(args.output_dir, "kernel_types_avg.csv"), data["KERNEL_TYPES"], data["kt_avgs"])
@@ -944,21 +973,12 @@ def main(argv=None):
         action="store_true",
         help="Save per-step triton kernel CSV files (default: off)",
     )
-    parser.add_argument(
-        "-k", "--kernel-types",
-        default="gemm,embedding,pool",
-        metavar="PATTERN,...",
-        help="Comma-separated list of name patterns for kernel classification (case-insensitive substring match). "
-             "Each pattern becomes its own category. First match wins. "
-             "Default: gemm,embedding,pool",
-    )
     args = parser.parse_args(argv)
     if len(args.trace_files) > 2:
         parser.error("At most two trace files can be provided.")
-    kernel_types = [p for p in args.kernel_types.split(",") if p]
 
     if len(args.trace_files) == 1:
-        data = compute_avgs(parse_trace(args.trace_files[0], kernel_types), kernel_types)
+        data = compute_avgs(parse_trace(args.trace_files[0]))
         print_step_summary(data)
         print_kernel_type_breakdown(data)
         print_top_kernels(data)
@@ -966,8 +986,8 @@ def main(argv=None):
     else:
         label_a = os.path.basename(args.trace_files[0])
         label_b = os.path.basename(args.trace_files[1])
-        data_a = compute_avgs(parse_trace(args.trace_files[0], kernel_types), kernel_types)
-        data_b = compute_avgs(parse_trace(args.trace_files[1], kernel_types), kernel_types)
+        data_a = compute_avgs(parse_trace(args.trace_files[0]))
+        data_b = compute_avgs(parse_trace(args.trace_files[1]))
         print_comparison(data_a, data_b, label_a, label_b)
         print_top_kernels(data_a, label=label_a)
         print_top_kernels(data_b, label=label_b)

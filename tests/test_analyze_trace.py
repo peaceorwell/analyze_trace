@@ -10,6 +10,7 @@ from trace_analyzer import (
     fmt3,
     pct,
     classify_kernel,
+    safe_float,
     parse_trace,
     compute_avgs,
     write_avg_csv,
@@ -51,83 +52,79 @@ class TestPct:
 
 
 class TestClassifyKernel:
-    def test_triton_kernel(self):
-        result = classify_kernel("triton_matmul", {}, ["gemm"])
-        assert result == "triton"
+    def test_triton_kernel_family(self):
+        result = classify_kernel("triton_poi_fused_add")
+        assert result == "triton_pointwise"
 
-    def test_custom_pattern(self):
-        result = classify_kernel("gemm_cuda_kernel", {}, ["gemm", "embedding"])
+    def test_auto_family(self):
+        result = classify_kernel("gemm_cuda_kernel")
         assert result == "gemm"
-
-    def test_embedding_pattern(self):
-        result = classify_kernel("embedding_lookup", {}, ["embedding"])
-        assert result == "embedding"
 
     def test_collective(self):
         result = classify_kernel(
-            "some_kernel", {"Collective name": "allreduce"}, []
+            "some_kernel", {"Collective name": "allreduce"}
         )
         assert result == "collective"
 
     def test_fallback_family(self):
-        result = classify_kernel("random_kernel", {}, ["gemm"])
+        result = classify_kernel("random_kernel")
         assert result == "random_kernel"
 
     def test_case_insensitive(self):
-        result = classify_kernel("GEMM_CUDA", {}, ["gemm"])
+        result = classify_kernel("GEMM_CUDA")
         assert result == "gemm"
+
+
+class TestSafeFloat:
+    def test_plain_number(self):
+        assert safe_float("350.2") == 350.2
+
+    def test_number_with_units(self):
+        assert safe_float("350.2 GB/s") == 350.2
+
+    def test_malformed_value(self):
+        assert safe_float("n/a") is None
 
 
 class TestParseTrace:
     def test_basic_parsing(self, sample_trace_file):
-        result = parse_trace(sample_trace_file, ["gemm", "embedding", "pool"])
+        result = parse_trace(sample_trace_file)
 
         assert "step_to_kernels" in result
-        assert "step_to_kernel_types" in result
         assert "step_to_aten" in result
         assert "step_to_cncl" in result
         assert "step_durations" in result
 
-    def test_kernel_classification(self, sample_trace_file):
-        result = parse_trace(sample_trace_file, ["gemm", "embedding", "pool"])
-
-        # Step 0 has triton and gemm kernels
-        step0_kernels = result["step_to_kernel_types"][0]
-        assert "triton" in step0_kernels
-        assert "gemm" in step0_kernels
-
     def test_step_durations(self, sample_trace_file):
-        result = parse_trace(sample_trace_file, ["gemm"])
+        result = parse_trace(sample_trace_file)
 
         # Step 0: 100000 microseconds = 100 ms
         assert result["step_durations"][0] == 100.0
         assert result["step_durations"][1] == 100.0
         assert result["step_durations"][2] == 100.0
 
-    def test_missing_kernel_types(self, sample_trace_file):
-        # Should not raise an error with empty kernel types
-        result = parse_trace(sample_trace_file, [])
-        assert "step_to_kernel_types" in result
+    def test_parse_without_kernel_type_patterns(self, sample_trace_file):
+        result = parse_trace(sample_trace_file)
         assert result["step_ranges"][0] == (1000000, 1100000)
 
     def test_gzip_trace(self, sample_trace_file_gz):
-        result = parse_trace(sample_trace_file_gz, ["gemm"])
+        result = parse_trace(sample_trace_file_gz)
         assert result["step_durations"][0] == 100.0
 
     def test_tar_gzip_trace(self, sample_trace_file_tar_gz):
-        result = parse_trace(sample_trace_file_tar_gz, ["gemm"])
+        result = parse_trace(sample_trace_file_tar_gz)
         assert result["step_durations"][0] == 100.0
 
     def test_tgz_trace(self, sample_trace_file_tar_gz, tmp_path):
         tgz_path = tmp_path / "trace.tgz"
         shutil.copyfile(sample_trace_file_tar_gz, tgz_path)
 
-        result = parse_trace(str(tgz_path), ["gemm"])
+        result = parse_trace(str(tgz_path))
 
         assert result["step_durations"][0] == 100.0
 
     def test_zip_trace(self, sample_trace_file_zip):
-        result = parse_trace(sample_trace_file_zip, ["gemm"])
+        result = parse_trace(sample_trace_file_zip)
         assert result["step_durations"][0] == 100.0
 
     def test_step_underscore_markers(self, tmp_path):
@@ -143,7 +140,7 @@ class TestParseTrace:
             ],
         }))
 
-        result = parse_trace(str(trace_path), ["gemm"])
+        result = parse_trace(str(trace_path))
 
         assert result["step_ranges"][0] == (1000, 2500)
         assert result["step_durations"][0] == 1.5
@@ -154,8 +151,8 @@ class TestParseTrace:
 
 class TestComputeAvgs:
     def test_compute_avgs(self, sample_trace_file):
-        result = parse_trace(sample_trace_file, ["gemm", "embedding", "pool"])
-        avgs = compute_avgs(result, ["gemm", "embedding", "pool"])
+        result = parse_trace(sample_trace_file)
+        avgs = compute_avgs(result)
 
         assert "KERNEL_TYPES" in avgs
         assert "avg_kernels" in avgs
@@ -165,14 +162,78 @@ class TestComputeAvgs:
 
         empty_data = {
             "step_to_kernels": defaultdict(lambda: defaultdict(dict)),
-            "step_to_kernel_types": defaultdict(lambda: defaultdict(dict)),
             "step_to_aten": defaultdict(lambda: defaultdict(dict)),
             "step_to_cncl": defaultdict(lambda: defaultdict(dict)),
             "step_durations": {},
             "step_to_triton": defaultdict(list),
         }
-        avgs = compute_avgs(empty_data, ["gemm"])
+        avgs = compute_avgs(empty_data)
         assert avgs is not None
+
+    def test_triton_io_efficiency_is_call_average(self, tmp_path):
+        trace_path = tmp_path / "trace.json"
+        trace_path.write_text(json.dumps({
+            "traceEvents": [
+                {"name": "ProfilerStep#0", "cat": "user_annotation", "ts": 1000, "dur": 1000},
+                {
+                    "name": "triton_poi_fused_add",
+                    "cat": "kernel",
+                    "ts": 1100,
+                    "dur": 100,
+                    "args": {"IO efficiency(GB/s)": "100 GB/s", "kernel num(GB)": "1GB"},
+                },
+                {
+                    "name": "triton_poi_fused_add",
+                    "cat": "kernel",
+                    "ts": 1200,
+                    "dur": 200,
+                    "args": {"IO efficiency(GB/s)": "300 GB/s", "kernel num(GB)": "2GB"},
+                },
+            ],
+        }))
+
+        avgs = compute_avgs(parse_trace(str(trace_path)))
+
+        assert avgs["avg_triton"]["triton_poi_fused_add"]["avg_io_eff"] == 200.0
+
+    def test_malformed_triton_args_do_not_fail_analysis(self, tmp_path):
+        trace_path = tmp_path / "trace.json"
+        trace_path.write_text(json.dumps({
+            "traceEvents": [
+                {"name": "ProfilerStep#0", "cat": "user_annotation", "ts": 1000, "dur": 1000},
+                {
+                    "name": "triton_poi_fused_add",
+                    "cat": "kernel",
+                    "ts": 1100,
+                    "dur": 100,
+                    "args": {"IO efficiency(GB/s)": "n/a", "kernel num(GB)": ""},
+                },
+            ],
+        }))
+
+        avgs = compute_avgs(parse_trace(str(trace_path)))
+
+        assert avgs["avg_triton"]["triton_poi_fused_add"]["avg_io_eff"] is None
+
+    def test_collective_kernel_is_excluded_from_compute_duration(self, tmp_path):
+        trace_path = tmp_path / "trace.json"
+        trace_path.write_text(json.dumps({
+            "traceEvents": [
+                {"name": "ProfilerStep#0", "cat": "user_annotation", "ts": 1000, "dur": 100000},
+                {"name": "gemm_cuda_kernel", "cat": "kernel", "ts": 1100, "dur": 30000, "args": {}},
+                {"name": "ncclAllReduceKernel", "cat": "kernel", "ts": 50000, "dur": 20000, "args": {}},
+            ],
+        }))
+
+        avgs = compute_avgs(parse_trace(str(trace_path)))
+        _, kernel_count, compute_kernel_dur, _, _, _, _, collective_count, collective_dur = avgs["step_stats"][0]
+
+        assert kernel_count == 2
+        assert compute_kernel_dur == 30.0
+        assert collective_count == 1
+        assert collective_dur == 20.0
+        assert "collective" not in avgs["KERNEL_TYPES"]
+        assert avgs["kt_avgs"]["collective"] == (1.0, 20.0)
 
 
 class TestWriteAvgCsv:
@@ -215,8 +276,8 @@ class TestWriteTritonCodeFile:
 class TestEndToEnd:
     def test_full_analysis(self, sample_trace_file, temp_output_dir):
         """Test full analysis pipeline from parsing to computing averages."""
-        result = parse_trace(sample_trace_file, ["gemm", "embedding", "pool"])
-        avgs = compute_avgs(result, ["gemm", "embedding", "pool"])
+        result = parse_trace(sample_trace_file)
+        avgs = compute_avgs(result)
 
         assert avgs is not None
         assert len(avgs["KERNEL_TYPES"]) > 0

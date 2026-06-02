@@ -291,6 +291,18 @@ def _safe_result_csv_path(jid: str, filename: str) -> str:
     return full
 
 
+def _safe_child_path(root: str, rel_path: str, error_message: str) -> str:
+    root_abs = os.path.abspath(root)
+    full = os.path.abspath(os.path.normpath(os.path.join(root_abs, rel_path)))
+    try:
+        in_root = os.path.commonpath([root_abs, full]) == root_abs
+    except ValueError:
+        in_root = False
+    if not in_root:
+        raise HTTPException(400, error_message)
+    return full
+
+
 def collect_result_files(jid: str) -> dict:
     rdir = result_dir(jid)
     files = {}
@@ -583,7 +595,7 @@ async def _compare_source_summaries(job: dict):
 def _perfetto_context_from_trace(path):
     from trace_analyzer import compute_avgs, parse_trace
 
-    return _perfetto_context(compute_avgs(parse_trace(path, []), []))
+    return _perfetto_context(compute_avgs(parse_trace(path)))
 
 
 async def _resolve_job_trace_path(job: dict, slot: str):
@@ -691,7 +703,7 @@ def _iter_gzip_encoded(chunks):
 
 # ── Synchronous analysis (runs in thread pool, must not await) ────────────────
 
-def _run_sync_analysis(job, kernel_types, rdir, path_a, path_b, name_a, name_b):
+def _run_sync_analysis(job, rdir, path_a, path_b, name_a, name_b):
     """All blocking I/O lives here so the event loop stays free."""
     from trace_analyzer import (compute_avgs, parse_trace,
                                 print_step_summary, print_kernel_type_breakdown, print_top_kernels,
@@ -701,7 +713,7 @@ def _run_sync_analysis(job, kernel_types, rdir, path_a, path_b, name_a, name_b):
     perfetto_context = {}
     with contextlib.redirect_stdout(buf):
         if job["mode"] == "single":
-            data = compute_avgs(parse_trace(path_a, kernel_types), kernel_types)
+            data = compute_avgs(parse_trace(path_a))
             fake_args = types.SimpleNamespace(
                 output_dir=rdir,
                 save_triton_csv=bool(job["save_triton_csv"]),
@@ -713,8 +725,8 @@ def _run_sync_analysis(job, kernel_types, rdir, path_a, path_b, name_a, name_b):
             write_single(data, fake_args)
             perfetto_context["a"] = _perfetto_context(data)
         else:
-            data_a = compute_avgs(parse_trace(path_a, kernel_types), kernel_types)
-            data_b = compute_avgs(parse_trace(path_b, kernel_types), kernel_types)
+            data_a = compute_avgs(parse_trace(path_a))
+            data_b = compute_avgs(parse_trace(path_b))
             fake_args = types.SimpleNamespace(output_dir=rdir)
             label_a = name_a or os.path.basename(path_a)
             label_b = name_b or os.path.basename(path_b)
@@ -746,7 +758,6 @@ async def run_analysis(job_id: str):
         await db.execute("UPDATE jobs SET status='running', error_msg='' WHERE id=?", (job_id,))
         await db.commit()
 
-        kernel_types = [p for p in (job["kernel_types"] or "").split(",") if p]
         rdir = result_dir(job_id)
         os.makedirs(rdir, exist_ok=True)
 
@@ -768,7 +779,7 @@ async def run_analysis(job_id: str):
 
         # Run all blocking analysis in a thread pool so the event loop stays responsive
         console_out = await asyncio.to_thread(
-            _run_sync_analysis, job, kernel_types, rdir, path_a, path_b, name_a, name_b
+            _run_sync_analysis, job, rdir, path_a, path_b, name_a, name_b
         )
 
         # Post-analysis: keep only .json.gz files to save storage space
@@ -897,15 +908,15 @@ async def delete_project(pid: str):
             INSERT INTO deleted_jobs(id, project_id, user_token, created_at, label, mode,
                 file_a_name, file_a_path, file_a_gzip_path, file_a_exists,
                 file_b_name, file_b_path, file_b_gzip_path, file_b_exists,
-                source_job_a, source_job_b, kernel_types, save_triton_csv, save_triton_code,
+                source_job_a, source_job_b, save_triton_csv, save_triton_code,
                 status, console_out, error_msg, result_dir, deleted_at)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         """, (job_dict["id"], job_dict.get("project_id"), job_dict.get("user_token"),
               job_dict.get("created_at"), job_dict.get("label", ""), job_dict.get("mode"),
               job_dict.get("file_a_name"), job_dict.get("file_a_path"), job_dict.get("file_a_gzip_path"), job_dict.get("file_a_exists", 1),
               job_dict.get("file_b_name"), job_dict.get("file_b_path"), job_dict.get("file_b_gzip_path"), job_dict.get("file_b_exists", 1),
               job_dict.get("source_job_a"), job_dict.get("source_job_b"),
-              job_dict.get("kernel_types", "gemm,embedding,pool"), job_dict.get("save_triton_csv", 0), job_dict.get("save_triton_code", 0),
+              job_dict.get("save_triton_csv", 0), job_dict.get("save_triton_code", 0),
               job_dict.get("status", "pending"), job_dict.get("console_out", ""), job_dict.get("error_msg", ""), job_dict.get("result_dir", "")))
 
     # Delete jobs from main table
@@ -978,15 +989,15 @@ async def restore_project(pid: str):
             INSERT INTO jobs(id, project_id, user_token, created_at, label, mode,
                 file_a_name, file_a_path, file_a_gzip_path, file_a_exists,
                 file_b_name, file_b_path, file_b_gzip_path, file_b_exists,
-                source_job_a, source_job_b, kernel_types, save_triton_csv, save_triton_code,
+                source_job_a, source_job_b, save_triton_csv, save_triton_code,
                 status, console_out, error_msg, result_dir)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (job_dict["id"], pid, job_dict.get("user_token"),
               job_dict.get("created_at"), job_dict.get("label", ""), job_dict.get("mode"),
               job_dict.get("file_a_name"), job_dict.get("file_a_path"), job_dict.get("file_a_gzip_path"), job_dict.get("file_a_exists", 1),
               job_dict.get("file_b_name"), job_dict.get("file_b_path"), job_dict.get("file_b_gzip_path"), job_dict.get("file_b_exists", 1),
               job_dict.get("source_job_a"), job_dict.get("source_job_b"),
-              job_dict.get("kernel_types", "gemm,embedding,pool"), job_dict.get("save_triton_csv", 0), job_dict.get("save_triton_code", 0),
+              job_dict.get("save_triton_csv", 0), job_dict.get("save_triton_code", 0),
               job_dict.get("status", "pending"), job_dict.get("console_out", ""), job_dict.get("error_msg", ""), job_dict.get("result_dir", "")))
 
     # Remove restored jobs from deleted_jobs
@@ -1504,7 +1515,6 @@ async def list_group_jobs(
 async def create_job(
     file_a: UploadFile,
     file_b: Optional[UploadFile] = None,
-    kernel_types: str = Form("gemm,embedding,pool"),
     save_triton_csv: bool = Form(False),
     save_triton_code: bool = Form(False),
     label: str = Form(""),
@@ -1533,11 +1543,11 @@ async def create_job(
     await db.execute(
         """INSERT INTO jobs(id, project_id, label, mode,
                file_a_name, file_a_path, file_a_gzip_path, file_b_name, file_b_path, file_b_gzip_path,
-               kernel_types, save_triton_csv, save_triton_code)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               save_triton_csv, save_triton_code)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
         (jid, project_id or None, eff_label, mode,
          file_a.filename, path_a, gzip_path_a[0], name_b, path_b, gzip_path_b[0],
-         kernel_types, int(save_triton_csv), int(save_triton_code)),
+         int(save_triton_csv), int(save_triton_code)),
     )
     await _refresh_job_storage_cache(db, jid)
     await db.commit()
@@ -1578,19 +1588,18 @@ async def compare_jobs(body: dict):
         raise HTTPException(409, f"Source file B has been deleted")
 
     jid = str(uuid.uuid4())
-    kernel_types = body.get("kernel_types", "gemm,embedding,pool")
     eff_label = body.get("label") or f"{src_a['label']} vs {src_b['label']}"
 
     await db.execute(
         """INSERT INTO jobs(id, project_id, label, mode,
                file_a_name, file_b_name,
                source_job_a, source_job_b,
-               kernel_types, save_triton_csv, save_triton_code)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+               save_triton_csv, save_triton_code)
+           VALUES(?,?,?,?,?,?,?,?,?,?)""",
         (jid, body.get("project_id"), eff_label, "compare",
          src_a["file_a_name"], src_b["file_a_name"],
          job_id_a, job_id_b,
-         kernel_types, 0, 0),
+         0, 0),
     )
     await _refresh_job_storage_cache(db, jid)
     await db.commit()
@@ -1899,10 +1908,7 @@ async def run_single_triton(jid: str, body: dict):
         raise HTTPException(400, "code_path is required")
 
     rdir = result_dir(jid)
-    code_path = os.path.normpath(os.path.join(rdir, code_path_rel))
-    # Security: ensure the resolved path is within rdir
-    if not code_path.startswith(os.path.abspath(rdir)):
-        raise HTTPException(400, "Invalid code_path")
+    code_path = _safe_child_path(rdir, code_path_rel, "Invalid code_path")
 
     def do_run():
         import subprocess, sys
@@ -2204,10 +2210,7 @@ async def get_triton_code(jid: str, path: str):
     if not row:
         raise HTTPException(404)
 
-    # Prevent path traversal - ensure path is within result_dir
-    full_path = os.path.normpath(os.path.join(result_dir(jid), path))
-    if not full_path.startswith(os.path.abspath(result_dir(jid))):
-        raise HTTPException(400, "Invalid path")
+    full_path = _safe_child_path(result_dir(jid), path, "Invalid path")
 
     if not os.path.exists(full_path):
         raise HTTPException(404)

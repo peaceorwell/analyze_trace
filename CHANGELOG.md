@@ -22,7 +22,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### CLI Options
 - `-o, --output-dir` - Output directory
-- `-k, --kernel-types` - Custom kernel type keywords
 - `-s, --save-triton-csv` - Save per-step Triton kernel details
 - `-c, --save-triton-code` - Save Triton kernel source code
 
