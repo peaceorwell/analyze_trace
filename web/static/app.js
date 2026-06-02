@@ -98,6 +98,16 @@ const ktPieChartInst  = ref(null);
 const ktPieChart      = ref(null);
 const ktPieChartInstB = ref(null);
 const ktPieChartB     = ref(null);
+const chartSource     = ref("");
+const chartMetric     = ref("");
+const chartTopN       = ref(10);
+const chartLoading    = ref(false);
+const chartError      = ref("");
+const chartSummaryCards = ref([]);
+const chartSlowdowns    = ref([]);
+const chartSpeedups     = ref([]);
+const chartBarRows      = ref([]);
+const chartPieRows      = ref([]);
 
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
@@ -406,6 +416,50 @@ const availableTabs = computed(() => {
     tabs.push({ key: file, label: `Triton Step ${stepNum}` });
   }
   return tabs;
+});
+
+const CHART_SOURCE_CONFIGS = [
+  { file: "kernel_types_delta.csv", label: "类型 Delta", mode: "compare", nameField: "type", defaultMetric: "delta_dur_ms" },
+  { file: "kernel_types_cmp.csv", label: "类型对比", mode: "compare", nameField: "type", defaultMetric: "delta_dur_ms" },
+  { file: "all_kernels_cmp.csv", label: "Kernel Delta", mode: "compare", nameField: "kernel_name", defaultMetric: "delta_dur_ms" },
+  { file: "triton_kernels_cmp.csv", label: "Triton Delta", mode: "compare", nameField: "kernel_name", defaultMetric: "delta_dur_ms" },
+  { file: "aten_ops_cmp.csv", label: "Aten Delta", mode: "compare", nameField: "op_name", defaultMetric: "delta_dur_ms" },
+  { file: "cncl_ops_cmp.csv", label: "CNCL Delta", mode: "compare", nameField: "op_name", defaultMetric: "delta_dur_ms" },
+  { file: "kernel_types_avg.csv", label: "Kernel 类型", mode: "single", nameField: "type", defaultMetric: "avg_dur_ms" },
+  { file: "all_kernels_avg.csv", label: "所有 Kernel", mode: "single", nameField: "kernel_name", defaultMetric: "avg_dur_ms" },
+  { file: "triton_kernels_avg.csv", label: "Triton Kernel", mode: "single", nameField: "kernel_name", defaultMetric: "avg_dur_ms" },
+  { file: "aten_ops_avg.csv", label: "Aten Ops", mode: "single", nameField: "op_name", defaultMetric: "avg_dur_ms" },
+  { file: "cncl_ops_avg.csv", label: "CNCL Ops", mode: "single", nameField: "op_name", defaultMetric: "avg_dur_ms" },
+];
+
+const CHART_METRIC_DEFS = [
+  { key: "delta_dur_ms", label: "耗时 Delta (B-A)", unit: "ms", signed: true },
+  { key: "delta_count", label: "调用数 Delta", unit: "", signed: true },
+  { key: "delta_abs_ms", label: "耗时 Delta 绝对值", unit: "ms" },
+  { key: "avg_dur_ms", label: "平均耗时", unit: "ms" },
+  { key: "avg_dur_ms_A", label: "A 平均耗时", unit: "ms" },
+  { key: "avg_dur_ms_B", label: "B 平均耗时", unit: "ms" },
+  { key: "avg_count", label: "平均调用数", unit: "" },
+  { key: "avg_count_A", label: "A 平均调用数", unit: "" },
+  { key: "avg_count_B", label: "B 平均调用数", unit: "" },
+  { key: "avg_us_per_call", label: "单次耗时", unit: "us/call" },
+  { key: "avg_io_gb", label: "IO 量", unit: "GB" },
+  { key: "avg_io_gb_A", label: "A IO 量", unit: "GB" },
+  { key: "avg_io_gb_B", label: "B IO 量", unit: "GB" },
+  { key: "avg_io_efficiency", label: "IO 效率", unit: "" },
+];
+
+const chartSourceOptions = computed(() => {
+  const res = selectedJob.value?.result_files || {};
+  const mode = selectedJob.value?.mode === "compare" ? "compare" : "single";
+  return CHART_SOURCE_CONFIGS.filter(item => item.mode === mode && res[item.file]);
+});
+
+const chartMetricOptions = computed(() => {
+  const res = selectedJob.value?.result_files || {};
+  const fields = res[chartSource.value]?.fields || [];
+  const available = new Set(fields);
+  return CHART_METRIC_DEFS.filter(item => available.has(item.key));
 });
 
 const isTritonStepTab = computed(() => {
@@ -852,6 +906,14 @@ const loadJob = async id => {
   resultTable.value = { fields: [], rows: [], total: 0, filtered_total: 0, limit: tableLimit.value, offset: tableOffset.value };
   resultTableFile.value = "";
   chartTables.value = {};
+  chartSource.value = "";
+  chartMetric.value = "";
+  chartError.value = "";
+  chartSummaryCards.value = [];
+  chartSlowdowns.value = [];
+  chartSpeedups.value = [];
+  chartBarRows.value = [];
+  chartPieRows.value = [];
   return true;
 };
 
@@ -1049,6 +1111,8 @@ const PIE_COLORS = [
   'rgba(132,204,22,.82)',  'rgba(20,184,166,.82)',
 ];
 const getColors = n => Array.from({ length: n }, (_, i) => PIE_COLORS[i % PIE_COLORS.length]);
+const CHART_FETCH_LIMIT = 5000;
+const chartTopNOptions = [5, 10, 15, 20, 30];
 
 const chartColors = () => {
   const dark = isDark.value;
@@ -1060,17 +1124,186 @@ const chartColors = () => {
   };
 };
 
-const buildPie = (canvas, labels, data, title) => {
-  const pairs = labels.map((l, i) => ({ l, v: data[i] })).filter(p => p.v > 0);
+const parseChartNumber = value => {
+  if (value === null || value === undefined || value === "") return 0;
+  const n = parseFloat(String(value).replace(/,/g, "").replace("%", ""));
+  return Number.isFinite(n) ? n : 0;
+};
+
+const trimNumber = value => {
+  if (!Number.isFinite(value)) return "0";
+  const abs = Math.abs(value);
+  const digits = abs >= 100 ? 1 : abs >= 10 ? 2 : 3;
+  return value.toFixed(digits).replace(/\.?0+$/, "");
+};
+
+const fmtChartValue = (value, metricDef = {}) => {
+  const text = trimNumber(value);
+  return metricDef.unit ? `${text} ${metricDef.unit}` : text;
+};
+const fmtDeltaMs = value => fmtChartValue(value, { unit: "ms" });
+
+const shortChartLabel = (label, max = 44) => {
+  const text = String(label || "");
+  if (text.length <= max) return text;
+  const head = Math.max(12, Math.floor(max * 0.58));
+  const tail = Math.max(8, max - head - 3);
+  return `${text.slice(0, head)}...${text.slice(-tail)}`;
+};
+
+const chartMetricDefFor = key =>
+  CHART_METRIC_DEFS.find(item => item.key === key) || { key, label: key, unit: "" };
+
+const resolveChartSource = () => {
+  const options = chartSourceOptions.value;
+  if (!options.length) return null;
+  if (!chartSource.value || !options.some(item => item.file === chartSource.value)) {
+    chartSource.value = options[0].file;
+  }
+  return options.find(item => item.file === chartSource.value) || options[0];
+};
+
+const resolveChartMetric = sourceConfig => {
+  if (!sourceConfig) return null;
+  const options = chartMetricOptions.value;
+  if (!options.length) return null;
+  if (!chartMetric.value || !options.some(item => item.key === chartMetric.value)) {
+    chartMetric.value = options.some(item => item.key === sourceConfig.defaultMetric)
+      ? sourceConfig.defaultMetric
+      : options[0].key;
+  }
+  return chartMetricDefFor(chartMetric.value);
+};
+
+const inferChartNameField = (fields, sourceConfig) => {
+  if (fields.includes(sourceConfig.nameField)) return sourceConfig.nameField;
+  return fields.find(field => /(kernel|op|type|name)/i.test(field)) || fields[0] || "";
+};
+
+const normalizeChartRows = (rows, fields, sourceConfig, metricDef) => {
+  const nameField = inferChartNameField(fields, sourceConfig);
+  return (rows || [])
+    .map(row => {
+      const label = String(row[nameField] ?? "").trim();
+      const value = parseChartNumber(row[metricDef.key]);
+      const delta = parseChartNumber(row.delta_dur_ms);
+      return {
+        label,
+        shortLabel: shortChartLabel(label),
+        value,
+        displayValue: metricDef.signed ? Math.abs(value) : value,
+        delta,
+        countDelta: parseChartNumber(row.delta_count),
+        aValue: parseChartNumber(row.avg_dur_ms_A),
+        bValue: parseChartNumber(row.avg_dur_ms_B),
+        countA: parseChartNumber(row.avg_count_A),
+        countB: parseChartNumber(row.avg_count_B),
+        source: sourceConfig.file,
+        sourceLabel: sourceConfig.label,
+        metric: metricDef.key,
+        nameField,
+        raw: row,
+      };
+    })
+    .filter(row => row.label);
+};
+
+const sortChartRows = (rows, metricDef) => {
+  const metricValue = row => metricDef.signed ? Math.abs(row.value) : row.value;
+  return [...rows]
+    .filter(row => metricValue(row) > 0)
+    .sort((a, b) => metricValue(b) - metricValue(a));
+};
+
+const buildPieRows = (rows, metricDef, topN) => {
+  const sorted = sortChartRows(rows, metricDef);
+  const top = sorted.slice(0, topN);
+  const rest = sorted.slice(topN);
+  const otherValue = rest.reduce((sum, row) => sum + row.displayValue, 0);
+  const pieRows = top.map(row => ({ ...row }));
+  if (otherValue > 0) {
+    pieRows.push({
+      label: "Other",
+      shortLabel: "Other",
+      value: otherValue,
+      displayValue: otherValue,
+      isOther: true,
+      metric: metricDef.key,
+    });
+  }
+  return pieRows;
+};
+
+const buildChartSummary = (rows, table, sourceConfig) => {
+  const totalLabel = table?.total && table.total > rows.length
+    ? `前 ${rows.length} / 共 ${table.total} 项`
+    : `${rows.length} 项`;
+  const makeCard = (label, value, sub = "", tone = "", row = null) => ({ label, value, sub, tone, row });
+  if (selectedJob.value?.mode === "compare") {
+    const totalA = rows.reduce((sum, row) => sum + row.aValue, 0);
+    const totalB = rows.reduce((sum, row) => sum + row.bValue, 0);
+    const totalDelta = rows.reduce((sum, row) => sum + row.delta, 0);
+    const slowest = rows.filter(row => row.delta > 0).sort((a, b) => b.delta - a.delta)[0] || null;
+    const fastest = rows.filter(row => row.delta < 0).sort((a, b) => a.delta - b.delta)[0] || null;
+    return [
+      makeCard("A 总耗时", fmtChartValue(totalA, { unit: "ms" }), totalLabel),
+      makeCard("B 总耗时", fmtChartValue(totalB, { unit: "ms" }), sourceConfig.label),
+      makeCard("总 Delta", fmtChartValue(totalDelta, { unit: "ms" }), "B - A", totalDelta > 0 ? "neg" : totalDelta < 0 ? "pos" : ""),
+      makeCard("最大回退", slowest ? fmtChartValue(slowest.delta, { unit: "ms" }) : "0", slowest ? shortChartLabel(slowest.label, 28) : "无", "neg", slowest),
+      makeCard("最大改善", fastest ? fmtChartValue(fastest.delta, { unit: "ms" }) : "0", fastest ? shortChartLabel(fastest.label, 28) : "无", "pos", fastest),
+    ];
+  }
+
+  const totalDur = rows.reduce((sum, row) => sum + parseChartNumber(row.raw.avg_dur_ms), 0);
+  const totalCount = rows.reduce((sum, row) => sum + parseChartNumber(row.raw.avg_count), 0);
+  const hotspot = rows
+    .map(row => ({ ...row, hotValue: parseChartNumber(row.raw.avg_dur_ms) }))
+    .sort((a, b) => b.hotValue - a.hotValue)[0] || null;
+  const topPct = totalDur && hotspot ? hotspot.hotValue / totalDur * 100 : 0;
+  return [
+    makeCard("总耗时", fmtChartValue(totalDur, { unit: "ms" }), totalLabel),
+    makeCard("最大热点", hotspot ? fmtChartValue(hotspot.hotValue, { unit: "ms" }) : "0", hotspot ? shortChartLabel(hotspot.label, 28) : "无", "", hotspot),
+    makeCard("总调用数", fmtChartValue(totalCount), "avg_count 合计"),
+    makeCard("Top 占比", `${trimNumber(topPct)}%`, hotspot ? shortChartLabel(hotspot.label, 28) : "无"),
+  ];
+};
+
+const updateDeltaLists = rows => {
+  if (selectedJob.value?.mode !== "compare") {
+    chartSlowdowns.value = [];
+    chartSpeedups.value = [];
+    return;
+  }
+  chartSlowdowns.value = rows
+    .filter(row => row.delta > 0)
+    .sort((a, b) => b.delta - a.delta)
+    .slice(0, 6);
+  chartSpeedups.value = rows
+    .filter(row => row.delta < 0)
+    .sort((a, b) => a.delta - b.delta)
+    .slice(0, 6);
+};
+
+const destroyChartInstances = () => {
+  if (ktChartInst.value)     { ktChartInst.value.destroy();     ktChartInst.value = null; }
+  if (ktPieChartInst.value)  { ktPieChartInst.value.destroy();  ktPieChartInst.value = null; }
+  if (ktPieChartInstB.value) { ktPieChartInstB.value.destroy(); ktPieChartInstB.value = null; }
+};
+
+const buildPie = (canvas, rows, title, metricDef) => {
+  const pairs = (rows || []).filter(row => row.displayValue > 0);
   if (!pairs.length || !canvas) return null;
-  const total = pairs.reduce((s, p) => s + p.v, 0);
+  const total = pairs.reduce((sum, row) => sum + row.displayValue, 0);
   const cc = chartColors();
+  const colors = getColors(pairs.length).map((color, index) =>
+    pairs[index].isOther ? 'rgba(148,163,184,.72)' : color
+  );
   return new Chart(canvas, {
     type: 'doughnut',
     data: {
-      labels: pairs.map(p => p.l),
-      datasets: [{ data: pairs.map(p => p.v),
-        backgroundColor: getColors(pairs.length),
+      labels: pairs.map(row => row.shortLabel),
+      datasets: [{ data: pairs.map(row => row.displayValue),
+        backgroundColor: colors,
         borderWidth: 2, borderColor: cc.border }],
     },
     options: {
@@ -1079,11 +1312,11 @@ const buildPie = (canvas, labels, data, title) => {
         title: { display: true, text: title, font: { size: 13 }, color: cc.title },
         legend: {
           position: 'bottom',
-          labels: { font: { size: 11 }, boxWidth: 12, padding: 10, color: cc.text,
+          labels: { font: { size: 11 }, boxWidth: 12, padding: 8, color: cc.text,
                     generateLabels: chart => {
                       const ds = chart.data.datasets[0];
-                      return chart.data.labels.map((l, i) => ({
-                        text: `${l}  ${(ds.data[i] / total * 100).toFixed(1)}%`,
+                      return chart.data.labels.map((label, i) => ({
+                        text: `${label}  ${(ds.data[i] / total * 100).toFixed(1)}%`,
                         fillStyle: ds.backgroundColor[i],
                         strokeStyle: ds.backgroundColor[i],
                         fontColor: cc.text,
@@ -1093,73 +1326,138 @@ const buildPie = (canvas, labels, data, title) => {
         },
         tooltip: { callbacks: { label: ctx => {
           const pct = total ? (ctx.parsed / total * 100).toFixed(1) : 0;
-          return ` ${ctx.label}: ${ctx.parsed.toFixed(2)} ms (${pct}%)`;
+          const row = pairs[ctx.dataIndex];
+          const value = row.isOther || metricDef.signed ? row.displayValue : row.value;
+          const prefix = metricDef.signed ? "绝对值" : metricDef.label;
+          return ` ${row.label}: ${prefix} ${fmtChartValue(value, metricDef)} (${pct}%)`;
+        }, title: items => {
+          const row = pairs[items[0]?.dataIndex];
+          return row?.label || "";
         }}},
       },
     },
   });
 };
 
+const drillDownChart = async row => {
+  if (!row || row.isOther || !row.source || !selectedJobId.value) return;
+  const fields = selectedJob.value?.result_files?.[row.source]?.fields || [];
+  if (!fields.length) return;
+  const state = {
+    ...defaultResultViewState(),
+    tableLimit: tableLimit.value || 100,
+    tableOffset: 0,
+    sortCol: fields.includes(row.metric) ? row.metric : "",
+    sortAsc: false,
+    colFilters: {},
+    colFilterOps: {},
+  };
+  if (fields.includes(row.nameField)) {
+    state.colFilters[row.nameField] = row.label;
+    state.colFilterOps[row.nameField] = "~";
+  } else {
+    state.tableSearch = row.label;
+  }
+  const memory = readResultMemory(selectedJobId.value);
+  memory.tabs = { ...(memory.tabs || {}), [row.source]: state };
+  writeResultMemory(selectedJobId.value, memory);
+  await activateCsvTab(row.source);
+  showToast(`已跳转到 ${row.source} 并筛选: ${shortChartLabel(row.label, 36)}`, "success");
+};
+
 const buildChart = async () => {
   await nextTick();
   if (!ktChart.value || !selectedJob.value?.result_files) return;
-  const res = selectedJob.value.result_files;
-  const csvKey = res?.["kernel_types_cmp.csv"]
-    ? "kernel_types_cmp.csv" : "kernel_types_avg.csv";
-  if (!res?.[csvKey]) return;
-  if (!chartTables.value[csvKey]) {
+  const sourceConfig = resolveChartSource();
+  if (!sourceConfig) {
+    chartError.value = "没有可用的图表数据";
+    return;
+  }
+  const metricDef = resolveChartMetric(sourceConfig);
+  if (!metricDef) {
+    chartError.value = "当前数据源没有可绘制的指标";
+    return;
+  }
+  chartLoading.value = true;
+  chartError.value = "";
+  if (!chartTables.value[sourceConfig.file]) {
     try {
       chartTables.value = {
         ...chartTables.value,
-        [csvKey]: await fetchResultTable(csvKey, { limit: 1000, offset: 0, ignoreViewState: true }),
+        [sourceConfig.file]: await fetchResultTable(sourceConfig.file, {
+          limit: CHART_FETCH_LIMIT,
+          offset: 0,
+          ignoreViewState: true,
+        }),
       };
     } catch (e) {
+      chartError.value = e.message || "加载图表数据失败";
+      chartLoading.value = false;
       return;
     }
   }
-  const table = chartTables.value[csvKey];
-  if (!table) return;
+  const table = chartTables.value[sourceConfig.file];
+  const fields = table?.fields || selectedJob.value.result_files[sourceConfig.file]?.fields || [];
+  const rows = normalizeChartRows(table?.rows || [], fields, sourceConfig, metricDef);
+  destroyChartInstances();
 
-  if (ktChartInst.value)     { ktChartInst.value.destroy();     ktChartInst.value = null; }
-  if (ktPieChartInst.value)  { ktPieChartInst.value.destroy();  ktPieChartInst.value = null; }
-  if (ktPieChartInstB.value) { ktPieChartInstB.value.destroy(); ktPieChartInstB.value = null; }
+  chartSummaryCards.value = buildChartSummary(rows, table, sourceConfig);
+  updateDeltaLists(rows);
+  const topN = Math.max(1, Number(chartTopN.value) || 10);
+  chartBarRows.value = sortChartRows(rows, metricDef).slice(0, topN);
+  chartPieRows.value = buildPieRows(rows, metricDef, topN);
 
-  const isCmp = csvKey === "kernel_types_cmp.csv";
-  const labels = table.rows.map(r => r.type);
-
-  const barsPerLabel = isCmp ? 2 : 1;
-  ktChart.value.parentElement.style.height =
-    Math.max(420, labels.length * barsPerLabel * 32 + 80) + 'px';
-
-  const barColors = getColors(labels.length);
-  const datasets = [];
-  if (!isCmp) {
-    datasets.push({ label: "avg_dur_ms",
-      data: table.rows.map(r => parseFloat(r.avg_dur_ms) || 0),
-      backgroundColor: barColors, borderRadius: 3, barThickness: 22 });
-  } else {
-    datasets.push({ label: "A avg_dur_ms",
-      data: table.rows.map(r => parseFloat(r.avg_dur_ms_A) || 0),
-      backgroundColor: "rgba(99,102,241,0.75)", borderRadius: 3 });
-    datasets.push({ label: "B avg_dur_ms",
-      data: table.rows.map(r => parseFloat(r.avg_dur_ms_B) || 0),
-      backgroundColor: "rgba(234,88,12,0.75)", borderRadius: 3 });
+  if (!chartBarRows.value.length) {
+    chartError.value = "当前指标没有可绘制的数据";
+    chartLoading.value = false;
+    return;
   }
-  const durPcts = isCmp
-    ? table.rows.map(r => `A:${r.dur_pct_A || ''} B:${r.dur_pct_B || ''}`)
-    : table.rows.map(r => r.dur_pct || '');
+
+  ktChart.value.parentElement.style.height =
+    Math.max(280, Math.min(620, chartBarRows.value.length * 34 + 96)) + 'px';
+
   const cc = chartColors();
+  const barColors = metricDef.signed
+    ? chartBarRows.value.map(row => row.value >= 0 ? "rgba(239,68,68,0.76)" : "rgba(34,197,94,0.76)")
+    : getColors(chartBarRows.value.length);
   ktChartInst.value = new Chart(ktChart.value, {
     type: "bar",
-    data: { labels, datasets },
+    data: {
+      labels: chartBarRows.value.map(row => row.shortLabel),
+      datasets: [{
+        label: metricDef.label,
+        data: chartBarRows.value.map(row => row.value),
+        backgroundColor: barColors,
+        borderRadius: 4,
+        barThickness: 18,
+      }],
+    },
     options: {
       indexAxis: 'y',
       responsive: true, maintainAspectRatio: false,
+      onClick: (_, elements) => {
+        const row = chartBarRows.value[elements?.[0]?.index];
+        if (row) drillDownChart(row);
+      },
+      onHover: (event, elements) => {
+        if (event?.native?.target) event.native.target.style.cursor = elements.length ? "pointer" : "default";
+      },
       plugins: {
-        legend: { display: isCmp, position: "top",
-          labels: { color: cc.text, font: { size: 11 } } },
-        title: { display: true, text: "Kernel 类型耗时 (ms)", font: { size: 13 }, color: cc.title },
-        tooltip: { callbacks: { afterLabel: (ctx) => `  占比: ${durPcts[ctx.dataIndex]}` } },
+        legend: { display: false },
+        title: { display: true, text: `${sourceConfig.label} · ${metricDef.label}`, font: { size: 13 }, color: cc.title },
+        tooltip: { callbacks: {
+          title: items => chartBarRows.value[items[0]?.dataIndex]?.label || "",
+          label: ctx => ` ${metricDef.label}: ${fmtChartValue(ctx.parsed.x, metricDef)}`,
+          afterLabel: ctx => {
+            const row = chartBarRows.value[ctx.dataIndex];
+            if (!row || selectedJob.value?.mode !== "compare") return "";
+            return [
+              `A: ${fmtChartValue(row.aValue, { unit: "ms" })}`,
+              `B: ${fmtChartValue(row.bValue, { unit: "ms" })}`,
+              `count: ${trimNumber(row.countA)} -> ${trimNumber(row.countB)}`,
+            ];
+          },
+        }},
       },
       scales: {
         x: { beginAtZero: true,
@@ -1171,24 +1469,13 @@ const buildChart = async () => {
     },
   });
 
-  if (!isCmp) {
-    ktPieChartInst.value = buildPie(
-      ktPieChart.value, labels,
-      table.rows.map(r => parseFloat(r.avg_dur_ms) || 0),
-      "耗时占比"
-    );
-  } else {
-    ktPieChartInst.value = buildPie(
-      ktPieChart.value, labels,
-      table.rows.map(r => parseFloat(r.avg_dur_ms_A) || 0),
-      "A 耗时占比"
-    );
-    ktPieChartInstB.value = buildPie(
-      ktPieChartB.value, labels,
-      table.rows.map(r => parseFloat(r.avg_dur_ms_B) || 0),
-      "B 耗时占比"
-    );
-  }
+  ktPieChartInst.value = buildPie(
+    ktPieChart.value,
+    chartPieRows.value,
+    metricDef.signed ? "TopN Delta 绝对值占比" : "TopN 占比",
+    metricDef
+  );
+  chartLoading.value = false;
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -2474,12 +2761,78 @@ const JobDetail = {
 
         <!-- Chart tab -->
         <div v-if="resultTab==='chart'" class="chart-wrap">
-          <div class="chart-bar-area">
-            <canvas ref="ktChart"></canvas>
+          <div class="chart-head">
+            <div class="chart-controls">
+              <label>
+                <span>数据源</span>
+                <select v-model="chartSource" class="input input-sm" @change="buildChart">
+                  <option v-for="source in chartSourceOptions" :key="source.file" :value="source.file">
+                    {{ source.label }}
+                  </option>
+                </select>
+              </label>
+              <label>
+                <span>指标</span>
+                <select v-model="chartMetric" class="input input-sm" @change="buildChart">
+                  <option v-for="metric in chartMetricOptions" :key="metric.key" :value="metric.key">
+                    {{ metric.label }}
+                  </option>
+                </select>
+              </label>
+              <label>
+                <span>Top</span>
+                <select v-model.number="chartTopN" class="input input-sm chart-top-select" @change="buildChart">
+                  <option v-for="n in chartTopNOptions" :key="n" :value="n">{{ n }}</option>
+                </select>
+              </label>
+            </div>
+            <span v-if="chartLoading" class="chart-loading"><span class="spinner-small"></span> 生成图表...</span>
           </div>
-          <div class="chart-pie-area">
-            <canvas ref="ktPieChart"></canvas>
-            <canvas ref="ktPieChartB" v-show="selectedJob.mode==='compare'"></canvas>
+
+          <div v-if="chartError" class="error-box mb-2">{{ chartError }}</div>
+
+          <div class="chart-summary-grid">
+            <div v-for="card in chartSummaryCards" :key="card.label"
+                 :class="['chart-summary-card', card.tone ? 'tone-' + card.tone : '', card.row ? 'clickable' : '']"
+                 @click="card.row && drillDownChart(card.row)">
+              <div class="chart-summary-label">{{ card.label }}</div>
+              <div class="chart-summary-value">{{ card.value }}</div>
+              <div class="chart-summary-sub">{{ card.sub }}</div>
+            </div>
+          </div>
+
+          <div v-if="selectedJob.mode==='compare' && (chartSlowdowns.length || chartSpeedups.length)" class="chart-delta-grid">
+            <div class="chart-delta-panel">
+              <div class="chart-delta-title tone-neg">Top 回退</div>
+              <button v-for="row in chartSlowdowns" :key="'slow-'+row.source+'-'+row.label"
+                      class="chart-delta-row" @click="drillDownChart(row)">
+                <span class="chart-delta-name">{{ row.label }}</span>
+                <span class="chart-delta-value tone-neg">+{{ fmtDeltaMs(row.delta) }}</span>
+              </button>
+            </div>
+            <div class="chart-delta-panel">
+              <div class="chart-delta-title tone-pos">Top 改善</div>
+              <button v-for="row in chartSpeedups" :key="'fast-'+row.source+'-'+row.label"
+                      class="chart-delta-row" @click="drillDownChart(row)">
+                <span class="chart-delta-name">{{ row.label }}</span>
+                <span class="chart-delta-value tone-pos">{{ fmtDeltaMs(row.delta) }}</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="chart-main-grid">
+            <div class="chart-panel chart-panel-wide">
+              <div class="chart-panel-title">排序排行（点击下钻）</div>
+              <div class="chart-bar-area">
+                <canvas ref="ktChart"></canvas>
+              </div>
+            </div>
+            <div class="chart-panel">
+              <div class="chart-panel-title">TopN + Other 占比</div>
+              <div class="chart-pie-area">
+                <canvas ref="ktPieChart"></canvas>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -2652,6 +3005,9 @@ const JobDetail = {
     return {
       ktChart: ktChartRef, ktPieChart: ktPieChartRef, ktPieChartB: ktPieChartBRef,
       selectedJob, selectedJobId, jobLoading, resultTab, availableTabs, currentTable,
+      chartSource, chartMetric, chartTopN, chartTopNOptions, chartSourceOptions,
+      chartMetricOptions, chartLoading, chartError, chartSummaryCards,
+      chartSlowdowns, chartSpeedups, buildChart, drillDownChart, fmtDeltaMs,
       displayedFields, filteredRows, tableSearch, sortCol, sortAsc, colWidths, colFilters,
       colFilterOps, visibleColumns, showColumnMenu, hiddenColumnCount,
       tableLimit, tableOffset, tableTotalRows, tablePageStart, tablePageEnd,
