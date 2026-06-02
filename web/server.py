@@ -6,6 +6,7 @@ import gzip
 import io
 import json
 import os
+import shlex
 import shutil
 import sys
 import tarfile
@@ -27,6 +28,7 @@ from trace_analyzer import compute_avgs, extract_kernel_family, parse_trace, run
 from db import get_db, init_db, row_to_dict  # noqa: E402
 
 STORAGE_DIR = os.path.join(os.path.dirname(__file__), "storage")
+APP_VERSION = "0.1.0"
 
 # Configured at startup via CLI; read-only after that
 ALLOW_FILE_DOWNLOAD = os.environ.get("TRACE_NO_DOWNLOAD", "") == ""
@@ -123,6 +125,50 @@ def result_dir(job_id: str) -> str:
 def require_code_execution_enabled():
     if not ALLOW_CODE_EXECUTION:
         raise HTTPException(403, "Code execution is disabled")
+
+
+def _text_or_empty(value: Optional[str]) -> str:
+    text = (value or "").strip()
+    return text or "<empty>"
+
+
+def _format_command(command: list[str]) -> str:
+    return " ".join(shlex.quote(str(part)) for part in command)
+
+
+def _format_triton_execution_error(
+    result,
+    *,
+    command: list[str],
+    code_path: Optional[str] = None,
+    no_output: bool = False,
+) -> str:
+    if no_output:
+        lines = [
+            "脚本执行成功，但没有输出可解析的结果。",
+            "",
+            "可能原因:",
+            "- 该 Triton 代码只包含 kernel/function 定义，没有实际运行 benchmark。",
+            "- 脚本运行后没有 print 性能结果，前端无法提取 GB/s。",
+            '- 如果是手动编辑代码，请确认脚本末尾会执行并打印结果，例如 "123.45 GB/s"。',
+            "",
+        ]
+    else:
+        lines = [
+            f"脚本执行失败，返回码: {result.returncode}",
+            "",
+        ]
+
+    lines.extend([
+        f"Command: {_format_command(command)}",
+    ])
+    if code_path:
+        lines.append(f"Code path: {code_path}")
+    lines.extend([
+        f"stdout:\n{_text_or_empty(result.stdout)}",
+        f"stderr:\n{_text_or_empty(result.stderr)}",
+    ])
+    return "\n".join(lines)
 
 
 async def save_upload(upload: UploadFile, dest: str):
@@ -846,6 +892,7 @@ async def index():
 @app.get("/api/config")
 async def get_config():
     return {
+        "version": APP_VERSION,
         "allow_file_download": ALLOW_FILE_DOWNLOAD,
         "allow_code_execution": ALLOW_CODE_EXECUTION,
     }
@@ -1965,8 +2012,9 @@ except Exception as e:
             except subprocess.TimeoutExpired:
                 mlu_info = "[MLU Info] 获取超时"
 
+            command = [sys.executable, code_path]
             result = subprocess.run(
-                [sys.executable, code_path],
+                command,
                 capture_output=True,
                 text=True,
                 timeout=600,
@@ -1977,14 +2025,15 @@ except Exception as e:
                     lines = stderr.split("\n")
                     mod_lines = [l for l in lines if "ModuleNotFoundError" in l or "ImportError" in l or "No module named" in l]
                     mod_info = " ".join(mod_lines)
-                    error_msg = f"缺少依赖模块 (ImportError): {mod_info}"
+                    diagnostic = _format_triton_execution_error(result, command=command, code_path=code_path)
+                    error_msg = f"缺少依赖模块 (ImportError): {mod_info}\n\n{diagnostic}"
                 else:
-                    error_msg = f"Return code {result.returncode}: {stderr}"
+                    error_msg = _format_triton_execution_error(result, command=command, code_path=code_path)
                 full_error = f"{mlu_info}\n\n--- Execution Result ---\n{error_msg}" if mlu_info else error_msg
                 return {"efficiency": None, "error": full_error}
             output = result.stdout.strip()
             if not output:
-                error_msg = f"No output. stderr: {result.stderr}"
+                error_msg = _format_triton_execution_error(result, command=command, code_path=code_path, no_output=True)
                 full_error = f"{mlu_info}\n\n--- Execution Result ---\n{error_msg}" if mlu_info else error_msg
                 return {"efficiency": None, "error": full_error}
             # Prepend MLU info to the output with separator
@@ -2065,8 +2114,9 @@ except Exception as e:
                 temp_path = f.name
 
             try:
+                command = [sys.executable, temp_path]
                 result = subprocess.run(
-                    [sys.executable, temp_path],
+                    command,
                     capture_output=True,
                     text=True,
                     timeout=600,
@@ -2080,14 +2130,15 @@ except Exception as e:
                     lines = stderr.split("\n")
                     mod_lines = [l for l in lines if "ModuleNotFoundError" in l or "ImportError" in l or "No module named" in l]
                     mod_info = " ".join(mod_lines)
-                    error_msg = f"缺少依赖模块 (ImportError): {mod_info}"
+                    diagnostic = _format_triton_execution_error(result, command=command, code_path=temp_path)
+                    error_msg = f"缺少依赖模块 (ImportError): {mod_info}\n\n{diagnostic}"
                 else:
-                    error_msg = f"Return code {result.returncode}: {stderr}"
+                    error_msg = _format_triton_execution_error(result, command=command, code_path=temp_path)
                 full_error = f"{mlu_info}\n\n--- Execution Result ---\n{error_msg}" if mlu_info else error_msg
                 return {"efficiency": None, "error": full_error}
             output = result.stdout.strip()
             if not output:
-                error_msg = f"No output. stderr: {result.stderr}"
+                error_msg = _format_triton_execution_error(result, command=command, code_path=temp_path, no_output=True)
                 full_error = f"{mlu_info}\n\n--- Execution Result ---\n{error_msg}" if mlu_info else error_msg
                 return {"efficiency": None, "error": full_error}
             # Prepend MLU info to the output with separator

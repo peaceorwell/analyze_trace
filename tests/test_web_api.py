@@ -43,6 +43,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
+        "version": "0.1.0",
         "allow_file_download": True,
         "allow_code_execution": False,
     }
@@ -313,6 +314,44 @@ def test_code_execution_is_disabled_by_default(client):
 
     assert r.status_code == 403
     assert r.json()["detail"] == "Code execution is disabled"
+
+
+def test_run_triton_single_reports_no_output_diagnostics(isolated_server, monkeypatch):
+    monkeypatch.setattr(isolated_server, "ALLOW_CODE_EXECUTION", True)
+    storage_dir = Path(isolated_server.STORAGE_DIR)
+    job_id = "empty-output-job"
+    code_dir = storage_dir / job_id / "results" / "step_0_triton_codes"
+    code_dir.mkdir(parents=True)
+    (code_dir / "kernel.py").write_text("# exits successfully without output\n", encoding="utf-8")
+
+    async def seed_job():
+        await web_db.init_db()
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                "INSERT INTO jobs(id, label, mode, status) VALUES(?,?,?,?)",
+                (job_id, "done", "single", "done"),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(seed_job())
+
+    with TestClient(isolated_server.app) as test_client:
+        r = test_client.post(
+            f"/api/jobs/{job_id}/run-triton-single",
+            json={"code_path": "step_0_triton_codes/kernel.py"},
+        )
+
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["success"] is False
+    assert "脚本执行成功，但没有输出可解析的结果" in payload["message"]
+    assert "Command:" in payload["message"]
+    assert "Code path:" in payload["message"]
+    assert "stdout:\n<empty>" in payload["message"]
+    assert "stderr:\n<empty>" in payload["message"]
 
 
 def test_triton_code_paths_reject_sibling_prefix_traversal(isolated_server, monkeypatch):
