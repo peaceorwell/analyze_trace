@@ -277,3 +277,9 @@ kernel 自动分类逻辑：
 - **fallback**：无法匹配规则的 kernel 按名称前缀归入对应 family（保留原始大小写），兜底归入 `other`
 
 所有非 collective 的 kernel family 均在 Kernel Type Breakdown 和图表中展示。
+
+---
+
+## 开源协议
+
+本项目使用 BSD-3-Clause License，风格与 PyTorch 社区版采用的宽松开源协议一致。详见 [LICENSE](LICENSE)。
