@@ -514,6 +514,10 @@ const currentTable = computed(() => {
   return emptyResultTableForTab(resultTab.value);
 });
 
+const isKernelTypeTab = computed(() =>
+  ["kernel_types_avg.csv", "kernel_types_cmp.csv", "kernel_types_delta.csv"].includes(resultTab.value)
+);
+
 const tableTotalRows = computed(() =>
   currentTable.value.filtered_total ?? currentTable.value.total ?? currentTable.value.rows?.length ?? 0
 );
@@ -1080,6 +1084,43 @@ const activateCsvTab = async (filename, { updateRoute = true, savePrevious = tru
       preparingResultTab.value = "";
     }
   }
+};
+
+const canDrillKernelTypeRow = row =>
+  isKernelTypeTab.value && Boolean(row?.type);
+
+const drillDownKernelType = async row => {
+  if (!canDrillKernelTypeRow(row)) return;
+  const type = String(row.type || "").trim();
+  const targetFile = selectedJob.value?.mode === "compare"
+    ? "all_kernels_cmp.csv"
+    : "all_kernels_avg.csv";
+  const fields = selectedJob.value?.result_files?.[targetFile]?.fields || [];
+  if (!fields.length) {
+    showToast(`未找到 ${targetFile}`, "error");
+    return;
+  }
+  if (!fields.includes("family")) {
+    showToast("目标 Kernel 表缺少 family 字段，请重新分析/对比后再下钻", "error");
+    return;
+  }
+  const sortField = selectedJob.value?.mode === "compare" && fields.includes("delta_dur_ms")
+    ? "delta_dur_ms"
+    : (fields.includes("avg_dur_ms") ? "avg_dur_ms" : "");
+  const state = {
+    ...defaultResultViewState(),
+    tableLimit: tableLimit.value || 100,
+    tableOffset: 0,
+    sortCol: sortField,
+    sortAsc: false,
+    colFilters: { family: type },
+    colFilterOps: { family: "~" },
+  };
+  const memory = readResultMemory(selectedJobId.value);
+  memory.tabs = { ...(memory.tabs || {}), [targetFile]: state };
+  writeResultMemory(selectedJobId.value, memory);
+  await activateCsvTab(targetFile);
+  showToast(`已下钻到 ${type} 相关 Kernel`, "success");
 };
 
 const prevTablePage = () => {
@@ -3035,6 +3076,7 @@ const JobDetail = {
               列筛选已启用
               <button class="btn-clear-filter" @click="clearColFilters()">✕ 清除</button>
             </span>
+            <span v-if="isKernelTypeTab" class="filter-active-tip">点击类型行下钻到相关 Kernel</span>
             <div class="column-menu-wrap">
               <button class="btn btn-sm btn-outline" @click="showColumnMenu=!showColumnMenu">
                 列{{ hiddenColumnCount ? ' (' + hiddenColumnCount + ' 已隐藏)' : '' }}
@@ -3103,7 +3145,9 @@ const JobDetail = {
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="(row,i) in filteredRows" :key="i">
+                <tr v-for="(row,i) in filteredRows" :key="i"
+                    :class="{ 'drill-row': canDrillKernelTypeRow(row) }"
+                    @click="drillDownKernelType(row)">
                   <td v-for="f in displayedFields" :key="f"
                       :class="deltaCellClass(f, row[f])"
                       :title="row[f]">
@@ -3205,7 +3249,7 @@ const JobDetail = {
       tableLimit, tableOffset, tableTotalRows, tablePageStart, tablePageEnd,
       tablePageSizeOptions, customTableLimit, changeTableLimit, showAllTableRows,
       resultTableLoading, resultTableError, preparingResultTab, prevTablePage, nextTablePage,
-      hasColFilters, colSums,
+      hasColFilters, colSums, isKernelTypeTab, canDrillKernelTypeRow, drillDownKernelType,
       isTritonStepTab, tritonStatus, allowFileDownload, allowCodeExecution,
       switchTab,
       statusIcon,

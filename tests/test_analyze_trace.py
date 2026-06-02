@@ -310,3 +310,33 @@ class TestEndToEnd:
         assert rows[0]["delta_dur_ms"] == "-30"
         assert rows[1]["type"] == "gemm"
         assert rows[1]["delta_dur_ms"] == "8"
+
+    def test_comparison_all_kernels_cmp_includes_family(self, temp_output_dir):
+        data_a = {
+            "KERNEL_TYPES": ["gemm"],
+            "kt_avgs": {"gemm": (1, 2), "other": (0, 0), "collective": (0, 0)},
+            "avg_kernels": {"gemm_kernel_a": {"avg_count": 1, "avg_dur_ms": 2}},
+            "kernel_families": {"gemm_kernel_a": "gemm"},
+            "avg_triton": {},
+            "avg_aten": {},
+            "avg_cncl": {},
+        }
+        data_b = {
+            "KERNEL_TYPES": ["gemm"],
+            "kt_avgs": {"gemm": (1, 5), "other": (0, 0), "collective": (0, 0)},
+            "avg_kernels": {"gemm_kernel_a": {"avg_count": 1, "avg_dur_ms": 5}},
+            "kernel_families": {"gemm_kernel_a": "gemm"},
+            "avg_triton": {},
+            "avg_aten": {},
+            "avg_cncl": {},
+        }
+        args = type("Args", (), {"output_dir": temp_output_dir})
+
+        write_comparison(data_a, data_b, args)
+
+        with open(os.path.join(temp_output_dir, "all_kernels_cmp.csv")) as f:
+            rows = list(csv.DictReader(f))
+
+        assert rows[0]["kernel_name"] == "gemm_kernel_a"
+        assert rows[0]["family"] == "gemm"
+        assert rows[0]["delta_dur_ms"] == "3"

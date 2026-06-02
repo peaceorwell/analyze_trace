@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from trace_analyzer import compute_avgs, parse_trace, run_triton_code_and_get_efficiency  # noqa: E402
+from trace_analyzer import compute_avgs, extract_kernel_family, parse_trace, run_triton_code_and_get_efficiency  # noqa: E402
 
 from db import get_db, init_db, row_to_dict  # noqa: E402
 
@@ -258,8 +258,23 @@ def csv_to_rows(path: str) -> dict:
         return {"fields": [], "rows": []}
     with open(path, newline="") as f:
         reader = csv.DictReader(f)
-        rows = list(reader)
-        return {"fields": reader.fieldnames or [], "rows": rows}
+        fields = _augment_result_csv_fields(os.path.basename(path), reader.fieldnames or [])
+        rows = [_augment_result_csv_row(os.path.basename(path), row) for row in reader]
+        return {"fields": fields, "rows": rows}
+
+
+def _augment_result_csv_fields(filename: str, fields: list[str]) -> list[str]:
+    if filename != "all_kernels_cmp.csv" or "family" in fields or "kernel_name" not in fields:
+        return fields
+    idx = fields.index("kernel_name") + 1
+    return fields[:idx] + ["family"] + fields[idx:]
+
+
+def _augment_result_csv_row(filename: str, row: dict) -> dict:
+    if filename == "all_kernels_cmp.csv" and "family" not in row and row.get("kernel_name"):
+        row = dict(row)
+        row["family"] = extract_kernel_family(row["kernel_name"])
+    return row
 
 
 def _ordered_result_csv_names(rdir: str) -> list[str]:
@@ -311,7 +326,7 @@ def collect_result_files(jid: str) -> dict:
         fields = []
         with open(full, newline="") as f:
             reader = csv.reader(f)
-            fields = next(reader, []) or []
+            fields = _augment_result_csv_fields(name, next(reader, []) or [])
         files[name] = {
             "fields": fields,
             "size": _path_size(full),
@@ -380,14 +395,16 @@ def read_csv_page(
     offset = max(0, offset)
 
     with open(path, newline="") as f:
+        filename = os.path.basename(path)
         reader = csv.DictReader(f)
-        fields = reader.fieldnames or []
+        fields = _augment_result_csv_fields(filename, reader.fieldnames or [])
         rows = []
         total = 0
         filtered_total = 0
         requires_materialize = bool(q or filters or sort_col)
         if requires_materialize:
             for row in reader:
+                row = _augment_result_csv_row(filename, row)
                 total += 1
                 if _csv_filter_match(row, q, filters, filter_ops):
                     rows.append(row)
@@ -401,6 +418,7 @@ def read_csv_page(
         else:
             page_rows = []
             for row in reader:
+                row = _augment_result_csv_row(filename, row)
                 if total >= offset and len(page_rows) < limit:
                     page_rows.append(row)
                 total += 1

@@ -806,6 +806,16 @@ body.result-reading-active { overflow: hidden; }
 }
 .data-table tbody tr:nth-child(even) td:first-child { background-color: var(--td-first-even); }
 .data-table tr:hover td { background-color: var(--td-hover) !important; }
+.data-table tbody tr.drill-row { cursor: pointer; }
+.data-table tbody tr.drill-row td:first-child {
+  color: var(--purple-l);
+  text-decoration: underline;
+  text-decoration-color: rgba(99,102,241,.35);
+  text-underline-offset: 2px;
+}
+.data-table tbody tr.drill-row:hover td {
+  background-color: var(--purple-bg) !important;
+}
 
 /* All CSV tables - scrollable container */
 .csv-table-wrap {

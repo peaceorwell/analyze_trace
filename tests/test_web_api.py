@@ -803,6 +803,48 @@ def test_done_job_lists_result_files_and_paginates_tables(client):
     assert filtered.json()["rows"][0]["kernel_name"] == "fast_kernel"
 
 
+def test_all_kernels_cmp_without_family_exposes_virtual_family(client):
+    result_dir = Path(web_server.result_dir("cmp-table-job"))
+    result_dir.mkdir(parents=True)
+    (result_dir / "all_kernels_cmp.csv").write_text(
+        "kernel_name,avg_dur_ms_A,avg_dur_ms_B,delta_dur_ms\n"
+        "gemm_kernel,1,3,2\n"
+        "triton_poi_kernel,4,1,-3\n"
+    )
+
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                "INSERT INTO jobs(id, label, mode, status, result_dir) VALUES(?,?,?,?,?)",
+                ("cmp-table-job", "cmp", "compare", "done", str(result_dir)),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+
+    detail = client.get("/api/jobs/cmp-table-job")
+    assert detail.status_code == 200
+    assert detail.json()["result_files"]["all_kernels_cmp.csv"]["fields"] == [
+        "kernel_name", "family", "avg_dur_ms_A", "avg_dur_ms_B", "delta_dur_ms"
+    ]
+
+    filtered = client.get(
+        "/api/jobs/cmp-table-job/results/all_kernels_cmp.csv",
+        params={
+            "filters": json.dumps({"family": "gemm"}),
+            "filter_ops": json.dumps({"family": "~"}),
+            "limit": 10,
+        },
+    )
+    assert filtered.status_code == 200
+    assert filtered.json()["filtered_total"] == 1
+    assert filtered.json()["rows"][0]["kernel_name"] == "gemm_kernel"
+    assert filtered.json()["rows"][0]["family"] == "gemm"
+
+
 def test_result_table_can_return_more_than_default_page_cap(client):
     result_dir = Path(web_server.result_dir("large-table-job"))
     result_dir.mkdir(parents=True)

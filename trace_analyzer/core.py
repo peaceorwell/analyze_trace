@@ -785,6 +785,39 @@ def _write_cmp_avg_csv(path, data_a, data_b, name_field):
     print(f"Wrote {path} ({len(rows)} rows)")
 
 
+def _write_kernels_cmp_csv(path, data_a, data_b):
+    """Write all_kernels_cmp.csv with family for type drill-down."""
+    avg_a = data_a["avg_kernels"]
+    avg_b = data_b["avg_kernels"]
+    families_a = data_a.get("kernel_families", {})
+    families_b = data_b.get("kernel_families", {})
+    zero = {"avg_count": 0.0, "avg_dur_ms": 0.0}
+    rows = []
+    for name in set(avg_a) | set(avg_b):
+        a, b  = avg_a.get(name, zero), avg_b.get(name, zero)
+        delta = b["avg_dur_ms"] - a["avg_dur_ms"]
+        delta_cnt = b["avg_count"] - a["avg_count"]
+        rows.append({
+            "kernel_name":  name,
+            "family":       families_b.get(name) or families_a.get(name) or extract_kernel_family(name),
+            "avg_dur_ms_A": fmt3(a["avg_dur_ms"]),
+            "avg_dur_ms_B": fmt3(b["avg_dur_ms"]),
+            "delta_dur_ms": fmt3(delta),
+            "avg_count_A":  fmt3(a["avg_count"]),
+            "avg_count_B":  fmt3(b["avg_count"]),
+            "delta_count":  fmt3(delta_cnt),
+            "_sort":        abs(delta),
+        })
+    rows.sort(key=lambda r: -r["_sort"])
+    fields = ["kernel_name", "family", "avg_dur_ms_A", "avg_dur_ms_B", "delta_dur_ms",
+              "avg_count_A", "avg_count_B", "delta_count"]
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+    print(f"Wrote {path} ({len(rows)} rows)")
+
+
 def _write_triton_cmp_csv(path, avg_triton_a, avg_triton_b):
     zero = {"avg_count": 0.0, "avg_dur_ms": 0.0, "avg_io_gb": 0.0, "avg_io_eff": 0.0}
     rows = []
@@ -937,8 +970,7 @@ def write_single(data, args):
 
 def write_comparison(data_a, data_b, args):
     os.makedirs(args.output_dir, exist_ok=True)
-    _write_cmp_avg_csv(os.path.join(args.output_dir, "all_kernels_cmp.csv"),
-                       data_a["avg_kernels"], data_b["avg_kernels"], "kernel_name")
+    _write_kernels_cmp_csv(os.path.join(args.output_dir, "all_kernels_cmp.csv"), data_a, data_b)
     _write_triton_cmp_csv(os.path.join(args.output_dir, "triton_kernels_cmp.csv"),
                           data_a["avg_triton"], data_b["avg_triton"])
     _write_cmp_avg_csv(os.path.join(args.output_dir, "aten_ops_cmp.csv"),
