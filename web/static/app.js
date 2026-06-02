@@ -93,6 +93,8 @@ const resultTableLoading = ref(false);
 const resultTableError = ref("");
 const preparingResultTab = ref("");
 const isReadingMode = ref(false);
+const consoleSearch = ref("");
+const consoleHideWrote = ref(readStoredBool("tpa-console-hide-wrote", true));
 const chartTables = ref({});
 const colWidths     = ref({});
 const colFilters    = ref({});
@@ -937,6 +939,7 @@ const loadJob = async id => {
   selectedJob.value = await r.json();
   resultTable.value = { fields: [], rows: [], total: 0, filtered_total: 0, limit: tableLimit.value, offset: tableOffset.value };
   resultTableFile.value = "";
+  consoleSearch.value = "";
   chartTables.value = {};
   chartSource.value = "";
   chartMetric.value = "";
@@ -2724,20 +2727,105 @@ const nextComparePage = () => {
 // Console formatting
 // ══════════════════════════════════════════════════════════════════════════════
 
-const formatConsole = (text) => {
-  if (!text) return '';
-  return text.split('\n').map(line => {
-    const e = line.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    if (/^={3,}/.test(line))  return `<span class="co-hdr">${e}</span>`;
-    if (/^-{5,}/.test(line))  return `<span class="co-sep">${e}</span>`;
-    if (/^Wrote /.test(line)) return `<span class="co-wrote">${e}</span>`;
-    if (/^\s*$/.test(line))   return e;
-    const highlighted = e.replace(
-      /(\b\d+\.?\d*%?|\+[\d.]+|[-][\d.]+)/g,
-      '<span class="co-num">$1</span>'
-    );
-    return `<span class="co-line">${highlighted}</span>`;
-  }).join('\n');
+const escapeRegExp = value => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const consoleLines = computed(() =>
+  String(selectedJob.value?.console_out || "").split("\n")
+);
+
+const consoleSectionId = index => `console-section-${selectedJobId.value || "job"}-${index}`;
+
+const cleanConsoleSectionTitle = line =>
+  String(line || "")
+    .replace(/^\s*=+\s*/, "")
+    .replace(/\s*=+\s*$/, "")
+    .trim();
+
+const consoleSections = computed(() =>
+  consoleLines.value
+    .map((line, index) => ({ line, index }))
+    .filter(item => /^\s*=+\s*.+?\s*=+\s*$/.test(item.line))
+    .map(item => ({
+      id: consoleSectionId(item.index),
+      title: cleanConsoleSectionTitle(item.line),
+    }))
+);
+
+const consoleWroteCount = computed(() =>
+  consoleLines.value.filter(line => /^Wrote /.test(line)).length
+);
+
+const consoleSearchMatchCount = computed(() => {
+  const q = consoleSearch.value.trim().toLowerCase();
+  if (!q) return 0;
+  return consoleLines.value.reduce((count, line) => {
+    if (consoleHideWrote.value && /^Wrote /.test(line)) return count;
+    const text = line.toLowerCase();
+    let offset = 0;
+    let next = text.indexOf(q, offset);
+    while (next >= 0) {
+      count += 1;
+      offset = next + q.length;
+      next = text.indexOf(q, offset);
+    }
+    return count;
+  }, 0);
+});
+
+const decorateConsoleText = (line, search = "") => {
+  const q = search.trim();
+  const numberPattern = "[+-]\\d+(?:\\.\\d+)?%?|\\b\\d+(?:\\.\\d+)?%?";
+  const regex = q
+    ? new RegExp(`(${escapeRegExp(q)})|(${numberPattern})`, "gi")
+    : new RegExp(`(${numberPattern})`, "g");
+  let html = "";
+  let last = 0;
+  for (const match of line.matchAll(regex)) {
+    const text = match[0];
+    const start = match.index ?? 0;
+    if (start < last) continue;
+    html += escapeHtml(line.slice(last, start));
+    const isSearchHit = Boolean(q && match[1]);
+    if (isSearchHit) {
+      html += `<mark class="console-search-hit">${escapeHtml(text)}</mark>`;
+    } else if (text.startsWith("+")) {
+      html += `<span class="co-delta-up">${escapeHtml(text)}</span>`;
+    } else if (text.startsWith("-")) {
+      html += `<span class="co-delta-down">${escapeHtml(text)}</span>`;
+    } else {
+      html += `<span class="co-num">${escapeHtml(text)}</span>`;
+    }
+    last = start + text.length;
+  }
+  html += escapeHtml(line.slice(last));
+  return html;
+};
+
+const formatConsole = (text, options = {}) => {
+  if (!text) return "";
+  const search = options.search || "";
+  const hideWrote = options.hideWrote ?? false;
+  let foldedWrote = false;
+  return String(text).split("\n").map((line, index) => {
+    if (hideWrote && /^Wrote /.test(line)) {
+      if (foldedWrote) return null;
+      foldedWrote = true;
+      return `<span class="co-folded">已折叠 ${consoleWroteCount.value} 条生成文件输出，可在工具栏展开</span>`;
+    }
+    const decorated = decorateConsoleText(line, search);
+    if (/^\s*=+\s*.+?\s*=+\s*$/.test(line)) {
+      return `<span id="${consoleSectionId(index)}" class="co-hdr">${decorated}</span>`;
+    }
+    if (/^-{5,}/.test(line))  return `<span class="co-sep">${escapeHtml(line)}</span>`;
+    if (/^Wrote /.test(line)) return `<span class="co-wrote">${decorateConsoleText(line, search)}</span>`;
+    if (/^\s*$/.test(line))   return escapeHtml(line);
+    return `<span class="co-line">${decorated}</span>`;
+  }).filter(line => line !== null).join("\n");
+};
+
+const scrollConsoleSection = section => {
+  const el = document.getElementById(section.id);
+  if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -2988,7 +3076,24 @@ const JobDetail = {
             <span class="console-dot dot-green"></span>
             <span class="console-title">Console Output</span>
           </div>
-          <pre v-html="formatConsole(selectedJob.console_out)"></pre>
+          <div class="console-tools">
+            <div class="console-search-wrap">
+              <input v-model="consoleSearch" class="console-search-input" placeholder="搜索控制台..." />
+              <span class="console-search-count">{{ consoleSearch.trim() ? consoleSearchMatchCount + ' 处' : '搜索' }}</span>
+            </div>
+            <button v-if="consoleWroteCount" class="console-tool-btn" @click="consoleHideWrote=!consoleHideWrote">
+              {{ consoleHideWrote ? '展开生成文件' : '折叠生成文件' }} · {{ consoleWroteCount }}
+            </button>
+            <div v-if="consoleSections.length" class="console-section-nav">
+              <button v-for="section in consoleSections" :key="section.id"
+                      class="console-section-btn"
+                      :title="section.title"
+                      @click="scrollConsoleSection(section)">
+                {{ section.title }}
+              </button>
+            </div>
+          </div>
+          <pre v-html="formatConsole(selectedJob.console_out, { search: consoleSearch, hideWrote: consoleHideWrote })"></pre>
         </div>
 
         <!-- Chart tab -->
@@ -3241,6 +3346,8 @@ const JobDetail = {
       ktChart: ktChartRef, ktPieChart: ktPieChartRef, ktPieChartB: ktPieChartBRef,
       selectedJob, selectedJobId, jobLoading, resultTab, availableTabs, currentTable,
       isReadingMode, toggleReadingMode,
+      consoleSearch, consoleHideWrote, consoleSections, consoleWroteCount,
+      consoleSearchMatchCount, scrollConsoleSection,
       chartSource, chartMetric, chartTopN, chartTopNOptions, chartSourceOptions,
       chartMetricOptions, chartLoading, chartError, chartSummaryCards,
       chartSlowdowns, chartSpeedups, buildChart, drillDownChart, fmtDeltaMs,
@@ -3450,6 +3557,7 @@ const App = {
     watch(sidebarWidth, value => localStorage.setItem("tpa-sidebar-width", String(value)));
     watch(sidebarCollapsed, value => localStorage.setItem("tpa-sidebar-collapsed", String(value)));
     watch(sidebarTab, value => localStorage.setItem("tpa-sidebar-tab", value));
+    watch(consoleHideWrote, value => localStorage.setItem("tpa-console-hide-wrote", String(value)));
     watch(isReadingMode, value => {
       document.body.classList.toggle("result-reading-active", value);
     });
