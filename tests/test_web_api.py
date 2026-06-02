@@ -695,6 +695,26 @@ def test_uploaded_trace_formats_download_as_json_gzip(
         assert json.loads(gzip.decompress(gzip_resp.content))["traceEvents"]
 
 
+def test_direct_two_file_upload_creates_compare_job(client, sample_trace_file, sample_trace_file_gz):
+    with open(sample_trace_file, "rb") as file_a, open(sample_trace_file_gz, "rb") as file_b:
+        created = client.post(
+            "/api/jobs",
+            files={
+                "file_a": ("base.json", file_a, "application/octet-stream"),
+                "file_b": ("target.json.gz", file_b, "application/octet-stream"),
+            },
+        )
+
+    assert created.status_code == 201
+    job = created.json()
+    assert job["mode"] == "compare"
+    assert job["label"] == "base.json vs target.json.gz"
+    assert job["file_a_name"] == "base.json"
+    assert job["file_b_name"] == "target.json.gz"
+    assert Path(web_server.job_dir(job["id"]), "trace_a.json").exists()
+    assert Path(web_server.job_dir(job["id"]), "trace_b.json").exists()
+
+
 def test_done_job_exposes_perfetto_context(client, sample_trace_file):
     result_dir = Path(web_server.result_dir("done-job"))
     result_dir.mkdir(parents=True)

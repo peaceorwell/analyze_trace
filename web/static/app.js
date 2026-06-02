@@ -63,6 +63,12 @@ let preSearchExpandedGroups = null;
 // ── Upload form ─────────────────────────────────────────────────────────
 const fileA    = ref(null);
 const fileAName = ref("");
+const quickUploadMode = ref(localStorage.getItem("tpa-upload-mode") || "single");
+const quickFileA = ref(null);
+const quickFileB = ref(null);
+const quickFileAName = ref("");
+const quickFileBName = ref("");
+const quickCompareStatus = ref("");
 const uploadQueue = ref([]);
 const submitting = ref(false);
 const uploadProgress = ref(0);
@@ -1518,6 +1524,53 @@ const clearFile = () => {
   uploadQueue.value = [];
 };
 
+const setQuickUploadMode = mode => {
+  if (!["single", "compare"].includes(mode) || submitting.value) return;
+  quickUploadMode.value = mode;
+  localStorage.setItem("tpa-upload-mode", mode);
+};
+
+const setQuickCompareFile = (slot, files) => {
+  const file = Array.from(files || [])[0];
+  if (!file) return;
+  if (slot === "a") {
+    quickFileA.value = file;
+    quickFileAName.value = file.name;
+  } else {
+    quickFileB.value = file;
+    quickFileBName.value = file.name;
+  }
+  quickCompareStatus.value = "";
+};
+
+const onQuickFileChange = (slot, e) => {
+  setQuickCompareFile(slot, e.target.files);
+  e.target.value = "";
+};
+
+const onQuickDrop = (slot, e) => {
+  setQuickCompareFile(slot, e.dataTransfer.files);
+};
+
+const clearQuickCompareFile = slot => {
+  if (slot === "a") {
+    quickFileA.value = null;
+    quickFileAName.value = "";
+  } else {
+    quickFileB.value = null;
+    quickFileBName.value = "";
+  }
+  quickCompareStatus.value = "";
+};
+
+const clearQuickCompareFiles = () => {
+  quickFileA.value = null;
+  quickFileB.value = null;
+  quickFileAName.value = "";
+  quickFileBName.value = "";
+  quickCompareStatus.value = "";
+};
+
 // ══════════════════════════════════════════════════════════════════════════════
 // Submit job
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1599,6 +1652,61 @@ const submitJob = async () => {
     showToast("提交失败，请检查上传队列", "error");
   }
 };
+
+const submitQuickCompare = () => new Promise(resolve => {
+  if (!quickFileA.value || !quickFileB.value || submitting.value) {
+    resolve(null);
+    return;
+  }
+  submitting.value = true;
+  uploadProgress.value = 0;
+  quickCompareStatus.value = "uploading";
+
+  const fd = new FormData();
+  fd.append("file_a", quickFileA.value);
+  fd.append("file_b", quickFileB.value);
+  fd.append("label", form.value.label.trim());
+  fd.append("project_id", form.value.projectId);
+  fd.append("save_triton_csv", false);
+  fd.append("save_triton_code", false);
+
+  const xhr = new XMLHttpRequest();
+  xhr.upload.onprogress = e => {
+    if (!e.lengthComputable) return;
+    uploadProgress.value = Math.round(e.loaded / e.total * 100);
+  };
+  xhr.onload = async () => {
+    submitting.value = false;
+    uploadProgress.value = 0;
+    if (xhr.status < 200 || xhr.status >= 300) {
+      let detail = "服务器错误";
+      try { detail = JSON.parse(xhr.responseText).detail || detail; } catch (e) {}
+      quickCompareStatus.value = "error";
+      showToast("快速对比提交失败: " + detail, "error");
+      resolve(null);
+      return;
+    }
+    const job = JSON.parse(xhr.responseText);
+    quickCompareStatus.value = "submitted";
+    form.value.label = "";
+    clearQuickCompareFiles();
+    await refreshSidebarData();
+    sidebarTab.value = "jobs";
+    router.push({ path: `/job/${job.id}` });
+    showToast("已提交快速对比任务", "success");
+    resolve(job);
+  };
+  xhr.onerror = () => {
+    submitting.value = false;
+    uploadProgress.value = 0;
+    quickCompareStatus.value = "error";
+    showToast("快速对比提交失败: 网络错误", "error");
+    resolve(null);
+  };
+  xhr.open("POST", "/api/jobs");
+  xhr.withCredentials = true;
+  xhr.send(fd);
+});
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Job actions
@@ -2583,8 +2691,19 @@ const Home = {
   template: `
     <!-- Submit form -->
     <section class="card submit-card">
-      <div class="card-title">提交分析</div>
-      <div class="submit-cols">
+      <div class="submit-head">
+        <div class="card-title">提交分析</div>
+        <div class="upload-mode-toggle">
+          <button :class="['mode-toggle-btn', quickUploadMode==='single'?'active':'']"
+                  :disabled="submitting"
+                  @click="setQuickUploadMode('single')">单文件/批量</button>
+          <button :class="['mode-toggle-btn', quickUploadMode==='compare'?'active':'']"
+                  :disabled="submitting"
+                  @click="setQuickUploadMode('compare')">快速对比</button>
+        </div>
+      </div>
+
+      <div v-if="quickUploadMode==='single'" class="submit-cols">
         <div class="upload-box upload-box-sm" @dragover.prevent @drop.prevent="onDrop">
           <input type="file" ref="fileInputA" accept=".json,.json.gz,.gz,.zip,.tar.gz,.tgz" multiple @change="onFileChange" hidden />
           <div @click="$refs.fileInputA.click()" class="upload-inner">
@@ -2608,7 +2727,43 @@ const Home = {
           {{ submitting ? '提交中 ' + uploadProgress + '%' : (uploadQueue.length > 1 ? '批量提交' : '提交分析') }}
         </button>
       </div>
-      <div v-if="uploadQueue.length" class="upload-queue">
+
+      <div v-else class="quick-compare-cols">
+        <div class="quick-upload-pair">
+          <div class="upload-box upload-box-sm quick-upload-box" @dragover.prevent @drop.prevent="onQuickDrop('a', $event)">
+            <input type="file" ref="quickFileInputA" accept=".json,.json.gz,.gz,.zip,.tar.gz,.tgz" @change="onQuickFileChange('a', $event)" hidden />
+            <div @click="$refs.quickFileInputA.click()" class="upload-inner">
+              <span class="trace-slot">A</span>
+              <div class="upload-label">{{ quickFileAName || '选择 A trace' }}</div>
+            </div>
+            <button v-if="quickFileAName" class="upload-clear" @click.stop="clearQuickCompareFile('a')">✕</button>
+          </div>
+          <div class="upload-box upload-box-sm quick-upload-box" @dragover.prevent @drop.prevent="onQuickDrop('b', $event)">
+            <input type="file" ref="quickFileInputB" accept=".json,.json.gz,.gz,.zip,.tar.gz,.tgz" @change="onQuickFileChange('b', $event)" hidden />
+            <div @click="$refs.quickFileInputB.click()" class="upload-inner">
+              <span class="trace-slot">B</span>
+              <div class="upload-label">{{ quickFileBName || '选择 B trace' }}</div>
+            </div>
+            <button v-if="quickFileBName" class="upload-clear" @click.stop="clearQuickCompareFile('b')">✕</button>
+          </div>
+        </div>
+        <div class="form-row">
+          <label>项目</label>
+          <select v-model="form.projectId" class="input">
+            <option value="">未分组</option>
+            <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label>备注</label>
+          <input v-model="form.label" class="input" placeholder="默认 A vs B" />
+        </div>
+        <button class="btn btn-primary" :disabled="!quickFileA || !quickFileB || submitting" @click="submitQuickCompare">
+          {{ submitting ? '提交中 ' + uploadProgress + '%' : '提交对比' }}
+        </button>
+      </div>
+
+      <div v-if="quickUploadMode==='single' && uploadQueue.length" class="upload-queue">
         <div v-for="item in uploadQueue" :key="item.id" class="upload-queue-item">
           <span class="upload-queue-name" :title="item.name">{{ item.name }}</span>
           <span :class="['upload-queue-status', 'queue-' + item.status]">
@@ -2618,6 +2773,10 @@ const Home = {
             <template v-else>{{ item.error || '失败' }}</template>
           </span>
         </div>
+      </div>
+      <div v-if="quickUploadMode==='compare' && (quickFileAName || quickFileBName)" class="quick-compare-summary">
+        <span :class="['quick-file-chip', quickFileAName ? 'ready' : '']">A {{ quickFileAName || '未选择' }}</span>
+        <span :class="['quick-file-chip', quickFileBName ? 'ready' : '']">B {{ quickFileBName || '未选择' }}</span>
       </div>
       <div v-if="submitting && uploadProgress < 100" class="upload-progress">
         <div class="upload-progress-label">总进度 {{ uploadProgress }}%</div>
@@ -2640,9 +2799,13 @@ const Home = {
   setup() {
     const fileInputA = ref(null);
     return {
-      fileInputA, fileAName, fileA, uploadQueue, submitting, uploadProgress,
+      fileInputA, fileAName, fileA, quickUploadMode,
+      quickFileA, quickFileB, quickFileAName, quickFileBName,
+      uploadQueue, submitting, uploadProgress,
       form, projects, selectedJob,
+      setQuickUploadMode,
       onDrop, onFileChange, clearFile, submitJob,
+      onQuickDrop, onQuickFileChange, clearQuickCompareFile, submitQuickCompare,
     };
   },
 };

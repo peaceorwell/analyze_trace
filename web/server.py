@@ -1537,7 +1537,9 @@ async def create_job(
         name_b = file_b.filename
         mode = "compare"
 
-    eff_label = label or file_a.filename or jid
+    eff_label = label or (
+        f"{file_a.filename} vs {name_b}" if mode == "compare" and name_b else file_a.filename
+    ) or jid
 
     db = await get_db()
     await db.execute(
