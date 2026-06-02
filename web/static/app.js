@@ -421,7 +421,17 @@ const selectedCompareJobs = computed(() =>
 const availableTabs = computed(() => {
   const res = selectedJob.value?.result_files || selectedJob.value?.results;
   if (!res) return [];
-  const tabs = [{ key: "console", label: "控制台" }, { key: "chart", label: "图表" }];
+  const tabs = [
+    { key: "chart", label: "性能总览" },
+    { key: "console", label: "控制台" },
+  ];
+  const primaryTypeTabs = {
+    "kernel_types_avg.csv": "Kernel 类型",
+    "kernel_types_cmp.csv": "类型对比",
+  };
+  for (const [file, label] of Object.entries(primaryTypeTabs)) {
+    if (res[file]) tabs.push({ key: file, label });
+  }
   const csvMap = {
     "all_kernels_avg.csv":      "所有 Kernel",
     "all_kernels_cmp.csv":      "Kernel 对比",
@@ -429,8 +439,6 @@ const availableTabs = computed(() => {
     "triton_kernels_cmp.csv":   "Triton 对比",
     "aten_ops_avg.csv":         "Aten Ops",
     "aten_ops_cmp.csv":         "Aten 对比",
-    "kernel_types_avg.csv":     "Kernel 类型",
-    "kernel_types_cmp.csv":     "类型对比",
     "kernel_types_delta.csv":   "类型 Delta",
     "cncl_ops_avg.csv":         "CNCL Ops",
     "cncl_ops_cmp.csv":         "CNCL 对比",
