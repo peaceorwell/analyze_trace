@@ -12,6 +12,7 @@ from trace_analyzer import (
     parse_trace,
     compute_avgs,
     write_avg_csv,
+    write_comparison,
     write_triton_code_file,
 )
 
@@ -206,3 +207,32 @@ class TestEndToEnd:
 
         assert avgs is not None
         assert len(avgs["KERNEL_TYPES"]) > 0
+
+    def test_comparison_writes_kernel_type_delta_csv(self, temp_output_dir):
+        data_a = {
+            "KERNEL_TYPES": ["gemm", "attention", "other"],
+            "kt_avgs": {"gemm": (10, 20), "attention": (5, 40), "other": (1, 3), "collective": (0, 0)},
+            "avg_kernels": {},
+            "avg_triton": {},
+            "avg_aten": {},
+            "avg_cncl": {},
+        }
+        data_b = {
+            "KERNEL_TYPES": ["gemm", "attention", "other"],
+            "kt_avgs": {"gemm": (10, 28), "attention": (5, 10), "other": (1, 4), "collective": (0, 0)},
+            "avg_kernels": {},
+            "avg_triton": {},
+            "avg_aten": {},
+            "avg_cncl": {},
+        }
+        args = type("Args", (), {"output_dir": temp_output_dir})
+
+        write_comparison(data_a, data_b, args)
+
+        with open(os.path.join(temp_output_dir, "kernel_types_delta.csv")) as f:
+            rows = list(csv.DictReader(f))
+
+        assert rows[0]["type"] == "attention"
+        assert rows[0]["delta_dur_ms"] == "-30"
+        assert rows[1]["type"] == "gemm"
+        assert rows[1]["delta_dur_ms"] == "8"

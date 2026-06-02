@@ -30,8 +30,6 @@ STORAGE_DIR = os.path.join(os.path.dirname(__file__), "storage")
 ALLOW_FILE_DOWNLOAD = os.environ.get("TRACE_NO_DOWNLOAD", "") == ""
 ALLOW_CODE_EXECUTION = os.environ.get("TRACE_ENABLE_CODE_EXEC", "") == "1"
 ANALYSIS_CONCURRENCY = max(1, int(os.environ.get("TRACE_ANALYSIS_CONCURRENCY", "1")))
-CSV_PAGE_LIMIT_MAX = 1000
-
 analysis_queue: asyncio.Queue[str] = asyncio.Queue()
 analysis_workers: list[asyncio.Task] = []
 
@@ -233,7 +231,7 @@ def _ordered_result_csv_names(rdir: str) -> list[str]:
     for name in ["all_kernels_avg.csv", "all_kernels_cmp.csv",
                  "triton_kernels_avg.csv", "triton_kernels_cmp.csv",
                  "aten_ops_avg.csv", "aten_ops_cmp.csv",
-                 "kernel_types_avg.csv", "kernel_types_cmp.csv",
+                 "kernel_types_avg.csv", "kernel_types_cmp.csv", "kernel_types_delta.csv",
                  "cncl_ops_avg.csv", "cncl_ops_cmp.csv"]:
         if os.path.exists(os.path.join(rdir, name)):
             names.append(name)
@@ -330,7 +328,7 @@ def read_csv_page(
 ) -> dict:
     filters = filters or {}
     filter_ops = filter_ops or {}
-    limit = max(1, min(limit, CSV_PAGE_LIMIT_MAX))
+    limit = max(1, limit)
     offset = max(0, offset)
 
     with open(path, newline="") as f:
@@ -376,7 +374,7 @@ def collect_results(jid: str) -> dict:
     for name in ["all_kernels_avg.csv", "all_kernels_cmp.csv",
                  "triton_kernels_avg.csv", "triton_kernels_cmp.csv",
                  "aten_ops_avg.csv", "aten_ops_cmp.csv",
-                 "kernel_types_avg.csv", "kernel_types_cmp.csv",
+                 "kernel_types_avg.csv", "kernel_types_cmp.csv", "kernel_types_delta.csv",
                  "cncl_ops_avg.csv", "cncl_ops_cmp.csv"]:
         full = os.path.join(rdir, name)
         if os.path.exists(full):

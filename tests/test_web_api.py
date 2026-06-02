@@ -578,6 +578,38 @@ def test_done_job_lists_result_files_and_paginates_tables(client):
     assert filtered.json()["rows"][0]["kernel_name"] == "fast_kernel"
 
 
+def test_result_table_can_return_more_than_default_page_cap(client):
+    result_dir = Path(web_server.result_dir("large-table-job"))
+    result_dir.mkdir(parents=True)
+    rows = ["kernel_name,avg_dur_ms,family"]
+    rows.extend(f"kernel_{i},{i},other" for i in range(1005))
+    (result_dir / "all_kernels_avg.csv").write_text("\n".join(rows) + "\n")
+
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                "INSERT INTO jobs(id, label, mode, status, result_dir) VALUES(?,?,?,?,?)",
+                ("large-table-job", "large", "single", "done", str(result_dir)),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+
+    page = client.get(
+        "/api/jobs/large-table-job/results/all_kernels_avg.csv",
+        params={"limit": 1005, "offset": 0},
+    )
+
+    assert page.status_code == 200
+    payload = page.json()
+    assert payload["limit"] == 1005
+    assert payload["total"] == 1005
+    assert len(payload["rows"]) == 1005
+
+
 def test_done_job_without_perfetto_context_still_loads(client, sample_trace_file):
     async def insert_job():
         db = await web_db.get_db()

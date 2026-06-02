@@ -80,6 +80,7 @@ const sortCol     = ref("");
 const sortAsc     = ref(true);
 const tableLimit  = ref(100);
 const tableOffset = ref(0);
+const tablePageSizeOptions = [50, 100, 200, 500, 1000];
 const resultTable = ref({ fields: [], rows: [], total: 0, filtered_total: 0, limit: 100, offset: 0 });
 const resultTableFile = ref("");
 const resultTableLoading = ref(false);
@@ -390,6 +391,7 @@ const availableTabs = computed(() => {
     "aten_ops_cmp.csv":         "Aten 对比",
     "kernel_types_avg.csv":     "Kernel 类型",
     "kernel_types_cmp.csv":     "类型对比",
+    "kernel_types_delta.csv":   "类型 Delta",
     "cncl_ops_avg.csv":         "CNCL Ops",
     "cncl_ops_cmp.csv":         "CNCL 对比",
   };
@@ -441,6 +443,11 @@ const tablePageStart = computed(() =>
 const tablePageEnd = computed(() =>
   Math.min((currentTable.value.offset || 0) + (currentTable.value.rows || []).length, tableTotalRows.value)
 );
+
+const customTableLimit = computed(() => {
+  const limit = Number(tableLimit.value);
+  return Number.isFinite(limit) && limit > 0 && !tablePageSizeOptions.includes(limit) ? limit : null;
+});
 
 const displayedFields = computed(() => {
   const fields = currentTable.value.fields || [];
@@ -994,6 +1001,20 @@ const nextTablePage = () => {
   if (tableOffset.value + tableLimit.value >= tableTotalRows.value) return;
   tableOffset.value += tableLimit.value;
   loadResultTable();
+};
+
+const changeTableLimit = value => {
+  const next = Number(value);
+  if (!Number.isFinite(next) || next <= 0 || next === tableLimit.value) return;
+  tableLimit.value = Math.floor(next);
+  tableOffset.value = 0;
+  loadResultTable();
+};
+
+const showAllTableRows = () => {
+  const total = Number(tableTotalRows.value);
+  if (!Number.isFinite(total) || total <= 0) return;
+  changeTableLimit(total);
 };
 
 const startPoll = () => {
@@ -2585,6 +2606,17 @@ const JobDetail = {
           <div class="table-footer table-footer-paged">
             <span>第 {{ tablePageStart }}-{{ tablePageEnd }} 行 / 共 {{ tableTotalRows }} 行</span>
             <div class="table-pagination">
+              <span class="page-size-control">
+                每页
+                <select class="input input-xs table-limit-select"
+                        :value="tableLimit"
+                        :disabled="resultTableLoading"
+                        @change="changeTableLimit($event.target.value)">
+                  <option v-for="n in tablePageSizeOptions" :key="n" :value="n">{{ n }}</option>
+                  <option v-if="customTableLimit" :value="customTableLimit">全部 {{ customTableLimit }}</option>
+                </select>
+              </span>
+              <button class="btn btn-xs btn-outline" @click="showAllTableRows" :disabled="!tableTotalRows || resultTableLoading || tableLimit >= tableTotalRows">全部</button>
               <button class="btn btn-xs btn-outline" @click="prevTablePage" :disabled="tableOffset===0 || resultTableLoading">上一页</button>
               <button class="btn btn-xs btn-outline" @click="nextTablePage" :disabled="tableOffset + tableLimit >= tableTotalRows || resultTableLoading">下一页</button>
             </div>
@@ -2623,6 +2655,7 @@ const JobDetail = {
       displayedFields, filteredRows, tableSearch, sortCol, sortAsc, colWidths, colFilters,
       colFilterOps, visibleColumns, showColumnMenu, hiddenColumnCount,
       tableLimit, tableOffset, tableTotalRows, tablePageStart, tablePageEnd,
+      tablePageSizeOptions, customTableLimit, changeTableLimit, showAllTableRows,
       resultTableLoading, resultTableError, preparingResultTab, prevTablePage, nextTablePage,
       hasColFilters, colSums,
       isTritonStepTab, tritonStatus, allowFileDownload, allowCodeExecution,
@@ -2830,7 +2863,7 @@ const App = {
     }, { deep: true });
 
     watch(
-      [tableSearch, sortCol, sortAsc, colWidths, colFilters, colFilterOps, visibleColumns],
+      [tableSearch, sortCol, sortAsc, tableLimit, tableOffset, colWidths, colFilters, colFilterOps, visibleColumns],
       () => {
         if (restoringResultState) return;
         saveResultViewState(activeResultStateJobId);

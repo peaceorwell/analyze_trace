@@ -393,6 +393,7 @@ body {
 .input:focus { border-color: var(--purple); box-shadow: 0 0 0 3px rgba(99,102,241,.12); }
 .input::placeholder { color: var(--text3); }
 .input-sm { padding: 4px 7px; font-size: 11px; }
+.input-xs { padding: 2px 5px; font-size: 10px; }
 select.input { appearance: none; cursor: pointer; }
 
 .w-full { width: 100%; }
@@ -675,6 +676,8 @@ select.input { appearance: none; cursor: pointer; }
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
 }
 .table-pagination { display: flex; align-items: center; gap: 5px; }
+.page-size-control { display: inline-flex; align-items: center; gap: 4px; color: var(--text3); }
+.table-limit-select { width: 66px; font-family: var(--mono); }
 
 .filter-row th {
   background-color: var(--filter-row-bg); padding: 3px 6px 4px;

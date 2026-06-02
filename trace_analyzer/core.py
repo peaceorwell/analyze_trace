@@ -774,40 +774,69 @@ def _write_triton_cmp_csv(path, avg_triton_a, avg_triton_b):
 
 
 def _write_kernel_types_cmp_csv(path, data_a, data_b):
-    # Use union of both type lists (excluding "other"), then append "other" at the end
+    rows = _kernel_type_cmp_rows(data_a, data_b, sort_by="combined")
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=[
+            "type", "dur_pct_A", "avg_dur_ms_A", "dur_pct_B", "avg_dur_ms_B",
+            "delta_dur_ms", "avg_count_A", "avg_count_B",
+        ], extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+    print(f"Wrote {path} ({len(rows)} rows)")
+
+
+def _kernel_type_cmp_rows(data_a, data_b, sort_by="combined"):
+    """Build per-kernel-family comparison rows.
+
+    sort_by="combined" keeps the legacy order by A+B duration; sort_by="delta"
+    highlights the largest duration changes first.
+    """
     all_types = list(dict.fromkeys(
         [t for t in data_a["KERNEL_TYPES"] if t != "other"] +
         [t for t in data_b["KERNEL_TYPES"] if t != "other"]
-    ))
-    # Sort by max duration across A/B descending, then append "other"
-    all_types.sort(key=lambda t: -(
-        data_a["kt_avgs"].get(t, (0.0, 0.0))[1] + data_b["kt_avgs"].get(t, (0.0, 0.0))[1]
     ))
     all_types.append("other")
     total_a    = sum(v[1] for v in data_a["kt_avgs"].values()) or 1.0
     total_b    = sum(v[1] for v in data_b["kt_avgs"].values()) or 1.0
     compute_a  = (total_a - data_a["kt_avgs"].get("collective", (0.0, 0.0))[1]) or 1.0
     compute_b  = (total_b - data_b["kt_avgs"].get("collective", (0.0, 0.0))[1]) or 1.0
-    # all_types contains only compute families (no collective); use compute totals
     rows = []
     for ktype in all_types:
         ac_a, ad_a = data_a["kt_avgs"].get(ktype, (0.0, 0.0))
         ac_b, ad_b = data_b["kt_avgs"].get(ktype, (0.0, 0.0))
+        delta_dur = ad_b - ad_a
+        delta_count = ac_b - ac_a
         rows.append({
             "type":         ktype,
             "dur_pct_A":    f"{ad_a / compute_a * 100:.1f}%",
             "avg_dur_ms_A": fmt3(ad_a),
             "dur_pct_B":    f"{ad_b / compute_b * 100:.1f}%",
             "avg_dur_ms_B": fmt3(ad_b),
-            "delta_dur_ms": fmt3(ad_b - ad_a),
+            "delta_dur_ms": fmt3(delta_dur),
+            "delta_abs_ms": fmt3(abs(delta_dur)),
+            "delta_pct":    pct(ad_a, ad_b),
             "avg_count_A":  fmt3(ac_a),
             "avg_count_B":  fmt3(ac_b),
+            "delta_count":  fmt3(delta_count),
+            "_combined":    ad_a + ad_b,
+            "_delta_abs":   abs(delta_dur),
         })
+
+    if sort_by == "delta":
+        rows.sort(key=lambda row: (-row["_delta_abs"], row["type"] == "other", row["type"]))
+    else:
+        rows.sort(key=lambda row: (row["type"] == "other", -row["_combined"], row["type"]))
+    return rows
+
+
+def _write_kernel_types_delta_csv(path, data_a, data_b):
+    rows = _kernel_type_cmp_rows(data_a, data_b, sort_by="delta")
     with open(path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=[
-            "type", "dur_pct_A", "avg_dur_ms_A", "dur_pct_B", "avg_dur_ms_B",
-            "delta_dur_ms", "avg_count_A", "avg_count_B",
-        ])
+            "type", "delta_dur_ms", "delta_abs_ms", "delta_pct",
+            "avg_dur_ms_A", "avg_dur_ms_B", "dur_pct_A", "dur_pct_B",
+            "avg_count_A", "avg_count_B", "delta_count",
+        ], extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
     print(f"Wrote {path} ({len(rows)} rows)")
@@ -872,6 +901,7 @@ def write_comparison(data_a, data_b, args):
     _write_cmp_avg_csv(os.path.join(args.output_dir, "aten_ops_cmp.csv"),
                        data_a["avg_aten"], data_b["avg_aten"], "op_name")
     _write_kernel_types_cmp_csv(os.path.join(args.output_dir, "kernel_types_cmp.csv"), data_a, data_b)
+    _write_kernel_types_delta_csv(os.path.join(args.output_dir, "kernel_types_delta.csv"), data_a, data_b)
     _write_cmp_avg_csv(os.path.join(args.output_dir, "cncl_ops_cmp.csv"),
                        data_a["avg_cncl"], data_b["avg_cncl"], "op_name")
 
