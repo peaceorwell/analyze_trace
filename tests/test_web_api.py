@@ -1,4 +1,5 @@
 import asyncio
+import gzip
 import json
 import os
 import sys
@@ -8,6 +9,7 @@ import shutil
 
 import aiosqlite
 import pytest
+from fastapi import UploadFile
 from fastapi.testclient import TestClient
 
 
@@ -488,6 +490,169 @@ def test_json_download_decompresses_gzip_with_json_name(
     assert stored_resp.headers["content-type"].startswith("application/gzip")
     assert 'filename="trace.json.gz"' in stored_resp.headers["content-disposition"]
     assert stored_resp.content.startswith(b"\x1f\x8b")
+
+
+def test_zip_upload_is_normalized_to_json_gzip(
+    sample_trace_file_zip,
+    tmp_path,
+):
+    dest_json = tmp_path / "trace.json"
+    gzip_path = [None]
+
+    async def extract_upload():
+        with open(sample_trace_file_zip, "rb") as f:
+            upload = UploadFile(file=f, filename="trace.json.zip")
+            await web_server.save_and_extract(upload, str(dest_json), gzip_path)
+
+    asyncio.run(extract_upload())
+
+    assert dest_json.exists()
+    assert gzip_path[0] == str(dest_json) + ".gz"
+    with open(dest_json, encoding="utf-8") as f:
+        assert json.load(f)["traceEvents"]
+    with gzip.open(gzip_path[0], "rt", encoding="utf-8") as f:
+        assert json.load(f)["traceEvents"]
+
+
+def test_trace_file_downloads_default_to_json_gzip_for_supported_formats(
+    client,
+    sample_trace_file,
+    sample_trace_file_gz,
+    sample_trace_file_tar_gz,
+    sample_trace_file_zip,
+    tmp_path,
+):
+    tgz_path = tmp_path / "trace.tgz"
+    shutil.copyfile(sample_trace_file_tar_gz, tgz_path)
+
+    async def insert_jobs():
+        db = await web_db.get_db()
+        try:
+            await db.executemany(
+                """
+                INSERT INTO jobs(
+                    id, label, mode, status,
+                    file_a_name, file_a_path, file_a_gzip_path, file_a_exists
+                ) VALUES(?,?,?,?,?,?,?,?)
+                """,
+                [
+                    (
+                        "download-json",
+                        "json",
+                        "single",
+                        "done",
+                        "trace.json",
+                        sample_trace_file,
+                        None,
+                        1,
+                    ),
+                    (
+                        "download-gzip",
+                        "gzip",
+                        "single",
+                        "done",
+                        "trace.json.gz",
+                        None,
+                        sample_trace_file_gz,
+                        1,
+                    ),
+                    (
+                        "download-zip",
+                        "zip",
+                        "single",
+                        "done",
+                        "trace.json.zip",
+                        sample_trace_file_zip,
+                        None,
+                        1,
+                    ),
+                    (
+                        "download-tar-gzip",
+                        "tar-gzip",
+                        "single",
+                        "done",
+                        "trace.tar.gz",
+                        None,
+                        sample_trace_file_tar_gz,
+                        1,
+                    ),
+                    (
+                        "download-tgz",
+                        "tgz",
+                        "single",
+                        "done",
+                        "trace.tgz",
+                        None,
+                        str(tgz_path),
+                        1,
+                    ),
+                ],
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_jobs())
+
+    for job_id in (
+        "download-json",
+        "download-gzip",
+        "download-zip",
+        "download-tar-gzip",
+        "download-tgz",
+    ):
+        json_resp = client.get(f"/api/jobs/{job_id}/files/a?format=json")
+        assert json_resp.status_code == 200
+        assert json_resp.headers["content-type"].startswith("application/json")
+        assert 'filename="trace.json"' in json_resp.headers["content-disposition"]
+        assert json_resp.json()["traceEvents"]
+
+        gzip_resp = client.get(f"/api/jobs/{job_id}/files/a")
+        assert gzip_resp.status_code == 200
+        assert gzip_resp.headers["content-type"].startswith("application/gzip")
+        assert 'filename="trace.json.gz"' in gzip_resp.headers["content-disposition"]
+        assert json.loads(gzip.decompress(gzip_resp.content))["traceEvents"]
+
+
+def test_uploaded_trace_formats_download_as_json_gzip(
+    client,
+    sample_trace_file,
+    sample_trace_file_gz,
+    sample_trace_file_zip,
+):
+    uploads = [
+        ("upload-json", sample_trace_file, "trace.json"),
+        ("upload-gzip", sample_trace_file_gz, "trace.json.gz"),
+        ("upload-zip", sample_trace_file_zip, "trace.json.zip"),
+    ]
+
+    for label, path, filename in uploads:
+        with open(path, "rb") as f:
+            created = client.post(
+                "/api/jobs",
+                data={"label": label, "kernel_types": "gemm"},
+                files={"file_a": (filename, f, "application/octet-stream")},
+            )
+        assert created.status_code == 201
+        job_id = created.json()["id"]
+
+        asyncio.run(web_server.run_analysis(job_id))
+        job_resp = client.get(f"/api/jobs/{job_id}")
+        assert job_resp.status_code == 200
+        job = job_resp.json()
+        assert job["status"] == "done", job.get("error_msg")
+
+        json_resp = client.get(f"/api/jobs/{job_id}/files/a?format=json")
+        assert json_resp.status_code == 200
+        assert json_resp.headers["content-type"].startswith("application/json")
+        assert 'filename="trace.json"' in json_resp.headers["content-disposition"]
+        assert json_resp.json()["traceEvents"]
+
+        gzip_resp = client.get(f"/api/jobs/{job_id}/files/a")
+        assert gzip_resp.status_code == 200
+        assert gzip_resp.headers["content-type"].startswith("application/gzip")
+        assert 'filename="trace.json.gz"' in gzip_resp.headers["content-disposition"]
+        assert json.loads(gzip.decompress(gzip_resp.content))["traceEvents"]
 
 
 def test_done_job_exposes_perfetto_context(client, sample_trace_file):

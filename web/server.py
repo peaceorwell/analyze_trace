@@ -11,6 +11,8 @@ import sys
 import tarfile
 import types
 import uuid
+import zipfile
+import zlib
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -162,14 +164,49 @@ def _extract_gz_to_json(gz_path: str, dest_path: str):
             shutil.copyfileobj(gz, out)
 
 
+def _extract_zip_to_json(zip_path: str, dest_path: str):
+    """Extract the largest .json file from a zip archive into dest_path."""
+    with zipfile.ZipFile(zip_path) as archive:
+        members = [
+            info for info in archive.infolist()
+            if not info.is_dir() and info.filename.lower().endswith(".json")
+        ]
+        if not members:
+            raise ValueError("压缩包中未找到 .json 文件")
+        member = max(members, key=lambda info: info.file_size)
+        with archive.open(member) as src:
+            with open(dest_path, "wb") as out:
+                shutil.copyfileobj(src, out)
+
+
 async def save_and_extract(upload: UploadFile, dest_json: str, gzip_path: list):
-    """Save upload; if it's a .gz file, extract the JSON and keep the original compressed file."""
-    if upload.filename and upload.filename.lower().endswith(".gz"):
-        # Save original compressed file (keep it for download/perfetto)
+    """Save upload and prepare a JSON file for analysis.
+
+    Compressed uploads keep a .json.gz copy for download/storage. Zip archives are
+    normalized to gzip-compressed JSON so downloaded traces stay tool-friendly.
+    """
+    filename = (upload.filename or "").lower()
+    if filename.endswith(".zip"):
+        temp_zip = dest_json + ".zip"
+        gzip_path[0] = dest_json + ".gz"
+        await save_upload(upload, temp_zip)
+        try:
+            await asyncio.to_thread(_extract_zip_to_json, temp_zip, dest_json)
+            await asyncio.to_thread(_compress_json_to_gz, dest_json, gzip_path[0])
+        except Exception as e:
+            raise HTTPException(400, f"解压失败: {e}")
+        finally:
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(temp_zip)
+    elif filename.endswith((".gz", ".tgz")):
+        # Plain gzip can be kept as-is; tar.gz/tgz is normalized to gzip JSON.
         gzip_path[0] = dest_json + ".gz"
         await save_upload(upload, gzip_path[0])
         try:
+            is_tar_archive = await asyncio.to_thread(_is_tar_archive, gzip_path[0])
             await asyncio.to_thread(_extract_gz_to_json, gzip_path[0], dest_json)
+            if is_tar_archive:
+                await asyncio.to_thread(_compress_json_to_gz, dest_json, gzip_path[0])
         except Exception as e:
             raise HTTPException(400, f"解压失败: {e}")
     else:
@@ -201,15 +238,14 @@ def _json_download_name(filename: Optional[str], slot: str) -> str:
     if lower.endswith(".gz"):
         base = name[:-3]
         return base if base.lower().endswith(".json") else base + ".json"
+    if lower.endswith(".zip"):
+        base = name[:-4]
+        return base if base.lower().endswith(".json") else base + ".json"
     return name if lower.endswith(".json") else name + ".json"
 
 
-def _stored_download_name(filename: Optional[str], file_path: str, slot: str) -> str:
-    name = _safe_download_name(filename, f"trace_{slot}.json")
-    lower = name.lower()
-    if file_path.endswith(".gz") and not (lower.endswith(".gz") or lower.endswith(".tgz")):
-        return name + ".gz"
-    return name
+def _gzip_json_download_name(filename: Optional[str], slot: str) -> str:
+    return _json_download_name(filename, slot) + ".gz"
 
 
 def _content_disposition(filename: str, disposition: str = "attachment") -> str:
@@ -598,6 +634,59 @@ def _iter_tar_json(path: str):
                 if not chunk:
                     break
                 yield chunk
+
+
+def _iter_zip_json(path: str):
+    with zipfile.ZipFile(path) as archive:
+        members = [
+            info for info in archive.infolist()
+            if not info.is_dir() and info.filename.lower().endswith(".json")
+        ]
+        if not members:
+            raise ValueError("Archive does not contain a JSON trace")
+        member = max(members, key=lambda info: info.file_size)
+        with archive.open(member) as extracted:
+            while True:
+                chunk = extracted.read(1 << 20)
+                if not chunk:
+                    break
+                yield chunk
+
+
+def _iter_file_chunks(path: str):
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(1 << 20)
+            if not chunk:
+                break
+            yield chunk
+
+
+def _is_tar_archive(path: str) -> bool:
+    try:
+        return tarfile.is_tarfile(path)
+    except Exception:
+        return False
+
+
+def _iter_json_chunks(path: str):
+    lower = path.lower()
+    if lower.endswith(".zip"):
+        return _iter_zip_json(path)
+    if lower.endswith((".gz", ".tgz")):
+        return _iter_tar_json(path) if _is_tar_archive(path) else _iter_gzip_json(path)
+    return _iter_file_chunks(path)
+
+
+def _iter_gzip_encoded(chunks):
+    compressor = zlib.compressobj(level=6, wbits=16 + zlib.MAX_WBITS)
+    for chunk in chunks:
+        compressed = compressor.compress(chunk)
+        if compressed:
+            yield compressed
+    tail = compressor.flush()
+    if tail:
+        yield tail
 
 
 # ── Synchronous analysis (runs in thread pool, must not await) ────────────────
@@ -2017,6 +2106,7 @@ async def get_job_file(jid: str, slot: str, format: Optional[str] = None):
     gzip_path = row.get(f"file_{slot}_gzip_path")
     json_path = row.get(f"file_{slot}_path")
     file_path = gzip_path if gzip_path else json_path
+    filename = row.get(f"file_{slot}_name")
 
     # Compare-from-history jobs have no file stored directly;
     # resolve via the corresponding source job (slot a → source_job_a, slot b → source_job_b)
@@ -2024,28 +2114,27 @@ async def get_job_file(jid: str, slot: str, format: Optional[str] = None):
         src_jid = row.get(f"source_job_{slot}")
         if src_jid:
             db2 = await get_db()
-            cur2 = await db2.execute("SELECT file_a_path, file_a_gzip_path FROM jobs WHERE id=?", (src_jid,))
+            cur2 = await db2.execute(
+                "SELECT file_a_name, file_a_path, file_a_gzip_path FROM jobs WHERE id=?",
+                (src_jid,),
+            )
             src = await row_to_dict(await cur2.fetchone())
             await db2.close()
             if src:
                 gzip_path = src.get("file_a_gzip_path")
                 json_path = src.get("file_a_path")
                 file_path = gzip_path if gzip_path else json_path
+                filename = src.get("file_a_name")
 
     if not file_path or not os.path.exists(file_path):
         raise HTTPException(404, "File not found")
-
-    filename = row.get(f"file_{slot}_name")
 
     # If the client requests raw JSON, return parseable JSON even when storage
     # keeps only a compressed copy after analysis.
     if format == "json":
         json_filename = _json_download_name(filename, slot)
-        if file_path.endswith(".gz"):
-            try:
-                chunks = _iter_tar_json(file_path) if tarfile.is_tarfile(file_path) else _iter_gzip_json(file_path)
-            except ValueError as exc:
-                raise HTTPException(400, str(exc))
+        if file_path.lower().endswith((".gz", ".tgz", ".zip")):
+            chunks = _iter_json_chunks(file_path)
             return StreamingResponse(
                 chunks,
                 media_type="application/json",
@@ -2053,10 +2142,15 @@ async def get_job_file(jid: str, slot: str, format: Optional[str] = None):
             )
         return FileResponse(file_path, media_type="application/json", filename=json_filename)
 
-    # Stream file directly — avoids loading entire file into memory
-    media_type = "application/gzip" if file_path.endswith(".gz") else "application/json"
-    stored_filename = _stored_download_name(filename, file_path, slot)
-    return FileResponse(file_path, media_type=media_type, filename=stored_filename)
+    gzip_filename = _gzip_json_download_name(filename, slot)
+    if file_path.lower().endswith(".gz") and not _is_tar_archive(file_path):
+        return FileResponse(file_path, media_type="application/gzip", filename=gzip_filename)
+
+    return StreamingResponse(
+        _iter_gzip_encoded(_iter_json_chunks(file_path)),
+        media_type="application/gzip",
+        headers={"Content-Disposition": _content_disposition(gzip_filename)},
+    )
 
 
 @app.delete("/api/jobs/{jid}/files/{slot}", status_code=204)

@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Web UI with drag-and-drop upload
 - Project grouping and management
 - Perfetto integration for trace visualization
-- `.json.gz` file support (auto-extract on upload, preserve compression on download)
+- `.json.gz` and `.json.zip` file support (auto-extract on upload, default `.json.gz` download)
 - User isolation via cookie-based session
 - Project sharing with password protection
 

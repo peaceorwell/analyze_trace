@@ -116,7 +116,7 @@ TRACE_ENABLE_CODE_EXEC=1 docker-compose up -d
 ### 功能特性
 
 #### 提交分析
-- 拖拽或点击上传 `.json` 或 `.json.gz` 文件（PyTorch Profiler 导出的 Chrome Trace 格式）
+- 拖拽或点击上传 `.json`、`.json.gz`、`.json.zip` 或 `.tar.gz/.tgz` 文件（PyTorch Profiler 导出的 Chrome Trace 格式）
 - 选择所属项目（可选）、填写备注（可选）
 - 点击"提交分析"，任务进入分析队列，实时显示上传进度和运行状态
 
@@ -155,7 +155,7 @@ TRACE_ENABLE_CODE_EXEC=1 docker-compose up -d
 - 源文件删除后无法参与对比，会显示"已删除"标签
 
 #### 文件操作
-- **下载**：可下载原始 trace 文件（受 `--no-download` 控制）
+- **下载**：默认下载 gzip 压缩的 JSON trace（`.json.gz`，受 `--no-download` 控制）
 - **Perfetto 集成**：点击"Perfetto ↗"按钮在 Perfetto UI 中打开 trace 文件
 - **删除文件**：删除原始 trace 文件，对应任务会标记"已删除"，无法再参与对比
 

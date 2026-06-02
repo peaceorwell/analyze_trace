@@ -1,6 +1,7 @@
 import csv
 import json
 import os
+import shutil
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -115,6 +116,18 @@ class TestParseTrace:
 
     def test_tar_gzip_trace(self, sample_trace_file_tar_gz):
         result = parse_trace(sample_trace_file_tar_gz, ["gemm"])
+        assert result["step_durations"][0] == 100.0
+
+    def test_tgz_trace(self, sample_trace_file_tar_gz, tmp_path):
+        tgz_path = tmp_path / "trace.tgz"
+        shutil.copyfile(sample_trace_file_tar_gz, tgz_path)
+
+        result = parse_trace(str(tgz_path), ["gemm"])
+
+        assert result["step_durations"][0] == 100.0
+
+    def test_zip_trace(self, sample_trace_file_zip):
+        result = parse_trace(sample_trace_file_zip, ["gemm"])
         assert result["step_durations"][0] == 100.0
 
     def test_step_underscore_markers(self, tmp_path):

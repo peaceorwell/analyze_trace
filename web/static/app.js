@@ -2299,7 +2299,7 @@ const Home = {
       <div class="card-title">提交分析</div>
       <div class="submit-cols">
         <div class="upload-box upload-box-sm" @dragover.prevent @drop.prevent="onDrop">
-          <input type="file" ref="fileInputA" accept=".json,.json.gz,.gz" multiple @change="onFileChange" hidden />
+          <input type="file" ref="fileInputA" accept=".json,.json.gz,.gz,.zip,.tar.gz,.tgz" multiple @change="onFileChange" hidden />
           <div @click="$refs.fileInputA.click()" class="upload-inner">
             <div class="upload-icon">📂</div>
             <div class="upload-label">{{ fileAName || '选择文件' }}</div>

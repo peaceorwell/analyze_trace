@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import tarfile
+import zipfile
 from collections import defaultdict
 from decimal import Decimal
 
@@ -294,15 +295,28 @@ def _write_kernels_avg_csv(path, avg_kernels):
 
 
 def _load_trace_json(trace_file):
-    """Load trace JSON from plain JSON, gzip JSON, or a tar.gz archive."""
-    if not str(trace_file).endswith(".gz"):
+    """Load trace JSON from plain JSON, gzip JSON, tar.gz, or zip archives."""
+    trace_name = str(trace_file).lower()
+    if trace_name.endswith(".zip"):
+        with zipfile.ZipFile(trace_file) as archive:
+            members = [
+                info for info in archive.infolist()
+                if not info.is_dir() and info.filename.lower().endswith(".json")
+            ]
+            if not members:
+                raise ValueError(f"No JSON trace found in archive: {trace_file}")
+            member = max(members, key=lambda info: info.file_size)
+            with archive.open(member) as extracted:
+                return json.load(extracted)
+
+    if not trace_name.endswith((".gz", ".tgz")):
         with open(trace_file) as f:
             return json.load(f)
 
     if tarfile.is_tarfile(trace_file):
         with tarfile.open(trace_file, "r:*") as tar:
             for member in tar.getmembers():
-                if member.isfile() and member.name.endswith(".json"):
+                if member.isfile() and member.name.lower().endswith(".json"):
                     extracted = tar.extractfile(member)
                     if extracted is not None:
                         with extracted:

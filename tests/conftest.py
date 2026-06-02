@@ -3,6 +3,7 @@ import os
 import pytest
 import tempfile
 import tarfile
+import zipfile
 
 
 @pytest.fixture
@@ -119,6 +120,30 @@ def sample_trace_file_tar_gz(sample_trace_data):
 
     with tarfile.open(archive_path, "w:gz") as tar:
         tar.add(json_path, arcname="trace.json")
+
+    os.unlink(json_path)
+
+    yield archive_path
+
+    os.unlink(archive_path)
+
+
+@pytest.fixture
+def sample_trace_file_zip(sample_trace_data):
+    """Create a temporary zip archive containing a trace JSON file."""
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".json", delete=False
+    ) as trace_file:
+        json.dump(sample_trace_data, trace_file)
+        json_path = trace_file.name
+
+    with tempfile.NamedTemporaryFile(
+        mode="wb", suffix=".json.zip", delete=False
+    ) as archive:
+        archive_path = archive.name
+
+    with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.write(json_path, arcname="trace.json")
 
     os.unlink(json_path)
 
