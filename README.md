@@ -117,7 +117,7 @@ TRACE_ENABLE_CODE_EXEC=1 docker-compose up -d
 
 #### 提交分析
 - 拖拽或点击上传 `.json`、`.json.gz`、`.json.zip` 或 `.tar.gz/.tgz` 文件（PyTorch Profiler 导出的 Chrome Trace 格式）
-- 选择所属项目（可选）、填写备注（可选）
+- 选择所属项目（可选）、填写别名（可选）
 - 点击"提交分析"，任务进入分析队列，实时显示上传进度和运行状态
 
 #### 结果查看
@@ -150,7 +150,7 @@ TRACE_ENABLE_CODE_EXEC=1 docker-compose up -d
 
 #### 历史对比
 - 在侧栏"对比"标签页选择两个已完成的单文件任务
-- 可选填备注和所属项目
+- 可选填别名和所属项目
 - 发起对比分析，无需重新上传文件，直接复用已有数据
 - 源文件删除后无法参与对比，会显示"已删除"标签
 

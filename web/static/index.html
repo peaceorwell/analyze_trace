@@ -226,7 +226,7 @@
 
           <div v-if="compareSelection.length===2" class="compare-form">
             <div class="form-row">
-              <label>备注</label>
+              <label>别名</label>
               <input v-model="compareLabel" class="input" placeholder="可选" />
             </div>
             <div class="form-row">
@@ -285,7 +285,7 @@
     <div v-if="showRenameJob" class="modal-mask" @click.self="showRenameJob=false">
       <div class="modal">
         <div class="modal-title">重命名任务</div>
-        <input v-model="renameJobName" class="input w-full" placeholder="任务备注" @keyup.enter="confirmRenameJob" />
+        <input v-model="renameJobName" class="input w-full" placeholder="任务别名" @keyup.enter="confirmRenameJob" />
         <div class="modal-actions">
           <button class="btn btn-outline" @click="showRenameJob=false">取消</button>
           <button class="btn btn-primary" @click="confirmRenameJob">保存</button>
@@ -456,7 +456,7 @@
             <h3>1. 提交分析</h3>
             <ul>
               <li>在主区域上传区拖拽或点击上传一个或多个 <code>.json</code> / <code>.json.gz</code> 文件（PyTorch Profiler 导出的 Chrome Trace 格式）</li>
-              <li>选择所属项目（可选），填写备注（可选）</li>
+              <li>选择所属项目（可选），填写别名（可选）</li>
               <li>勾选 <strong>Triton CSV 详情</strong>：输出逐 step 的 Triton kernel 详情表格</li>
               <li>勾选 <strong>Triton 代码保存</strong>：保存每个 Triton kernel 的生成源码，可在结果中查看和执行</li>
               <li>点击"提交分析"，后台异步处理，实时显示上传进度和运行状态</li>
@@ -501,7 +501,7 @@
             <ul>
               <li>在侧栏"对比"标签页选择两个已完成的单文件任务</li>
               <li>候选任务支持独立搜索和分页，已选任务会固定显示在列表上方</li>
-              <li>可选填备注和所属项目</li>
+              <li>可选填别名和所属项目</li>
               <li>点击"发起对比"，系统直接复用已有数据，无需重新上传文件</li>
               <li>对比结果页会显示 A/B 来源任务，可跳回源任务，也可交换 A/B 重新发起对比</li>
               <li>对比结果含 Kernel 对比、Triton 对比、Aten 对比、类型对比、CNCL 对比等多个维度</li>

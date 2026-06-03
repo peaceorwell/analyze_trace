@@ -2881,7 +2881,7 @@ const Home = {
           </select>
         </div>
         <div class="form-row">
-          <label>备注</label>
+          <label>别名</label>
           <input v-model="form.label" class="input" placeholder="可选" />
         </div>
         <button class="btn btn-primary" :disabled="uploadQueue.length===0 || submitting" @click="submitJob">
@@ -2916,7 +2916,7 @@ const Home = {
           </select>
         </div>
         <div class="form-row">
-          <label>备注</label>
+          <label>别名</label>
           <input v-model="form.label" class="input" placeholder="默认 A vs B" />
         </div>
         <button class="btn btn-primary" :disabled="!quickFileA || !quickFileB || submitting" @click="submitQuickCompare">
