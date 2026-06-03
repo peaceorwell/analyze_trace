@@ -43,7 +43,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.1.2",
+        "version": "0.1.3",
         "allow_file_download": True,
         "allow_code_execution": False,
     }

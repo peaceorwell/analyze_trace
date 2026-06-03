@@ -264,7 +264,7 @@ python analyze_trace.py baseline.json optimized.json -o ./output
 
 `analyze_trace.py` 对 Chrome Trace 格式的 JSON 执行两遍扫描：
 
-1. **Pass 1** — 收集所有 `ProfilerStep#N` 事件，建立 `step_num → (start_ts, end_ts)` 映射
+1. **Pass 1** — 收集所有 `ProfilerStep#N` / `step_N` 事件，建立 `step_num → (start_ts, end_ts)` 映射；若 trace 没有标准 step 标记，则 fallback 到 `run_step` 区间或全部可分析事件范围
 2. **Pass 2** — 遍历 `kernel` / `aten::*` / CNCL 事件，通过时间戳二分查找将每个事件归属到对应的 ProfilerStep
 
 每个 ProfilerStep 内按 kernel 名称聚合耗时后，再对所有 step 求均值，消除单步抖动。

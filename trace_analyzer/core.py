@@ -65,6 +65,8 @@ _STEP_NAME_PATTERNS = [
     re.compile(r"^step[_\s#:-]*(\d+)$", re.IGNORECASE),
 ]
 
+_RUN_STEP_RE = re.compile(r"\brun[_\s-]*step\b", re.IGNORECASE)
+
 
 def extract_step_number(name: str):
     """Return a numeric step id for common profiler step marker names."""
@@ -74,6 +76,11 @@ def extract_step_number(name: str):
         if match:
             return int(match.group(1))
     return None
+
+
+def is_fallback_step_marker(name: str) -> bool:
+    """Return True for common non-numbered model step wrappers."""
+    return bool(_RUN_STEP_RE.search(name or ""))
 
 
 def extract_kernel_family(name: str) -> str:
@@ -347,6 +354,10 @@ def parse_trace(trace_file):
         step_to_cncl:         step -> {op/kernel_name -> {"count": int, "dur_ms": float}}
         step_durations:       step -> wall-clock duration in ms (from ProfilerStep#/step_N event)
         kernel_families:      kernel_name -> automatic family label
+
+    Traces that do not contain ProfilerStep#/step_N markers fall back to
+    non-numbered run_step wrappers, then to one synthetic step spanning all
+    analyzable events.  This keeps valid traces from producing empty results.
     """
     trace = _load_trace_json(trace_file)
 
@@ -358,7 +369,15 @@ def parse_trace(trace_file):
     all_kernel_events = []
     aten_events       = []
     cncl_events       = []
+    fallback_step_events = []
     kernel_families   = {}
+
+    def event_interval(e):
+        ts = safe_float(e.get("ts"))
+        if ts is None:
+            return None
+        dur = safe_float(e.get("dur")) or 0.0
+        return ts, ts + max(dur, 0.0)
 
     def add_step_range(step_num, ts, dur):
         start = ts
@@ -375,15 +394,52 @@ def parse_trace(trace_file):
         cat  = e.get("cat", "")
         step_num = extract_step_number(name)
         if step_num is not None and cat != "kernel":
-            ts  = e.get("ts", 0)
-            dur = e.get("dur", 0)
-            add_step_range(step_num, ts, dur)
+            interval = event_interval(e)
+            if interval is not None:
+                add_step_range(step_num, interval[0], interval[1] - interval[0])
+        elif cat != "kernel" and is_fallback_step_marker(name) and event_interval(e):
+            fallback_step_events.append(e)
         elif cat == "kernel":
             all_kernel_events.append(e)
         elif name.startswith("aten::"):
             aten_events.append(e)
         elif cat == "gpu_user_annotation" and (name.startswith("cncl") or name.startswith("nccl")):
             cncl_events.append(e)
+
+    def add_fallback_step_ranges():
+        analyzable_events = [*all_kernel_events, *aten_events, *cncl_events]
+        analyzable_intervals = [
+            interval for interval in (event_interval(e) for e in analyzable_events)
+            if interval is not None
+        ]
+
+        fallback_intervals = [
+            interval for interval in (event_interval(e) for e in fallback_step_events)
+            if interval is not None and interval[1] > interval[0]
+        ]
+        fallback_intervals.sort(key=lambda item: item[0])
+
+        if fallback_intervals:
+            for index, (start, end) in enumerate(fallback_intervals):
+                next_start = fallback_intervals[index + 1][0] if index + 1 < len(fallback_intervals) else None
+                event_ends = [
+                    event_end for event_start, event_end in analyzable_intervals
+                    if event_start >= start and (next_start is None or event_start < next_start)
+                ]
+                if event_ends:
+                    end = max(end, max(event_ends))
+                if next_start is not None:
+                    end = min(end, next_start)
+                add_step_range(index, start, max(end - start, 0.0))
+            return
+
+        if analyzable_intervals:
+            start = min(interval[0] for interval in analyzable_intervals)
+            end = max(interval[1] for interval in analyzable_intervals)
+            add_step_range(0, start, max(end - start, 0.0))
+
+    if not step_ranges:
+        add_fallback_step_ranges()
 
     sorted_steps = sorted(step_ranges.items(), key=lambda x: x[1][0])
     step_starts  = [v[0] for _, v in sorted_steps]

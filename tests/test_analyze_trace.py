@@ -148,6 +148,40 @@ class TestParseTrace:
         assert result["step_to_kernels"][1]["gemm_cuda_kernel"]["count"] == 1
         assert result["step_to_aten"][0]["aten::linear"]["count"] == 1
 
+    def test_run_step_fallback_without_profiler_markers(self, tmp_path):
+        trace_path = tmp_path / "run_step_fallback.json"
+        trace_path.write_text(json.dumps({
+            "traceEvents": [
+                {"name": "model.py(10): run_step, callsite: 20", "cat": "python_function", "ts": 1000, "dur": 500},
+                {"name": "triton_poi_fused_add", "cat": "kernel", "ts": 1100, "dur": 100, "args": {}},
+                {"name": "aten::linear", "cat": "cpu_op", "ts": 1200, "dur": 50, "args": {}},
+                {"name": "gemm_cuda_kernel", "cat": "kernel", "ts": 1550, "dur": 100, "args": {}},
+            ],
+        }))
+
+        result = parse_trace(str(trace_path))
+
+        assert result["step_ranges"][0] == (1000.0, 1650.0)
+        assert result["step_durations"][0] == 0.65
+        assert result["step_to_kernels"][0]["triton_poi_fused_add"]["count"] == 1
+        assert result["step_to_kernels"][0]["gemm_cuda_kernel"]["count"] == 1
+        assert result["step_to_aten"][0]["aten::linear"]["count"] == 1
+
+    def test_analyzable_range_fallback_without_any_step_markers(self, tmp_path):
+        trace_path = tmp_path / "no_step_markers.json"
+        trace_path.write_text(json.dumps({
+            "traceEvents": [
+                {"name": "triton_poi_fused_add", "cat": "kernel", "ts": 2000, "dur": 100, "args": {}},
+                {"name": "aten::linear", "cat": "cpu_op", "ts": 1800, "dur": 50, "args": {}},
+            ],
+        }))
+
+        result = parse_trace(str(trace_path))
+
+        assert result["step_ranges"][0] == (1800.0, 2100.0)
+        assert result["step_to_kernels"][0]["triton_poi_fused_add"]["count"] == 1
+        assert result["step_to_aten"][0]["aten::linear"]["count"] == 1
+
 
 class TestComputeAvgs:
     def test_compute_avgs(self, sample_trace_file):
