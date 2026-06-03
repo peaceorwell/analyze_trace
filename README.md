@@ -252,7 +252,7 @@ python analyze_trace.py baseline.json optimized.json -o ./output
 
 | 文件 | 内容 |
 |------|------|
-| `all_kernels_cmp.csv` | 两个 trace 的 kernel 耗时对比，含 delta 和百分比变化 |
+| `all_kernels_cmp.csv` | 两个 trace 的 kernel 耗时对比，含 delta 变化 |
 | `triton_kernels_cmp.csv` | Triton kernel 对比 |
 | `aten_ops_cmp.csv` | ATen 算子对比 |
 | `kernel_types_cmp.csv` | kernel 类型汇总对比 |

@@ -905,7 +905,7 @@ def _write_kernel_types_cmp_csv(path, data_a, data_b):
     rows = _kernel_type_cmp_rows(data_a, data_b, sort_by="combined")
     with open(path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=[
-            "type", "dur_pct_A", "avg_dur_ms_A", "dur_pct_B", "avg_dur_ms_B",
+            "type", "avg_dur_ms_A", "avg_dur_ms_B",
             "delta_dur_ms", "avg_count_A", "avg_count_B",
         ], extrasaction="ignore")
         writer.writeheader()
@@ -924,10 +924,6 @@ def _kernel_type_cmp_rows(data_a, data_b, sort_by="combined"):
         [t for t in data_b["KERNEL_TYPES"] if t != "other"]
     ))
     all_types.append("other")
-    total_a    = sum(v[1] for v in data_a["kt_avgs"].values()) or 1.0
-    total_b    = sum(v[1] for v in data_b["kt_avgs"].values()) or 1.0
-    compute_a  = (total_a - data_a["kt_avgs"].get("collective", (0.0, 0.0))[1]) or 1.0
-    compute_b  = (total_b - data_b["kt_avgs"].get("collective", (0.0, 0.0))[1]) or 1.0
     rows = []
     for ktype in all_types:
         ac_a, ad_a = data_a["kt_avgs"].get(ktype, (0.0, 0.0))
@@ -936,9 +932,7 @@ def _kernel_type_cmp_rows(data_a, data_b, sort_by="combined"):
         delta_count = ac_b - ac_a
         rows.append({
             "type":         ktype,
-            "dur_pct_A":    f"{ad_a / compute_a * 100:.1f}%",
             "avg_dur_ms_A": fmt3(ad_a),
-            "dur_pct_B":    f"{ad_b / compute_b * 100:.1f}%",
             "avg_dur_ms_B": fmt3(ad_b),
             "delta_dur_ms": fmt3(delta_dur),
             "delta_abs_ms": fmt3(abs(delta_dur)),
@@ -962,7 +956,7 @@ def _write_kernel_types_delta_csv(path, data_a, data_b):
     with open(path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=[
             "type", "delta_dur_ms", "delta_abs_ms", "delta_pct",
-            "avg_dur_ms_A", "avg_dur_ms_B", "dur_pct_A", "dur_pct_B",
+            "avg_dur_ms_A", "avg_dur_ms_B",
             "avg_count_A", "avg_count_B", "delta_count",
         ], extrasaction="ignore")
         writer.writeheader()

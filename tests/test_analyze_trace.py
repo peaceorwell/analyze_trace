@@ -345,6 +345,15 @@ class TestEndToEnd:
         assert rows[1]["type"] == "gemm"
         assert rows[1]["delta_dur_ms"] == "8"
 
+        with open(os.path.join(temp_output_dir, "kernel_types_cmp.csv")) as f:
+            cmp_fields = csv.DictReader(f).fieldnames
+        delta_fields = rows[0].keys()
+
+        assert "dur_pct_A" not in cmp_fields
+        assert "dur_pct_B" not in cmp_fields
+        assert "dur_pct_A" not in delta_fields
+        assert "dur_pct_B" not in delta_fields
+
     def test_comparison_all_kernels_cmp_includes_family(self, temp_output_dir):
         data_a = {
             "KERNEL_TYPES": ["gemm"],

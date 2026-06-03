@@ -120,7 +120,7 @@ const chartPieRows      = ref([]);
 
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
-const appVersion = ref("0.1.5");
+const appVersion = ref("0.1.6");
 const perfettoOpening = ref({});
 const compareRerunLoading = ref(false);
 let activeResultStateJobId = null;
@@ -706,7 +706,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.1.5";
+  appVersion.value = cfg.version || "0.1.6";
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
 };
