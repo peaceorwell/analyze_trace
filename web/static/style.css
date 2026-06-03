@@ -359,11 +359,11 @@ body {
   min-height: 48px; position: relative; cursor: pointer; transition: all .2s;
 }
 .upload-box-sm:hover { border-color: var(--purple); }
-.upload-inner { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 8px; }
+.upload-inner { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; min-width: 0; padding: 8px; }
 .upload-box-sm .upload-inner { padding: 6px; }
 .upload-icon { font-size: 18px; margin-bottom: 2px; }
 .upload-box-sm .upload-icon { font-size: 16px; margin-bottom: 0; }
-.upload-label { font-size: 11px; color: var(--text3); text-align: center; word-break: break-all; }
+.upload-label { min-width: 0; max-width: 100%; font-size: 11px; color: var(--text3); text-align: center; word-break: break-all; }
 .upload-box-sm .upload-label { font-size: 10px; }
 .upload-clear {
   position: absolute; top: 4px; right: 6px;
@@ -376,7 +376,7 @@ body {
    FORM
    ═══════════════════════════════════════════════ */
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
-.form-row { display: flex; flex-direction: column; gap: 4px; }
+.form-row { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .form-row-inline { display: flex; flex-direction: row; align-items: center; gap: 6px; flex: 1; }
 .form-row-inline label { font-size: 11px; color: var(--text3); font-weight: 500; white-space: nowrap; }
 .form-row-inline .input { flex: 1; }
@@ -469,31 +469,39 @@ select.input { appearance: none; cursor: pointer; }
 .mode-toggle-btn:disabled { cursor: not-allowed; opacity: .65; }
 .submit-cols {
   display: grid;
-  grid-template-columns: minmax(140px, 1.2fr) 1fr 1.2fr 1fr auto;
+  grid-template-columns: minmax(140px, 1.2fr) minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1fr) auto;
   gap: 10px;
   align-items: end;
 }
+.submit-cols > * { min-width: 0; }
 .submit-cols .upload-box-sm {
   width: 100%; height: 34px; min-height: 34px; border-radius: 6px; flex: none;
 }
 .submit-cols .upload-inner { flex-direction: row; gap: 6px; padding: 4px 10px; height: auto; }
 .submit-cols .upload-icon { margin-bottom: 0; font-size: 13px; }
-.submit-cols .upload-label { font-size: 12px; text-align: left; }
+.submit-cols .upload-label {
+  flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  word-break: normal; font-size: 12px; text-align: left;
+}
 .submit-cols .form-row { display: flex; flex-direction: column; gap: 4px; }
 .submit-cols label { font-size: 11px; color: var(--text3); font-weight: 500; }
 .submit-cols .btn { height: 34px; white-space: nowrap; align-self: end; }
 .submit-cols .input { height: 34px; }
 .quick-compare-cols {
   display: grid;
-  grid-template-columns: minmax(260px, 1.6fr) 1fr 1.2fr auto;
+  grid-template-columns: minmax(320px, 1.8fr) minmax(0, .9fr) minmax(0, 1.1fr) auto;
   gap: 10px; align-items: end;
 }
-.quick-upload-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; min-width: 0; }
-.quick-upload-box { width: 100%; height: 34px; min-height: 34px; flex: none; }
-.quick-upload-box .upload-inner { flex-direction: row; justify-content: flex-start; gap: 6px; padding: 4px 10px; }
+.quick-compare-cols > * { min-width: 0; }
+.quick-upload-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; min-width: 0; }
+.quick-upload-box { width: 100%; min-width: 0; height: 34px; min-height: 34px; overflow: hidden; flex: none; }
+.quick-upload-box .upload-inner {
+  min-width: 0; flex-direction: row; justify-content: flex-start; gap: 6px;
+  padding: 4px 26px 4px 10px;
+}
 .quick-upload-box .upload-label {
-  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  text-align: left; font-size: 12px;
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  word-break: normal; text-align: left; font-size: 12px;
 }
 .quick-compare-cols .form-row { display: flex; flex-direction: column; gap: 4px; }
 .quick-compare-cols label { font-size: 11px; color: var(--text3); font-weight: 500; }
