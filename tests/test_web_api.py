@@ -3,6 +3,7 @@ import gzip
 import json
 import os
 import sys
+import tarfile
 import time
 from pathlib import Path
 import shutil
@@ -19,6 +20,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(WEB_DIR))
 
 import db as web_db  # noqa: E402
+import backup as web_backup  # noqa: E402
 import server as web_server  # noqa: E402
 
 
@@ -43,10 +45,49 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.1.7",
+        "version": "0.1.8",
         "allow_file_download": True,
         "allow_code_execution": False,
     }
+
+
+def test_ops_endpoints_and_audit_logs(client):
+    assert client.get("/healthz").json()["status"] == "ok"
+    assert client.get("/readyz").json()["checks"]["db"] == "ok"
+
+    created = client.post(
+        "/api/projects",
+        json={"name": "Audit Project"},
+        headers={"X-Remote-User": "alice"},
+    )
+    assert created.status_code == 201
+    project_id = created.json()["id"]
+
+    logs = client.get("/api/audit-logs", params={"action": "project.create"})
+    assert logs.status_code == 200
+    payload = logs.json()
+    assert payload["total"] == 1
+    assert payload["data"][0]["user"] == "alice"
+    assert payload["data"][0]["resource_id"] == project_id
+
+    metrics = client.get("/metrics")
+    assert metrics.status_code == 200
+    assert "analyze_trace_app_uptime_seconds" in metrics.text
+    assert "analyze_trace_http_requests_total" in metrics.text
+
+
+def test_backup_script_creates_archive_and_manifest(client, isolated_server, tmp_path):
+    backup_dir = tmp_path / "backups"
+    manifest = web_backup.create_backup(isolated_server.STORAGE_DIR, str(backup_dir), retention_days=14)
+
+    archive = Path(manifest["archive"])
+    assert archive.exists()
+    assert (backup_dir / "latest.json").exists()
+    assert manifest["size_bytes"] == archive.stat().st_size
+    assert len(manifest["sha256"]) == 64
+
+    with tarfile.open(archive, "r:gz") as tar:
+        assert "storage/jobs.db" in tar.getnames()
 
 
 def test_project_crud_does_not_require_auth(client):

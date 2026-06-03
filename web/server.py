@@ -2,14 +2,17 @@ import argparse
 import asyncio
 import contextlib
 import csv
+from datetime import datetime, timezone
 import gzip
 import io
 import json
+import logging
 import os
 import shlex
 import shutil
 import sys
 import tarfile
+import time
 import types
 import uuid
 import zipfile
@@ -18,8 +21,8 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 import aiofiles
-from fastapi import FastAPI, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -28,7 +31,8 @@ from trace_analyzer import compute_avgs, extract_kernel_family, parse_trace, run
 from db import get_db, init_db, row_to_dict  # noqa: E402
 
 STORAGE_DIR = os.path.join(os.path.dirname(__file__), "storage")
-APP_VERSION = "0.1.7"
+APP_VERSION = "0.1.8"
+BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(os.path.dirname(__file__), "backups"))
 
 # Configured at startup via CLI; read-only after that
 ALLOW_FILE_DOWNLOAD = os.environ.get("TRACE_NO_DOWNLOAD", "") == ""
@@ -36,6 +40,106 @@ ALLOW_CODE_EXECUTION = os.environ.get("TRACE_ENABLE_CODE_EXEC", "") == "1"
 ANALYSIS_CONCURRENCY = max(1, int(os.environ.get("TRACE_ANALYSIS_CONCURRENCY", "1")))
 analysis_queue: asyncio.Queue[str] = asyncio.Queue()
 analysis_workers: list[asyncio.Task] = []
+APP_STARTED_AT = time.time()
+HTTP_METRICS: dict[tuple[str, str, int], dict[str, float]] = {}
+
+
+class JsonLogFormatter(logging.Formatter):
+    def format(self, record):
+        payload = {
+            "time": datetime.fromtimestamp(record.created, timezone.utc).isoformat(),
+            "level": record.levelname.lower(),
+            "message": record.getMessage(),
+        }
+        for key, value in record.__dict__.items():
+            if key.startswith("_") or key in _LOG_RESERVED_KEYS:
+                continue
+            payload[key] = value
+        if record.exc_info:
+            payload["exception"] = self.formatException(record.exc_info)
+        return json.dumps(payload, ensure_ascii=False, default=str)
+
+
+_LOG_RESERVED_KEYS = {
+    "name", "msg", "args", "levelname", "levelno", "pathname", "filename",
+    "module", "exc_info", "exc_text", "stack_info", "lineno", "funcName",
+    "created", "msecs", "relativeCreated", "thread", "threadName",
+    "processName", "process",
+}
+
+
+def configure_logging():
+    logger = logging.getLogger("analyze_trace.web")
+    logger.setLevel(os.environ.get("TRACE_LOG_LEVEL", "INFO").upper())
+    logger.handlers.clear()
+    logger.propagate = False
+
+    formatter = JsonLogFormatter()
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+    logger.addHandler(stream_handler)
+
+    log_file = os.environ.get("TRACE_LOG_FILE")
+    if log_file:
+        log_dir = os.path.dirname(log_file)
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+    return logger
+
+
+logger = configure_logging()
+
+
+def request_user(request: Request) -> str:
+    return (
+        request.headers.get("X-Remote-User")
+        or request.headers.get("X-Forwarded-User")
+        or request.headers.get("X-User")
+        or "local"
+    )
+
+
+def request_ip(request: Request) -> str:
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if forwarded:
+        return forwarded.split(",", 1)[0].strip()
+    return request.client.host if request.client else ""
+
+
+def _record_http_metric(method: str, path: str, status: int, duration: float):
+    key = (method, path, status)
+    item = HTTP_METRICS.setdefault(key, {"count": 0.0, "sum": 0.0})
+    item["count"] += 1
+    item["sum"] += duration
+
+
+async def write_audit(
+    db,
+    request: Request,
+    action: str,
+    *,
+    resource_type: str = "",
+    resource_id: str = "",
+    details: Optional[dict] = None,
+):
+    await db.execute(
+        """
+        INSERT INTO audit_logs(id, user, action, resource_type, resource_id, ip, detail_json)
+        VALUES(?,?,?,?,?,?,?)
+        """,
+        (
+            str(uuid.uuid4()),
+            request_user(request),
+            action,
+            resource_type,
+            resource_id,
+            request_ip(request),
+            json.dumps(details or {}, ensure_ascii=False, default=str),
+        ),
+    )
 
 # ── App lifecycle ─────────────────────────────────────────────────────────────
 
@@ -53,6 +157,53 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
+
+
+@app.middleware("http")
+async def request_logging_middleware(request: Request, call_next):
+    request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    start = time.perf_counter()
+    status_code = 500
+    response = None
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        return response
+    except Exception:
+        logger.exception(
+            "http_request_failed",
+            extra={
+                "event": "http_request",
+                "request_id": request_id,
+                "user": request_user(request),
+                "ip": request_ip(request),
+                "method": request.method,
+                "path": request.url.path,
+                "status": status_code,
+            },
+        )
+        raise
+    finally:
+        duration_ms = (time.perf_counter() - start) * 1000
+        route = request.scope.get("route")
+        route_path = getattr(route, "path", request.url.path)
+        _record_http_metric(request.method, route_path, status_code, duration_ms / 1000)
+        if response is not None:
+            response.headers["X-Request-ID"] = request_id
+        logger.info(
+            "http_request",
+            extra={
+                "event": "http_request",
+                "request_id": request_id,
+                "user": request_user(request),
+                "ip": request_ip(request),
+                "method": request.method,
+                "path": route_path,
+                "raw_path": request.url.path,
+                "status": status_code,
+                "duration_ms": round(duration_ms, 3),
+            },
+        )
 
 
 async def mark_interrupted_jobs():
@@ -819,6 +970,7 @@ async def run_analysis(job_id: str):
         if not job or job["status"] != "pending":
             return
 
+        logger.info("analysis_started", extra={"event": "analysis_started", "job_id": job_id, "mode": job["mode"]})
         await db.execute("UPDATE jobs SET status='running', error_msg='' WHERE id=?", (job_id,))
         await db.commit()
 
@@ -870,6 +1022,7 @@ async def run_analysis(job_id: str):
         )
         await _refresh_job_storage_cache(db, job_id)
         await db.commit()
+        logger.info("analysis_finished", extra={"event": "analysis_finished", "job_id": job_id, "mode": job["mode"]})
 
     except Exception as e:
         await db.execute(
@@ -878,11 +1031,140 @@ async def run_analysis(job_id: str):
         )
         await _refresh_job_storage_cache(db, job_id)
         await db.commit()
+        logger.exception("analysis_failed", extra={"event": "analysis_failed", "job_id": job_id})
+    finally:
+        await db.close()
+
+
+def _prom_label(value: str) -> str:
+    return str(value).replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
+
+
+def _backup_manifest() -> dict:
+    path = os.path.join(BACKUP_DIR, "latest.json")
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+async def _job_status_counts() -> dict[str, int]:
+    db = await get_db()
+    try:
+        rows = await (
+            await db.execute("SELECT status, COUNT(*) AS count FROM jobs GROUP BY status")
+        ).fetchall()
+        return {row["status"]: row["count"] for row in rows}
     finally:
         await db.close()
 
 
 # ── Routes: index / config ────────────────────────────────────────────────────
+
+@app.get("/healthz")
+async def healthz():
+    return {"status": "ok", "version": APP_VERSION}
+
+
+@app.get("/readyz")
+async def readyz():
+    checks = {}
+    db = None
+    try:
+        db = await get_db()
+        await (await db.execute("SELECT 1")).fetchone()
+        checks["db"] = "ok"
+    except Exception as e:
+        checks["db"] = f"error: {e}"
+    finally:
+        if db is not None:
+            await db.close()
+
+    try:
+        os.makedirs(STORAGE_DIR, exist_ok=True)
+        probe_path = os.path.join(STORAGE_DIR, f".readyz-{uuid.uuid4().hex}")
+        with open(probe_path, "w") as f:
+            f.write("ok")
+        os.remove(probe_path)
+        checks["storage"] = "ok"
+    except Exception as e:
+        checks["storage"] = f"error: {e}"
+
+    ready = all(value == "ok" for value in checks.values())
+    return JSONResponse(
+        {"status": "ok" if ready else "error", "checks": checks, "version": APP_VERSION},
+        status_code=200 if ready else 503,
+    )
+
+
+@app.get("/metrics")
+async def metrics():
+    job_counts = await _job_status_counts()
+    disk = shutil.disk_usage(STORAGE_DIR if os.path.exists(STORAGE_DIR) else os.path.dirname(STORAGE_DIR))
+    backup = _backup_manifest()
+
+    lines = [
+        "# HELP analyze_trace_app_uptime_seconds Web application uptime.",
+        "# TYPE analyze_trace_app_uptime_seconds gauge",
+        f"analyze_trace_app_uptime_seconds {time.time() - APP_STARTED_AT:.3f}",
+        "# HELP analyze_trace_http_requests_total HTTP requests by method, route and status.",
+        "# TYPE analyze_trace_http_requests_total counter",
+    ]
+    for (method, path, status), item in sorted(HTTP_METRICS.items()):
+        lines.append(
+            f'analyze_trace_http_requests_total{{method="{_prom_label(method)}",'
+            f'path="{_prom_label(path)}",status="{status}"}} {int(item["count"])}'
+        )
+
+    lines.extend([
+        "# HELP analyze_trace_http_request_duration_seconds_sum Total HTTP request duration.",
+        "# TYPE analyze_trace_http_request_duration_seconds_sum counter",
+    ])
+    for (method, path, status), item in sorted(HTTP_METRICS.items()):
+        lines.append(
+            f'analyze_trace_http_request_duration_seconds_sum{{method="{_prom_label(method)}",'
+            f'path="{_prom_label(path)}",status="{status}"}} {item["sum"]:.6f}'
+        )
+
+    lines.extend([
+        "# HELP analyze_trace_http_request_duration_seconds_count HTTP request duration sample count.",
+        "# TYPE analyze_trace_http_request_duration_seconds_count counter",
+    ])
+    for (method, path, status), item in sorted(HTTP_METRICS.items()):
+        lines.append(
+            f'analyze_trace_http_request_duration_seconds_count{{method="{_prom_label(method)}",'
+            f'path="{_prom_label(path)}",status="{status}"}} {int(item["count"])}'
+        )
+
+    lines.extend([
+        "# HELP analyze_trace_jobs_total Jobs by status.",
+        "# TYPE analyze_trace_jobs_total gauge",
+    ])
+    for status, count in sorted(job_counts.items()):
+        lines.append(f'analyze_trace_jobs_total{{status="{_prom_label(status)}"}} {count}')
+
+    lines.extend([
+        "# HELP analyze_trace_analysis_queue_size Pending analysis queue size in memory.",
+        "# TYPE analyze_trace_analysis_queue_size gauge",
+        f"analyze_trace_analysis_queue_size {analysis_queue.qsize()}",
+        "# HELP analyze_trace_storage_free_bytes Free bytes on the storage filesystem.",
+        "# TYPE analyze_trace_storage_free_bytes gauge",
+        f"analyze_trace_storage_free_bytes {disk.free}",
+        "# HELP analyze_trace_storage_total_bytes Total bytes on the storage filesystem.",
+        "# TYPE analyze_trace_storage_total_bytes gauge",
+        f"analyze_trace_storage_total_bytes {disk.total}",
+        "# HELP analyze_trace_backup_last_success_timestamp_seconds Last successful backup timestamp.",
+        "# TYPE analyze_trace_backup_last_success_timestamp_seconds gauge",
+        f"analyze_trace_backup_last_success_timestamp_seconds {float(backup.get('created_at_epoch', 0) or 0):.0f}",
+        "# HELP analyze_trace_backup_last_size_bytes Last successful backup archive size.",
+        "# TYPE analyze_trace_backup_last_size_bytes gauge",
+        f"analyze_trace_backup_last_size_bytes {int(backup.get('size_bytes', 0) or 0)}",
+    ])
+    return PlainTextResponse("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
+
 
 @app.get("/")
 async def index():
@@ -895,6 +1177,56 @@ async def get_config():
         "version": APP_VERSION,
         "allow_file_download": ALLOW_FILE_DOWNLOAD,
         "allow_code_execution": ALLOW_CODE_EXECUTION,
+    }
+
+
+@app.get("/api/audit-logs")
+async def list_audit_logs(
+    action: Optional[str] = None,
+    resource_type: Optional[str] = None,
+    resource_id: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+):
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
+    clauses = []
+    params = []
+    if action:
+        clauses.append("action = ?")
+        params.append(action)
+    if resource_type:
+        clauses.append("resource_type = ?")
+        params.append(resource_type)
+    if resource_id:
+        clauses.append("resource_id = ?")
+        params.append(resource_id)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+
+    db = await get_db()
+    try:
+        total_row = await (
+            await db.execute(f"SELECT COUNT(*) AS total FROM audit_logs {where}", params)
+        ).fetchone()
+        rows = await (
+            await db.execute(
+                f"""
+                SELECT *
+                FROM audit_logs
+                {where}
+                ORDER BY created_at DESC
+                LIMIT ? OFFSET ?
+                """,
+                (*params, limit, offset),
+            )
+        ).fetchall()
+    finally:
+        await db.close()
+    return {
+        "data": [dict(row) for row in rows],
+        "total": total_row["total"],
+        "limit": limit,
+        "offset": offset,
     }
 
 
@@ -912,12 +1244,17 @@ async def list_projects():
 
 
 @app.post("/api/projects", status_code=201)
-async def create_project(body: dict):
+async def create_project(request: Request, body: dict):
     pid = str(uuid.uuid4())
     db = await get_db()
     await db.execute(
         "INSERT INTO projects(id, name, description, is_public) VALUES(?,?,?,?)",
         (pid, body.get("name", "新项目"), body.get("description", ""), 1),
+    )
+    await write_audit(
+        db, request, "project.create",
+        resource_type="project", resource_id=pid,
+        details={"name": body.get("name", "新项目")},
     )
     await db.commit()
     cursor = await db.execute("SELECT * FROM projects WHERE id=?", (pid,))
@@ -927,7 +1264,7 @@ async def create_project(body: dict):
 
 
 @app.put("/api/projects/{pid}")
-async def update_project(pid: str, body: dict):
+async def update_project(request: Request, pid: str, body: dict):
     db = await get_db()
 
     cursor = await db.execute("SELECT * FROM projects WHERE id=?", (pid,))
@@ -940,6 +1277,14 @@ async def update_project(pid: str, body: dict):
         "UPDATE projects SET name=?, description=? WHERE id=?",
         (body.get("name"), body.get("description", ""), pid),
     )
+    await write_audit(
+        db, request, "project.update",
+        resource_type="project", resource_id=pid,
+        details={
+            "old_name": row.get("name"),
+            "new_name": body.get("name"),
+        },
+    )
     await db.commit()
     cursor = await db.execute("SELECT * FROM projects WHERE id=?", (pid,))
     row = await cursor.fetchone()
@@ -948,7 +1293,7 @@ async def update_project(pid: str, body: dict):
 
 
 @app.delete("/api/projects/{pid}", status_code=204)
-async def delete_project(pid: str):
+async def delete_project(request: Request, pid: str):
     db = await get_db()
 
     cursor = await db.execute("SELECT * FROM projects WHERE id=?", (pid,))
@@ -989,6 +1334,11 @@ async def delete_project(pid: str):
 
     # Delete the project
     await db.execute("DELETE FROM projects WHERE id=?", (pid,))
+    await write_audit(
+        db, request, "project.delete",
+        resource_type="project", resource_id=pid,
+        details={"name": row.get("name"), "jobs": len(jobs_data)},
+    )
     await db.commit()
     await db.close()
 
@@ -1009,7 +1359,7 @@ async def list_deleted_projects():
 
 
 @app.post("/api/deleted-projects/{pid}/restore", status_code=200)
-async def restore_project(pid: str):
+async def restore_project(request: Request, pid: str):
     """Restore a project deleted within the last 10 days."""
     db = await get_db()
 
@@ -1070,6 +1420,11 @@ async def restore_project(pid: str):
 
     # Remove from deleted_projects
     await db.execute("DELETE FROM deleted_projects WHERE id=?", (pid,))
+    await write_audit(
+        db, request, "project.restore",
+        resource_type="project", resource_id=pid,
+        details={"name": row.get("name"), "jobs": len(deleted_jobs)},
+    )
 
     await db.commit()
     cursor = await db.execute("SELECT * FROM projects WHERE id=?", (pid,))
@@ -1080,7 +1435,7 @@ async def restore_project(pid: str):
 
 
 @app.delete("/api/deleted-projects/{pid}", status_code=204)
-async def permanently_delete_project(pid: str):
+async def permanently_delete_project(request: Request, pid: str):
     """Permanently delete a project from recovery list (without restoring)."""
     db = await get_db()
 
@@ -1103,6 +1458,11 @@ async def permanently_delete_project(pid: str):
 
     # Delete from deleted_projects
     await db.execute("DELETE FROM deleted_projects WHERE id=?", (pid,))
+    await write_audit(
+        db, request, "project.permanent_delete",
+        resource_type="project", resource_id=pid,
+        details={"name": row.get("name"), "jobs": len(job_ids)},
+    )
     await db.commit()
     await db.close()
 
@@ -1309,7 +1669,7 @@ async def list_compare_candidates(
 
 
 @app.patch("/api/jobs/bulk/project")
-async def bulk_move_jobs(body: dict):
+async def bulk_move_jobs(request: Request, body: dict):
     job_ids = _unique_job_ids(body)
     db = await get_db()
     try:
@@ -1319,6 +1679,11 @@ async def bulk_move_jobs(body: dict):
             f"UPDATE jobs SET project_id=? WHERE id IN ({placeholders})",
             (body.get("project_id") or None, *job_ids),
         )
+        await write_audit(
+            db, request, "job.bulk_move",
+            resource_type="job", resource_id=",".join(job_ids[:10]),
+            details={"job_count": len(job_ids), "project_id": body.get("project_id") or None},
+        )
         await db.commit()
     finally:
         await db.close()
@@ -1326,7 +1691,7 @@ async def bulk_move_jobs(body: dict):
 
 
 @app.post("/api/jobs/bulk/delete")
-async def bulk_delete_jobs(body: dict):
+async def bulk_delete_jobs(request: Request, body: dict):
     job_ids = _unique_job_ids(body)
     db = await get_db()
     try:
@@ -1335,6 +1700,11 @@ async def bulk_delete_jobs(body: dict):
             _remove_job_dir(job_id)
         placeholders = ",".join("?" * len(job_ids))
         await db.execute(f"DELETE FROM jobs WHERE id IN ({placeholders})", tuple(job_ids))
+        await write_audit(
+            db, request, "job.bulk_delete",
+            resource_type="job", resource_id=",".join(job_ids[:10]),
+            details={"job_count": len(job_ids)},
+        )
         await db.commit()
     finally:
         await db.close()
@@ -1342,7 +1712,7 @@ async def bulk_delete_jobs(body: dict):
 
 
 @app.post("/api/jobs/bulk/delete-files")
-async def bulk_delete_job_files(body: dict):
+async def bulk_delete_job_files(request: Request, body: dict):
     job_ids = _unique_job_ids(body)
     db = await get_db()
     try:
@@ -1351,6 +1721,11 @@ async def bulk_delete_job_files(body: dict):
         for job in jobs:
             files_deleted += await _delete_trace_files(db, job)
             await _refresh_job_storage_cache(db, job["id"])
+        await write_audit(
+            db, request, "job.bulk_delete_files",
+            resource_type="job", resource_id=",".join(job_ids[:10]),
+            details={"job_count": len(job_ids), "files_deleted": files_deleted},
+        )
         await db.commit()
     finally:
         await db.close()
@@ -1578,6 +1953,7 @@ async def list_group_jobs(
 
 @app.post("/api/jobs", status_code=201)
 async def create_job(
+    request: Request,
     file_a: UploadFile,
     file_b: Optional[UploadFile] = None,
     save_triton_csv: bool = Form(False),
@@ -1617,6 +1993,17 @@ async def create_job(
          int(save_triton_csv), int(save_triton_code)),
     )
     await _refresh_job_storage_cache(db, jid)
+    await write_audit(
+        db, request, "job.create",
+        resource_type="job", resource_id=jid,
+        details={
+            "mode": mode,
+            "project_id": project_id,
+            "label": eff_label,
+            "file_a_name": file_a.filename,
+            "file_b_name": name_b,
+        },
+    )
     await db.commit()
     cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
     row = await cursor.fetchone()
@@ -1627,7 +2014,7 @@ async def create_job(
 
 
 @app.post("/api/jobs/compare", status_code=201)
-async def compare_jobs(body: dict):
+async def compare_jobs(request: Request, body: dict):
     job_id_a = body.get("job_id_a")
     job_id_b = body.get("job_id_b")
     if not job_id_a or not job_id_b:
@@ -1669,6 +2056,16 @@ async def compare_jobs(body: dict):
          0, 0),
     )
     await _refresh_job_storage_cache(db, jid)
+    await write_audit(
+        db, request, "job.compare_create",
+        resource_type="job", resource_id=jid,
+        details={
+            "source_job_a": job_id_a,
+            "source_job_b": job_id_b,
+            "project_id": body.get("project_id"),
+            "label": eff_label,
+        },
+    )
     await db.commit()
     cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
     row = await cursor.fetchone()
@@ -1693,7 +2090,7 @@ def _copy_trace_reference(src_path: str, dest_json: str) -> tuple[Optional[str],
 
 
 @app.post("/api/jobs/{jid}/rerun-swapped", status_code=201)
-async def rerun_compare_swapped(jid: str):
+async def rerun_compare_swapped(request: Request, jid: str):
     db = await get_db()
     try:
         cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
@@ -1768,6 +2165,11 @@ async def rerun_compare_swapped(jid: str):
             )
 
         await _refresh_job_storage_cache(db, new_jid)
+        await write_audit(
+            db, request, "job.compare_swap",
+            resource_type="job", resource_id=new_jid,
+            details={"source_compare_job": jid},
+        )
         await db.commit()
         cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (new_jid,))
         row = await cursor.fetchone()
@@ -1866,7 +2268,7 @@ async def get_job_result_table(
 
 
 @app.patch("/api/jobs/{jid}")
-async def patch_job(jid: str, body: dict):
+async def patch_job(request: Request, jid: str, body: dict):
     db = await get_db()
 
     cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
@@ -1880,6 +2282,16 @@ async def patch_job(jid: str, body: dict):
     if "project_id" in body:
         await db.execute("UPDATE jobs SET project_id=? WHERE id=?",
                          (body["project_id"] or None, jid))
+    await write_audit(
+        db, request, "job.update",
+        resource_type="job", resource_id=jid,
+        details={
+            "old_label": row.get("label"),
+            "new_label": body.get("label", row.get("label")),
+            "old_project_id": row.get("project_id"),
+            "new_project_id": body.get("project_id", row.get("project_id")),
+        },
+    )
     await db.commit()
     cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
     row = await cursor.fetchone()
@@ -1888,7 +2300,7 @@ async def patch_job(jid: str, body: dict):
 
 
 @app.delete("/api/jobs/{jid}", status_code=204)
-async def delete_job(jid: str):
+async def delete_job(request: Request, jid: str):
     db = await get_db()
 
     cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
@@ -1901,6 +2313,11 @@ async def delete_job(jid: str):
     _remove_job_dir(jid)
 
     await db.execute("DELETE FROM jobs WHERE id=?", (jid,))
+    await write_audit(
+        db, request, "job.delete",
+        resource_type="job", resource_id=jid,
+        details={"label": row.get("label"), "mode": row.get("mode")},
+    )
     await db.commit()
     await db.close()
 
@@ -2262,7 +2679,7 @@ except Exception as e:
 
 
 @app.get("/api/jobs/{jid}/files/{slot}")
-async def get_job_file(jid: str, slot: str, format: Optional[str] = None):
+async def get_job_file(request: Request, jid: str, slot: str, format: Optional[str] = None):
     """Serve trace file (a or b) for Perfetto/download.
 
     Query params:
@@ -2309,6 +2726,17 @@ async def get_job_file(jid: str, slot: str, format: Optional[str] = None):
     if not file_path or not os.path.exists(file_path):
         raise HTTPException(404, "File not found")
 
+    audit_db = await get_db()
+    try:
+        await write_audit(
+            audit_db, request, "job.file_download",
+            resource_type="job", resource_id=jid,
+            details={"slot": slot, "format": format or "gzip", "filename": filename},
+        )
+        await audit_db.commit()
+    finally:
+        await audit_db.close()
+
     # If the client requests raw JSON, return parseable JSON even when storage
     # keeps only a compressed copy after analysis.
     if format == "json":
@@ -2334,7 +2762,7 @@ async def get_job_file(jid: str, slot: str, format: Optional[str] = None):
 
 
 @app.delete("/api/jobs/{jid}/files/{slot}", status_code=204)
-async def delete_job_file(jid: str, slot: str):
+async def delete_job_file(request: Request, jid: str, slot: str):
     """Delete the stored trace file (a or b) for a job."""
     db = await get_db()
     cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
@@ -2348,6 +2776,11 @@ async def delete_job_file(jid: str, slot: str):
 
     await _delete_trace_files(db, row, slots=(slot,))
     await _refresh_job_storage_cache(db, jid)
+    await write_audit(
+        db, request, "job.file_delete",
+        resource_type="job", resource_id=jid,
+        details={"slot": slot, "label": row.get("label")},
+    )
     await db.commit()
     await db.close()
 

@@ -104,6 +104,40 @@ TRACE_NO_DOWNLOAD=1 docker-compose up -d
 TRACE_ENABLE_CODE_EXEC=1 docker-compose up -d
 ```
 
+### 运维能力
+
+#### 日志与审计
+
+- Web 服务会输出 JSON 格式请求日志，包含 `request_id`、用户、IP、路由、状态码和耗时等字段。
+- 设置 `TRACE_LOG_FILE=/path/to/analyze-trace.log` 可同时写入日志文件，便于接入 ELK / Loki / Splunk。
+- 关键操作会写入 SQLite 的 `audit_logs` 表，包括项目创建/删除/恢复、任务创建/移动/删除、文件删除/下载、历史对比和交换 A/B。
+- 可通过 `GET /api/audit-logs?limit=100` 查看最近审计记录。
+
+#### 备份
+
+备份对象包括 SQLite 数据库和整个 storage 文件目录。脚本会先用 SQLite backup API 生成一致性数据库快照，再打包为 `.tar.gz`：
+
+```bash
+uv run python web/backup.py \
+  --storage-dir web/storage \
+  --backup-dir /data/analyze_trace/backups \
+  --retention-days 14
+```
+
+建议由 cron、systemd timer 或公司统一备份平台每天执行一次，并将备份目录放到 NAS / 对象存储等持久化位置。脚本会生成 `latest.json`，监控接口会读取最近一次备份时间和大小。
+
+#### 监控
+
+服务提供以下探测接口：
+
+| 接口 | 用途 |
+|------|------|
+| `/healthz` | 进程存活检查 |
+| `/readyz` | DB 与 storage 可用性检查 |
+| `/metrics` | Prometheus 文本指标 |
+
+`/metrics` 包含请求量、请求耗时、任务状态数量、分析队列长度、磁盘容量和最近一次备份状态。设置 `TRACE_BACKUP_DIR=/data/analyze_trace/backups` 可让服务读取指定备份目录下的 `latest.json`。
+
 ### CLI 参数
 
 | 参数 | 默认值 | 说明 |

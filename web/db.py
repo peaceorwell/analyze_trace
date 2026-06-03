@@ -105,6 +105,17 @@ async def init_db():
                 deleted_at   DATETIME DEFAULT CURRENT_TIMESTAMP
             );
 
+            CREATE TABLE IF NOT EXISTS audit_logs (
+                id            TEXT PRIMARY KEY,
+                created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+                user          TEXT DEFAULT 'local',
+                action        TEXT NOT NULL,
+                resource_type TEXT DEFAULT '',
+                resource_id   TEXT DEFAULT '',
+                ip            TEXT DEFAULT '',
+                detail_json   TEXT DEFAULT '{}'
+            );
+
             CREATE TABLE IF NOT EXISTS schema_migrations (
                 version     INTEGER PRIMARY KEY,
                 applied_at  DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -167,6 +178,9 @@ async def init_db():
             CREATE INDEX IF NOT EXISTS idx_jobs_source_b ON jobs(source_job_b);
             CREATE INDEX IF NOT EXISTS idx_folders_user ON folders(user_token);
             CREATE INDEX IF NOT EXISTS idx_projects_folder ON projects(folder_id);
+            CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at);
+            CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action);
+            CREATE INDEX IF NOT EXISTS idx_audit_logs_resource ON audit_logs(resource_type, resource_id);
         """)
         await db.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(1)")
 
