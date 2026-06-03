@@ -43,7 +43,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.1.3",
+        "version": "0.1.4",
         "allow_file_download": True,
         "allow_code_execution": False,
     }
@@ -975,6 +975,106 @@ def test_compare_job_exposes_source_summaries_and_delete_impact(client, sample_t
     assert impact.status_code == 200
     assert impact.json()["count"] == 1
     assert impact.json()["dependent_compare_jobs"][0]["id"] == "compare-job"
+
+
+def test_rerun_swapped_direct_compare_copies_reversed_files(
+    client,
+    sample_trace_file,
+    tmp_path,
+    monkeypatch,
+):
+    enqueued = []
+
+    async def fake_enqueue(job_id):
+        enqueued.append(job_id)
+
+    trace_b = tmp_path / "b.json"
+    shutil.copyfile(sample_trace_file, trace_b)
+    monkeypatch.setattr(web_server, "enqueue_analysis_job", fake_enqueue)
+
+    async def insert_jobs():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO jobs(
+                    id, label, mode, status,
+                    file_a_name, file_a_path,
+                    file_b_name, file_b_path
+                ) VALUES(?,?,?,?,?,?,?,?)
+                """,
+                (
+                    "direct-compare", "a vs b", "compare", "done",
+                    "a.json", sample_trace_file,
+                    "b.json", str(trace_b),
+                ),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_jobs())
+
+    response = client.post("/api/jobs/direct-compare/rerun-swapped")
+
+    assert response.status_code == 201
+    job = response.json()
+    assert job["mode"] == "compare"
+    assert job["label"] == "b.json vs a.json"
+    assert job["file_a_name"] == "b.json"
+    assert job["file_b_name"] == "a.json"
+    assert job["source_job_a"] is None
+    assert job["source_job_b"] is None
+    assert Path(job["file_a_path"]).exists()
+    assert Path(job["file_b_path"]).exists()
+    assert enqueued == [job["id"]]
+
+
+def test_rerun_swapped_source_compare_reverses_sources(
+    client,
+    sample_trace_file,
+    monkeypatch,
+):
+    enqueued = []
+
+    async def fake_enqueue(job_id):
+        enqueued.append(job_id)
+
+    monkeypatch.setattr(web_server, "enqueue_analysis_job", fake_enqueue)
+
+    async def insert_jobs():
+        db = await web_db.get_db()
+        try:
+            await db.executemany(
+                """
+                INSERT INTO jobs(
+                    id, label, mode, status,
+                    file_a_name, file_a_path,
+                    source_job_a, source_job_b
+                ) VALUES(?,?,?,?,?,?,?,?)
+                """,
+                [
+                    ("source-a", "base", "single", "done", "a.json", sample_trace_file, None, None),
+                    ("source-b", "target", "single", "done", "b.json", sample_trace_file, None, None),
+                    ("compare-job", "base vs target", "compare", "done", "a.json", None, "source-a", "source-b"),
+                ],
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_jobs())
+
+    response = client.post("/api/jobs/compare-job/rerun-swapped")
+
+    assert response.status_code == 201
+    job = response.json()
+    assert job["label"] == "target vs base"
+    assert job["file_a_name"] == "b.json"
+    assert job["file_b_name"] == "a.json"
+    assert job["source_job_a"] == "source-b"
+    assert job["source_job_b"] == "source-a"
+    assert enqueued == [job["id"]]
 
 
 def test_storage_summary(client, tmp_path):

@@ -120,8 +120,9 @@ const chartPieRows      = ref([]);
 
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
-const appVersion = ref("0.1.3");
+const appVersion = ref("0.1.4");
 const perfettoOpening = ref({});
+const compareRerunLoading = ref(false);
 let activeResultStateJobId = null;
 
 const resultStateKey = jobId => `tpa-result-state:${jobId}`;
@@ -705,7 +706,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.1.3";
+  appVersion.value = cfg.version || "0.1.4";
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
 };
@@ -2650,31 +2651,31 @@ const openCompareSource = source => {
 };
 
 const rerunCompareSwapped = async () => {
-  const sourceA = selectedJob.value?.compare_sources?.a;
-  const sourceB = selectedJob.value?.compare_sources?.b;
-  if (!sourceA?.id || !sourceB?.id) return;
-  if (!sourceA.file_a_exists || !sourceB.file_a_exists) {
-    showToast("源文件已删除，无法重新对比", "error");
+  if (compareRerunLoading.value) return;
+  if (!selectedJobId.value || selectedJob.value?.mode !== "compare") {
+    showToast("当前任务不是对比任务", "error");
     return;
   }
-  const r = await fetch("/api/jobs/compare", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({
-      job_id_a: sourceB.id,
-      job_id_b: sourceA.id,
-      label: `${sourceB.label || sourceB.id.slice(0, 8)} vs ${sourceA.label || sourceA.id.slice(0, 8)}`,
-      project_id: selectedJob.value.project_id || null,
-    }),
-  });
-  const job = await r.json();
-  if (!r.ok) {
-    showToast("重新对比失败: " + (job.detail || "服务器错误"), "error");
-    return;
+  compareRerunLoading.value = true;
+  try {
+    const r = await fetch(`/api/jobs/${selectedJobId.value}/rerun-swapped`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+    });
+    const job = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      showToast("重新对比失败: " + (job.detail || "服务器错误"), "error");
+      return;
+    }
+    showToast("已提交交换 A/B 对比", "success");
+    await refreshSidebarData();
+    router.push({ path: `/job/${job.id}` });
+  } catch (e) {
+    showToast("重新对比失败: 网络错误", "error");
+  } finally {
+    compareRerunLoading.value = false;
   }
-  await refreshSidebarData();
-  router.push({ path: `/job/${job.id}` });
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -3035,7 +3036,11 @@ const JobDetail = {
       <div v-if="selectedJob.mode==='compare' && selectedJob.compare_sources" class="compare-source-panel">
         <div class="compare-source-head">
           <span>来源</span>
-          <button class="btn btn-xs btn-outline" @click="rerunCompareSwapped">交换 A/B 重新对比</button>
+          <button class="btn btn-xs btn-outline"
+                  :disabled="compareRerunLoading"
+                  @click="rerunCompareSwapped">
+            {{ compareRerunLoading ? '提交中...' : '交换 A/B 重新对比' }}
+          </button>
         </div>
         <div class="compare-source-grid">
           <div v-for="slot in ['a','b']" :key="slot" class="compare-source-item">
@@ -3356,6 +3361,7 @@ const JobDetail = {
       ktChart: ktChartRef, ktPieChart: ktPieChartRef, ktPieChartB: ktPieChartBRef,
       selectedJob, selectedJobId, jobLoading, resultTab, availableTabs, currentTable,
       isReadingMode, toggleReadingMode,
+      compareRerunLoading,
       consoleSearch, consoleHideWrote, consoleSections, consoleWroteCount,
       consoleSearchMatchCount, scrollConsoleSection,
       chartSource, chartMetric, chartTopN, chartTopNOptions, chartSourceOptions,

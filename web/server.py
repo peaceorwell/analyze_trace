@@ -28,7 +28,7 @@ from trace_analyzer import compute_avgs, extract_kernel_family, parse_trace, run
 from db import get_db, init_db, row_to_dict  # noqa: E402
 
 STORAGE_DIR = os.path.join(os.path.dirname(__file__), "storage")
-APP_VERSION = "0.1.3"
+APP_VERSION = "0.1.4"
 
 # Configured at startup via CLI; read-only after that
 ALLOW_FILE_DOWNLOAD = os.environ.get("TRACE_NO_DOWNLOAD", "") == ""
@@ -1675,6 +1675,109 @@ async def compare_jobs(body: dict):
     await db.close()
 
     await enqueue_analysis_job(jid)
+    return dict(row)
+
+
+def _primary_trace_path(row: dict, slot: str = "a") -> Optional[str]:
+    return row.get(f"file_{slot}_gzip_path") or row.get(f"file_{slot}_path")
+
+
+def _copy_trace_reference(src_path: str, dest_json: str) -> tuple[Optional[str], Optional[str]]:
+    os.makedirs(os.path.dirname(dest_json), exist_ok=True)
+    if src_path.lower().endswith((".gz", ".tgz")):
+        dest_gzip = dest_json + ".gz"
+        shutil.copyfile(src_path, dest_gzip)
+        return None, dest_gzip
+    shutil.copyfile(src_path, dest_json)
+    return dest_json, None
+
+
+@app.post("/api/jobs/{jid}/rerun-swapped", status_code=201)
+async def rerun_compare_swapped(jid: str):
+    db = await get_db()
+    try:
+        cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
+        job = await row_to_dict(await cursor.fetchone())
+        if not job:
+            raise HTTPException(404, "Job not found")
+        if job.get("mode") != "compare":
+            raise HTTPException(400, "Only compare jobs can be swapped")
+
+        new_jid = str(uuid.uuid4())
+
+        if job.get("source_job_a") and job.get("source_job_b"):
+            cursor_a = await db.execute("SELECT * FROM jobs WHERE id=?", (job["source_job_a"],))
+            source_a = await row_to_dict(await cursor_a.fetchone())
+            cursor_b = await db.execute("SELECT * FROM jobs WHERE id=?", (job["source_job_b"],))
+            source_b = await row_to_dict(await cursor_b.fetchone())
+            if not source_a or not source_b:
+                raise HTTPException(404, "Source job not found")
+
+            path_a = _primary_trace_path(source_a)
+            path_b = _primary_trace_path(source_b)
+            if not path_a or not os.path.exists(path_a):
+                raise HTTPException(409, "Source file A has been deleted")
+            if not path_b or not os.path.exists(path_b):
+                raise HTTPException(409, "Source file B has been deleted")
+
+            label = f"{source_b.get('label') or source_b['id'][:8]} vs {source_a.get('label') or source_a['id'][:8]}"
+            await db.execute(
+                """INSERT INTO jobs(id, project_id, label, mode,
+                       file_a_name, file_b_name,
+                       source_job_a, source_job_b,
+                       save_triton_csv, save_triton_code)
+                   VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    new_jid, job.get("project_id"), label, "compare",
+                    source_b.get("file_a_name"), source_a.get("file_a_name"),
+                    source_b["id"], source_a["id"],
+                    0, 0,
+                ),
+            )
+        else:
+            path_a = _primary_trace_path(job, "a")
+            path_b = _primary_trace_path(job, "b")
+            if not path_a or not os.path.exists(path_a):
+                raise HTTPException(409, "File A has been deleted")
+            if not path_b or not os.path.exists(path_b):
+                raise HTTPException(409, "File B has been deleted")
+
+            new_dir = job_dir(new_jid)
+            try:
+                new_a_path, new_a_gzip_path = _copy_trace_reference(path_b, os.path.join(new_dir, "trace_a.json"))
+                new_b_path, new_b_gzip_path = _copy_trace_reference(path_a, os.path.join(new_dir, "trace_b.json"))
+            except OSError as e:
+                with contextlib.suppress(FileNotFoundError):
+                    shutil.rmtree(new_dir)
+                raise HTTPException(500, f"Failed to copy trace files: {e}") from e
+
+            label_a = job.get("file_b_name") or os.path.basename(path_b)
+            label_b = job.get("file_a_name") or os.path.basename(path_a)
+            await db.execute(
+                """INSERT INTO jobs(id, project_id, label, mode,
+                       file_a_name, file_a_path, file_a_gzip_path,
+                       file_b_name, file_b_path, file_b_gzip_path,
+                       save_triton_csv, save_triton_code)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    new_jid, job.get("project_id"), f"{label_a} vs {label_b}", "compare",
+                    label_a, new_a_path, new_a_gzip_path,
+                    label_b, new_b_path, new_b_gzip_path,
+                    0, 0,
+                ),
+            )
+
+        await _refresh_job_storage_cache(db, new_jid)
+        await db.commit()
+        cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (new_jid,))
+        row = await cursor.fetchone()
+    except HTTPException:
+        await db.rollback()
+        raise
+    finally:
+        await db.close()
+
+    await enqueue_analysis_job(new_jid)
     return dict(row)
 
 
