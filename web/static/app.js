@@ -120,7 +120,7 @@ const chartPieRows      = ref([]);
 
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
-const appVersion = ref("0.1.6");
+const appVersion = ref("0.1.7");
 const perfettoOpening = ref({});
 const compareRerunLoading = ref(false);
 let activeResultStateJobId = null;
@@ -441,7 +441,6 @@ const availableTabs = computed(() => {
     "triton_kernels_cmp.csv":   "Triton 对比",
     "aten_ops_avg.csv":         "Aten Ops",
     "aten_ops_cmp.csv":         "Aten 对比",
-    "kernel_types_delta.csv":   "类型 Delta",
     "cncl_ops_avg.csv":         "CNCL Ops",
     "cncl_ops_cmp.csv":         "CNCL 对比",
   };
@@ -459,7 +458,6 @@ const availableTabs = computed(() => {
 });
 
 const CHART_SOURCE_CONFIGS = [
-  { file: "kernel_types_delta.csv", label: "类型 Delta", mode: "compare", nameField: "type", defaultMetric: "delta_dur_ms" },
   { file: "kernel_types_cmp.csv", label: "类型对比", mode: "compare", nameField: "type", defaultMetric: "delta_dur_ms" },
   { file: "all_kernels_cmp.csv", label: "Kernel Delta", mode: "compare", nameField: "kernel_name", defaultMetric: "delta_dur_ms" },
   { file: "triton_kernels_cmp.csv", label: "Triton Delta", mode: "compare", nameField: "kernel_name", defaultMetric: "delta_dur_ms" },
@@ -527,7 +525,7 @@ const currentTable = computed(() => {
 });
 
 const isKernelTypeTab = computed(() =>
-  ["kernel_types_avg.csv", "kernel_types_cmp.csv", "kernel_types_delta.csv"].includes(resultTab.value)
+  ["kernel_types_avg.csv", "kernel_types_cmp.csv"].includes(resultTab.value)
 );
 
 const tableTotalRows = computed(() =>
@@ -706,7 +704,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.1.6";
+  appVersion.value = cfg.version || "0.1.7";
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
 };

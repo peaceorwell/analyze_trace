@@ -28,7 +28,7 @@ from trace_analyzer import compute_avgs, extract_kernel_family, parse_trace, run
 from db import get_db, init_db, row_to_dict  # noqa: E402
 
 STORAGE_DIR = os.path.join(os.path.dirname(__file__), "storage")
-APP_VERSION = "0.1.6"
+APP_VERSION = "0.1.7"
 
 # Configured at startup via CLI; read-only after that
 ALLOW_FILE_DOWNLOAD = os.environ.get("TRACE_NO_DOWNLOAD", "") == ""
@@ -328,7 +328,7 @@ def _ordered_result_csv_names(rdir: str) -> list[str]:
     for name in ["all_kernels_avg.csv", "all_kernels_cmp.csv",
                  "triton_kernels_avg.csv", "triton_kernels_cmp.csv",
                  "aten_ops_avg.csv", "aten_ops_cmp.csv",
-                 "kernel_types_avg.csv", "kernel_types_cmp.csv", "kernel_types_delta.csv",
+                 "kernel_types_avg.csv", "kernel_types_cmp.csv",
                  "cncl_ops_avg.csv", "cncl_ops_cmp.csv"]:
         if os.path.exists(os.path.join(rdir, name)):
             names.append(name)
@@ -486,7 +486,7 @@ def collect_results(jid: str) -> dict:
     for name in ["all_kernels_avg.csv", "all_kernels_cmp.csv",
                  "triton_kernels_avg.csv", "triton_kernels_cmp.csv",
                  "aten_ops_avg.csv", "aten_ops_cmp.csv",
-                 "kernel_types_avg.csv", "kernel_types_cmp.csv", "kernel_types_delta.csv",
+                 "kernel_types_avg.csv", "kernel_types_cmp.csv",
                  "cncl_ops_avg.csv", "cncl_ops_cmp.csv"]:
         full = os.path.join(rdir, name)
         if os.path.exists(full):

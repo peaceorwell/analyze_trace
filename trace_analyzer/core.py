@@ -902,7 +902,7 @@ def _write_triton_cmp_csv(path, avg_triton_a, avg_triton_b):
 
 
 def _write_kernel_types_cmp_csv(path, data_a, data_b):
-    rows = _kernel_type_cmp_rows(data_a, data_b, sort_by="combined")
+    rows = _kernel_type_cmp_rows(data_a, data_b)
     with open(path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=[
             "type", "avg_dur_ms_A", "avg_dur_ms_B",
@@ -913,11 +913,11 @@ def _write_kernel_types_cmp_csv(path, data_a, data_b):
     print(f"Wrote {path} ({len(rows)} rows)")
 
 
-def _kernel_type_cmp_rows(data_a, data_b, sort_by="combined"):
+def _kernel_type_cmp_rows(data_a, data_b):
     """Build per-kernel-family comparison rows.
 
-    sort_by="combined" keeps the legacy order by A+B duration; sort_by="delta"
-    highlights the largest duration changes first.
+    Rows are ordered by the largest absolute duration changes first so the
+    remaining type comparison view carries the old Delta tab's value.
     """
     all_types = list(dict.fromkeys(
         [t for t in data_a["KERNEL_TYPES"] if t != "other"] +
@@ -930,38 +930,20 @@ def _kernel_type_cmp_rows(data_a, data_b, sort_by="combined"):
         ac_b, ad_b = data_b["kt_avgs"].get(ktype, (0.0, 0.0))
         delta_dur = ad_b - ad_a
         delta_count = ac_b - ac_a
+        delta_abs = abs(delta_dur)
         rows.append({
             "type":         ktype,
             "avg_dur_ms_A": fmt3(ad_a),
             "avg_dur_ms_B": fmt3(ad_b),
             "delta_dur_ms": fmt3(delta_dur),
-            "delta_abs_ms": fmt3(abs(delta_dur)),
-            "delta_pct":    pct(ad_a, ad_b),
             "avg_count_A":  fmt3(ac_a),
             "avg_count_B":  fmt3(ac_b),
             "delta_count":  fmt3(delta_count),
-            "_combined":    ad_a + ad_b,
-            "_delta_abs":   abs(delta_dur),
+            "_delta_abs":   delta_abs,
         })
 
-    if sort_by == "delta":
-        rows.sort(key=lambda row: (-row["_delta_abs"], row["type"] == "other", row["type"]))
-    else:
-        rows.sort(key=lambda row: (row["type"] == "other", -row["_combined"], row["type"]))
+    rows.sort(key=lambda row: (-row["_delta_abs"], row["type"] == "other", row["type"]))
     return rows
-
-
-def _write_kernel_types_delta_csv(path, data_a, data_b):
-    rows = _kernel_type_cmp_rows(data_a, data_b, sort_by="delta")
-    with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=[
-            "type", "delta_dur_ms", "delta_abs_ms", "delta_pct",
-            "avg_dur_ms_A", "avg_dur_ms_B",
-            "avg_count_A", "avg_count_B", "delta_count",
-        ], extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(rows)
-    print(f"Wrote {path} ({len(rows)} rows)")
 
 
 # ── Top-level write functions ─────────────────────────────────────────────────
@@ -1026,7 +1008,6 @@ def write_comparison(data_a, data_b, args):
     _write_cmp_avg_csv(os.path.join(args.output_dir, "aten_ops_cmp.csv"),
                        data_a["avg_aten"], data_b["avg_aten"], "op_name")
     _write_kernel_types_cmp_csv(os.path.join(args.output_dir, "kernel_types_cmp.csv"), data_a, data_b)
-    _write_kernel_types_delta_csv(os.path.join(args.output_dir, "kernel_types_delta.csv"), data_a, data_b)
     _write_cmp_avg_csv(os.path.join(args.output_dir, "cncl_ops_cmp.csv"),
                        data_a["avg_cncl"], data_b["avg_cncl"], "op_name")
 

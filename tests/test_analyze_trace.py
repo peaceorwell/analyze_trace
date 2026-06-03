@@ -316,7 +316,7 @@ class TestEndToEnd:
         assert avgs is not None
         assert len(avgs["KERNEL_TYPES"]) > 0
 
-    def test_comparison_writes_kernel_type_delta_csv(self, temp_output_dir):
+    def test_comparison_writes_kernel_type_cmp_without_delta_tab_csv(self, temp_output_dir):
         data_a = {
             "KERNEL_TYPES": ["gemm", "attention", "other"],
             "kt_avgs": {"gemm": (10, 20), "attention": (5, 40), "other": (1, 3), "collective": (0, 0)},
@@ -337,7 +337,7 @@ class TestEndToEnd:
 
         write_comparison(data_a, data_b, args)
 
-        with open(os.path.join(temp_output_dir, "kernel_types_delta.csv")) as f:
+        with open(os.path.join(temp_output_dir, "kernel_types_cmp.csv")) as f:
             rows = list(csv.DictReader(f))
 
         assert rows[0]["type"] == "attention"
@@ -345,14 +345,11 @@ class TestEndToEnd:
         assert rows[1]["type"] == "gemm"
         assert rows[1]["delta_dur_ms"] == "8"
 
-        with open(os.path.join(temp_output_dir, "kernel_types_cmp.csv")) as f:
-            cmp_fields = csv.DictReader(f).fieldnames
-        delta_fields = rows[0].keys()
+        cmp_fields = rows[0].keys()
 
         assert "dur_pct_A" not in cmp_fields
         assert "dur_pct_B" not in cmp_fields
-        assert "dur_pct_A" not in delta_fields
-        assert "dur_pct_B" not in delta_fields
+        assert not os.path.exists(os.path.join(temp_output_dir, "kernel_types_delta.csv"))
 
     def test_comparison_all_kernels_cmp_includes_family(self, temp_output_dir):
         data_a = {
