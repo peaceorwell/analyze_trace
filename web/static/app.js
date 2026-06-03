@@ -120,7 +120,7 @@ const chartPieRows      = ref([]);
 
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
-const appVersion = ref("0.1.4");
+const appVersion = ref("0.1.5");
 const perfettoOpening = ref({});
 const compareRerunLoading = ref(false);
 let activeResultStateJobId = null;
@@ -706,7 +706,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.1.4";
+  appVersion.value = cfg.version || "0.1.5";
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
 };
@@ -1129,6 +1129,7 @@ const drillDownKernelType = async row => {
     sortAsc: false,
     colFilters: { family: type },
     colFilterOps: { family: "~" },
+    visibleColumns: fields.filter(field => field !== "family"),
   };
   const memory = readResultMemory(selectedJobId.value);
   memory.tabs = { ...(memory.tabs || {}), [targetFile]: state };

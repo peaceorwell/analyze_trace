@@ -28,7 +28,7 @@ from trace_analyzer import compute_avgs, extract_kernel_family, parse_trace, run
 from db import get_db, init_db, row_to_dict  # noqa: E402
 
 STORAGE_DIR = os.path.join(os.path.dirname(__file__), "storage")
-APP_VERSION = "0.1.4"
+APP_VERSION = "0.1.5"
 
 # Configured at startup via CLI; read-only after that
 ALLOW_FILE_DOWNLOAD = os.environ.get("TRACE_NO_DOWNLOAD", "") == ""
