@@ -138,6 +138,7 @@ body {
   line-height: 1.2;
 }
 .header-actions { display: flex; gap: 6px; align-items: center; }
+.header-more-menu .action-menu { min-width: 124px; }
 
 .header-actions .btn-outline {
   background: transparent;
