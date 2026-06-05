@@ -27,26 +27,51 @@
 <body>
   <div id="app">
     <div v-if="!authChecked" class="auth-page">
-      <div class="auth-panel">
-        <div class="auth-title">Torch Profiler Analyzer</div>
-        <div class="auth-subtitle">正在初始化...</div>
-      </div>
+      <section class="auth-brand-panel">
+        <div class="auth-brand-mark">
+          <div class="auth-cambricon-logo">Cambricon</div>
+          <div class="auth-cambricon-cn">寒　武　纪</div>
+        </div>
+      </section>
+      <section class="auth-form-panel">
+        <div class="auth-form-card">
+          <div class="auth-title">Torch Profiler Analyzer</div>
+          <div class="auth-subtitle">正在初始化...</div>
+        </div>
+      </section>
     </div>
 
     <div v-else-if="authRequired && !currentUser" class="auth-page">
-      <form class="auth-panel" @submit.prevent="submitLogin">
-        <div class="auth-logo-wrap">
-          <img src="/static/favicon.svg" class="auth-logo" alt="" />
+      <section class="auth-brand-panel">
+        <div class="auth-brand-mark">
+          <div class="auth-cambricon-logo">Cambricon</div>
+          <div class="auth-cambricon-cn">寒　武　纪</div>
         </div>
-        <div class="auth-title">Torch Profiler Analyzer</div>
-        <div class="auth-subtitle">使用 LDAP / AD 账号登录</div>
-        <input v-model="loginForm.username" class="input auth-input" placeholder="用户名" autocomplete="username" autofocus />
-        <input v-model="loginForm.password" class="input auth-input" type="password" placeholder="密码" autocomplete="current-password" />
-        <div v-if="loginError" class="auth-error">{{ loginError }}</div>
-        <button class="btn btn-primary auth-submit" type="submit" :disabled="loginLoading">
-          {{ loginLoading ? '登录中...' : '登录' }}
-        </button>
-      </form>
+      </section>
+      <section class="auth-form-panel">
+        <form class="auth-form-card" @submit.prevent="submitLogin">
+          <div class="auth-form-kicker">Torch Profiler Analyzer</div>
+          <h1 class="auth-heading">登录</h1>
+          <label class="auth-field">
+            <span class="auth-field-label">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="7" r="4"/></svg>
+              用户名
+            </span>
+            <input v-model="loginForm.username" class="auth-input" placeholder="请输入用户名" autocomplete="username" autofocus />
+          </label>
+          <label class="auth-field">
+            <span class="auth-field-label">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+              密码
+            </span>
+            <input v-model="loginForm.password" class="auth-input" type="password" placeholder="请输入密码" autocomplete="current-password" />
+          </label>
+          <div v-if="loginError" class="auth-error">{{ loginError }}</div>
+          <button class="auth-submit" type="submit" :disabled="loginLoading">
+            {{ loginLoading ? '登录中...' : '登录' }}
+          </button>
+        </form>
+      </section>
     </div>
 
     <!-- ── Header ── -->
