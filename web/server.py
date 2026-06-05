@@ -36,7 +36,7 @@ from db import get_db, init_db, row_to_dict  # noqa: E402
 import auth as ldap_auth  # noqa: E402
 
 STORAGE_DIR = os.path.join(os.path.dirname(__file__), "storage")
-APP_VERSION = "0.1.18"
+APP_VERSION = "0.1.19"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(os.path.dirname(__file__), "backups"))
 
 # Configured at startup via CLI; read-only after that
@@ -767,9 +767,29 @@ def csv_to_rows(path: str) -> dict:
         return {"fields": [], "rows": []}
     with open(path, newline="") as f:
         reader = csv.DictReader(f)
-        fields = _augment_result_csv_fields(os.path.basename(path), reader.fieldnames or [])
-        rows = [_augment_result_csv_row(os.path.basename(path), row) for row in reader]
+        fields = _result_csv_fields(os.path.basename(path), reader.fieldnames or [])
+        rows = [_result_csv_row(os.path.basename(path), row) for row in reader]
         return {"fields": fields, "rows": rows}
+
+
+def _is_percent_csv_field(field: str) -> bool:
+    name = (field or "").strip().lower()
+    return (
+        name == "pct"
+        or name.startswith("pct_")
+        or name.endswith("_pct")
+        or "_pct_" in name
+        or "percent" in name
+        or "percentage" in name
+    )
+
+
+def _filter_result_csv_fields(fields: list[str]) -> list[str]:
+    return [field for field in fields if not _is_percent_csv_field(field)]
+
+
+def _filter_result_csv_row(row: dict) -> dict:
+    return {field: value for field, value in row.items() if not _is_percent_csv_field(field)}
 
 
 def _augment_result_csv_fields(filename: str, fields: list[str]) -> list[str]:
@@ -784,6 +804,14 @@ def _augment_result_csv_row(filename: str, row: dict) -> dict:
         row = dict(row)
         row["family"] = extract_kernel_family(row["kernel_name"])
     return row
+
+
+def _result_csv_fields(filename: str, fields: list[str]) -> list[str]:
+    return _filter_result_csv_fields(_augment_result_csv_fields(filename, fields))
+
+
+def _result_csv_row(filename: str, row: dict) -> dict:
+    return _filter_result_csv_row(_augment_result_csv_row(filename, row))
 
 
 def _ordered_result_csv_names(rdir: str) -> list[str]:
@@ -835,7 +863,7 @@ def collect_result_files(jid: str) -> dict:
         fields = []
         with open(full, newline="") as f:
             reader = csv.reader(f)
-            fields = _augment_result_csv_fields(name, next(reader, []) or [])
+            fields = _result_csv_fields(name, next(reader, []) or [])
         files[name] = {
             "fields": fields,
             "size": _path_size(full),
@@ -906,14 +934,16 @@ def read_csv_page(
     with open(path, newline="") as f:
         filename = os.path.basename(path)
         reader = csv.DictReader(f)
-        fields = _augment_result_csv_fields(filename, reader.fieldnames or [])
+        fields = _result_csv_fields(filename, reader.fieldnames or [])
+        filters = {key: value for key, value in filters.items() if key in fields}
+        filter_ops = {key: value for key, value in filter_ops.items() if key in fields}
         rows = []
         total = 0
         filtered_total = 0
         requires_materialize = bool(q or filters or sort_col)
         if requires_materialize:
             for row in reader:
-                row = _augment_result_csv_row(filename, row)
+                row = _result_csv_row(filename, row)
                 total += 1
                 if _csv_filter_match(row, q, filters, filter_ops):
                     rows.append(row)
@@ -927,7 +957,7 @@ def read_csv_page(
         else:
             page_rows = []
             for row in reader:
-                row = _augment_result_csv_row(filename, row)
+                row = _result_csv_row(filename, row)
                 if total >= offset and len(page_rows) < limit:
                     page_rows.append(row)
                 total += 1

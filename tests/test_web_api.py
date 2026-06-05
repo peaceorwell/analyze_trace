@@ -49,7 +49,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.1.18",
+        "version": "0.1.19",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -1017,10 +1017,10 @@ def test_done_job_lists_result_files_and_paginates_tables(client):
     result_dir = Path(web_server.result_dir("table-job"))
     result_dir.mkdir(parents=True)
     (result_dir / "all_kernels_avg.csv").write_text(
-        "kernel_name,avg_dur_ms,family\n"
-        "slow_kernel,30,gemm\n"
-        "medium_kernel,20,gemm\n"
-        "fast_kernel,10,other\n"
+        "kernel_name,count_pct,avg_dur_ms,dur_pct,family\n"
+        "slow_kernel,50.0%,30,60.0%,gemm\n"
+        "medium_kernel,30.0%,20,30.0%,gemm\n"
+        "fast_kernel,20.0%,10,10.0%,other\n"
     )
 
     async def insert_job():
@@ -1052,6 +1052,8 @@ def test_done_job_lists_result_files_and_paginates_tables(client):
     assert payload["total"] == 3
     assert payload["filtered_total"] == 3
     assert [row["kernel_name"] for row in payload["rows"]] == ["slow_kernel", "medium_kernel"]
+    assert "dur_pct" not in payload["fields"]
+    assert "count_pct" not in payload["rows"][0]
 
     filtered = client.get(
         "/api/jobs/table-job/results/all_kernels_avg.csv",
@@ -1060,6 +1062,13 @@ def test_done_job_lists_result_files_and_paginates_tables(client):
     assert filtered.status_code == 200
     assert filtered.json()["filtered_total"] == 1
     assert filtered.json()["rows"][0]["kernel_name"] == "fast_kernel"
+
+    old_percent_filter = client.get(
+        "/api/jobs/table-job/results/all_kernels_avg.csv",
+        params={"filters": json.dumps({"dur_pct": "60"}), "limit": 10},
+    )
+    assert old_percent_filter.status_code == 200
+    assert old_percent_filter.json()["filtered_total"] == 3
 
 
 def test_all_kernels_cmp_without_family_exposes_virtual_family(client):

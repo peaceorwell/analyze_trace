@@ -14,6 +14,7 @@ from trace_analyzer import (
     parse_trace,
     compute_avgs,
     write_avg_csv,
+    write_single,
     write_comparison,
     write_triton_code_file,
 )
@@ -380,3 +381,45 @@ class TestEndToEnd:
         assert rows[0]["kernel_name"] == "gemm_kernel_a"
         assert rows[0]["family"] == "gemm"
         assert rows[0]["delta_dur_ms"] == "3"
+
+    def test_single_csv_outputs_do_not_include_percentage_columns(self, temp_output_dir):
+        data = {
+            "all_steps": [],
+            "step_to_triton": {},
+            "avg_kernels": {
+                "gemm_kernel": {"avg_count": 10, "avg_dur_ms": 20},
+            },
+            "kernel_families": {"gemm_kernel": "gemm"},
+            "avg_triton": {
+                "triton_poi_kernel": {
+                    "avg_count": 5,
+                    "avg_dur_ms": 3,
+                    "avg_io_gb": 1,
+                    "avg_io_eff": 9,
+                },
+            },
+            "avg_aten": {
+                "aten::mm": {"avg_count": 2, "avg_dur_ms": 4},
+            },
+            "avg_cncl": {},
+            "KERNEL_TYPES": ["gemm"],
+            "kt_avgs": {"gemm": (10, 20), "other": (0, 0), "collective": (0, 0)},
+        }
+        args = type("Args", (), {
+            "output_dir": temp_output_dir,
+            "save_triton_csv": False,
+            "save_triton_code": False,
+        })
+
+        write_single(data, args)
+
+        for name in [
+            "all_kernels_avg.csv",
+            "triton_kernels_avg.csv",
+            "aten_ops_avg.csv",
+            "kernel_types_avg.csv",
+            "cncl_ops_avg.csv",
+        ]:
+            with open(os.path.join(temp_output_dir, name)) as f:
+                fields = next(csv.reader(f))
+            assert not any("pct" in field.lower() or "percent" in field.lower() for field in fields)

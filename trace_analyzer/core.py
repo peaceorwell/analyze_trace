@@ -271,40 +271,24 @@ def write_avg_csv(path, data, name_field):
 
 
 def _write_kernels_avg_csv(path, avg_kernels, kernel_families=None):
-    """Write all_kernels_avg.csv with family, dur_pct, count_pct, and avg_us_per_call.
-
-    dur_pct / count_pct for compute kernels are relative to the compute total
-    (collective excluded).  For collective kernels they are relative to all-kernel total.
-    """
+    """Write all_kernels_avg.csv with family and avg_us_per_call."""
     # Pre-compute family for each kernel (avoid calling extract_kernel_family twice)
     kernel_families = kernel_families or {}
     families = {name: kernel_families.get(name) or extract_kernel_family(name) for name in avg_kernels}
-    total_dur     = sum(v["avg_dur_ms"] for v in avg_kernels.values()) or 1.0
-    total_count   = sum(v["avg_count"]  for v in avg_kernels.values()) or 1.0
-    compute_dur   = sum(v["avg_dur_ms"] for name, v in avg_kernels.items()
-                        if families[name] != "collective") or 1.0
-    compute_count = sum(v["avg_count"]  for name, v in avg_kernels.items()
-                        if families[name] != "collective") or 1.0
     with open(path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=[
-            "kernel_name", "family", "avg_count", "count_pct",
-            "avg_dur_ms", "dur_pct", "avg_us_per_call",
+            "kernel_name", "family", "avg_count", "avg_dur_ms", "avg_us_per_call",
         ])
         writer.writeheader()
         for name, s in avg_kernels.items():
             fam = families[name]
             cnt = s["avg_count"]
             dur = s["avg_dur_ms"]
-            is_collective = (fam == "collective")
-            d_denom = total_dur   if is_collective else compute_dur
-            c_denom = total_count if is_collective else compute_count
             writer.writerow({
                 "kernel_name":     name,
                 "family":          fam,
                 "avg_count":       fmt3(cnt),
-                "count_pct":       f"{cnt / c_denom * 100:.1f}%",
                 "avg_dur_ms":      fmt3(dur),
-                "dur_pct":         f"{dur / d_denom * 100:.1f}%",
                 "avg_us_per_call": fmt3(dur / cnt * 1000) if cnt > 0 else "",
             })
     print(f"Wrote {path} ({len(avg_kernels)} rows)")
@@ -768,11 +752,10 @@ def print_comparison(data_a, data_b, label_a, label_b):
 # ── CSV write helpers ─────────────────────────────────────────────────────────
 
 def _write_triton_avg_csv(path, avg_triton):
-    total_dur = sum(s["avg_dur_ms"] for s in avg_triton.values()) or 1.0
     with open(path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=[
-            "kernel_name", "avg_count", "avg_dur_ms", "dur_pct",
-            "avg_us_per_call", "avg_io_gb", "avg_io_efficiency",
+            "kernel_name", "avg_count", "avg_dur_ms", "avg_us_per_call",
+            "avg_io_gb", "avg_io_efficiency",
         ])
         writer.writeheader()
         for name, s in avg_triton.items():
@@ -782,7 +765,6 @@ def _write_triton_avg_csv(path, avg_triton):
                 "kernel_name":       name,
                 "avg_count":         fmt3(cnt),
                 "avg_dur_ms":        fmt3(dur),
-                "dur_pct":           f"{dur / total_dur * 100:.1f}%",
                 "avg_us_per_call":   fmt3(dur / cnt * 1000) if cnt > 0 else "",
                 "avg_io_gb":         fmt3(s["avg_io_gb"]),
                 "avg_io_efficiency": fmt3(s["avg_io_eff"]),
@@ -791,14 +773,8 @@ def _write_triton_avg_csv(path, avg_triton):
 
 
 def _write_kernel_types_csv(path, kernel_type_names, kt_avgs):
-    total_dur     = sum(v[1] for v in kt_avgs.values()) or 1.0
-    total_count   = sum(v[0] for v in kt_avgs.values()) or 1.0
-    coll_dur      = kt_avgs.get("collective", (0.0, 0.0))[1]
-    coll_count    = kt_avgs.get("collective", (0.0, 0.0))[0]
-    compute_dur   = (total_dur   - coll_dur)   or 1.0
-    compute_count = (total_count - coll_count) or 1.0
     with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["type", "avg_count", "count_pct", "avg_dur_ms", "dur_pct"])
+        writer = csv.DictWriter(f, fieldnames=["type", "avg_count", "avg_dur_ms"])
         writer.writeheader()
         # kernel_type_names contains only compute families (no collective)
         for ktype in kernel_type_names:
@@ -806,9 +782,7 @@ def _write_kernel_types_csv(path, kernel_type_names, kt_avgs):
             writer.writerow({
                 "type":       ktype,
                 "avg_count":  fmt3(ac),
-                "count_pct":  f"{ac / compute_count * 100:.1f}%",
                 "avg_dur_ms": fmt3(ad),
-                "dur_pct":    f"{ad / compute_dur   * 100:.1f}%",
             })
     print(f"Wrote {path} ({len(kernel_type_names)} rows)")
 
