@@ -35,8 +35,9 @@ from trace_analyzer import compute_avgs, extract_kernel_family, parse_trace, run
 from db import get_db, init_db, row_to_dict  # noqa: E402
 import auth as ldap_auth  # noqa: E402
 
-STORAGE_DIR = os.path.join(os.path.dirname(__file__), "storage")
-APP_VERSION = "0.2.0"
+DEFAULT_STORAGE_DIR = os.path.join(os.path.dirname(__file__), "storage")
+STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
+APP_VERSION = "0.2.1"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(os.path.dirname(__file__), "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
 
@@ -97,12 +98,18 @@ def configure_logging():
 
     log_file = os.environ.get("TRACE_LOG_FILE")
     if log_file:
-        log_dir = os.path.dirname(log_file)
-        if log_dir:
-            os.makedirs(log_dir, exist_ok=True)
-        file_handler = logging.FileHandler(log_file)
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
+        try:
+            log_dir = os.path.dirname(log_file)
+            if log_dir:
+                os.makedirs(log_dir, exist_ok=True)
+            file_handler = logging.FileHandler(log_file)
+            file_handler.setFormatter(formatter)
+            logger.addHandler(file_handler)
+        except OSError as e:
+            logger.warning(
+                "log_file_unavailable",
+                extra={"event": "log_file_unavailable", "path": log_file, "error": str(e)},
+            )
     return logger
 
 
@@ -1479,6 +1486,32 @@ async def _job_status_counts() -> dict[str, int]:
         await db.close()
 
 
+def _probe_writable_dir(path: str) -> str:
+    try:
+        os.makedirs(path, exist_ok=True)
+        probe_path = os.path.join(path, f".readyz-{uuid.uuid4().hex}")
+        with open(probe_path, "w") as f:
+            f.write("ok")
+        os.remove(probe_path)
+        return "ok"
+    except Exception as e:
+        return f"error: {e}"
+
+
+def _probe_writable_file(path: str) -> str:
+    if not path:
+        return "disabled"
+    try:
+        log_dir = os.path.dirname(path)
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
+        with open(path, "a"):
+            pass
+        return "ok"
+    except Exception as e:
+        return f"error: {e}"
+
+
 # ── Routes: index / config ────────────────────────────────────────────────────
 
 @app.get("/healthz")
@@ -1489,6 +1522,11 @@ async def healthz():
 @app.get("/readyz")
 async def readyz():
     checks = {}
+    paths = {
+        "storage": STORAGE_DIR,
+        "backup": BACKUP_DIR,
+        "log_file": os.environ.get("TRACE_LOG_FILE", ""),
+    }
     db = None
     try:
         db = await get_db()
@@ -1500,19 +1538,13 @@ async def readyz():
         if db is not None:
             await db.close()
 
-    try:
-        os.makedirs(STORAGE_DIR, exist_ok=True)
-        probe_path = os.path.join(STORAGE_DIR, f".readyz-{uuid.uuid4().hex}")
-        with open(probe_path, "w") as f:
-            f.write("ok")
-        os.remove(probe_path)
-        checks["storage"] = "ok"
-    except Exception as e:
-        checks["storage"] = f"error: {e}"
+    checks["storage"] = _probe_writable_dir(STORAGE_DIR)
+    checks["backup"] = _probe_writable_dir(BACKUP_DIR)
+    checks["log_file"] = _probe_writable_file(os.environ.get("TRACE_LOG_FILE", ""))
 
-    ready = all(value == "ok" for value in checks.values())
+    ready = all(value in ("ok", "disabled") for value in checks.values())
     return JSONResponse(
-        {"status": "ok" if ready else "error", "checks": checks, "version": APP_VERSION},
+        {"status": "ok" if ready else "error", "checks": checks, "paths": paths, "version": APP_VERSION},
         status_code=200 if ready else 503,
     )
 

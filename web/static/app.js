@@ -6,6 +6,7 @@ const { createRouter, createWebHashHistory } = VueRouter;
 // ══════════════════════════════════════════════════════════════════════════════
 
 let appInitialized = false;
+const DEFAULT_RESULT_TAB = "chart";
 
 const readStoredJson = (key, fallback) => {
   try {
@@ -39,7 +40,7 @@ const toggleTheme = () => {
   document.documentElement.setAttribute('data-theme', t);
   localStorage.setItem('tpa-theme', t);
   if (resultTab.value === 'chart' && selectedJob.value?.status === 'done') {
-    nextTick(() => buildChart());
+    scheduleBuildChart();
   }
 };
 
@@ -80,7 +81,7 @@ const form = ref({
 });
 
 // ── Result view ─────────────────────────────────────────────────────────
-const resultTab   = ref("console");
+const resultTab   = ref(DEFAULT_RESULT_TAB);
 const tableSearch = ref("");
 const sortCol     = ref("");
 const sortAsc     = ref(true);
@@ -121,7 +122,7 @@ const chartPieRows      = ref([]);
 
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
-const appVersion = ref("0.2.0");
+const appVersion = ref("0.2.1");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -151,7 +152,7 @@ document.addEventListener("click", closeActionMenu);
 
 const resultStateKey = jobId => `tpa-result-state:${jobId}`;
 const readResultMemory = jobId =>
-  jobId ? readStoredJson(resultStateKey(jobId), { lastTab: "console", tabs: {} }) : { lastTab: "console", tabs: {} };
+  jobId ? readStoredJson(resultStateKey(jobId), { lastTab: DEFAULT_RESULT_TAB, tabs: {} }) : { lastTab: DEFAULT_RESULT_TAB, tabs: {} };
 const writeResultMemory = (jobId, memory) => {
   if (!jobId) return;
   localStorage.setItem(resultStateKey(jobId), JSON.stringify(memory));
@@ -234,11 +235,9 @@ const applyResultViewState = state => {
 const restoreResultViewState = (jobId, tab) => {
   applyResultViewState(resultViewStateFor(jobId, tab));
 };
-const rememberedResultTab = jobId => readResultMemory(jobId).lastTab || "console";
-
 const refreshReadingLayout = () => {
   if (resultTab.value === "chart" && selectedJob.value?.status === "done") {
-    nextTick(() => buildChart());
+    scheduleBuildChart();
   }
 };
 
@@ -691,6 +690,21 @@ const fmtBytes = bytes => {
   return `${value >= 10 ? value.toFixed(1) : value.toFixed(2)} ${unit}`;
 };
 
+const traceFormatLabel = filename => {
+  const name = String(filename || "").toLowerCase();
+  if (name.endsWith(".json.gz")) return "json.gz";
+  if (name.endsWith(".json.zip")) return "json.zip";
+  if (name.endsWith(".tar.gz")) return "tar.gz";
+  if (name.endsWith(".tgz")) return "tgz";
+  if (name.endsWith(".zip")) return "zip";
+  if (name.endsWith(".gz")) return "gz";
+  if (name.endsWith(".json")) return "json";
+  return "trace";
+};
+
+const uploadFileMeta = file =>
+  file ? `${traceFormatLabel(file.name)} · ${fmtBytes(file.size)}` : "";
+
 const isColumnVisible = field =>
   !visibleColumns.value.length || visibleColumns.value.includes(field);
 
@@ -750,7 +764,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.0";
+  appVersion.value = cfg.version || "0.2.1";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -968,6 +982,11 @@ const loadHistoryGroups = async () => {
       collapsedGroups.value = Object.fromEntries(
         historyGroups.value.map(group => [group.id, true])
       );
+    } else if (!historyGroups.value.some(group => collapsedGroups.value[group.id]) && historyGroups.value.length) {
+      collapsedGroups.value = {
+        ...collapsedGroups.value,
+        [historyGroups.value[0].id]: true,
+      };
     }
     const expandedGroups = historyGroups.value.filter(group => collapsedGroups.value[group.id]);
     await Promise.all(expandedGroups.map(group => loadHistoryGroupJobs(group.id, true)));
@@ -1510,6 +1529,20 @@ const destroyChartInstances = () => {
   if (ktPieChartInstB.value) { ktPieChartInstB.value.destroy(); ktPieChartInstB.value = null; }
 };
 
+let chartBuildToken = 0;
+const scheduleBuildChart = async () => {
+  const token = ++chartBuildToken;
+  await nextTick();
+  await new Promise(resolve => {
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(resolve);
+    else setTimeout(resolve, 0);
+  });
+  if (token !== chartBuildToken) return;
+  if (resultTab.value === "chart" && selectedJob.value?.status === "done") {
+    await buildChart();
+  }
+};
+
 const buildPie = (canvas, rows, title, metricDef) => {
   const pairs = (rows || []).filter(row => row.displayValue > 0);
   if (!pairs.length || !canvas) return null;
@@ -1587,7 +1620,10 @@ const drillDownChart = async row => {
 
 const buildChart = async () => {
   await nextTick();
-  if (!ktChart.value || !selectedJob.value?.result_files) return;
+  if (!ktChart.value || !selectedJob.value?.result_files) {
+    chartLoading.value = false;
+    return;
+  }
   const sourceConfig = resolveChartSource();
   if (!sourceConfig) {
     chartError.value = "没有可用的图表数据";
@@ -1709,6 +1745,7 @@ const setUploadFiles = files => {
     id: `${Date.now()}-${index}-${file.name}`,
     file,
     name: file.name,
+    meta: uploadFileMeta(file),
     status: "ready",
     progress: 0,
     error: "",
@@ -3173,7 +3210,10 @@ const Home = {
           <input type="file" ref="fileInputA" accept=".json,.json.gz,.gz,.zip,.tar.gz,.tgz" multiple @change="onFileChange" hidden />
           <div @click="$refs.fileInputA.click()" class="upload-inner">
             <div class="upload-icon">📂</div>
-            <div class="upload-label">{{ fileAName || '选择文件' }}</div>
+            <div class="upload-label">
+              <span>{{ fileAName || '选择文件' }}</span>
+              <small v-if="uploadQueue.length===1">{{ uploadQueue[0].meta }}</small>
+            </div>
           </div>
           <button v-if="fileAName" class="upload-clear" @click.stop="clearFile">✕</button>
         </div>
@@ -3199,7 +3239,10 @@ const Home = {
             <input type="file" ref="quickFileInputA" accept=".json,.json.gz,.gz,.zip,.tar.gz,.tgz" @change="onQuickFileChange('a', $event)" hidden />
             <div @click="$refs.quickFileInputA.click()" class="upload-inner">
               <span class="trace-slot">A</span>
-              <div class="upload-label">{{ quickFileAName || '选择 A trace' }}</div>
+              <div class="upload-label">
+                <span>{{ quickFileAName || '选择 A trace' }}</span>
+                <small v-if="quickFileA">{{ uploadFileMeta(quickFileA) }}</small>
+              </div>
             </div>
             <button v-if="quickFileAName" class="upload-clear" @click.stop="clearQuickCompareFile('a')">✕</button>
           </div>
@@ -3207,7 +3250,10 @@ const Home = {
             <input type="file" ref="quickFileInputB" accept=".json,.json.gz,.gz,.zip,.tar.gz,.tgz" @change="onQuickFileChange('b', $event)" hidden />
             <div @click="$refs.quickFileInputB.click()" class="upload-inner">
               <span class="trace-slot">B</span>
-              <div class="upload-label">{{ quickFileBName || '选择 B trace' }}</div>
+              <div class="upload-label">
+                <span>{{ quickFileBName || '选择 B trace' }}</span>
+                <small v-if="quickFileB">{{ uploadFileMeta(quickFileB) }}</small>
+              </div>
             </div>
             <button v-if="quickFileBName" class="upload-clear" @click.stop="clearQuickCompareFile('b')">✕</button>
           </div>
@@ -3230,7 +3276,10 @@ const Home = {
 
       <div v-if="quickUploadMode==='single' && uploadQueue.length" class="upload-queue">
         <div v-for="item in uploadQueue" :key="item.id" class="upload-queue-item">
-          <span class="upload-queue-name" :title="item.name">{{ item.name }}</span>
+          <span class="upload-queue-main">
+            <span class="upload-queue-name" :title="item.name">{{ item.name }}</span>
+            <span class="upload-queue-meta">{{ item.meta }}</span>
+          </span>
           <span :class="['upload-queue-status', 'queue-' + item.status]">
             <template v-if="item.status==='ready'">待提交</template>
             <template v-else-if="item.status==='uploading'">上传中 {{ item.progress }}%</template>
@@ -3240,8 +3289,8 @@ const Home = {
         </div>
       </div>
       <div v-if="quickUploadMode==='compare' && (quickFileAName || quickFileBName)" class="quick-compare-summary">
-        <span :class="['quick-file-chip', quickFileAName ? 'ready' : '']">A {{ quickFileAName || '未选择' }}</span>
-        <span :class="['quick-file-chip', quickFileBName ? 'ready' : '']">B {{ quickFileBName || '未选择' }}</span>
+        <span :class="['quick-file-chip', quickFileAName ? 'ready' : '']">A {{ quickFileAName || '未选择' }} <small v-if="quickFileA">{{ uploadFileMeta(quickFileA) }}</small></span>
+        <span :class="['quick-file-chip', quickFileBName ? 'ready' : '']">B {{ quickFileBName || '未选择' }} <small v-if="quickFileB">{{ uploadFileMeta(quickFileB) }}</small></span>
       </div>
       <div v-if="submitting && uploadProgress < 100" class="upload-progress">
         <div class="upload-progress-label">总进度 {{ uploadProgress }}%</div>
@@ -3254,20 +3303,45 @@ const Home = {
     <!-- Empty state -->
     <div v-if="!selectedJob" class="empty-main">
       <div class="empty-main-icon">📊</div>
-      <div class="empty-main-title">选择左侧历史记录查看结果，或上传文件开始分析</div>
+      <div class="empty-main-title">上传 trace 开始分析，或从左侧历史记录继续</div>
+      <div class="empty-action-grid">
+        <button class="empty-action-card" type="button" @click="openSingleUploadPicker">
+          <strong>上传单文件/批量</strong>
+          <span>分析一个或多个 trace，自动进入任务队列</span>
+        </button>
+        <button class="empty-action-card" type="button" @click="setQuickUploadMode('compare')">
+          <strong>上传两个 trace 快速对比</strong>
+          <span>直接生成 A/B 对比任务</span>
+        </button>
+        <button class="empty-action-card" type="button" @click="sidebarTab='jobs'">
+          <strong>{{ historyGroupsTotal ? '查看历史与共享项目' : '等待历史记录' }}</strong>
+          <span>{{ historyGroupsTotal ? '左侧可搜索、置顶和批量管理任务' : '提交成功后会在左侧出现' }}</span>
+        </button>
+        <button class="empty-action-card" type="button" @click="showGuide=true">
+          <strong>打开使用指南</strong>
+          <span>查看上传、对比、Perfetto 和 Triton 运行说明</span>
+        </button>
+      </div>
       <div class="empty-main-tips">
-        <div class="empty-tip-item">详细使用指南见右上角「使用指南」</div>
-        <div class="empty-tip-item">建议上传的 trace 文件中开启了 triton code 保存功能</div>
+        <div class="empty-tip-item">支持 .json.gz、.json.zip、.json、.tar.gz、.tgz，默认下载保留压缩格式</div>
+        <div class="empty-tip-item">建议 trace 中开启 triton code 保存功能，后续可直接查看和运行 Triton kernel</div>
       </div>
     </div>
   `,
   setup() {
     const fileInputA = ref(null);
+    const openSingleUploadPicker = async () => {
+      setQuickUploadMode("single");
+      await nextTick();
+      fileInputA.value?.click();
+    };
     return {
       fileInputA, fileAName, fileA, quickUploadMode,
       quickFileA, quickFileB, quickFileAName, quickFileBName,
       uploadQueue, submitting, uploadProgress,
       form, projects, projectOptionLabel, selectedJob,
+      historyGroupsTotal, sidebarTab, showGuide, uploadFileMeta,
+      openSingleUploadPicker,
       setQuickUploadMode,
       onDrop, onFileChange, clearFile, submitJob,
       onQuickDrop, onQuickFileChange, clearQuickCompareFile, submitQuickCompare,
@@ -3783,18 +3857,18 @@ router.beforeEach(async (to, from) => {
     selectedJobId.value = null;
     selectedJob.value = null;
     jobLoading.value = false;
-    resultTab.value = "console";
+    resultTab.value = DEFAULT_RESULT_TAB;
     resultTableFile.value = "";
     activeResultStateJobId = null;
     return;
   }
 
-  const tab = to.params?.tab || resultTab.value || "console";
+  const tab = to.params?.tab || DEFAULT_RESULT_TAB;
 
   // Same job, just switch tab
   if (newJobId === selectedJobId.value) {
     const validTabs = availableTabs.value.map(t => t.key);
-    const targetTab = validTabs.includes(tab) ? tab : "console";
+    const targetTab = validTabs.includes(tab) ? tab : (validTabs.includes(DEFAULT_RESULT_TAB) ? DEFAULT_RESULT_TAB : "console");
     if (targetTab !== resultTab.value) {
       if (targetTab.endsWith(".csv")) {
         await activateCsvTab(targetTab, { updateRoute: false });
@@ -3826,9 +3900,9 @@ router.beforeEach(async (to, from) => {
     return { path: "/" };
   }
 
-  const requestedTab = to.params?.tab || rememberedResultTab(newJobId);
+  const requestedTab = to.params?.tab || DEFAULT_RESULT_TAB;
   const validTabs = availableTabs.value.map(t => t.key);
-  const targetTab = validTabs.includes(requestedTab) ? requestedTab : "console";
+  const targetTab = validTabs.includes(requestedTab) ? requestedTab : (validTabs.includes(DEFAULT_RESULT_TAB) ? DEFAULT_RESULT_TAB : "console");
   activeResultStateJobId = newJobId;
   if (targetTab.endsWith(".csv")) {
     await activateCsvTab(targetTab, { updateRoute: false, savePrevious: false });
@@ -3839,7 +3913,7 @@ router.beforeEach(async (to, from) => {
     rememberResultTabSelection(newJobId, targetTab);
   }
   if (targetTab === "chart" && selectedJob.value.status === "done") {
-    nextTick(() => buildChart());
+    scheduleBuildChart();
   }
   if (selectedJob.value.status === "pending" || selectedJob.value.status === "running") {
     startPoll();
@@ -3867,14 +3941,12 @@ const App = {
       showColumnMenu.value = false;
       if (v?.endsWith(".csv")) loadResultTable();
       if (v === "chart" && selectedJob.value?.status === "done") {
-        nextTick(() => buildChart());
+        scheduleBuildChart();
       }
     });
 
     watch(selectedJob, v => {
-      if (v?.status === "done") nextTick(() => {
-        if (resultTab.value === "chart") buildChart();
-      });
+      if (v?.status === "done" && resultTab.value === "chart") scheduleBuildChart();
     }, { deep: true });
 
     watch(filterProject, () => {

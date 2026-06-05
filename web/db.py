@@ -1,7 +1,11 @@
 import aiosqlite
 import os
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "storage", "jobs.db")
+DEFAULT_STORAGE_DIR = os.path.join(os.path.dirname(__file__), "storage")
+DB_PATH = os.environ.get(
+    "TRACE_DB_PATH",
+    os.path.join(os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR), "jobs.db"),
+)
 
 
 async def get_db():

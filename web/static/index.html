@@ -220,7 +220,7 @@
               </template>
             </div>
           </div>
-          <div class="bulk-toolbar">
+          <div v-if="historyGroupsTotal > 0 || historyBulkMode" class="bulk-toolbar">
             <button :class="['btn', 'btn-xs', historyBulkMode ? 'btn-primary' : 'btn-outline']" @click="toggleHistoryBulkMode">
               {{ historyBulkMode ? '退出多选' : '多选' }}
             </button>

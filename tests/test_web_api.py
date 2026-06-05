@@ -27,8 +27,10 @@ import server as web_server  # noqa: E402
 @pytest.fixture
 def isolated_server(tmp_path, monkeypatch):
     storage_dir = tmp_path / "storage"
+    monkeypatch.delenv("TRACE_LOG_FILE", raising=False)
     monkeypatch.setattr(web_db, "DB_PATH", str(storage_dir / "jobs.db"))
     monkeypatch.setattr(web_server, "STORAGE_DIR", str(storage_dir))
+    monkeypatch.setattr(web_server, "BACKUP_DIR", str(storage_dir / "backups"))
     monkeypatch.setattr(web_server, "ALLOW_FILE_DOWNLOAD", True)
     monkeypatch.setattr(web_server, "ALLOW_CODE_EXECUTION", False)
     monkeypatch.setattr(web_server, "AUTH_MODE", "none")
@@ -49,7 +51,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.0",
+        "version": "0.2.1",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -59,7 +61,12 @@ def test_config_reports_local_execution_flags(client):
 
 def test_ops_endpoints_and_audit_logs(client):
     assert client.get("/healthz").json()["status"] == "ok"
-    assert client.get("/readyz").json()["checks"]["db"] == "ok"
+    ready = client.get("/readyz").json()
+    assert ready["checks"]["db"] == "ok"
+    assert ready["checks"]["storage"] == "ok"
+    assert ready["checks"]["backup"] == "ok"
+    assert ready["checks"]["log_file"] == "disabled"
+    assert ready["paths"]["storage"]
 
     created = client.post(
         "/api/projects",
@@ -80,6 +87,16 @@ def test_ops_endpoints_and_audit_logs(client):
     assert metrics.status_code == 200
     assert "analyze_trace_app_uptime_seconds" in metrics.text
     assert "analyze_trace_http_requests_total" in metrics.text
+
+
+def test_readyz_reports_log_file_writeability(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("TRACE_LOG_FILE", str(tmp_path / "logs" / "app.jsonl"))
+
+    ready = client.get("/readyz").json()
+
+    assert ready["status"] == "ok"
+    assert ready["checks"]["log_file"] == "ok"
+    assert ready["paths"]["log_file"].endswith("app.jsonl")
 
 
 def test_ldap_auth_requires_login_and_isolates_user_data(isolated_server, monkeypatch):
