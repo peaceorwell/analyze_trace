@@ -101,6 +101,7 @@ const colFilters    = ref({});
 const colFilterOps  = ref({});
 const visibleColumns = ref([]);
 const showColumnMenu = ref(false);
+const openActionMenu = ref("");
 const ktChartInst     = ref(null);
 const ktChart         = ref(null);
 const ktPieChartInst  = ref(null);
@@ -120,7 +121,7 @@ const chartPieRows      = ref([]);
 
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
-const appVersion = ref("0.1.15");
+const appVersion = ref("0.1.16");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -139,6 +140,14 @@ const loginCaptchaImage = ref("");
 const perfettoOpening = ref({});
 const compareRerunLoading = ref(false);
 let activeResultStateJobId = null;
+
+const toggleActionMenu = key => {
+  openActionMenu.value = openActionMenu.value === key ? "" : key;
+};
+const closeActionMenu = () => {
+  openActionMenu.value = "";
+};
+document.addEventListener("click", closeActionMenu);
 
 const resultStateKey = jobId => `tpa-result-state:${jobId}`;
 const readResultMemory = jobId =>
@@ -727,7 +736,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.1.15";
+  appVersion.value = cfg.version || "0.1.16";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -3127,7 +3136,7 @@ const JobDetail = {
     <!-- Result panel -->
     <section v-if="!jobLoading && selectedJob" class="card result-card">
       <div class="result-header">
-        <div>
+        <div class="result-title-row">
           <span class="job-status lg" :class="'status-'+selectedJob.status">
             {{ statusIcon(selectedJob.status) }}
           </span>
@@ -3136,10 +3145,15 @@ const JobDetail = {
             {{ selectedJob.mode==='compare'?'对比':'单文件' }}
           </span>
         </div>
-        <div v-if="selectedJob.is_owner !== false" class="result-actions">
-          <button class="btn btn-sm btn-outline" @click="editLabel">重命名</button>
-          <button class="btn btn-sm btn-outline" @click="moveProject">移动项目</button>
-          <button class="btn btn-sm btn-danger" @click="deleteJob">删除任务</button>
+        <div v-if="selectedJob.is_owner !== false" class="result-actions action-menu-wrap" @click.stop>
+          <button class="action-icon-btn" type="button" title="更多任务操作"
+                  aria-label="更多任务操作"
+                  @click="toggleActionMenu('job')">...</button>
+          <div v-if="openActionMenu==='job'" class="action-menu">
+            <button type="button" @click="editLabel(); closeActionMenu()">重命名</button>
+            <button type="button" @click="moveProject(); closeActionMenu()">移动项目</button>
+            <button type="button" class="danger" @click="deleteJob(); closeActionMenu()">删除任务</button>
+          </div>
         </div>
       </div>
 
@@ -3150,11 +3164,21 @@ const JobDetail = {
           <span class="trace-file-name" :title="selectedJob.file_a_name">📄 {{ selectedJob.file_a_name }}</span>
           <span v-if="!selectedJob.file_a_exists" class="tag-deleted">已删除</span>
           <div v-else class="trace-file-actions">
-            <button v-if="allowFileDownload" class="btn btn-xs btn-outline" @click="downloadTraceFile('a')">下载</button>
             <button v-if="allowFileDownload" class="btn btn-xs btn-perfetto"
                     :disabled="perfettoOpening.a"
                     @click="openInPerfetto('a')">{{ perfettoButtonLabel('a') }}</button>
-            <button v-if="selectedJob.is_owner !== false" class="btn btn-xs btn-danger" @click="deleteFile('a')">删除文件</button>
+            <div v-if="allowFileDownload || selectedJob.is_owner !== false"
+                 class="action-menu-wrap trace-action-menu" @click.stop>
+              <button class="action-icon-btn action-icon-btn-xs" type="button"
+                      title="更多文件操作" aria-label="更多文件操作"
+                      @click="toggleActionMenu('file-a')">...</button>
+              <div v-if="openActionMenu==='file-a'" class="action-menu action-menu-sm">
+                <button v-if="allowFileDownload" type="button"
+                        @click="downloadTraceFile('a'); closeActionMenu()">下载</button>
+                <button v-if="selectedJob.is_owner !== false" type="button" class="danger"
+                        @click="deleteFile('a'); closeActionMenu()">删除文件</button>
+              </div>
+            </div>
           </div>
         </div>
         <div v-if="selectedJob.file_b_name" class="trace-file-row">
@@ -3162,11 +3186,21 @@ const JobDetail = {
           <span class="trace-file-name" :title="selectedJob.file_b_name">📄 {{ selectedJob.file_b_name }}</span>
           <span v-if="!selectedJob.file_b_exists" class="tag-deleted">已删除</span>
           <div v-else class="trace-file-actions">
-            <button v-if="allowFileDownload" class="btn btn-xs btn-outline" @click="downloadTraceFile('b')">下载</button>
             <button v-if="allowFileDownload" class="btn btn-xs btn-perfetto"
                     :disabled="perfettoOpening.b"
                     @click="openInPerfetto('b')">{{ perfettoButtonLabel('b') }}</button>
-            <button v-if="selectedJob.is_owner !== false" class="btn btn-xs btn-danger" @click="deleteFile('b')">删除文件</button>
+            <div v-if="allowFileDownload || selectedJob.is_owner !== false"
+                 class="action-menu-wrap trace-action-menu" @click.stop>
+              <button class="action-icon-btn action-icon-btn-xs" type="button"
+                      title="更多文件操作" aria-label="更多文件操作"
+                      @click="toggleActionMenu('file-b')">...</button>
+              <div v-if="openActionMenu==='file-b'" class="action-menu action-menu-sm">
+                <button v-if="allowFileDownload" type="button"
+                        @click="downloadTraceFile('b'); closeActionMenu()">下载</button>
+                <button v-if="selectedJob.is_owner !== false" type="button" class="danger"
+                        @click="deleteFile('b'); closeActionMenu()">删除文件</button>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -3512,6 +3546,7 @@ const JobDetail = {
       resultTableLoading, resultTableError, preparingResultTab, prevTablePage, nextTablePage,
       hasColFilters, colSums, isKernelTypeTab, canDrillKernelTypeRow, drillDownKernelType,
       isTritonStepTab, tritonStatus, allowFileDownload, allowCodeExecution,
+      openActionMenu, toggleActionMenu, closeActionMenu,
       switchTab,
       statusIcon,
       editLabel, moveProject, deleteJob, deleteFile,
@@ -3802,6 +3837,7 @@ const App = {
       showGuide, showErrorModal, errorModalMsg, errorModalTitle,
       copyTritonCode, copyErrorModal,
       toasts, showConfirmModal, confirmModal, resolveConfirm,
+      openActionMenu, toggleActionMenu, closeActionMenu,
 
       // Misc
       fmtDate, statusIcon, toggleGroup, createProject,
