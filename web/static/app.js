@@ -121,7 +121,7 @@ const chartPieRows      = ref([]);
 
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
-const appVersion = ref("0.1.19");
+const appVersion = ref("0.1.20");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -736,7 +736,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.1.19";
+  appVersion.value = cfg.version || "0.1.20";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -2399,6 +2399,28 @@ const downloadTraceFile = (slot) => {
   a.click();
 };
 
+const shareJob = async () => {
+  if (!selectedJobId.value) return;
+  const r = await fetch(`/api/jobs/${selectedJobId.value}/share`, {
+    method: "POST",
+    credentials: "include",
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    showToast("生成分享链接失败: " + (err.detail || err.message || `HTTP ${r.status}`), "error");
+    return;
+  }
+  const data = await r.json();
+  const url = data.url || `${window.location.origin}${window.location.pathname}#/job/${selectedJobId.value}`;
+  await copyTextToClipboard(url);
+  if (data.changed) {
+    await loadProjects();
+    await refreshSidebarData();
+    await loadJob(selectedJobId.value);
+  }
+  showToast(data.changed ? "已转为共享并复制链接" : "已复制分享链接", "success");
+};
+
 const escapeHtml = value => String(value ?? "")
   .replace(/&/g, "&amp;")
   .replace(/</g, "&lt;")
@@ -2704,36 +2726,29 @@ const viewTritonCode = async (codePath) => {
   });
 };
 
-const copyTritonCode = async () => {
-  if (!tritonCodeContent.value) return;
+const copyTextToClipboard = async (text) => {
   try {
-    await navigator.clipboard.writeText(tritonCodeContent.value);
-    showToast("已复制到剪贴板", "success");
+    await navigator.clipboard.writeText(text);
   } catch (e) {
     const textarea = document.createElement("textarea");
-    textarea.value = tritonCodeContent.value;
+    textarea.value = text;
     document.body.appendChild(textarea);
     textarea.select();
     document.execCommand("copy");
     document.body.removeChild(textarea);
-    showToast("已复制到剪贴板", "success");
   }
+};
+
+const copyTritonCode = async () => {
+  if (!tritonCodeContent.value) return;
+  await copyTextToClipboard(tritonCodeContent.value);
+  showToast("已复制到剪贴板", "success");
 };
 
 const copyErrorModal = async () => {
   if (!errorModalMsg.value) return;
-  try {
-    await navigator.clipboard.writeText(errorModalMsg.value);
-    showToast("已复制到剪贴板", "success");
-  } catch (e) {
-    const textarea = document.createElement("textarea");
-    textarea.value = errorModalMsg.value;
-    document.body.appendChild(textarea);
-    textarea.select();
-    document.execCommand("copy");
-    document.body.removeChild(textarea);
-    showToast("已复制到剪贴板", "success");
-  }
+  await copyTextToClipboard(errorModalMsg.value);
+  showToast("已复制到剪贴板", "success");
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -3145,14 +3160,15 @@ const JobDetail = {
             {{ selectedJob.mode==='compare'?'对比':'单文件' }}
           </span>
         </div>
-        <div v-if="selectedJob.is_owner !== false" class="result-actions action-menu-wrap" @click.stop>
+        <div class="result-actions action-menu-wrap" @click.stop>
           <button class="action-icon-btn" type="button" title="更多任务操作"
                   aria-label="更多任务操作"
                   @click="toggleActionMenu('job')">...</button>
           <div v-if="openActionMenu==='job'" class="action-menu">
-            <button type="button" @click="editLabel(); closeActionMenu()">重命名</button>
-            <button type="button" @click="moveProject(); closeActionMenu()">移动项目</button>
-            <button type="button" class="danger" @click="deleteJob(); closeActionMenu()">删除任务</button>
+            <button type="button" @click="shareJob(); closeActionMenu()">复制分享链接</button>
+            <button v-if="selectedJob.is_owner !== false" type="button" @click="editLabel(); closeActionMenu()">重命名</button>
+            <button v-if="selectedJob.is_owner !== false" type="button" @click="moveProject(); closeActionMenu()">移动项目</button>
+            <button v-if="selectedJob.is_owner !== false" type="button" class="danger" @click="deleteJob(); closeActionMenu()">删除任务</button>
           </div>
         </div>
       </div>
@@ -3561,7 +3577,7 @@ const JobDetail = {
       openActionMenu, toggleActionMenu, closeActionMenu,
       switchTab,
       statusIcon,
-      editLabel, moveProject, deleteJob, deleteFile,
+      shareJob, editLabel, moveProject, deleteJob, deleteFile,
       openCompareSource, rerunCompareSwapped,
       downloadTraceFile, openInPerfetto, perfettoOpening, perfettoButtonLabel,
       setSort, startResize, downloadCsv,

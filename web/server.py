@@ -36,7 +36,7 @@ from db import get_db, init_db, row_to_dict  # noqa: E402
 import auth as ldap_auth  # noqa: E402
 
 STORAGE_DIR = os.path.join(os.path.dirname(__file__), "storage")
-APP_VERSION = "0.1.19"
+APP_VERSION = "0.1.20"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(os.path.dirname(__file__), "backups"))
 
 # Configured at startup via CLI; read-only after that
@@ -759,6 +759,18 @@ def _gzip_json_download_name(filename: Optional[str], slot: str) -> str:
 
 def _content_disposition(filename: str, disposition: str = "attachment") -> str:
     return f'{disposition}; filename="{filename}"'
+
+
+def _app_base_url(request: Request) -> str:
+    host = request.headers.get("X-Forwarded-Host") or request.headers.get("Host")
+    proto = request.headers.get("X-Forwarded-Proto") or request.url.scheme
+    if host:
+        return f"{proto}://{host}"
+    return str(request.base_url).rstrip("/")
+
+
+def _job_share_url(request: Request, jid: str) -> str:
+    return f"{_app_base_url(request)}/#/job/{jid}"
 
 
 def csv_to_rows(path: str) -> dict:
@@ -2692,6 +2704,73 @@ async def rerun_compare_swapped(request: Request, jid: str):
 
     await enqueue_analysis_job(new_jid)
     return dict(row)
+
+
+@app.post("/api/jobs/{jid}/share")
+async def share_job(request: Request, jid: str):
+    db = await get_db()
+    changed = False
+    created_project = False
+    try:
+        row = await load_accessible_job(db, request, jid)
+        if row is None:
+            raise HTTPException(404)
+
+        job = _job_response(row, request)
+        project_id = job.get("project_id")
+        project_is_public = False
+        if AUTH_ENABLED:
+            if project_id:
+                project = await load_accessible_project(db, request, project_id)
+                if not project:
+                    raise HTTPException(404, "Project not found")
+                project_is_public = bool(project.get("is_public"))
+                if not project_is_public:
+                    if not job.get("is_owner"):
+                        raise HTTPException(404)
+                    await db.execute("UPDATE projects SET is_public=1 WHERE id=?", (project_id,))
+                    project_is_public = True
+                    changed = True
+            else:
+                if not job.get("is_owner"):
+                    raise HTTPException(404)
+                user_token = await ensure_user_row(db, request)
+                project_id = str(uuid.uuid4())
+                project_name = (job.get("label") or "共享任务")[:80]
+                await db.execute(
+                    "INSERT INTO projects(id, user_token, name, description, is_public) VALUES(?,?,?,?,1)",
+                    (project_id, user_token, project_name, "由分享任务自动创建"),
+                )
+                await db.execute("UPDATE jobs SET project_id=? WHERE id=?", (project_id, jid))
+                project_is_public = True
+                changed = True
+                created_project = True
+
+        await write_audit(
+            db, request, "job.share",
+            resource_type="job", resource_id=jid,
+            details={
+                "project_id": project_id,
+                "project_is_public": project_is_public,
+                "changed": changed,
+                "created_project": created_project,
+            },
+        )
+        await db.commit()
+    except HTTPException:
+        await db.rollback()
+        raise
+    finally:
+        await db.close()
+
+    return {
+        "url": _job_share_url(request, jid),
+        "path": f"/#/job/{jid}",
+        "project_id": project_id,
+        "project_is_public": project_is_public,
+        "changed": changed,
+        "created_project": created_project,
+    }
 
 
 @app.get("/api/jobs/{jid}")

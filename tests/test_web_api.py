@@ -49,7 +49,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.1.19",
+        "version": "0.1.20",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -233,6 +233,48 @@ def test_ldap_login_requires_captcha_after_repeated_failures(isolated_server, mo
         assert len(auth_calls) == 6
         assert web_server.LOGIN_FAILURES == {}
         assert web_server.LOGIN_CAPTCHA_CHALLENGES == {}
+
+
+def test_job_share_converts_private_project_and_allows_other_users(isolated_server, monkeypatch):
+    def fake_authenticate(username, password):
+        return {
+            "username": username,
+            "display_name": f"{username} User",
+            "email": f"{username}@example.com",
+            "dn": f"CN={username},DC=example,DC=com",
+        }
+
+    monkeypatch.setattr(web_server, "AUTH_MODE", "ldap")
+    monkeypatch.setattr(web_server, "AUTH_ENABLED", True)
+    monkeypatch.setattr(web_server.ldap_auth, "authenticate", fake_authenticate)
+
+    with TestClient(isolated_server.app) as test_client:
+        assert test_client.post("/api/login", json={"username": "alice", "password": "ok"}).status_code == 200
+        project = test_client.post("/api/projects", json={"name": "Private Project"}).json()
+
+        async def insert_job():
+            db = await web_db.get_db()
+            try:
+                await db.execute(
+                    "INSERT INTO jobs(id, project_id, user_token, label, mode, status) VALUES(?,?,?,?,?,?)",
+                    ("share-job", project["id"], "alice", "share me", "single", "done"),
+                )
+                await db.commit()
+            finally:
+                await db.close()
+
+        asyncio.run(insert_job())
+
+        share = test_client.post("/api/jobs/share-job/share")
+        assert share.status_code == 200
+        payload = share.json()
+        assert payload["project_is_public"] is True
+        assert payload["changed"] is True
+        assert payload["url"].endswith("/#/job/share-job")
+
+        assert test_client.post("/api/logout").status_code == 200
+        assert test_client.post("/api/login", json={"username": "bob", "password": "ok"}).status_code == 200
+        assert test_client.get("/api/jobs/share-job").status_code == 200
 
 
 def test_ldap_bind_error_is_wrapped_as_auth_error(monkeypatch):
