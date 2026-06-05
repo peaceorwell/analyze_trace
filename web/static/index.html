@@ -28,6 +28,13 @@
   <div id="app">
     <div v-if="!authChecked" class="auth-page">
       <section class="auth-brand-panel">
+        <div class="auth-chip-board" aria-hidden="true">
+          <div class="auth-chip-core">MLU</div>
+          <span class="trace-pin pin-a"></span>
+          <span class="trace-pin pin-b"></span>
+          <span class="trace-pin pin-c"></span>
+          <span class="trace-pin pin-d"></span>
+        </div>
         <div class="auth-brand-mark">
           <div class="auth-cambricon-logo">Cambricon</div>
           <div class="auth-cambricon-cn">寒　武　纪</div>
@@ -43,6 +50,13 @@
 
     <div v-else-if="authRequired && !currentUser" class="auth-page">
       <section class="auth-brand-panel">
+        <div class="auth-chip-board" aria-hidden="true">
+          <div class="auth-chip-core">MLU</div>
+          <span class="trace-pin pin-a"></span>
+          <span class="trace-pin pin-b"></span>
+          <span class="trace-pin pin-c"></span>
+          <span class="trace-pin pin-d"></span>
+        </div>
         <div class="auth-brand-mark">
           <div class="auth-cambricon-logo">Cambricon</div>
           <div class="auth-cambricon-cn">寒　武　纪</div>
@@ -50,7 +64,7 @@
       </section>
       <section class="auth-form-panel">
         <form class="auth-form-card" method="post" action="/api/login" autocomplete="on" @submit.prevent="submitLogin">
-          <div class="auth-form-kicker">Torch Profiler Analyzer</div>
+          <div class="auth-form-kicker">MLU Trace Analyzer</div>
           <h1 class="auth-heading">登录</h1>
           <label class="auth-field" for="ldap-username">
             <span class="auth-field-label">
