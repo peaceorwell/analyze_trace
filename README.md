@@ -104,6 +104,41 @@ TRACE_NO_DOWNLOAD=1 docker-compose up -d
 TRACE_ENABLE_CODE_EXEC=1 docker-compose up -d
 ```
 
+### LDAP 认证与用户隔离
+
+默认 `AUTH_MODE=none`，保持单用户本地模式。对内开放时设置 `AUTH_MODE=ldap` 后会启用登录页和后端会话校验；项目、任务、对比候选、结果 CSV、trace 下载和文件删除都会按 LDAP 用户隔离。
+
+服务账号搜索用户的推荐配置：
+
+```bash
+AUTH_MODE=ldap
+SESSION_SECRET=replace-with-a-long-random-secret
+LDAP_URL=ldaps://ldap.example.com:636
+LDAP_BASE_DN=DC=example,DC=com
+LDAP_BIND_DN=CN=svc_analyze_trace,OU=Service Accounts,DC=example,DC=com
+LDAP_BIND_PASSWORD=replace-with-service-account-password
+LDAP_USER_FILTER=(sAMAccountName={username})
+LDAP_REQUIRE_GROUP_DN=CN=analyze_trace_users,OU=Groups,DC=example,DC=com
+LDAP_TLS_CA_FILE=/etc/ssl/certs/company-ca.pem
+```
+
+如果 IT 提供的是 UPN 直连绑定方式，也可以用：
+
+```bash
+AUTH_MODE=ldap
+SESSION_SECRET=replace-with-a-long-random-secret
+LDAP_URL=ldaps://ldap.example.com:636
+LDAP_USER_DN_TEMPLATE={username}@example.com
+```
+
+可选项：
+
+| 环境变量 | 说明 |
+|------|------|
+| `LDAP_DISPLAY_NAME_ATTR` | 显示名属性，默认 `displayName` |
+| `LDAP_MAIL_ATTR` | 邮箱属性，默认 `mail` |
+| `SESSION_COOKIE_SECURE=1` | HTTPS 部署时建议开启 |
+
 ### 运维能力
 
 #### 日志与审计

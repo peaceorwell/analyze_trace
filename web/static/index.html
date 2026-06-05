@@ -26,8 +26,31 @@
 </head>
 <body>
   <div id="app">
+    <div v-if="!authChecked" class="auth-page">
+      <div class="auth-panel">
+        <div class="auth-title">Torch Profiler Analyzer</div>
+        <div class="auth-subtitle">正在初始化...</div>
+      </div>
+    </div>
+
+    <div v-else-if="authRequired && !currentUser" class="auth-page">
+      <form class="auth-panel" @submit.prevent="submitLogin">
+        <div class="auth-logo-wrap">
+          <img src="/static/favicon.svg" class="auth-logo" alt="" />
+        </div>
+        <div class="auth-title">Torch Profiler Analyzer</div>
+        <div class="auth-subtitle">使用 LDAP / AD 账号登录</div>
+        <input v-model="loginForm.username" class="input auth-input" placeholder="用户名" autocomplete="username" autofocus />
+        <input v-model="loginForm.password" class="input auth-input" type="password" placeholder="密码" autocomplete="current-password" />
+        <div v-if="loginError" class="auth-error">{{ loginError }}</div>
+        <button class="btn btn-primary auth-submit" type="submit" :disabled="loginLoading">
+          {{ loginLoading ? '登录中...' : '登录' }}
+        </button>
+      </form>
+    </div>
+
     <!-- ── Header ── -->
-    <header class="header">
+    <header v-if="authChecked && (!authRequired || currentUser)" class="header">
       <div class="header-brand" @click="$router.push('/')" style="cursor:pointer" title="返回上传页面">
         <svg class="header-logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
           <defs>
@@ -84,10 +107,12 @@
         <span class="header-version">v{{ appVersion }}</span>
       </div>
       <div class="header-actions">
+        <span v-if="authRequired && currentUser" class="header-user">{{ currentUser.display_name || currentUser.username }}</span>
         <button class="btn btn-sm btn-outline" @click="openStorageManager">存储</button>
         <button class="btn btn-sm btn-outline" @click="showGuide=true">使用指南</button>
         <button class="btn btn-sm btn-outline" @click="showDeletedProjects=true; loadDeletedProjects()">找回项目</button>
         <button class="btn btn-sm btn-primary" @click="showNewProject=true">+ 新建项目</button>
+        <button v-if="authRequired" class="btn btn-sm btn-outline" @click="logout">退出</button>
         <button class="theme-toggle" @click="toggleTheme" :title="isDark ? '切换到浅色模式' : '切换到深色模式'">
           <svg class="icon-sun" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
           <svg class="icon-moon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
@@ -95,7 +120,7 @@
       </div>
     </header>
 
-    <div class="layout">
+    <div v-if="authChecked && (!authRequired || currentUser)" class="layout">
       <!-- ── Sidebar ── -->
       <aside class="sidebar"
              :class="{ 'sidebar-collapsed': sidebarCollapsed }"

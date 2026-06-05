@@ -31,6 +31,8 @@ def isolated_server(tmp_path, monkeypatch):
     monkeypatch.setattr(web_server, "STORAGE_DIR", str(storage_dir))
     monkeypatch.setattr(web_server, "ALLOW_FILE_DOWNLOAD", True)
     monkeypatch.setattr(web_server, "ALLOW_CODE_EXECUTION", False)
+    monkeypatch.setattr(web_server, "AUTH_MODE", "none")
+    monkeypatch.setattr(web_server, "AUTH_ENABLED", False)
     return web_server
 
 
@@ -45,7 +47,9 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.1.8",
+        "version": "0.1.9",
+        "auth_mode": "none",
+        "auth_required": False,
         "allow_file_download": True,
         "allow_code_execution": False,
     }
@@ -74,6 +78,69 @@ def test_ops_endpoints_and_audit_logs(client):
     assert metrics.status_code == 200
     assert "analyze_trace_app_uptime_seconds" in metrics.text
     assert "analyze_trace_http_requests_total" in metrics.text
+
+
+def test_ldap_auth_requires_login_and_isolates_user_data(isolated_server, monkeypatch):
+    def fake_authenticate(username, password):
+        if password != "ok":
+            raise web_server.ldap_auth.AuthError("bad credentials")
+        return {
+            "username": username,
+            "display_name": f"{username} User",
+            "email": f"{username}@example.com",
+            "dn": f"CN={username},DC=example,DC=com",
+        }
+
+    monkeypatch.setattr(web_server, "AUTH_MODE", "ldap")
+    monkeypatch.setattr(web_server, "AUTH_ENABLED", True)
+    monkeypatch.setattr(web_server.ldap_auth, "authenticate", fake_authenticate)
+
+    with TestClient(isolated_server.app) as test_client:
+        assert test_client.get("/api/projects").status_code == 401
+
+        bad = test_client.post("/api/login", json={"username": "alice", "password": "bad"})
+        assert bad.status_code == 401
+
+        login = test_client.post("/api/login", json={"username": "alice", "password": "ok"})
+        assert login.status_code == 200
+        assert login.json()["user"]["username"] == "alice"
+
+        created = test_client.post("/api/projects", json={"name": "Alice Project"})
+        assert created.status_code == 201
+        alice_project = created.json()
+        assert alice_project["user_token"] == "alice"
+
+        async def insert_rows():
+            db = await web_db.get_db()
+            try:
+                await db.execute("INSERT OR IGNORE INTO users(user_token) VALUES(?)", ("bob",))
+                await db.execute(
+                    "INSERT INTO projects(id, user_token, name) VALUES(?,?,?)",
+                    ("bob-project", "bob", "Bob Project"),
+                )
+                await db.executemany(
+                    "INSERT INTO jobs(id, project_id, user_token, label, mode, status) VALUES(?,?,?,?,?,?)",
+                    [
+                        ("alice-job", alice_project["id"], "alice", "alice job", "single", "done"),
+                        ("bob-job", "bob-project", "bob", "bob job", "single", "done"),
+                    ],
+                )
+                await db.commit()
+            finally:
+                await db.close()
+
+        asyncio.run(insert_rows())
+
+        projects = test_client.get("/api/projects")
+        assert projects.status_code == 200
+        assert [item["id"] for item in projects.json()] == [alice_project["id"]]
+
+        jobs = test_client.get("/api/jobs")
+        assert jobs.status_code == 200
+        assert [item["id"] for item in jobs.json()["data"]] == ["alice-job"]
+
+        assert test_client.get("/api/jobs/bob-job").status_code == 404
+        assert test_client.get("/api/jobs/alice-job").status_code == 200
 
 
 def test_backup_script_creates_archive_and_manifest(client, isolated_server, tmp_path):

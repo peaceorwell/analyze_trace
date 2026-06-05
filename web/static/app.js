@@ -120,7 +120,13 @@ const chartPieRows      = ref([]);
 
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
-const appVersion = ref("0.1.8");
+const appVersion = ref("0.1.9");
+const authRequired = ref(false);
+const authChecked = ref(false);
+const currentUser = ref(null);
+const loginForm = ref({ username: "", password: "" });
+const loginLoading = ref(false);
+const loginError = ref("");
 const perfettoOpening = ref({});
 const compareRerunLoading = ref(false);
 let activeResultStateJobId = null;
@@ -704,9 +710,62 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.1.8";
+  appVersion.value = cfg.version || "0.1.9";
+  authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
+};
+
+const loadMe = async () => {
+  const r = await fetch("/api/me", { credentials: "include" });
+  if (!r.ok) {
+    currentUser.value = null;
+    authChecked.value = true;
+    return null;
+  }
+  const data = await r.json();
+  currentUser.value = data.authenticated ? data.user : null;
+  authChecked.value = true;
+  return currentUser.value;
+};
+
+const submitLogin = async () => {
+  loginLoading.value = true;
+  loginError.value = "";
+  try {
+    const r = await fetch("/api/login", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(loginForm.value),
+    });
+    if (!r.ok) {
+      const payload = await r.json().catch(() => ({}));
+      throw new Error(payload.detail || "登录失败");
+    }
+    const data = await r.json();
+    currentUser.value = data.user || null;
+    loginForm.value.password = "";
+    appInitialized = true;
+    await loadProjects();
+    await refreshSidebarData();
+  } catch (e) {
+    loginError.value = e.message || "登录失败";
+  } finally {
+    loginLoading.value = false;
+  }
+};
+
+const logout = async () => {
+  await fetch("/api/logout", { method: "POST", credentials: "include" }).catch(() => {});
+  currentUser.value = null;
+  appInitialized = false;
+  projects.value = [];
+  historyGroups.value = [];
+  compareJobs.value = [];
+  selectedJobId.value = null;
+  selectedJob.value = null;
+  router.push({ path: "/" });
 };
 
 const loadProjects = async () => {
@@ -3408,10 +3467,17 @@ router.beforeEach(async (to, from) => {
   // Ensure config/data is loaded on first navigation
   if (!appInitialized) {
     await loadConfig();
+    await loadMe();
+    if (authRequired.value && !currentUser.value) {
+      appInitialized = true;
+      return;
+    }
     await loadProjects();
     await refreshSidebarData();
     appInitialized = true;
   }
+
+  if (authRequired.value && !currentUser.value) return;
 
   const newJobId = to.params?.id || null;
 
@@ -3616,6 +3682,8 @@ const App = {
       // Layout/theme
       isDark, toggleTheme, sidebarWidth, sidebarCollapsed, appVersion,
       toggleSidebar, startSidebarResize,
+      authRequired, authChecked, currentUser, loginForm, loginLoading, loginError,
+      submitLogin, logout,
 
       // Sidebar data
       projects,
