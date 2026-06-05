@@ -49,7 +49,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.1.21",
+        "version": "0.1.22",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -353,6 +353,64 @@ def test_job_patch_does_not_require_auth(client):
 
     assert patched.status_code == 200
     assert patched.json()["label"] == "after"
+
+
+def test_job_patch_can_pin_and_lists_pinned_first(client):
+    async def insert_rows():
+        db = await web_db.get_db()
+        try:
+            await db.execute("INSERT INTO projects(id, name) VALUES(?,?)", ("project-pin", "Pinned"))
+            await db.executemany(
+                """
+                INSERT INTO jobs(id, project_id, label, mode, status, created_at, is_pinned)
+                VALUES(?,?,?,?,?,?,?)
+                """,
+                [
+                    ("old-job", "project-pin", "old", "single", "done", "2026-05-18 10:00:00", 0),
+                    ("new-job", "project-pin", "new", "single", "done", "2026-05-18 12:00:00", 0),
+                    ("pin-job", "project-pin", "pin", "single", "done", "2026-05-18 09:00:00", 0),
+                ],
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_rows())
+
+    patched = client.patch("/api/jobs/pin-job", json={"is_pinned": True})
+    assert patched.status_code == 200
+    assert patched.json()["is_pinned"] == 1
+
+    response = client.get("/api/job-groups/project-pin/jobs")
+    assert response.status_code == 200
+    assert [job["id"] for job in response.json()["data"][:3]] == ["pin-job", "new-job", "old-job"]
+
+
+def test_project_restore_preserves_pinned_jobs(client):
+    async def insert_rows():
+        db = await web_db.get_db()
+        try:
+            await db.execute("INSERT INTO projects(id, name) VALUES(?,?)", ("project-restore", "Restore"))
+            await db.execute(
+                """
+                INSERT INTO jobs(id, project_id, label, mode, status, is_pinned)
+                VALUES(?,?,?,?,?,?)
+                """,
+                ("restore-job", "project-restore", "pin", "single", "done", 1),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_rows())
+
+    assert client.delete("/api/projects/project-restore").status_code == 204
+    restored = client.post("/api/deleted-projects/project-restore/restore")
+    assert restored.status_code == 200
+
+    response = client.get("/api/job-groups/project-restore/jobs")
+    assert response.status_code == 200
+    assert response.json()["data"][0]["is_pinned"] == 1
 
 
 def test_job_groups_paginate_by_visible_groups(client):

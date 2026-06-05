@@ -65,6 +65,7 @@ async def init_db():
                 user_token       TEXT REFERENCES users(user_token) ON DELETE CASCADE,
                 created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
                 label            TEXT DEFAULT '',
+                is_pinned        INTEGER DEFAULT 0,
                 mode             TEXT CHECK(mode IN ('single','compare')) NOT NULL,
 
                 file_a_name      TEXT,
@@ -133,6 +134,7 @@ async def init_db():
         await add_column_if_missing(db, "jobs", "owned_bytes", "INTEGER")
         await add_column_if_missing(db, "jobs", "result_bytes", "INTEGER")
         await add_column_if_missing(db, "jobs", "original_trace_bytes", "INTEGER")
+        await add_column_if_missing(db, "jobs", "is_pinned", "INTEGER DEFAULT 0")
         await add_column_if_missing(db, "folders", "password_hash", "TEXT DEFAULT NULL")
 
         await db.executescript("""
@@ -142,6 +144,7 @@ async def init_db():
                 user_token       TEXT,
                 created_at       DATETIME,
                 label            TEXT DEFAULT '',
+                is_pinned        INTEGER DEFAULT 0,
                 mode             TEXT,
 
                 file_a_name      TEXT,
@@ -174,6 +177,7 @@ async def init_db():
             CREATE INDEX IF NOT EXISTS idx_jobs_user ON jobs(user_token);
             CREATE INDEX IF NOT EXISTS idx_jobs_project_created ON jobs(project_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_jobs_mode_status_created ON jobs(mode, status, created_at);
+            CREATE INDEX IF NOT EXISTS idx_jobs_pinned_created ON jobs(is_pinned, created_at);
             CREATE INDEX IF NOT EXISTS idx_jobs_source_a ON jobs(source_job_a);
             CREATE INDEX IF NOT EXISTS idx_jobs_source_b ON jobs(source_job_b);
             CREATE INDEX IF NOT EXISTS idx_folders_user ON folders(user_token);
@@ -182,6 +186,7 @@ async def init_db():
             CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action);
             CREATE INDEX IF NOT EXISTS idx_audit_logs_resource ON audit_logs(resource_type, resource_id);
         """)
+        await add_column_if_missing(db, "deleted_jobs", "is_pinned", "INTEGER DEFAULT 0")
         await db.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(1)")
 
         await db.commit()

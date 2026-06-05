@@ -264,6 +264,11 @@ body {
 .job-mode-badge { font-size: 9px; padding: 1px 5px; border-radius: 10px; font-weight: 600; flex-shrink: 0; }
 .mode-single  { background: var(--purple-bg); color: var(--purple-l); }
 .mode-compare { background: rgba(234,179,8,.12); color: var(--yellow); }
+.job-pin-badge {
+  flex-shrink: 0; font-size: 9px; font-weight: 700;
+  border-radius: 10px; padding: 1px 5px;
+  background: var(--purple-bg); color: var(--purple-l);
+}
 
 .job-status { font-size: 11px; flex-shrink: 0; }
 .job-status.lg { font-size: 15px; }

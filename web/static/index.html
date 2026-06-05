@@ -255,6 +255,7 @@
                   <input v-if="historyBulkMode" type="checkbox" :checked="historySelection.includes(job.id)" readonly />
                   <span class="job-status" :class="'status-'+job.status">{{ statusIcon(job.status) }}</span>
                   <span class="job-label">{{ job.label || job.id.slice(0,8) }}</span>
+                  <span v-if="job.is_pinned" class="job-pin-badge">置顶</span>
                   <span class="job-mode-badge" :class="'mode-'+job.mode">{{ job.mode==='compare'?'对比':'单文件' }}</span>
                 </div>
                 <div class="job-item-meta">{{ fmtDate(job.created_at) }}</div>

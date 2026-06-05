@@ -36,7 +36,7 @@ from db import get_db, init_db, row_to_dict  # noqa: E402
 import auth as ldap_auth  # noqa: E402
 
 STORAGE_DIR = os.path.join(os.path.dirname(__file__), "storage")
-APP_VERSION = "0.1.21"
+APP_VERSION = "0.1.22"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(os.path.dirname(__file__), "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
 
@@ -331,6 +331,7 @@ def _job_response(row: dict, request: Request) -> dict:
     data = dict(row)
     token = current_user_token(request)
     data["is_owner"] = True if not token else data.get("user_token") == token
+    data["is_pinned"] = 1 if data.get("is_pinned") else 0
     return data
 
 
@@ -1781,13 +1782,15 @@ async def delete_project(request: Request, pid: str):
         job_dict = dict(job)
         await db.execute("""
             INSERT INTO deleted_jobs(id, project_id, user_token, created_at, label, mode,
+                is_pinned,
                 file_a_name, file_a_path, file_a_gzip_path, file_a_exists,
                 file_b_name, file_b_path, file_b_gzip_path, file_b_exists,
                 source_job_a, source_job_b, save_triton_csv, save_triton_code,
                 status, console_out, error_msg, result_dir, deleted_at)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         """, (job_dict["id"], job_dict.get("project_id"), job_dict.get("user_token"),
               job_dict.get("created_at"), job_dict.get("label", ""), job_dict.get("mode"),
+              job_dict.get("is_pinned", 0),
               job_dict.get("file_a_name"), job_dict.get("file_a_path"), job_dict.get("file_a_gzip_path"), job_dict.get("file_a_exists", 1),
               job_dict.get("file_b_name"), job_dict.get("file_b_path"), job_dict.get("file_b_gzip_path"), job_dict.get("file_b_exists", 1),
               job_dict.get("source_job_a"), job_dict.get("source_job_b"),
@@ -1877,13 +1880,15 @@ async def restore_project(request: Request, pid: str):
         job_dict = dict(job)
         await db.execute("""
             INSERT INTO jobs(id, project_id, user_token, created_at, label, mode,
+                is_pinned,
                 file_a_name, file_a_path, file_a_gzip_path, file_a_exists,
                 file_b_name, file_b_path, file_b_gzip_path, file_b_exists,
                 source_job_a, source_job_b, save_triton_csv, save_triton_code,
                 status, console_out, error_msg, result_dir)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (job_dict["id"], pid, job_dict.get("user_token"),
               job_dict.get("created_at"), job_dict.get("label", ""), job_dict.get("mode"),
+              job_dict.get("is_pinned", 0),
               job_dict.get("file_a_name"), job_dict.get("file_a_path"), job_dict.get("file_a_gzip_path"), job_dict.get("file_a_exists", 1),
               job_dict.get("file_b_name"), job_dict.get("file_b_path"), job_dict.get("file_b_gzip_path"), job_dict.get("file_b_exists", 1),
               job_dict.get("source_job_a"), job_dict.get("source_job_b"),
@@ -2028,7 +2033,7 @@ async def list_jobs(
     rows = await (await db.execute(f"""
             SELECT * FROM jobs
             {where_sql}
-            ORDER BY created_at DESC
+            ORDER BY COALESCE(is_pinned, 0) DESC, created_at DESC
             LIMIT ? OFFSET ?
         """, (*params, limit, offset))).fetchall()
 
@@ -2152,7 +2157,7 @@ async def list_compare_candidates(
             FROM jobs j
             LEFT JOIN projects p ON p.id = j.project_id
             WHERE {where_sql}
-            ORDER BY j.created_at DESC
+            ORDER BY COALESCE(j.is_pinned, 0) DESC, j.created_at DESC
             LIMIT ? OFFSET ?
             """,
             (*params, limit, offset),
@@ -2457,7 +2462,7 @@ async def list_group_jobs(
             FROM jobs j
             LEFT JOIN projects p ON p.id = j.project_id
             WHERE {where_sql}
-            ORDER BY j.created_at DESC
+            ORDER BY COALESCE(j.is_pinned, 0) DESC, j.created_at DESC
             LIMIT ? OFFSET ?
             """,
             (*params, limit, offset),
@@ -2952,6 +2957,8 @@ async def patch_job(request: Request, jid: str, body: dict):
     if "project_id" in body:
         await db.execute("UPDATE jobs SET project_id=? WHERE id=?",
                          (body["project_id"] or None, jid))
+    if "is_pinned" in body:
+        await db.execute("UPDATE jobs SET is_pinned=? WHERE id=?", (1 if body["is_pinned"] else 0, jid))
     await write_audit(
         db, request, "job.update",
         resource_type="job", resource_id=jid,
@@ -2960,6 +2967,8 @@ async def patch_job(request: Request, jid: str, body: dict):
             "new_label": body.get("label", row.get("label")),
             "old_project_id": row.get("project_id"),
             "new_project_id": body.get("project_id", row.get("project_id")),
+            "old_is_pinned": row.get("is_pinned", 0),
+            "new_is_pinned": 1 if body.get("is_pinned", row.get("is_pinned", 0)) else 0,
         },
     )
     await db.commit()

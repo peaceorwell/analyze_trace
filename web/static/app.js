@@ -121,7 +121,7 @@ const chartPieRows      = ref([]);
 
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
-const appVersion = ref("0.1.21");
+const appVersion = ref("0.1.22");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -750,7 +750,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.1.21";
+  appVersion.value = cfg.version || "0.1.22";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -2443,6 +2443,25 @@ const shareJob = async () => {
   showToast(data.changed ? "已转为共享并复制链接" : "已复制分享链接", "success");
 };
 
+const togglePinJob = async () => {
+  if (!selectedJobId.value || !selectedJob.value) return;
+  const nextPinned = !selectedJob.value.is_pinned;
+  const r = await fetch(`/api/jobs/${selectedJobId.value}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ is_pinned: nextPinned }),
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    showToast("置顶失败: " + (err.detail || err.message || `HTTP ${r.status}`), "error");
+    return;
+  }
+  selectedJob.value = await r.json();
+  await refreshSidebarData();
+  showToast(nextPinned ? "任务已置顶" : "已取消置顶", "success");
+};
+
 const escapeHtml = value => String(value ?? "")
   .replace(/&/g, "&amp;")
   .replace(/</g, "&lt;")
@@ -3271,6 +3290,7 @@ const JobDetail = {
             {{ statusIcon(selectedJob.status) }}
           </span>
           <span class="result-label">{{ selectedJob.label }}</span>
+          <span v-if="selectedJob.is_pinned" class="job-pin-badge">置顶</span>
           <span class="job-mode-badge" :class="'mode-'+selectedJob.mode">
             {{ selectedJob.mode==='compare'?'对比':'单文件' }}
           </span>
@@ -3281,6 +3301,9 @@ const JobDetail = {
                   @click="toggleActionMenu('job')">...</button>
           <div v-if="openActionMenu==='job'" class="action-menu">
             <button type="button" @click="shareJob(); closeActionMenu()">复制分享链接</button>
+            <button v-if="selectedJob.is_owner !== false" type="button" @click="togglePinJob(); closeActionMenu()">
+              {{ selectedJob.is_pinned ? '取消置顶' : '置顶' }}
+            </button>
             <button v-if="selectedJob.is_owner !== false" type="button" @click="editLabel(); closeActionMenu()">重命名</button>
             <button v-if="selectedJob.is_owner !== false" type="button" @click="moveProject(); closeActionMenu()">移动项目</button>
             <button v-if="selectedJob.is_owner !== false" type="button" class="danger" @click="deleteJob(); closeActionMenu()">删除任务</button>
@@ -3692,7 +3715,7 @@ const JobDetail = {
       openActionMenu, toggleActionMenu, closeActionMenu,
       switchTab,
       statusIcon,
-      shareJob, editLabel, moveProject, deleteJob, deleteFile,
+      shareJob, togglePinJob, editLabel, moveProject, deleteJob, deleteFile,
       openCompareSource, rerunCompareSwapped,
       downloadTraceFile, openInPerfetto, perfettoOpening, perfettoButtonLabel,
       setSort, startResize, downloadCsv,
