@@ -2,6 +2,7 @@ import asyncio
 import gzip
 import json
 import os
+import shlex
 import sys
 import tarfile
 import time
@@ -33,10 +34,15 @@ def isolated_server(tmp_path, monkeypatch):
     monkeypatch.setattr(web_server, "BACKUP_DIR", str(storage_dir / "backups"))
     monkeypatch.setattr(web_server, "ALLOW_FILE_DOWNLOAD", True)
     monkeypatch.setattr(web_server, "ALLOW_CODE_EXECUTION", False)
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_ENABLED", False)
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_COMMAND_TEMPLATE", "")
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_EXTRA_ARGS", "")
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_TIMEOUT_SECONDS", 30)
     monkeypatch.setattr(web_server, "AUTH_MODE", "none")
     monkeypatch.setattr(web_server, "AUTH_ENABLED", False)
     web_server.LOGIN_FAILURES.clear()
     web_server.LOGIN_CAPTCHA_CHALLENGES.clear()
+    web_server.ai_analysis_tasks.clear()
     return web_server
 
 
@@ -51,12 +57,137 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.3",
+        "version": "0.2.4",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
         "allow_code_execution": False,
+        "claude_analysis_enabled": False,
     }
+
+
+def test_ai_analysis_is_disabled_by_default(client):
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                "INSERT INTO jobs(id, label, mode, status) VALUES(?,?,?,?)",
+                ("ai-disabled-job", "AI disabled", "single", "done"),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+
+    r = client.post("/api/jobs/ai-disabled-job/ai-analysis", json={})
+
+    assert r.status_code == 403
+
+
+def test_ai_analysis_runs_configured_command(client, isolated_server, tmp_path, monkeypatch):
+    trace_path = tmp_path / "trace.pt.trace.json.gz"
+    with gzip.open(trace_path, "wt", encoding="utf-8") as f:
+        f.write("{}")
+
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO jobs(id, label, mode, status, file_a_name, file_a_gzip_path)
+                VALUES(?,?,?,?,?,?)
+                """,
+                ("ai-job", "AI job", "single", "done", "trace.pt.trace.json.gz", str(trace_path)),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+    Path(web_server.result_dir("ai-job")).mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_ENABLED", True)
+    monkeypatch.setattr(
+        web_server,
+        "CLAUDE_ANALYSIS_COMMAND_TEMPLATE",
+        f"{shlex.quote(sys.executable)} -c \"import sys; print('# AI OK'); print('prompt_len=' + str(len(sys.argv[1])))\" {{prompt}}",
+    )
+
+    started = client.post("/api/jobs/ai-job/ai-analysis", json={})
+
+    assert started.status_code == 202
+
+    payload = {}
+    for _ in range(80):
+        payload = client.get("/api/jobs/ai-job/ai-analysis").json()
+        if payload["status"] != "running":
+            break
+        time.sleep(0.05)
+
+    assert payload["status"] == "done"
+    assert "# AI OK" in payload["content"]
+
+    detail = client.get("/api/jobs/ai-job").json()
+    assert detail["ai_analysis"]["status"] == "done"
+    assert detail["ai_analysis"]["report_exists"] is True
+
+
+def test_ai_analysis_supports_compare_jobs(client, tmp_path, monkeypatch):
+    trace_a = tmp_path / "a.pt.trace.json.gz"
+    trace_b = tmp_path / "b.pt.trace.json.gz"
+    for path in (trace_a, trace_b):
+        with gzip.open(path, "wt", encoding="utf-8") as f:
+            f.write("{}")
+
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO jobs(
+                    id, label, mode, status,
+                    file_a_name, file_a_gzip_path,
+                    file_b_name, file_b_gzip_path
+                )
+                VALUES(?,?,?,?,?,?,?,?)
+                """,
+                (
+                    "ai-compare-job", "AI compare", "compare", "done",
+                    "a.pt.trace.json.gz", str(trace_a),
+                    "b.pt.trace.json.gz", str(trace_b),
+                ),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+    Path(web_server.result_dir("ai-compare-job")).mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_ENABLED", True)
+    monkeypatch.setattr(web_server, "CLAUDE_COMPARE_TRACE_SKILL", "compare-skill")
+    monkeypatch.setattr(
+        web_server,
+        "CLAUDE_ANALYSIS_COMMAND_TEMPLATE",
+        f"{shlex.quote(sys.executable)} -c \"import os; print('# Compare OK'); print(os.environ['TRACE_AI_MODE']); print(os.environ['TRACE_AI_SKILL']); print(os.environ['TRACE_AI_TRACE_B'])\"",
+    )
+
+    started = client.post("/api/jobs/ai-compare-job/ai-analysis", json={})
+
+    assert started.status_code == 202
+
+    payload = {}
+    for _ in range(80):
+        payload = client.get("/api/jobs/ai-compare-job/ai-analysis").json()
+        if payload["status"] != "running":
+            break
+        time.sleep(0.05)
+
+    assert payload["status"] == "done"
+    assert "# Compare OK" in payload["content"]
+    assert "compare-skill" in payload["content"]
+    assert str(trace_b) in payload["content"]
 
 
 def test_ops_endpoints_and_audit_logs(client):

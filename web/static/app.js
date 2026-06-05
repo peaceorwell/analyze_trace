@@ -122,7 +122,8 @@ const chartPieRows      = ref([]);
 
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
-const appVersion = ref("0.2.3");
+const claudeAnalysisEnabled = ref(false);
+const appVersion = ref("0.2.4");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -140,7 +141,12 @@ const loginCaptchaRequired = ref(false);
 const loginCaptchaImage = ref("");
 const perfettoOpening = ref({});
 const compareRerunLoading = ref(false);
+const aiAnalysisLoading = ref(false);
+const aiAnalysisStarting = ref(false);
+const aiAnalysisError = ref("");
+const aiAnalysisContent = ref("");
 let activeResultStateJobId = null;
+let aiAnalysisPollTimer = null;
 
 const toggleActionMenu = key => {
   openActionMenu.value = openActionMenu.value === key ? "" : key;
@@ -479,6 +485,10 @@ const availableTabs = computed(() => {
   for (const [file, label] of Object.entries(primaryTypeTabs)) {
     if (res[file]) tabs.push({ key: file, label });
   }
+  const aiMeta = selectedJob.value?.ai_analysis || {};
+  if (claudeAnalysisEnabled.value || aiMeta.report_exists || ["running", "done", "error"].includes(aiMeta.status)) {
+    tabs.push({ key: "ai", label: "AI 分析" });
+  }
   const csvMap = {
     "all_kernels_avg.csv":      "所有 Kernel",
     "all_kernels_cmp.csv":      "Kernel 对比",
@@ -764,10 +774,11 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.3";
+  appVersion.value = cfg.version || "0.2.4";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
+  claudeAnalysisEnabled.value = cfg.claude_analysis_enabled ?? false;
 };
 
 const loadMe = async () => {
@@ -1115,7 +1126,110 @@ const loadJob = async id => {
   chartSpeedups.value = [];
   chartBarRows.value = [];
   chartPieRows.value = [];
+  aiAnalysisError.value = "";
+  aiAnalysisContent.value = "";
+  if (selectedJob.value?.ai_analysis?.status === "running") {
+    startAiAnalysisPolling();
+  } else {
+    stopAiAnalysisPolling();
+  }
+  if (resultTab.value === "ai") refreshAiAnalysis({ silent: true });
   return true;
+};
+
+const aiAnalysisMeta = computed(() => selectedJob.value?.ai_analysis || {
+  enabled: claudeAnalysisEnabled.value,
+  status: "not_started",
+  report_exists: false,
+});
+
+const aiAnalysisStatusText = status => ({
+  not_started: "未开始",
+  running: "分析中",
+  done: "已完成",
+  error: "失败",
+}[status || "not_started"] || status);
+
+const updateAiAnalysisState = payload => {
+  if (!payload || !selectedJob.value) return;
+  const { content, ...meta } = payload;
+  selectedJob.value = {
+    ...selectedJob.value,
+    ai_analysis: meta,
+  };
+  aiAnalysisContent.value = content || "";
+};
+
+const stopAiAnalysisPolling = () => {
+  if (aiAnalysisPollTimer) {
+    clearInterval(aiAnalysisPollTimer);
+    aiAnalysisPollTimer = null;
+  }
+};
+
+const refreshAiAnalysis = async ({ silent = false } = {}) => {
+  if (!selectedJobId.value) return;
+  if (!silent) aiAnalysisLoading.value = true;
+  aiAnalysisError.value = "";
+  try {
+    const r = await fetch(`/api/jobs/${selectedJobId.value}/ai-analysis`, { credentials: "include" });
+    const payload = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(payload.detail || "加载 AI 分析失败");
+    updateAiAnalysisState(payload);
+    if (payload.status === "running") startAiAnalysisPolling();
+    else stopAiAnalysisPolling();
+  } catch (e) {
+    aiAnalysisError.value = e.message || "加载 AI 分析失败";
+  } finally {
+    aiAnalysisLoading.value = false;
+  }
+};
+
+const startAiAnalysisPolling = () => {
+  if (aiAnalysisPollTimer) return;
+  aiAnalysisPollTimer = setInterval(() => {
+    if (!selectedJobId.value) {
+      stopAiAnalysisPolling();
+      return;
+    }
+    refreshAiAnalysis({ silent: true });
+  }, 2500);
+};
+
+const startAiAnalysis = async (force = false) => {
+  if (!selectedJobId.value || aiAnalysisStarting.value) return;
+  if (!claudeAnalysisEnabled.value) {
+    showToast("AI 分析未启用，请在服务端设置 TRACE_ENABLE_CLAUDE_ANALYSIS=1", "error");
+    return;
+  }
+  aiAnalysisStarting.value = true;
+  aiAnalysisError.value = "";
+  try {
+    const r = await fetch(`/api/jobs/${selectedJobId.value}/ai-analysis`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ force }),
+    });
+    const payload = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(payload.detail || "提交 AI 分析失败");
+    updateAiAnalysisState(payload);
+    if (payload.status === "running") {
+      startAiAnalysisPolling();
+      showToast("AI 分析已开始", "success");
+    }
+  } catch (e) {
+    aiAnalysisError.value = e.message || "提交 AI 分析失败";
+    showToast(aiAnalysisError.value, "error");
+  } finally {
+    aiAnalysisStarting.value = false;
+  }
+};
+
+const copyAiAnalysisReport = async () => {
+  if (!aiAnalysisContent.value) return;
+  await copyTextToClipboard(aiAnalysisContent.value);
+  showToast("AI 分析报告已复制", "success");
 };
 
 const activeColumnFilters = (state = null) => {
@@ -3597,7 +3711,50 @@ const JobDetail = {
         </div>
 
         <!-- CSV table tabs -->
-        <div v-if="resultTab!=='console' && resultTab!=='chart'" class="table-wrap">
+        <div v-if="resultTab==='ai'" class="ai-analysis-wrap">
+          <div class="ai-analysis-head">
+            <div class="ai-analysis-title-block">
+              <div class="ai-analysis-title">Claude Code AI 分析</div>
+              <div class="ai-analysis-sub">
+                {{ selectedJob.mode === 'compare' ? '使用对比 skill 分析 A/B trace' : '使用单 trace skill 分析当前 trace' }}
+              </div>
+            </div>
+            <div class="ai-analysis-actions">
+              <span :class="['ai-status-badge', 'status-' + (aiAnalysisMeta.status || 'not_started')]">
+                {{ aiAnalysisStatusText(aiAnalysisMeta.status) }}
+              </span>
+              <button class="btn btn-sm btn-outline"
+                      :disabled="aiAnalysisLoading"
+                      @click="refreshAiAnalysis()">
+                {{ aiAnalysisLoading ? '刷新中...' : '刷新' }}
+              </button>
+              <button v-if="aiAnalysisContent" class="btn btn-sm btn-outline" @click="copyAiAnalysisReport">
+                复制
+              </button>
+              <button class="btn btn-sm btn-primary"
+                      :disabled="!claudeAnalysisEnabled || aiAnalysisStarting || aiAnalysisMeta.status==='running'"
+                      @click="startAiAnalysis(aiAnalysisMeta.report_exists || aiAnalysisMeta.status==='done')">
+                {{ aiAnalysisStarting ? '提交中...' : (aiAnalysisMeta.report_exists ? '重新分析' : '开始分析') }}
+              </button>
+            </div>
+          </div>
+
+          <div v-if="!claudeAnalysisEnabled && !aiAnalysisMeta.report_exists" class="info-box">
+            AI 分析未启用。服务端设置 TRACE_ENABLE_CLAUDE_ANALYSIS=1 后可使用。
+          </div>
+          <div v-if="aiAnalysisError" class="error-box mb-2">{{ aiAnalysisError }}</div>
+          <div v-if="aiAnalysisMeta.status==='running'" class="ai-analysis-running">
+            <span class="spinner-small"></span>
+            Claude Code 正在分析 trace，完成后这里会自动刷新。
+          </div>
+          <pre v-if="aiAnalysisContent" class="ai-analysis-report">{{ aiAnalysisContent }}</pre>
+          <div v-else-if="aiAnalysisMeta.status!=='running'" class="ai-analysis-empty">
+            点击“开始分析”后，会调用服务端 Claude Code 和自定义 skill 生成报告。
+          </div>
+        </div>
+
+        <!-- CSV table tabs -->
+        <div v-if="resultTab!=='console' && resultTab!=='chart' && resultTab!=='ai'" class="table-wrap">
           <div class="table-toolbar">
             <div class="table-toolbar-main">
               <input v-model="tableSearch" class="input input-sm table-search-input" placeholder="全局搜索..." />
@@ -3794,6 +3951,9 @@ const JobDetail = {
       resultTableLoading, resultTableError, preparingResultTab, prevTablePage, nextTablePage,
       hasColFilters, colSums, isKernelTypeTab, canDrillKernelTypeRow, drillDownKernelType,
       isTritonStepTab, tritonStatus, allowFileDownload, allowCodeExecution,
+      claudeAnalysisEnabled, aiAnalysisMeta, aiAnalysisLoading, aiAnalysisStarting,
+      aiAnalysisError, aiAnalysisContent, aiAnalysisStatusText,
+      refreshAiAnalysis, startAiAnalysis, copyAiAnalysisReport,
       openActionMenu, toggleActionMenu, closeActionMenu,
       switchTab,
       statusIcon,
@@ -3853,6 +4013,7 @@ router.beforeEach(async (to, from) => {
     if (ktPieChartInstB.value) { ktPieChartInstB.value.destroy(); ktPieChartInstB.value = null; }
     clearInterval(pollTimer);
     pollTimer = null;
+    stopAiAnalysisPolling();
     cancelResultTableRequest();
     selectedJobId.value = null;
     selectedJob.value = null;
@@ -3886,6 +4047,7 @@ router.beforeEach(async (to, from) => {
   if (ktChartInst.value)     { ktChartInst.value.destroy();     ktChartInst.value = null; }
   if (ktPieChartInst.value)  { ktPieChartInst.value.destroy();  ktPieChartInst.value = null; }
   if (ktPieChartInstB.value) { ktPieChartInstB.value.destroy(); ktPieChartInstB.value = null; }
+  stopAiAnalysisPolling();
   cancelResultTableRequest();
 
   selectedJobId.value = newJobId;
@@ -3915,6 +4077,9 @@ router.beforeEach(async (to, from) => {
   if (targetTab === "chart" && selectedJob.value.status === "done") {
     scheduleBuildChart();
   }
+  if (targetTab === "ai" && selectedJob.value.status === "done") {
+    refreshAiAnalysis({ silent: true });
+  }
   if (selectedJob.value.status === "pending" || selectedJob.value.status === "running") {
     startPoll();
   }
@@ -3942,6 +4107,9 @@ const App = {
       if (v?.endsWith(".csv")) loadResultTable();
       if (v === "chart" && selectedJob.value?.status === "done") {
         scheduleBuildChart();
+      }
+      if (v === "ai" && selectedJob.value?.status === "done") {
+        refreshAiAnalysis({ silent: true });
       }
     });
 

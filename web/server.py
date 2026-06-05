@@ -37,9 +37,12 @@ import auth as ldap_auth  # noqa: E402
 
 DEFAULT_STORAGE_DIR = os.path.join(os.path.dirname(__file__), "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.3"
+APP_VERSION = "0.2.4"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(os.path.dirname(__file__), "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
+AI_ANALYSIS_DIRNAME = "ai_analysis"
+AI_ANALYSIS_STATUS_FILE = "ai_analysis_status.json"
+AI_ANALYSIS_REPORT_FILE = "ai_analysis.md"
 
 # Configured at startup via CLI; read-only after that
 AUTH_MODE = os.environ.get("AUTH_MODE", "none").strip().lower()
@@ -49,8 +52,17 @@ SESSION_COOKIE_SECURE = os.environ.get("SESSION_COOKIE_SECURE", "0") == "1"
 ALLOW_FILE_DOWNLOAD = os.environ.get("TRACE_NO_DOWNLOAD", "") == ""
 ALLOW_CODE_EXECUTION = os.environ.get("TRACE_ENABLE_CODE_EXEC", "") == "1"
 ANALYSIS_CONCURRENCY = max(1, int(os.environ.get("TRACE_ANALYSIS_CONCURRENCY", "1")))
+CLAUDE_ANALYSIS_ENABLED = os.environ.get("TRACE_ENABLE_CLAUDE_ANALYSIS", "") == "1"
+CLAUDE_ANALYSIS_COMMAND = os.environ.get("TRACE_CLAUDE_COMMAND", "claude")
+CLAUDE_ANALYSIS_COMMAND_TEMPLATE = os.environ.get("TRACE_CLAUDE_COMMAND_TEMPLATE", "")
+CLAUDE_ANALYSIS_EXTRA_ARGS = os.environ.get("TRACE_CLAUDE_EXTRA_ARGS", "")
+CLAUDE_ANALYSIS_TIMEOUT_SECONDS = max(30, int(os.environ.get("TRACE_CLAUDE_TIMEOUT_SECONDS", "1800")))
+CLAUDE_ANALYSIS_SKILLS_DIR = os.environ.get("TRACE_CLAUDE_SKILLS_DIR", "")
+CLAUDE_SINGLE_TRACE_SKILL = os.environ.get("TRACE_CLAUDE_SINGLE_SKILL", "e2e-profiling-analyzer")
+CLAUDE_COMPARE_TRACE_SKILL = os.environ.get("TRACE_CLAUDE_COMPARE_SKILL", "e2e-profiling-comparator")
 analysis_queue: asyncio.Queue[str] = asyncio.Queue()
 analysis_workers: list[asyncio.Task] = []
+ai_analysis_tasks: dict[str, asyncio.Task] = {}
 APP_STARTED_AT = time.time()
 HTTP_METRICS: dict[tuple[str, str, int], dict[str, float]] = {}
 LOGIN_CAPTCHA_THRESHOLD = max(1, int(os.environ.get("LOGIN_CAPTCHA_THRESHOLD", "5")))
@@ -594,6 +606,18 @@ def result_dir(job_id: str) -> str:
     return os.path.join(job_dir(job_id), "results")
 
 
+def ai_analysis_dir(job_id: str) -> str:
+    return os.path.join(result_dir(job_id), AI_ANALYSIS_DIRNAME)
+
+
+def ai_analysis_status_path(job_id: str) -> str:
+    return os.path.join(ai_analysis_dir(job_id), AI_ANALYSIS_STATUS_FILE)
+
+
+def ai_analysis_report_path(job_id: str) -> str:
+    return os.path.join(ai_analysis_dir(job_id), AI_ANALYSIS_REPORT_FILE)
+
+
 def require_code_execution_enabled():
     if not ALLOW_CODE_EXECUTION:
         raise HTTPException(403, "Code execution is disabled")
@@ -606,6 +630,10 @@ def _text_or_empty(value: Optional[str]) -> str:
 
 def _format_command(command: list[str]) -> str:
     return " ".join(shlex.quote(str(part)) for part in command)
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _format_triton_execution_error(
@@ -947,6 +975,356 @@ def collect_result_files(jid: str) -> dict:
             "size": _path_size(full),
         }
     return files
+
+
+def _read_ai_analysis_status(jid: str) -> dict:
+    path = ai_analysis_status_path(jid)
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _write_ai_analysis_status(jid: str, status: dict):
+    os.makedirs(ai_analysis_dir(jid), exist_ok=True)
+    path = ai_analysis_status_path(jid)
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w") as f:
+        json.dump(status, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, path)
+
+
+def _find_latest_ai_report(analysis_dir: str) -> Optional[str]:
+    candidates = []
+    for root, _, files in os.walk(analysis_dir):
+        for filename in files:
+            if not filename.lower().endswith(".md") or filename == AI_ANALYSIS_REPORT_FILE:
+                continue
+            path = os.path.join(root, filename)
+            priority = 1 if filename == "report.md" else 0
+            candidates.append((priority, os.path.getmtime(path), path))
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    return candidates[0][2]
+
+
+def collect_ai_analysis(jid: str) -> dict:
+    status = _read_ai_analysis_status(jid)
+    report_path = ai_analysis_report_path(jid)
+    report_exists = os.path.exists(report_path)
+    if not status and report_exists:
+        status = {"status": "done", "updated_at": datetime.fromtimestamp(os.path.getmtime(report_path), timezone.utc).isoformat()}
+    if not status:
+        status = {"status": "not_started"}
+    if status.get("status") == "running" and jid not in ai_analysis_tasks:
+        status = {
+            **status,
+            "status": "error",
+            "error": "Server restarted before this AI analysis completed",
+        }
+    return {
+        "enabled": CLAUDE_ANALYSIS_ENABLED,
+        "status": status.get("status", "not_started"),
+        "error": status.get("error", ""),
+        "mode": status.get("mode", ""),
+        "skill": status.get("skill", ""),
+        "started_at": status.get("started_at", ""),
+        "finished_at": status.get("finished_at", ""),
+        "updated_at": status.get("updated_at", ""),
+        "report_exists": report_exists,
+    }
+
+
+def _read_ai_analysis_report(jid: str) -> str:
+    path = ai_analysis_report_path(jid)
+    if not os.path.exists(path):
+        return ""
+    with open(path, encoding="utf-8", errors="replace") as f:
+        return f.read()
+
+
+class _SafeFormatDict(dict):
+    def __missing__(self, key):
+        return "{" + key + "}"
+
+
+def _build_claude_command(prompt: str, values: dict) -> list[str]:
+    values = {
+        **values,
+        "prompt": prompt,
+        "single_skill": CLAUDE_SINGLE_TRACE_SKILL,
+        "compare_skill": CLAUDE_COMPARE_TRACE_SKILL,
+    }
+    if CLAUDE_ANALYSIS_COMMAND_TEMPLATE.strip():
+        raw_parts = shlex.split(CLAUDE_ANALYSIS_COMMAND_TEMPLATE)
+        command = [part.format_map(_SafeFormatDict(values)) for part in raw_parts]
+        if "{prompt}" not in CLAUDE_ANALYSIS_COMMAND_TEMPLATE:
+            command.append(prompt)
+        return command
+
+    command = shlex.split(CLAUDE_ANALYSIS_COMMAND) or ["claude"]
+    if CLAUDE_ANALYSIS_EXTRA_ARGS.strip():
+        command.extend(shlex.split(CLAUDE_ANALYSIS_EXTRA_ARGS))
+    command.extend(["-p", prompt])
+    return command
+
+
+async def _source_trace_for_ai(db, source_id: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    if not source_id:
+        return None, None
+    source = await row_to_dict(
+        await (await db.execute(
+            "SELECT file_a_name, file_a_path, file_a_gzip_path FROM jobs WHERE id=?",
+            (source_id,),
+        )).fetchone()
+    )
+    if not source:
+        return None, None
+    path = source.get("file_a_gzip_path") or source.get("file_a_path")
+    return path, source.get("file_a_name")
+
+
+async def _resolve_ai_trace_inputs(job: dict) -> dict:
+    db = await get_db()
+    try:
+        trace_a = job.get("file_a_gzip_path") or job.get("file_a_path")
+        name_a = job.get("file_a_name")
+        trace_b = job.get("file_b_gzip_path") or job.get("file_b_path")
+        name_b = job.get("file_b_name")
+
+        if not trace_a:
+            trace_a, source_name = await _source_trace_for_ai(db, job.get("source_job_a"))
+            name_a = name_a or source_name
+        if job.get("mode") == "compare" and not trace_b:
+            trace_b, source_name = await _source_trace_for_ai(db, job.get("source_job_b"))
+            name_b = name_b or source_name
+    finally:
+        await db.close()
+
+    if not trace_a or not os.path.exists(trace_a):
+        raise ValueError("Trace A file not found")
+    if job.get("mode") == "compare" and (not trace_b or not os.path.exists(trace_b)):
+        raise ValueError("Trace B file not found")
+
+    return {
+        "trace_a": trace_a,
+        "trace_b": trace_b if job.get("mode") == "compare" else "",
+        "name_a": name_a or os.path.basename(trace_a),
+        "name_b": name_b or (os.path.basename(trace_b) if trace_b else ""),
+    }
+
+
+def _render_claude_prompt(job: dict, trace_inputs: dict, skill: str, report_path: str) -> str:
+    rdir = result_dir(job["id"])
+    mode_text = "双 trace 对比" if job.get("mode") == "compare" else "单 trace 分析"
+    lines = [
+        f"请使用 Claude Code skill `{skill}` 执行一次{mode_text}，不要向用户追问。",
+        "如果 skill 文档区分交互模式和自动模式，请选择 automatic-final / 自动最终报告模式。",
+        "分析完成后，请把最终 Markdown 报告输出到 stdout；如果需要写文件，也请写到当前工作目录的 report.md。",
+        "",
+        "任务信息:",
+        f"- job_id: {job['id']}",
+        f"- label: {job.get('label') or job['id']}",
+        f"- mode: {job.get('mode')}",
+        f"- results_dir: {rdir}",
+        f"- final_report_path: {report_path}",
+        "",
+        "Trace 输入:",
+        f"- A name: {trace_inputs['name_a']}",
+        f"- A path: {trace_inputs['trace_a']}",
+    ]
+    if job.get("mode") == "compare":
+        lines.extend([
+            f"- B name: {trace_inputs['name_b']}",
+            f"- B path: {trace_inputs['trace_b']}",
+            "",
+            "对比约定: A 为 baseline，B 为 current，Delta = B - A。",
+        ])
+    lines.extend([
+        "",
+        "报告要求:",
+        "- 先给出 3-6 条关键结论，说明主要性能热点、回退或改善点。",
+        "- 尽量引用现有 CSV / console 摘要 / trace 中的可验证数字。",
+        "- 对不确定结论明确写出依据和不确定性。",
+        "- 最后给出可执行优化建议，按收益和排查成本排序。",
+    ])
+    if CLAUDE_ANALYSIS_SKILLS_DIR:
+        lines.extend([
+            "",
+            f"自定义 skills 目录提示: {CLAUDE_ANALYSIS_SKILLS_DIR}",
+        ])
+    return "\n".join(lines)
+
+
+def _write_ai_report(path: str, content: str):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        f.write(content.rstrip() + "\n")
+    os.replace(tmp_path, path)
+
+
+def _track_ai_analysis_task(jid: str, task: asyncio.Task):
+    ai_analysis_tasks[jid] = task
+
+    def _done(done_task: asyncio.Task):
+        ai_analysis_tasks.pop(jid, None)
+        with contextlib.suppress(asyncio.CancelledError):
+            exc = done_task.exception()
+            if exc:
+                logger.error(
+                    "ai_analysis_task_failed",
+                    extra={"event": "ai_analysis_task_failed", "job_id": jid},
+                    exc_info=(type(exc), exc, exc.__traceback__),
+                )
+
+    task.add_done_callback(_done)
+
+
+async def _run_ai_analysis_task(jid: str):
+    analysis_dir = ai_analysis_dir(jid)
+    report_path = ai_analysis_report_path(jid)
+    os.makedirs(analysis_dir, exist_ok=True)
+    stdout_text = ""
+    stderr_text = ""
+
+    try:
+        db = await get_db()
+        try:
+            job = await row_to_dict(
+                await (await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))).fetchone()
+            )
+        finally:
+            await db.close()
+
+        if not job:
+            raise ValueError("Job not found")
+        if job.get("status") != "done":
+            raise ValueError("Job is not completed")
+
+        trace_inputs = await _resolve_ai_trace_inputs(job)
+        skill = CLAUDE_COMPARE_TRACE_SKILL if job.get("mode") == "compare" else CLAUDE_SINGLE_TRACE_SKILL
+        status = {
+            "status": "running",
+            "mode": job.get("mode"),
+            "skill": skill,
+            "started_at": _utc_now_iso(),
+            "updated_at": _utc_now_iso(),
+        }
+        _write_ai_analysis_status(jid, status)
+
+        prompt = _render_claude_prompt(job, trace_inputs, skill, report_path)
+        command = _build_claude_command(prompt, {
+            "job_id": jid,
+            "mode": job.get("mode") or "",
+            "skill": skill,
+            "trace_a": trace_inputs["trace_a"],
+            "trace_b": trace_inputs["trace_b"],
+            "results_dir": result_dir(jid),
+            "analysis_dir": analysis_dir,
+            "report_path": report_path,
+        })
+
+        with open(os.path.join(analysis_dir, "command.json"), "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "command": command,
+                    "display_command": _format_command(command),
+                    "skill": skill,
+                    "trace_a": trace_inputs["trace_a"],
+                    "trace_b": trace_inputs["trace_b"],
+                },
+                f,
+                ensure_ascii=False,
+                indent=2,
+            )
+
+        env = os.environ.copy()
+        env.update({
+            "TRACE_AI_JOB_ID": jid,
+            "TRACE_AI_MODE": job.get("mode") or "",
+            "TRACE_AI_SKILL": skill,
+            "TRACE_AI_TRACE_A": trace_inputs["trace_a"],
+            "TRACE_AI_TRACE_B": trace_inputs["trace_b"],
+            "TRACE_AI_RESULT_DIR": result_dir(jid),
+            "TRACE_AI_ANALYSIS_DIR": analysis_dir,
+            "TRACE_AI_REPORT_PATH": report_path,
+        })
+        if CLAUDE_ANALYSIS_SKILLS_DIR:
+            env["TRACE_CLAUDE_SKILLS_DIR"] = CLAUDE_ANALYSIS_SKILLS_DIR
+
+        proc = await asyncio.create_subprocess_exec(
+            *command,
+            cwd=analysis_dir,
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(),
+                timeout=CLAUDE_ANALYSIS_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            stdout, stderr = await proc.communicate()
+            stdout_text = stdout.decode("utf-8", errors="replace")
+            stderr_text = stderr.decode("utf-8", errors="replace")
+            raise RuntimeError(f"Claude analysis timed out after {CLAUDE_ANALYSIS_TIMEOUT_SECONDS}s")
+
+        stdout_text = stdout.decode("utf-8", errors="replace")
+        stderr_text = stderr.decode("utf-8", errors="replace")
+        _write_ai_report(os.path.join(analysis_dir, "stdout.txt"), stdout_text or "")
+        _write_ai_report(os.path.join(analysis_dir, "stderr.txt"), stderr_text or "")
+
+        if proc.returncode != 0:
+            tail = stderr_text[-2000:] or stdout_text[-2000:] or "no output"
+            raise RuntimeError(f"Claude analysis failed with exit code {proc.returncode}: {tail}")
+
+        candidate_report = _find_latest_ai_report(analysis_dir)
+        if candidate_report:
+            with open(candidate_report, encoding="utf-8", errors="replace") as f:
+                content = f.read()
+        else:
+            content = stdout_text.strip()
+        if not content:
+            content = "Claude command completed, but no report content was produced."
+        _write_ai_report(report_path, content)
+        _write_ai_analysis_status(jid, {
+            **status,
+            "status": "done",
+            "finished_at": _utc_now_iso(),
+            "updated_at": _utc_now_iso(),
+        })
+    except Exception as e:
+        error_report = [
+            "# AI 分析失败",
+            "",
+            f"- 任务 ID: `{jid}`",
+            f"- 错误: `{e}`",
+        ]
+        if stdout_text.strip():
+            error_report.extend(["", "## stdout", "", "```text", stdout_text[-4000:], "```"])
+        if stderr_text.strip():
+            error_report.extend(["", "## stderr", "", "```text", stderr_text[-4000:], "```"])
+        _write_ai_report(report_path, "\n".join(error_report))
+        status = _read_ai_analysis_status(jid)
+        _write_ai_analysis_status(jid, {
+            **status,
+            "status": "error",
+            "error": str(e),
+            "finished_at": _utc_now_iso(),
+            "updated_at": _utc_now_iso(),
+        })
+        logger.exception(
+            "ai_analysis_failed",
+            extra={"event": "ai_analysis_failed", "job_id": jid, "error": str(e)},
+        )
 
 
 def _csv_filter_match(row: dict, q: Optional[str], filters: dict, filter_ops: dict) -> bool:
@@ -1628,6 +2006,7 @@ async def get_config():
         "auth_required": AUTH_ENABLED,
         "allow_file_download": ALLOW_FILE_DOWNLOAD,
         "allow_code_execution": ALLOW_CODE_EXECUTION,
+        "claude_analysis_enabled": CLAUDE_ANALYSIS_ENABLED,
     }
 
 
@@ -2981,9 +3360,72 @@ async def get_job(request: Request, jid: str):
     if job["status"] == "done":
         job["result_files"] = collect_result_files(jid)
         job["perfetto_context"] = collect_perfetto_context(jid)
+        job["ai_analysis"] = collect_ai_analysis(jid)
     if job["mode"] == "compare":
         job["compare_sources"] = await _compare_source_summaries(request, job)
     return job
+
+
+@app.get("/api/jobs/{jid}/ai-analysis")
+async def get_job_ai_analysis(request: Request, jid: str):
+    db = await get_db()
+    try:
+        row = await load_accessible_job(db, request, jid, "id, status")
+    finally:
+        await db.close()
+    if not row:
+        raise HTTPException(404)
+
+    payload = collect_ai_analysis(jid)
+    payload["content"] = _read_ai_analysis_report(jid) if payload["report_exists"] else ""
+    return payload
+
+
+@app.post("/api/jobs/{jid}/ai-analysis")
+async def start_job_ai_analysis(request: Request, jid: str, body: Optional[dict] = None):
+    if not CLAUDE_ANALYSIS_ENABLED:
+        raise HTTPException(403, "Claude analysis is disabled")
+
+    force = bool((body or {}).get("force"))
+    db = await get_db()
+    try:
+        row = await load_accessible_job(db, request, jid)
+        if not row:
+            raise HTTPException(404)
+        if row.get("status") != "done":
+            raise HTTPException(409, "Job is not completed")
+
+        current = collect_ai_analysis(jid)
+        if current.get("status") == "running":
+            raise HTTPException(409, "AI analysis is already running")
+        if current.get("status") == "done" and not force:
+            current["content"] = _read_ai_analysis_report(jid)
+            return current
+
+        _write_ai_analysis_status(jid, {
+            "status": "running",
+            "mode": row.get("mode"),
+            "skill": CLAUDE_COMPARE_TRACE_SKILL if row.get("mode") == "compare" else CLAUDE_SINGLE_TRACE_SKILL,
+            "started_at": _utc_now_iso(),
+            "updated_at": _utc_now_iso(),
+        })
+        await write_audit(
+            db, request, "job.ai_analysis_start",
+            resource_type="job", resource_id=jid,
+            details={"mode": row.get("mode"), "force": force},
+        )
+        await db.commit()
+    except HTTPException:
+        await db.rollback()
+        raise
+    finally:
+        await db.close()
+
+    task = asyncio.create_task(_run_ai_analysis_task(jid))
+    _track_ai_analysis_task(jid, task)
+    payload = collect_ai_analysis(jid)
+    payload["content"] = _read_ai_analysis_report(jid) if payload["report_exists"] else ""
+    return JSONResponse(payload, status_code=202)
 
 
 @app.get("/api/jobs/{jid}/report.md")

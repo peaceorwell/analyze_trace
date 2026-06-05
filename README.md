@@ -104,6 +104,46 @@ TRACE_NO_DOWNLOAD=1 docker-compose up -d
 TRACE_ENABLE_CODE_EXEC=1 docker-compose up -d
 ```
 
+### Claude Code AI 分析
+
+Web 端支持把已完成任务交给服务端 Claude Code 做二次分析，并在结果页展示“AI 分析”页签。该能力默认关闭；开启前请先把自定义 skills 安装到服务端 Claude Code 可发现的位置，例如：
+
+```bash
+mkdir -p ~/.claude
+tar -xzf e2e-profiling.tar.gz -C ~/.claude
+# 解压后应包含 ~/.claude/skills/e2e-profiling-analyzer 和 ~/.claude/skills/e2e-profiling-comparator
+```
+
+推荐环境变量：
+
+| 环境变量 | 默认值 | 说明 |
+|------|------|------|
+| `TRACE_ENABLE_CLAUDE_ANALYSIS=1` | off | 开启 Web AI 分析入口 |
+| `TRACE_CLAUDE_COMMAND` | `claude` | Claude Code 命令 |
+| `TRACE_CLAUDE_EXTRA_ARGS` | 空 | 追加给 Claude Code 的参数，例如权限或模型参数 |
+| `TRACE_CLAUDE_COMMAND_TEMPLATE` | 空 | 完整命令模板；可使用 `{prompt}`、`{trace_a}`、`{trace_b}`、`{skill}`、`{results_dir}`、`{analysis_dir}`、`{report_path}` |
+| `TRACE_CLAUDE_SINGLE_SKILL` | `e2e-profiling-analyzer` | 单 trace 分析 skill 名称 |
+| `TRACE_CLAUDE_COMPARE_SKILL` | `e2e-profiling-comparator` | 双 trace 对比 skill 名称 |
+| `TRACE_CLAUDE_TIMEOUT_SECONDS` | `1800` | 单次 AI 分析超时 |
+
+默认命令等价于：
+
+```bash
+TRACE_ENABLE_CLAUDE_ANALYSIS=1 \
+TRACE_CLAUDE_COMMAND=claude \
+uv run --extra web python web/server.py
+```
+
+如果内部部署需要自定义 Claude 启动方式，可以改用模板：
+
+```bash
+TRACE_ENABLE_CLAUDE_ANALYSIS=1 \
+TRACE_CLAUDE_COMMAND_TEMPLATE='claude -p {prompt}' \
+uv run --extra web python web/server.py
+```
+
+AI 分析产物保存在任务目录下的 `results/ai_analysis/`，删除任务时会随任务文件一起删除。后台会把 `TRACE_AI_TRACE_A`、`TRACE_AI_TRACE_B`、`TRACE_AI_RESULT_DIR`、`TRACE_AI_REPORT_PATH` 等环境变量传给 Claude 进程，便于自定义 wrapper 或 skill 使用。
+
 ### LDAP 认证与用户隔离
 
 默认 `AUTH_MODE=none`，保持单用户本地模式。对内开放时设置 `AUTH_MODE=ldap` 后会启用登录页和后端会话校验；个人项目、个人任务、对比候选、结果 CSV、trace 下载和文件删除都会按 LDAP 用户隔离。用户也可以创建共享项目，或把自己的个人项目转为共享项目；共享项目内的任务对所有登录用户可读并可用于对比，但任务重命名、移动、删除和文件删除仍只允许任务创建者执行。
