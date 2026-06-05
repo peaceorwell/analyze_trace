@@ -121,7 +121,7 @@ const chartPieRows      = ref([]);
 
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
-const appVersion = ref("0.1.17");
+const appVersion = ref("0.1.18");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -736,7 +736,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.1.17";
+  appVersion.value = cfg.version || "0.1.18";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -3363,29 +3363,41 @@ const JobDetail = {
         <!-- CSV table tabs -->
         <div v-if="resultTab!=='console' && resultTab!=='chart'" class="table-wrap">
           <div class="table-toolbar">
-            <input v-model="tableSearch" class="input input-sm" placeholder="全局搜索..." />
-            <span v-if="hasColFilters" class="filter-active-tip">
-              列筛选已启用
-              <button class="btn-clear-filter" @click="clearColFilters()">✕ 清除</button>
-            </span>
-            <span v-if="isKernelTypeTab" class="filter-active-tip">点击类型行下钻到相关 Kernel</span>
-            <div class="column-menu-wrap">
-              <button class="btn btn-sm btn-outline" @click="showColumnMenu=!showColumnMenu">
-                列{{ hiddenColumnCount ? ' (' + hiddenColumnCount + ' 已隐藏)' : '' }}
-              </button>
-              <div v-if="showColumnMenu" class="column-menu">
-                <div class="column-menu-actions">
-                  <button class="btn btn-xs btn-outline" @click="resetVisibleColumns">全部列</button>
-                  <button class="btn btn-xs btn-outline" @click="applyCoreColumnPreset">核心列</button>
+            <div class="table-toolbar-main">
+              <input v-model="tableSearch" class="input input-sm table-search-input" placeholder="全局搜索..." />
+              <span v-if="hasColFilters" class="filter-active-tip">
+                列筛选已启用
+                <button class="btn-clear-filter" @click="clearColFilters()">✕ 清除</button>
+              </span>
+              <span v-if="isKernelTypeTab" class="filter-active-tip">点击类型行下钻到相关 Kernel</span>
+            </div>
+            <div class="table-toolbar-actions">
+              <div class="column-menu-wrap" @click.stop>
+                <button class="btn btn-sm btn-outline" @click="showColumnMenu=!showColumnMenu">
+                  列{{ hiddenColumnCount ? ' (' + hiddenColumnCount + ' 已隐藏)' : '' }}
+                </button>
+                <div v-if="showColumnMenu" class="column-menu">
+                  <div class="column-menu-actions">
+                    <button class="btn btn-xs btn-outline" @click="resetVisibleColumns">全部列</button>
+                    <button class="btn btn-xs btn-outline" @click="applyCoreColumnPreset">核心列</button>
+                  </div>
+                  <label v-for="f in currentTable.fields" :key="f" class="column-menu-item">
+                    <input type="checkbox" :checked="isColumnVisible(f)" @change="toggleColumnVisibility(f)" />
+                    <span>{{ f }}</span>
+                  </label>
                 </div>
-                <label v-for="f in currentTable.fields" :key="f" class="column-menu-item">
-                  <input type="checkbox" :checked="isColumnVisible(f)" @change="toggleColumnVisibility(f)" />
-                  <span>{{ f }}</span>
-                </label>
+              </div>
+              <div class="action-menu-wrap table-more-menu" @click.stop>
+                <button class="action-icon-btn" type="button" title="更多表格操作"
+                        aria-label="更多表格操作"
+                        @click="toggleActionMenu('table')">...</button>
+                <div v-if="openActionMenu==='table'" class="action-menu">
+                  <button type="button" @click="downloadCsv(resultTab); closeActionMenu()">下载当前页 CSV</button>
+                  <button v-if="isTritonStepTab && allowCodeExecution" type="button"
+                          @click="clearInductorCache(); closeActionMenu()">清除 Cache</button>
+                </div>
               </div>
             </div>
-            <button class="btn btn-sm btn-outline" @click="downloadCsv(resultTab)">下载当前页 CSV</button>
-            <button v-if="isTritonStepTab && allowCodeExecution" class="btn btn-sm btn-outline" @click="clearInductorCache()">清除 Cache</button>
           </div>
           <div v-if="resultTableError" class="error-box mb-2">{{ resultTableError }}</div>
           <div class="table-scroll">
