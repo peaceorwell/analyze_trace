@@ -120,11 +120,17 @@ const chartPieRows      = ref([]);
 
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
-const appVersion = ref("0.1.11");
+const appVersion = ref("0.1.12");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
-const loginForm = ref({ username: "", password: "" });
+const LOGIN_USERNAME_KEY = "tpa-login-username";
+const LOGIN_REMEMBER_USERNAME_KEY = "tpa-login-remember-username";
+const loginRememberUsername = ref(readStoredBool(LOGIN_REMEMBER_USERNAME_KEY, true));
+const loginForm = ref({
+  username: localStorage.getItem(LOGIN_USERNAME_KEY) || "",
+  password: "",
+});
 const loginLoading = ref(false);
 const loginError = ref("");
 const perfettoOpening = ref({});
@@ -718,7 +724,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.1.11";
+  appVersion.value = cfg.version || "0.1.12";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -752,8 +758,17 @@ const submitLogin = async () => {
       throw new Error(payload.detail || "登录失败");
     }
     const data = await r.json();
+    const username = loginForm.value.username.trim();
+    localStorage.setItem(LOGIN_REMEMBER_USERNAME_KEY, String(loginRememberUsername.value));
+    if (loginRememberUsername.value && username) {
+      localStorage.setItem(LOGIN_USERNAME_KEY, username);
+    } else {
+      localStorage.removeItem(LOGIN_USERNAME_KEY);
+    }
     currentUser.value = data.user || null;
-    loginForm.value.password = "";
+    window.setTimeout(() => {
+      loginForm.value.password = "";
+    }, 300);
     appInitialized = true;
     await loadProjects();
     await refreshSidebarData();
@@ -3722,7 +3737,7 @@ const App = {
       // Layout/theme
       isDark, toggleTheme, sidebarWidth, sidebarCollapsed, appVersion,
       toggleSidebar, startSidebarResize,
-      authRequired, authChecked, currentUser, loginForm, loginLoading, loginError,
+      authRequired, authChecked, currentUser, loginForm, loginRememberUsername, loginLoading, loginError,
       submitLogin, logout,
 
       // Sidebar data

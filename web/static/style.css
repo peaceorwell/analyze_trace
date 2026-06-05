@@ -1206,6 +1206,20 @@ body.result-reading-active { overflow: hidden; }
   border-color: #315cf7;
   box-shadow: 0 0 0 3px rgba(49,92,247,.14);
 }
+.auth-remember-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: -6px;
+  color: #4b5563;
+  font-size: 13px;
+  cursor: pointer;
+}
+.auth-remember-row input {
+  width: 15px;
+  height: 15px;
+  accent-color: #3155f3;
+}
 .auth-submit {
   height: 54px;
   margin-top: 16px;

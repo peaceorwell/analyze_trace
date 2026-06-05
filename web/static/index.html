@@ -49,22 +49,26 @@
         </div>
       </section>
       <section class="auth-form-panel">
-        <form class="auth-form-card" @submit.prevent="submitLogin">
+        <form class="auth-form-card" method="post" action="/api/login" autocomplete="on" @submit.prevent="submitLogin">
           <div class="auth-form-kicker">Torch Profiler Analyzer</div>
           <h1 class="auth-heading">登录</h1>
-          <label class="auth-field">
+          <label class="auth-field" for="ldap-username">
             <span class="auth-field-label">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="7" r="4"/></svg>
               用户名
             </span>
-            <input v-model="loginForm.username" class="auth-input" placeholder="请输入用户名" autocomplete="username" autofocus />
+            <input id="ldap-username" name="username" v-model="loginForm.username" class="auth-input" placeholder="请输入用户名" autocomplete="username" autofocus />
           </label>
-          <label class="auth-field">
+          <label class="auth-field" for="ldap-password">
             <span class="auth-field-label">
               <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
               密码
             </span>
-            <input v-model="loginForm.password" class="auth-input" type="password" placeholder="请输入密码" autocomplete="current-password" />
+            <input id="ldap-password" name="password" v-model="loginForm.password" class="auth-input" type="password" placeholder="请输入密码" autocomplete="current-password" />
+          </label>
+          <label class="auth-remember-row">
+            <input type="checkbox" v-model="loginRememberUsername" />
+            <span>记住用户名</span>
           </label>
           <div v-if="loginError" class="auth-error">{{ loginError }}</div>
           <button class="auth-submit" type="submit" :disabled="loginLoading">
