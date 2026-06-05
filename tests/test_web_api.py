@@ -49,7 +49,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.1.14",
+        "version": "0.1.15",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -233,6 +233,26 @@ def test_ldap_login_requires_captcha_after_repeated_failures(isolated_server, mo
         assert len(auth_calls) == 6
         assert web_server.LOGIN_FAILURES == {}
         assert web_server.LOGIN_CAPTCHA_CHALLENGES == {}
+
+
+def test_ldap_bind_error_is_wrapped_as_auth_error(monkeypatch):
+    class FakeLDAPException(Exception):
+        pass
+
+    class FakeConnection:
+        def __init__(self, *args, **kwargs):
+            raise FakeLDAPException("invalidCredentials")
+
+    monkeypatch.setenv("LDAP_USER_DN_TEMPLATE", "CN={username},DC=example,DC=com")
+    monkeypatch.setattr(web_server.ldap_auth, "_ldap_server", lambda: object())
+    monkeypatch.setattr(
+        web_server.ldap_auth,
+        "_ldap_imports",
+        lambda: (None, FakeConnection, None, None, lambda value: value, FakeLDAPException),
+    )
+
+    with pytest.raises(web_server.ldap_auth.AuthError, match="Invalid username or password"):
+        web_server.ldap_auth.authenticate("alice", "bad")
 
 
 def test_backup_script_creates_archive_and_manifest(client, isolated_server, tmp_path):

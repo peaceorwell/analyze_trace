@@ -13,14 +13,15 @@ def _env(name: str, default: str = "") -> str:
 def _ldap_imports():
     try:
         from ldap3 import ALL, Connection, Server, Tls
+        from ldap3.core.exceptions import LDAPException
         from ldap3.utils.conv import escape_filter_chars
     except ImportError as e:
         raise AuthError("LDAP auth requires the ldap3 package. Run `uv sync --extra web`.") from e
-    return ALL, Connection, Server, Tls, escape_filter_chars
+    return ALL, Connection, Server, Tls, escape_filter_chars, LDAPException
 
 
 def _ldap_server():
-    ALL, _, Server, Tls, _ = _ldap_imports()
+    ALL, _, Server, Tls, _, _ = _ldap_imports()
     url = _env("LDAP_URL")
     if not url:
         raise AuthError("LDAP_URL is required")
@@ -75,13 +76,16 @@ def authenticate(username: str, password: str) -> dict:
     if not username or not password:
         raise AuthError("Username and password are required")
 
-    _, Connection, _, _, escape_filter_chars = _ldap_imports()
+    _, Connection, _, _, escape_filter_chars, LDAPException = _ldap_imports()
     server = _ldap_server()
     dn_template = _env("LDAP_USER_DN_TEMPLATE")
 
     if dn_template:
         user_dn = dn_template.format(username=username)
-        conn = Connection(server, user=user_dn, password=password, auto_bind=True)
+        try:
+            conn = Connection(server, user=user_dn, password=password, auto_bind=True)
+        except LDAPException as e:
+            raise AuthError("Invalid username or password") from e
         conn.unbind()
         return {"username": username, "display_name": username, "email": "", "dn": user_dn}
 
@@ -95,9 +99,16 @@ def authenticate(username: str, password: str) -> dict:
     safe_username = escape_filter_chars(username)
     search_filter = user_filter.format(username=safe_username)
 
-    service = Connection(server, user=bind_dn, password=bind_password, auto_bind=True)
     try:
-        if not service.search(base_dn, search_filter, attributes=_attrs(), size_limit=2):
+        service = Connection(server, user=bind_dn, password=bind_password, auto_bind=True)
+    except LDAPException as e:
+        raise AuthError("LDAP service bind failed") from e
+    try:
+        try:
+            found = service.search(base_dn, search_filter, attributes=_attrs(), size_limit=2)
+        except LDAPException as e:
+            raise AuthError("LDAP user search failed") from e
+        if not found:
             raise AuthError("Invalid username or password")
         if len(service.entries) != 1:
             raise AuthError("LDAP user search did not return exactly one user")
@@ -111,7 +122,10 @@ def authenticate(username: str, password: str) -> dict:
     finally:
         service.unbind()
 
-    user_conn = Connection(server, user=user_dn, password=password, auto_bind=True)
+    try:
+        user_conn = Connection(server, user=user_dn, password=password, auto_bind=True)
+    except LDAPException as e:
+        raise AuthError("Invalid username or password") from e
     user_conn.unbind()
     return {
         "username": username,
