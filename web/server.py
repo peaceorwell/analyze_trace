@@ -33,7 +33,7 @@ from db import get_db, init_db, row_to_dict  # noqa: E402
 import auth as ldap_auth  # noqa: E402
 
 STORAGE_DIR = os.path.join(os.path.dirname(__file__), "storage")
-APP_VERSION = "0.1.9"
+APP_VERSION = "0.1.10"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(os.path.dirname(__file__), "backups"))
 
 # Configured at startup via CLI; read-only after that
@@ -155,6 +155,45 @@ def _owner_clause(request: Request, alias: str = "") -> tuple[str, list[str]]:
     return f"{prefix}user_token = ?", [token]
 
 
+def _project_access_clause(request: Request, alias: str = "") -> tuple[str, list[str]]:
+    token = current_user_token(request)
+    if not token:
+        return "", []
+    prefix = f"{alias}." if alias else ""
+    return f"({prefix}user_token = ? OR {prefix}is_public = 1)", [token]
+
+
+def _job_access_clause(request: Request, alias: str = "") -> tuple[str, list[str]]:
+    token = current_user_token(request)
+    if not token:
+        return "", []
+    prefix = f"{alias}." if alias else ""
+    project_id = f"{prefix}project_id"
+    return (
+        f"({prefix}user_token = ? OR EXISTS ("
+        f"SELECT 1 FROM projects p_access "
+        f"WHERE p_access.id = {project_id} AND p_access.is_public = 1"
+        f"))",
+        [token],
+    )
+
+
+def _project_response(row: dict, request: Request) -> dict:
+    data = dict(row)
+    data["is_public"] = 1 if data.get("is_public") else 0
+    token = current_user_token(request)
+    data["is_owner"] = True if not token else data.get("user_token") == token
+    data["visibility"] = "shared" if data["is_public"] else "personal"
+    return data
+
+
+def _job_response(row: dict, request: Request) -> dict:
+    data = dict(row)
+    token = current_user_token(request)
+    data["is_owner"] = True if not token else data.get("user_token") == token
+    return data
+
+
 async def ensure_user_row(db, request: Request) -> Optional[str]:
     token = current_user_token(request)
     if token:
@@ -175,6 +214,19 @@ async def load_owned_job(db, request: Request, job_id: str, columns: str = "*") 
     return row
 
 
+async def load_accessible_job(db, request: Request, job_id: str, columns: str = "*") -> Optional[dict]:
+    access_sql, access_params = _job_access_clause(request)
+    clauses = ["id=?"]
+    params = [job_id]
+    if access_sql:
+        clauses.append(access_sql)
+        params.extend(access_params)
+    row = await row_to_dict(
+        await (await db.execute(f"SELECT {columns} FROM jobs WHERE {' AND '.join(clauses)}", params)).fetchone()
+    )
+    return row
+
+
 async def load_owned_project(db, request: Request, project_id: Optional[str]) -> Optional[dict]:
     if not project_id:
         return None
@@ -189,10 +241,24 @@ async def load_owned_project(db, request: Request, project_id: Optional[str]) ->
     )
 
 
+async def load_accessible_project(db, request: Request, project_id: Optional[str]) -> Optional[dict]:
+    if not project_id:
+        return None
+    access_sql, access_params = _project_access_clause(request)
+    clauses = ["id=?"]
+    params = [project_id]
+    if access_sql:
+        clauses.append(access_sql)
+        params.extend(access_params)
+    return await row_to_dict(
+        await (await db.execute(f"SELECT * FROM projects WHERE {' AND '.join(clauses)}", params)).fetchone()
+    )
+
+
 async def validate_project_access(db, request: Request, project_id: Optional[str]):
     if not project_id:
         return
-    if not await load_owned_project(db, request, project_id):
+    if not await load_accessible_project(db, request, project_id):
         raise HTTPException(404, "Project not found")
 
 
@@ -858,17 +924,17 @@ def _cached_storage_value(job: dict, key: str, stats: Optional[dict] = None) -> 
 
 
 async def _compare_dependents(db, request: Request, source_job_id: str):
-    owner_sql, owner_params = _owner_clause(request)
-    owner_filter = f" AND {owner_sql}" if owner_sql else ""
+    access_sql, access_params = _job_access_clause(request)
+    access_filter = f" AND {access_sql}" if access_sql else ""
     rows = await (
         await db.execute(
             f"""
             SELECT id, label, created_at, project_id
             FROM jobs
-            WHERE mode='compare' AND (source_job_a=? OR source_job_b=?){owner_filter}
+            WHERE mode='compare' AND (source_job_a=? OR source_job_b=?){access_filter}
             ORDER BY created_at DESC
             """,
-            (source_job_id, source_job_id, *owner_params),
+            (source_job_id, source_job_id, *access_params),
         )
     ).fetchall()
     return [dict(row) for row in rows]
@@ -883,8 +949,8 @@ async def _compare_source_summaries(request: Request, job: dict):
     db = await get_db()
     try:
         placeholders = ",".join("?" * len(source_ids))
-        owner_sql, owner_params = _owner_clause(request, "j")
-        owner_filter = f" AND {owner_sql}" if owner_sql else ""
+        access_sql, access_params = _job_access_clause(request, "j")
+        access_filter = f" AND {access_sql}" if access_sql else ""
         rows = await (
             await db.execute(
                 f"""
@@ -893,9 +959,9 @@ async def _compare_source_summaries(request: Request, job: dict):
                        j.file_a_path, j.file_a_gzip_path
                 FROM jobs j
                 LEFT JOIN projects p ON p.id = j.project_id
-                WHERE j.id IN ({placeholders}){owner_filter}
+                WHERE j.id IN ({placeholders}){access_filter}
                 """,
-                (*source_ids, *owner_params),
+                (*source_ids, *access_params),
             )
         ).fetchall()
     finally:
@@ -1415,15 +1481,15 @@ async def list_audit_logs(
 @app.get("/api/projects")
 async def list_projects(request: Request):
     db = await get_db()
-    owner_sql, owner_params = _owner_clause(request)
-    where_sql = f"WHERE {owner_sql}" if owner_sql else ""
+    access_sql, access_params = _project_access_clause(request)
+    where_sql = f"WHERE {access_sql}" if access_sql else ""
     rows = await (await db.execute(f"""
         SELECT * FROM projects
         {where_sql}
-        ORDER BY created_at DESC
-    """, owner_params)).fetchall()
+        ORDER BY is_public DESC, created_at DESC
+    """, access_params)).fetchall()
     await db.close()
-    return [dict(r) for r in rows]
+    return [_project_response(dict(r), request) for r in rows]
 
 
 @app.post("/api/projects", status_code=201)
@@ -1431,20 +1497,21 @@ async def create_project(request: Request, body: dict):
     pid = str(uuid.uuid4())
     db = await get_db()
     user_token = await ensure_user_row(db, request)
+    is_public = 1 if body.get("is_public") else 0
     await db.execute(
         "INSERT INTO projects(id, user_token, name, description, is_public) VALUES(?,?,?,?,?)",
-        (pid, user_token, body.get("name", "新项目"), body.get("description", ""), 1),
+        (pid, user_token, body.get("name", "新项目"), body.get("description", ""), is_public),
     )
     await write_audit(
         db, request, "project.create",
         resource_type="project", resource_id=pid,
-        details={"name": body.get("name", "新项目")},
+        details={"name": body.get("name", "新项目"), "is_public": is_public},
     )
     await db.commit()
     cursor = await db.execute("SELECT * FROM projects WHERE id=?", (pid,))
     row = await cursor.fetchone()
     await db.close()
-    return dict(row)
+    return _project_response(dict(row), request)
 
 
 @app.put("/api/projects/{pid}")
@@ -1456,23 +1523,28 @@ async def update_project(request: Request, pid: str, body: dict):
         await db.close()
         raise HTTPException(404)
 
+    next_name = body.get("name", row.get("name"))
+    next_description = body.get("description", row.get("description", ""))
+    next_is_public = 1 if body.get("is_public", row.get("is_public", 0)) else 0
     await db.execute(
-        "UPDATE projects SET name=?, description=? WHERE id=?",
-        (body.get("name"), body.get("description", ""), pid),
+        "UPDATE projects SET name=?, description=?, is_public=? WHERE id=?",
+        (next_name, next_description, next_is_public, pid),
     )
     await write_audit(
         db, request, "project.update",
         resource_type="project", resource_id=pid,
         details={
             "old_name": row.get("name"),
-            "new_name": body.get("name"),
+            "new_name": next_name,
+            "old_is_public": row.get("is_public", 0),
+            "new_is_public": next_is_public,
         },
     )
     await db.commit()
     cursor = await db.execute("SELECT * FROM projects WHERE id=?", (pid,))
     row = await cursor.fetchone()
     await db.close()
-    return dict(row)
+    return _project_response(dict(row), request)
 
 
 @app.delete("/api/projects/{pid}", status_code=204)
@@ -1492,7 +1564,7 @@ async def delete_project(request: Request, pid: str):
           row.get("description", ""), row.get("password_hash"), row.get("is_public", 0), row.get("created_at")))
 
     # Move all jobs to deleted_jobs table (keep files for recovery)
-    cursor = await db.execute("SELECT * FROM jobs WHERE project_id=? AND user_token IS ?", (pid, row.get("user_token")))
+    cursor = await db.execute("SELECT * FROM jobs WHERE project_id=?", (pid,))
     jobs_data = await cursor.fetchall()
     for job in jobs_data:
         job_dict = dict(job)
@@ -1685,14 +1757,14 @@ async def _with_file_exists(rows, request: Optional[Request] = None):
         db2 = await get_db()
         placeholders = ",".join("?" * len(src_ids))
         params = list(src_ids)
-        owner_filter = ""
+        access_filter = ""
         if request is not None:
-            owner_sql, owner_params = _owner_clause(request)
-            if owner_sql:
-                owner_filter = f" AND {owner_sql}"
-                params.extend(owner_params)
+            access_sql, access_params = _job_access_clause(request)
+            if access_sql:
+                access_filter = f" AND {access_sql}"
+                params.extend(access_params)
         cur = await db2.execute(
-            f"SELECT id, file_a_path, file_a_gzip_path FROM jobs WHERE id IN ({placeholders}){owner_filter}",
+            f"SELECT id, file_a_path, file_a_gzip_path FROM jobs WHERE id IN ({placeholders}){access_filter}",
             tuple(params))
         async for src_row in cur:
             s = dict(src_row)
@@ -1701,7 +1773,7 @@ async def _with_file_exists(rows, request: Optional[Request] = None):
 
     data = []
     for r in rows:
-        d = dict(r)
+        d = _job_response(dict(r), request) if request is not None else dict(r)
         for slot in ("a", "b"):
             path = d.get(f"file_{slot}_gzip_path") or d.get(f"file_{slot}_path")
             if path:
@@ -1727,10 +1799,10 @@ async def list_jobs(
 
     clauses = []
     params = []
-    owner_sql, owner_params = _owner_clause(request)
-    if owner_sql:
-        clauses.append(owner_sql)
-        params.extend(owner_params)
+    access_sql, access_params = _job_access_clause(request)
+    if access_sql:
+        clauses.append(access_sql)
+        params.extend(access_params)
     if project_id == "__none__":
         clauses.append("project_id IS NULL")
     elif project_id:
@@ -1834,10 +1906,10 @@ async def list_compare_candidates(
 
     clauses = ["j.mode='single'", "j.status='done'"]
     params = []
-    owner_sql, owner_params = _owner_clause(request, "j")
-    if owner_sql:
-        clauses.append(owner_sql)
-        params.extend(owner_params)
+    access_sql, access_params = _job_access_clause(request, "j")
+    if access_sql:
+        clauses.append(access_sql)
+        params.extend(access_params)
     if project_id == "__none__":
         clauses.append("j.project_id IS NULL")
     elif project_id:
@@ -1950,8 +2022,8 @@ async def bulk_delete_job_files(request: Request, body: dict):
 async def storage_summary(request: Request):
     db = await get_db()
     try:
-        owner_sql, owner_params = _owner_clause(request, "j")
-        where_sql = f"WHERE {owner_sql}" if owner_sql else ""
+        access_sql, access_params = _job_access_clause(request, "j")
+        where_sql = f"WHERE {access_sql}" if access_sql else ""
         rows = await (
             await db.execute(
                 f"""
@@ -1961,25 +2033,25 @@ async def storage_summary(request: Request):
                 {where_sql}
                 ORDER BY j.created_at DESC
                 """,
-                owner_params,
+                access_params,
             )
         ).fetchall()
-        owner_source_filter = "WHERE user_token = ?" if current_user_token(request) else ""
-        owner_source_params = [current_user_token(request)] if current_user_token(request) else []
+        access_source_sql, access_source_params = _job_access_clause(request)
+        access_source_filter = f"WHERE {access_source_sql}" if access_source_sql else ""
         compare_counts_rows = await (
             await db.execute(
                 f"""
                 SELECT source_id, COUNT(*) AS count
                 FROM (
-                    SELECT source_job_a AS source_id FROM jobs {owner_source_filter}
-                    {'AND' if owner_source_filter else 'WHERE'} source_job_a IS NOT NULL
+                    SELECT source_job_a AS source_id FROM jobs {access_source_filter}
+                    {'AND' if access_source_filter else 'WHERE'} source_job_a IS NOT NULL
                     UNION ALL
-                    SELECT source_job_b AS source_id FROM jobs {owner_source_filter}
-                    {'AND' if owner_source_filter else 'WHERE'} source_job_b IS NOT NULL
+                    SELECT source_job_b AS source_id FROM jobs {access_source_filter}
+                    {'AND' if access_source_filter else 'WHERE'} source_job_b IS NOT NULL
                 )
                 GROUP BY source_id
                 """,
-                (*owner_source_params, *owner_source_params),
+                (*access_source_params, *access_source_params),
             )
         ).fetchall()
     finally:
@@ -2055,10 +2127,10 @@ async def list_job_groups(
 
     clauses = []
     where_params = []
-    owner_sql, owner_params = _owner_clause(request, "j")
-    if owner_sql:
-        clauses.append(owner_sql)
-        where_params.extend(owner_params)
+    access_sql, access_params = _job_access_clause(request, "j")
+    if access_sql:
+        clauses.append(access_sql)
+        where_params.extend(access_params)
     if project_id == "__none__":
         clauses.append("j.project_id IS NULL")
     elif project_id:
@@ -2139,10 +2211,10 @@ async def list_group_jobs(
 
     clauses = []
     params = []
-    owner_sql, owner_params = _owner_clause(request, "j")
-    if owner_sql:
-        clauses.append(owner_sql)
-        params.extend(owner_params)
+    access_sql, access_params = _job_access_clause(request, "j")
+    if access_sql:
+        clauses.append(access_sql)
+        params.extend(access_params)
     if group_id == "__none__":
         clauses.append("j.project_id IS NULL")
     else:
@@ -2266,8 +2338,8 @@ async def compare_jobs(request: Request, body: dict):
     db = await get_db()
     user_token = await ensure_user_row(db, request)
 
-    src_a = await load_owned_job(db, request, job_id_a)
-    src_b = await load_owned_job(db, request, job_id_b)
+    src_a = await load_accessible_job(db, request, job_id_a)
+    src_b = await load_accessible_job(db, request, job_id_b)
 
     if not src_a or not src_b:
         await db.close()
@@ -2337,7 +2409,7 @@ async def rerun_compare_swapped(request: Request, jid: str):
     db = await get_db()
     try:
         user_token = await ensure_user_row(db, request)
-        job = await load_owned_job(db, request, jid)
+        job = await load_accessible_job(db, request, jid)
         if not job:
             raise HTTPException(404, "Job not found")
         if job.get("mode") != "compare":
@@ -2346,8 +2418,8 @@ async def rerun_compare_swapped(request: Request, jid: str):
         new_jid = str(uuid.uuid4())
 
         if job.get("source_job_a") and job.get("source_job_b"):
-            source_a = await load_owned_job(db, request, job["source_job_a"])
-            source_b = await load_owned_job(db, request, job["source_job_b"])
+            source_a = await load_accessible_job(db, request, job["source_job_a"])
+            source_b = await load_accessible_job(db, request, job["source_job_b"])
             if not source_a or not source_b:
                 raise HTTPException(404, "Source job not found")
 
@@ -2427,13 +2499,13 @@ async def rerun_compare_swapped(request: Request, jid: str):
 @app.get("/api/jobs/{jid}")
 async def get_job(request: Request, jid: str):
     db = await get_db()
-    row = await load_owned_job(db, request, jid)
+    row = await load_accessible_job(db, request, jid)
     await db.close()
 
     if row is None:
         raise HTTPException(404)
 
-    job = dict(row)
+    job = _job_response(dict(row), request)
     # Verify actual file existence on disk (DB flag may be stale)
     # For compare jobs, resolve via source jobs
     for slot in ("a", "b"):
@@ -2444,7 +2516,7 @@ async def get_job(request: Request, jid: str):
             src_jid = job.get(f"source_job_{slot}")
             if src_jid:
                 db2 = await get_db()
-                src = await load_owned_job(db2, request, src_jid, "file_a_path, file_a_gzip_path")
+                src = await load_accessible_job(db2, request, src_jid, "file_a_path, file_a_gzip_path")
                 await db2.close()
                 if src:
                     src_path = src.get("file_a_gzip_path") or src.get("file_a_path")
@@ -2476,7 +2548,7 @@ async def get_job_result_table(
 ):
     db = await get_db()
     try:
-        row = await load_owned_job(db, request, jid, "id, status")
+        row = await load_accessible_job(db, request, jid, "id, status")
     finally:
         await db.close()
     if not row:
@@ -2923,7 +2995,7 @@ async def get_job_file(request: Request, jid: str, slot: str, format: Optional[s
         raise HTTPException(403, "File download is disabled")
 
     db = await get_db()
-    row = await load_owned_job(db, request, jid)
+    row = await load_accessible_job(db, request, jid)
     await db.close()
 
     if not row:
@@ -2944,7 +3016,7 @@ async def get_job_file(request: Request, jid: str, slot: str, format: Optional[s
         src_jid = row.get(f"source_job_{slot}")
         if src_jid:
             db2 = await get_db()
-            src = await load_owned_job(db2, request, src_jid, "file_a_name, file_a_path, file_a_gzip_path")
+            src = await load_accessible_job(db2, request, src_jid, "file_a_name, file_a_path, file_a_gzip_path")
             await db2.close()
             if src:
                 gzip_path = src.get("file_a_gzip_path")
@@ -3036,7 +3108,7 @@ async def get_triton_code(request: Request, jid: str, path: str):
         raise HTTPException(403, "File download is disabled")
 
     db = await get_db()
-    row = await load_owned_job(db, request, jid)
+    row = await load_accessible_job(db, request, jid)
     await db.close()
 
     if not row:

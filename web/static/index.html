@@ -141,12 +141,20 @@
             <select v-model="filterProject" class="input input-sm w-full">
               <option value="">全部项目</option>
               <option value="__none__">未分组</option>
-              <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
+              <option v-for="p in projects" :key="p.id" :value="p.id">{{ projectOptionLabel(p) }}</option>
             </select>
             <input v-model="historySearch" class="input input-sm mt-1" placeholder="搜索任务、文件或项目..." />
-            <div v-if="filterProject && filterProject !== '__none__'" class="project-actions">
-              <button class="btn btn-xs btn-outline mt-1 w-full" @click="openRenameModal(projects.find(p => p.id === filterProject))">重命名</button>
-              <button class="btn btn-xs btn-danger mt-1 w-full" @click="deleteProject(filterProject)">删除项目</button>
+            <div v-if="selectedFilterProject" class="project-actions">
+              <div class="project-action-meta">
+                <span :class="['project-scope-badge', selectedFilterProject.is_public ? 'shared' : 'personal']">
+                  {{ selectedFilterProject.is_public ? '共享项目' : '个人项目' }}
+                </span>
+              </div>
+              <template v-if="selectedFilterProject.is_owner">
+                <button class="btn btn-xs btn-outline mt-1 w-full" @click="openRenameModal(selectedFilterProject)">重命名</button>
+                <button v-if="!selectedFilterProject.is_public" class="btn btn-xs btn-outline mt-1 w-full" @click="shareProject(selectedFilterProject)">转为共享</button>
+                <button class="btn btn-xs btn-danger mt-1 w-full" @click="deleteProject(filterProject)">删除项目</button>
+              </template>
             </div>
           </div>
           <div class="bulk-toolbar">
@@ -213,7 +221,7 @@
             <select v-model="filterProject" class="input input-sm w-full">
               <option value="">全部项目</option>
               <option value="__none__">未分组</option>
-              <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
+              <option v-for="p in projects" :key="p.id" :value="p.id">{{ projectOptionLabel(p) }}</option>
             </select>
             <input v-model="compareSearch" class="input input-sm mt-1" placeholder="搜索任务、文件或项目..." />
           </div>
@@ -258,7 +266,7 @@
               <label>项目</label>
               <select v-model="compareProjectId" class="input">
                 <option value="">未分组</option>
-                <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
+                <option v-for="p in projects" :key="p.id" :value="p.id">{{ projectOptionLabel(p) }}</option>
               </select>
             </div>
             <button class="btn btn-primary w-full mt-2" @click="submitCompare">发起对比</button>
@@ -282,7 +290,7 @@
         <div class="modal-title">移动到项目</div>
         <select v-model="moveProjectTarget" class="input w-full">
           <option value="">未分组</option>
-          <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
+          <option v-for="p in projects" :key="p.id" :value="p.id">{{ projectOptionLabel(p) }}</option>
         </select>
         <div class="modal-actions">
           <button class="btn btn-outline" @click="showMoveProject=false">取消</button>
@@ -297,7 +305,7 @@
         <div class="modal-title">批量移动到项目</div>
         <select v-model="bulkMoveProjectTarget" class="input w-full">
           <option value="">未分组</option>
-          <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
+          <option v-for="p in projects" :key="p.id" :value="p.id">{{ projectOptionLabel(p) }}</option>
         </select>
         <div class="modal-actions">
           <button class="btn btn-outline" @click="showBulkMoveProject=false">取消</button>
@@ -324,6 +332,10 @@
         <div class="modal-title">新建项目</div>
         <input v-model="newProjectName" class="input w-full" placeholder="项目名称" />
         <input v-model="newProjectDesc" class="input w-full mt-2" placeholder="描述（可选）" />
+        <label class="check-row mt-2">
+          <input type="checkbox" v-model="newProjectShared" />
+          <span>共享项目</span>
+        </label>
         <div class="modal-actions">
           <button class="btn btn-outline" @click="showNewProject=false">取消</button>
           <button class="btn btn-primary" @click="createProject">创建</button>

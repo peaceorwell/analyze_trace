@@ -47,7 +47,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.1.9",
+        "version": "0.1.10",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -109,6 +109,14 @@ def test_ldap_auth_requires_login_and_isolates_user_data(isolated_server, monkey
         assert created.status_code == 201
         alice_project = created.json()
         assert alice_project["user_token"] == "alice"
+        assert alice_project["is_public"] == 0
+
+        shared_created = test_client.post("/api/projects", json={"name": "Shared Project", "is_public": True})
+        assert shared_created.status_code == 201
+        shared_project = shared_created.json()
+        assert shared_project["user_token"] == "alice"
+        assert shared_project["is_public"] == 1
+        assert shared_project["is_owner"] is True
 
         async def insert_rows():
             db = await web_db.get_db()
@@ -122,6 +130,7 @@ def test_ldap_auth_requires_login_and_isolates_user_data(isolated_server, monkey
                     "INSERT INTO jobs(id, project_id, user_token, label, mode, status) VALUES(?,?,?,?,?,?)",
                     [
                         ("alice-job", alice_project["id"], "alice", "alice job", "single", "done"),
+                        ("shared-job", shared_project["id"], "alice", "shared job", "single", "done"),
                         ("bob-job", "bob-project", "bob", "bob job", "single", "done"),
                     ],
                 )
@@ -133,14 +142,38 @@ def test_ldap_auth_requires_login_and_isolates_user_data(isolated_server, monkey
 
         projects = test_client.get("/api/projects")
         assert projects.status_code == 200
-        assert [item["id"] for item in projects.json()] == [alice_project["id"]]
+        assert {item["id"] for item in projects.json()} == {alice_project["id"], shared_project["id"]}
 
         jobs = test_client.get("/api/jobs")
         assert jobs.status_code == 200
-        assert [item["id"] for item in jobs.json()["data"]] == ["alice-job"]
+        assert {item["id"] for item in jobs.json()["data"]} == {"alice-job", "shared-job"}
 
         assert test_client.get("/api/jobs/bob-job").status_code == 404
         assert test_client.get("/api/jobs/alice-job").status_code == 200
+
+        assert test_client.post("/api/logout").status_code == 200
+        bob_login = test_client.post("/api/login", json={"username": "bob", "password": "ok"})
+        assert bob_login.status_code == 200
+
+        bob_projects = test_client.get("/api/projects")
+        assert bob_projects.status_code == 200
+        assert {item["id"] for item in bob_projects.json()} == {"bob-project", shared_project["id"]}
+
+        assert test_client.get("/api/jobs/alice-job").status_code == 404
+        shared_detail = test_client.get("/api/jobs/shared-job")
+        assert shared_detail.status_code == 200
+        assert shared_detail.json()["is_owner"] is False
+
+        cannot_patch = test_client.patch("/api/jobs/shared-job", json={"label": "bob edit"})
+        assert cannot_patch.status_code == 404
+
+        shared_jobs = test_client.get(f"/api/jobs?project_id={shared_project['id']}")
+        assert shared_jobs.status_code == 200
+        assert [item["id"] for item in shared_jobs.json()["data"]] == ["shared-job"]
+
+        candidates = test_client.get(f"/api/compare-candidates?project_id={shared_project['id']}")
+        assert candidates.status_code == 200
+        assert [item["id"] for item in candidates.json()["data"]] == ["shared-job"]
 
 
 def test_backup_script_creates_archive_and_manifest(client, isolated_server, tmp_path):

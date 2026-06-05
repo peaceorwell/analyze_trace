@@ -120,7 +120,7 @@ const chartPieRows      = ref([]);
 
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
-const appVersion = ref("0.1.9");
+const appVersion = ref("0.1.10");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -309,6 +309,7 @@ const startSidebarResize = (e) => {
 const showNewProject  = ref(false);
 const newProjectName  = ref("");
 const newProjectDesc  = ref("");
+const newProjectShared = ref(false);
 
 const showRenameProject = ref(false);
 const renameProjectId = ref("");
@@ -327,6 +328,13 @@ const renameJobName = ref("");
 
 const showDeletedProjects = ref(false);
 const deletedProjects = ref([]);
+
+const selectedFilterProject = computed(() =>
+  projects.value.find(project => project.id === filterProject.value) || null
+);
+
+const projectOptionLabel = project =>
+  `${project.name}${project.is_public ? " · 共享" : ""}`;
 const showStorageManager = ref(false);
 const storageSummary = ref({ totals: {}, projects: [], jobs: [] });
 const storageSelection = ref([]);
@@ -710,7 +718,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.1.9";
+  appVersion.value = cfg.version || "0.1.10";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -1969,6 +1977,10 @@ const toggleHistoryBulkMode = () => {
 };
 
 const toggleHistorySelection = job => {
+  if (job.is_owner === false) {
+    showToast("只能批量操作自己创建的任务", "error");
+    return;
+  }
   const idx = historySelection.value.indexOf(job.id);
   if (idx >= 0) historySelection.value.splice(idx, 1);
   else historySelection.value.push(job.id);
@@ -2139,6 +2151,32 @@ const deleteProject = async (projectId) => {
   await loadProjects();
   await refreshSidebarData();
   showToast("项目已删除，可在 10 天内找回", "success");
+};
+
+const shareProject = async (project) => {
+  if (!project?.id || project.is_public) return;
+  if (!await askConfirm("确定将该项目转为共享项目？", {
+    title: "转为共享项目",
+    confirmText: "转为共享",
+  })) return;
+  const r = await fetch(`/api/projects/${project.id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({
+      name: project.name,
+      description: project.description || "",
+      is_public: true,
+    }),
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    showToast("转为共享失败: " + (err.detail || err.message || `HTTP ${r.status}`), "error");
+    return;
+  }
+  await loadProjects();
+  await refreshSidebarData();
+  showToast("项目已转为共享", "success");
 };
 
 const setSort = col => {
@@ -2749,6 +2787,7 @@ const createProject = async () => {
     body: JSON.stringify({
       name: newProjectName.value,
       description: newProjectDesc.value,
+      is_public: newProjectShared.value,
     }),
   });
   if (!r.ok) {
@@ -2759,6 +2798,7 @@ const createProject = async () => {
   showNewProject.value = false;
   newProjectName.value = "";
   newProjectDesc.value = "";
+  newProjectShared.value = false;
   await loadProjects();
   await refreshSidebarData();
   showToast("项目已创建", "success");
@@ -2936,7 +2976,7 @@ const Home = {
           <label>项目</label>
           <select v-model="form.projectId" class="input">
             <option value="">未分组</option>
-            <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
+            <option v-for="p in projects" :key="p.id" :value="p.id">{{ projectOptionLabel(p) }}</option>
           </select>
         </div>
         <div class="form-row">
@@ -2971,7 +3011,7 @@ const Home = {
           <label>项目</label>
           <select v-model="form.projectId" class="input">
             <option value="">未分组</option>
-            <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
+            <option v-for="p in projects" :key="p.id" :value="p.id">{{ projectOptionLabel(p) }}</option>
           </select>
         </div>
         <div class="form-row">
@@ -3022,7 +3062,7 @@ const Home = {
       fileInputA, fileAName, fileA, quickUploadMode,
       quickFileA, quickFileB, quickFileAName, quickFileBName,
       uploadQueue, submitting, uploadProgress,
-      form, projects, selectedJob,
+      form, projects, projectOptionLabel, selectedJob,
       setQuickUploadMode,
       onDrop, onFileChange, clearFile, submitJob,
       onQuickDrop, onQuickFileChange, clearQuickCompareFile, submitQuickCompare,
@@ -3056,7 +3096,7 @@ const JobDetail = {
             {{ selectedJob.mode==='compare'?'对比':'单文件' }}
           </span>
         </div>
-        <div class="result-actions">
+        <div v-if="selectedJob.is_owner !== false" class="result-actions">
           <button class="btn btn-sm btn-outline" @click="editLabel">重命名</button>
           <button class="btn btn-sm btn-outline" @click="moveProject">移动项目</button>
           <button class="btn btn-sm btn-danger" @click="deleteJob">删除任务</button>
@@ -3074,7 +3114,7 @@ const JobDetail = {
             <button v-if="allowFileDownload" class="btn btn-xs btn-perfetto"
                     :disabled="perfettoOpening.a"
                     @click="openInPerfetto('a')">{{ perfettoButtonLabel('a') }}</button>
-            <button class="btn btn-xs btn-danger" @click="deleteFile('a')">删除文件</button>
+            <button v-if="selectedJob.is_owner !== false" class="btn btn-xs btn-danger" @click="deleteFile('a')">删除文件</button>
           </div>
         </div>
         <div v-if="selectedJob.file_b_name" class="trace-file-row">
@@ -3086,7 +3126,7 @@ const JobDetail = {
             <button v-if="allowFileDownload" class="btn btn-xs btn-perfetto"
                     :disabled="perfettoOpening.b"
                     @click="openInPerfetto('b')">{{ perfettoButtonLabel('b') }}</button>
-            <button class="btn btn-xs btn-danger" @click="deleteFile('b')">删除文件</button>
+            <button v-if="selectedJob.is_owner !== false" class="btn btn-xs btn-danger" @click="deleteFile('b')">删除文件</button>
           </div>
         </div>
       </div>
@@ -3687,6 +3727,7 @@ const App = {
 
       // Sidebar data
       projects,
+      selectedFilterProject, projectOptionLabel,
       historyGroupsTotal, historyGroupsLimit, historyGroupsOffset, historyGroupsLoading,
       historySearch, filterProject, sidebarTab, selectedJobId, selectedJob,
       collapsedGroups, groupedJobs, loadedHistoryJobIds,
@@ -3702,9 +3743,9 @@ const App = {
       prevComparePage, nextComparePage,
 
       // Modals
-      showNewProject, newProjectName, newProjectDesc,
+      showNewProject, newProjectName, newProjectDesc, newProjectShared,
       showRenameProject, renameProjectName, openRenameModal,
-      confirmRenameProject, deleteProject,
+      confirmRenameProject, deleteProject, shareProject,
       showMoveProject, moveProjectTarget, confirmMoveProject,
       showBulkMoveProject, bulkMoveProjectTarget, confirmBulkMoveProject,
       showRenameJob, renameJobName, confirmRenameJob,
