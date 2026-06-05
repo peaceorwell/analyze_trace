@@ -121,7 +121,7 @@ const chartPieRows      = ref([]);
 
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
-const appVersion = ref("0.1.22");
+const appVersion = ref("0.1.23");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -750,7 +750,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.1.22";
+  appVersion.value = cfg.version || "0.1.23";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -2421,6 +2421,13 @@ const downloadTraceFile = (slot) => {
   a.click();
 };
 
+const downloadReport = () => {
+  if (!selectedJobId.value) return;
+  const a = document.createElement("a");
+  a.href = `/api/jobs/${selectedJobId.value}/report.md`;
+  a.click();
+};
+
 const shareJob = async () => {
   if (!selectedJobId.value) return;
   const r = await fetch(`/api/jobs/${selectedJobId.value}/share`, {
@@ -3301,6 +3308,7 @@ const JobDetail = {
                   @click="toggleActionMenu('job')">...</button>
           <div v-if="openActionMenu==='job'" class="action-menu">
             <button type="button" @click="shareJob(); closeActionMenu()">复制分享链接</button>
+            <button type="button" @click="downloadReport(); closeActionMenu()">导出报告</button>
             <button v-if="selectedJob.is_owner !== false" type="button" @click="togglePinJob(); closeActionMenu()">
               {{ selectedJob.is_pinned ? '取消置顶' : '置顶' }}
             </button>
@@ -3717,7 +3725,7 @@ const JobDetail = {
       statusIcon,
       shareJob, togglePinJob, editLabel, moveProject, deleteJob, deleteFile,
       openCompareSource, rerunCompareSwapped,
-      downloadTraceFile, openInPerfetto, perfettoOpening, perfettoButtonLabel,
+      downloadTraceFile, downloadReport, openInPerfetto, perfettoOpening, perfettoButtonLabel,
       setSort, startResize, downloadCsv,
       viewTritonCode, runSingleTriton, clearInductorCache,
       fmtDate, fmtSum, deltaCellClass, clearColFilters,

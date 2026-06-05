@@ -49,7 +49,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.1.22",
+        "version": "0.1.23",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -1218,6 +1218,43 @@ def test_done_job_lists_result_files_and_paginates_tables(client):
     )
     assert old_percent_filter.status_code == 200
     assert old_percent_filter.json()["filtered_total"] == 3
+
+
+def test_job_report_download_includes_markdown_summary(client):
+    result_dir = Path(web_server.result_dir("report-job"))
+    result_dir.mkdir(parents=True)
+    (result_dir / "kernel_types_avg.csv").write_text(
+        "type,avg_dur_ms,dur_pct\n"
+        "gemm,12.3,70%\n"
+        "attention,4.5,30%\n"
+    )
+
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO jobs(id, label, mode, status, file_a_name, console_out, result_dir)
+                VALUES(?,?,?,?,?,?,?)
+                """,
+                ("report-job", "report", "single", "done", "trace.json", "Top kernels\nok", str(result_dir)),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+
+    response = client.get("/api/jobs/report-job/report.md")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/markdown")
+    text = response.text
+    assert "# report" in text
+    assert "## 任务信息" in text
+    assert "Top kernels" in text
+    assert "| type | avg_dur_ms |" in text
+    assert "dur_pct" not in text
 
 
 def test_all_kernels_cmp_without_family_exposes_virtual_family(client):

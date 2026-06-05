@@ -36,7 +36,7 @@ from db import get_db, init_db, row_to_dict  # noqa: E402
 import auth as ldap_auth  # noqa: E402
 
 STORAGE_DIR = os.path.join(os.path.dirname(__file__), "storage")
-APP_VERSION = "0.1.22"
+APP_VERSION = "0.1.23"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(os.path.dirname(__file__), "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
 
@@ -773,6 +773,63 @@ def _app_base_url(request: Request) -> str:
 
 def _job_share_url(request: Request, jid: str) -> str:
     return f"{_app_base_url(request)}/#/job/{jid}"
+
+
+def _markdown_cell(value, max_len: int = 160) -> str:
+    text = str(value if value is not None else "").replace("\n", " ").replace("\r", " ")
+    if len(text) > max_len:
+        text = text[:max_len - 3] + "..."
+    return text.replace("|", "\\|")
+
+
+def _markdown_table(fields: list[str], rows: list[dict]) -> str:
+    if not fields:
+        return "_无数据_"
+    lines = [
+        "| " + " | ".join(_markdown_cell(field, 80) for field in fields) + " |",
+        "| " + " | ".join("---" for _ in fields) + " |",
+    ]
+    for row in rows:
+        lines.append("| " + " | ".join(_markdown_cell(row.get(field)) for field in fields) + " |")
+    return "\n".join(lines)
+
+
+def _report_csv_sections(jid: str, mode: str) -> list[str]:
+    title_by_file = {
+        "kernel_types_avg.csv": "Kernel 类型汇总",
+        "kernel_types_cmp.csv": "Kernel 类型对比",
+        "all_kernels_avg.csv": "热点 Kernel",
+        "all_kernels_cmp.csv": "Kernel 对比",
+        "triton_kernels_avg.csv": "Triton Kernel",
+        "triton_kernels_cmp.csv": "Triton Kernel 对比",
+        "aten_ops_avg.csv": "Aten Ops",
+        "aten_ops_cmp.csv": "Aten Ops 对比",
+        "cncl_ops_avg.csv": "CNCL Ops",
+        "cncl_ops_cmp.csv": "CNCL Ops 对比",
+    }
+    preferred = (
+        ["kernel_types_cmp.csv", "all_kernels_cmp.csv", "triton_kernels_cmp.csv", "aten_ops_cmp.csv", "cncl_ops_cmp.csv"]
+        if mode == "compare"
+        else ["kernel_types_avg.csv", "all_kernels_avg.csv", "triton_kernels_avg.csv", "aten_ops_avg.csv", "cncl_ops_avg.csv"]
+    )
+    sections = []
+    for filename in preferred:
+        path = os.path.join(result_dir(jid), filename)
+        if not os.path.exists(path):
+            continue
+        page = read_csv_page(path, limit=10, offset=0)
+        sections.append(f"### {title_by_file.get(filename, filename)}\n\n{_markdown_table(page['fields'], page['rows'])}")
+    return sections
+
+
+def _console_excerpt(console_out: str, max_lines: int = 120) -> str:
+    lines = (console_out or "").splitlines()
+    if not lines:
+        return "无控制台输出。"
+    suffix = ""
+    if len(lines) > max_lines:
+        suffix = f"\n... 省略 {len(lines) - max_lines} 行"
+    return "\n".join(lines[:max_lines]) + suffix
 
 
 def csv_to_rows(path: str) -> dict:
@@ -2895,6 +2952,76 @@ async def get_job(request: Request, jid: str):
     if job["mode"] == "compare":
         job["compare_sources"] = await _compare_source_summaries(request, job)
     return job
+
+
+@app.get("/api/jobs/{jid}/report.md")
+async def download_job_report(request: Request, jid: str):
+    db = await get_db()
+    row = await load_accessible_job(db, request, jid)
+    project_name = ""
+    if row and row.get("project_id"):
+        cursor = await db.execute("SELECT name FROM projects WHERE id=?", (row["project_id"],))
+        project = await cursor.fetchone()
+        if project:
+            project_name = project["name"]
+    await db.close()
+
+    if row is None:
+        raise HTTPException(404)
+
+    job = _job_response(dict(row), request)
+    compare_sources = await _compare_source_summaries(request, job) if job.get("mode") == "compare" else {}
+    lines = [
+        f"# {job.get('label') or job['id']}",
+        "",
+        "## 任务信息",
+        "",
+        f"- 任务 ID: `{job['id']}`",
+        f"- 类型: `{job.get('mode')}`",
+        f"- 状态: `{job.get('status')}`",
+        f"- 项目: {project_name or '未分组'}",
+        f"- 创建时间: {job.get('created_at') or ''}",
+        f"- 导出版本: {APP_VERSION}",
+        "",
+        "## Trace 文件",
+        "",
+        f"- A: {job.get('file_a_name') or '无'}",
+    ]
+    if job.get("file_b_name"):
+        lines.append(f"- B: {job.get('file_b_name')}")
+    if compare_sources:
+        lines.extend(["", "## 对比来源", ""])
+        for slot in ("a", "b"):
+            source = compare_sources.get(slot)
+            if source:
+                lines.append(
+                    f"- {slot.upper()}: {source.get('label') or source.get('id')} "
+                    f"({source.get('project_name') or '未分组'}, {source.get('created_at') or ''})"
+                )
+
+    lines.extend([
+        "",
+        "## 控制台摘要",
+        "",
+        "```text",
+        _console_excerpt(job.get("console_out", "")),
+        "```",
+    ])
+
+    csv_sections = _report_csv_sections(jid, job.get("mode"))
+    if csv_sections:
+        lines.extend(["", "## 关键结果", "", *csv_sections])
+    else:
+        lines.extend(["", "## 关键结果", "", "_暂无可导出的结果表格。_"])
+
+    filename = _safe_download_name(job.get("label"), f"{jid}.md")
+    if not filename.lower().endswith(".md"):
+        filename += ".md"
+    return PlainTextResponse(
+        "\n".join(lines) + "\n",
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": _content_disposition(filename)},
+    )
 
 
 @app.get("/api/jobs/{jid}/results/{filename:path}")
