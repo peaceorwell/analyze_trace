@@ -120,7 +120,7 @@ const chartPieRows      = ref([]);
 
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
-const appVersion = ref("0.1.13");
+const appVersion = ref("0.1.14");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -130,9 +130,12 @@ const loginRememberUsername = ref(readStoredBool(LOGIN_REMEMBER_USERNAME_KEY, tr
 const loginForm = ref({
   username: localStorage.getItem(LOGIN_USERNAME_KEY) || "",
   password: "",
+  captcha: "",
 });
 const loginLoading = ref(false);
 const loginError = ref("");
+const loginCaptchaRequired = ref(false);
+const loginCaptchaImage = ref("");
 const perfettoOpening = ref({});
 const compareRerunLoading = ref(false);
 let activeResultStateJobId = null;
@@ -724,7 +727,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.1.13";
+  appVersion.value = cfg.version || "0.1.14";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -743,6 +746,24 @@ const loadMe = async () => {
   return currentUser.value;
 };
 
+const applyLoginCaptcha = payload => {
+  loginCaptchaRequired.value = Boolean(payload?.captcha_required);
+  loginCaptchaImage.value = payload?.captcha_image || "";
+  if (loginCaptchaRequired.value) {
+    loginForm.value.captcha = "";
+  }
+};
+
+const refreshLoginCaptcha = async () => {
+  if (!authRequired.value) return;
+  const username = loginForm.value.username.trim();
+  const r = await fetch(`/api/login-captcha?username=${encodeURIComponent(username)}`, {
+    credentials: "include",
+  });
+  const payload = await r.json().catch(() => ({}));
+  applyLoginCaptcha(payload);
+};
+
 const submitLogin = async () => {
   loginLoading.value = true;
   loginError.value = "";
@@ -755,6 +776,7 @@ const submitLogin = async () => {
     });
     if (!r.ok) {
       const payload = await r.json().catch(() => ({}));
+      applyLoginCaptcha(payload);
       throw new Error(payload.detail || "登录失败");
     }
     const data = await r.json();
@@ -768,7 +790,10 @@ const submitLogin = async () => {
     currentUser.value = data.user || null;
     window.setTimeout(() => {
       loginForm.value.password = "";
+      loginForm.value.captcha = "";
     }, 300);
+    loginCaptchaRequired.value = false;
+    loginCaptchaImage.value = "";
     appInitialized = true;
     await loadProjects();
     await refreshSidebarData();
@@ -3738,7 +3763,8 @@ const App = {
       isDark, toggleTheme, sidebarWidth, sidebarCollapsed, appVersion,
       toggleSidebar, startSidebarResize,
       authRequired, authChecked, currentUser, loginForm, loginRememberUsername, loginLoading, loginError,
-      submitLogin, logout,
+      loginCaptchaRequired, loginCaptchaImage,
+      submitLogin, refreshLoginCaptcha, logout,
 
       // Sidebar data
       projects,

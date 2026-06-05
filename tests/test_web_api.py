@@ -33,6 +33,8 @@ def isolated_server(tmp_path, monkeypatch):
     monkeypatch.setattr(web_server, "ALLOW_CODE_EXECUTION", False)
     monkeypatch.setattr(web_server, "AUTH_MODE", "none")
     monkeypatch.setattr(web_server, "AUTH_ENABLED", False)
+    web_server.LOGIN_FAILURES.clear()
+    web_server.LOGIN_CAPTCHA_CHALLENGES.clear()
     return web_server
 
 
@@ -47,7 +49,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.1.13",
+        "version": "0.1.14",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -174,6 +176,63 @@ def test_ldap_auth_requires_login_and_isolates_user_data(isolated_server, monkey
         candidates = test_client.get(f"/api/compare-candidates?project_id={shared_project['id']}")
         assert candidates.status_code == 200
         assert [item["id"] for item in candidates.json()["data"]] == ["shared-job"]
+
+
+def test_ldap_login_requires_captcha_after_repeated_failures(isolated_server, monkeypatch):
+    auth_calls = []
+
+    def fake_authenticate(username, password):
+        auth_calls.append((username, password))
+        if password != "ok":
+            raise web_server.ldap_auth.AuthError("bad credentials")
+        return {
+            "username": username,
+            "display_name": f"{username} User",
+            "email": f"{username}@example.com",
+            "dn": f"CN={username},DC=example,DC=com",
+        }
+
+    monkeypatch.setattr(web_server, "AUTH_MODE", "ldap")
+    monkeypatch.setattr(web_server, "AUTH_ENABLED", True)
+    monkeypatch.setattr(web_server, "LOGIN_CAPTCHA_THRESHOLD", 5)
+    monkeypatch.setattr(web_server.ldap_auth, "authenticate", fake_authenticate)
+
+    with TestClient(isolated_server.app) as test_client:
+        for _ in range(4):
+            bad = test_client.post("/api/login", json={"username": "alice", "password": "bad"})
+            assert bad.status_code == 401
+            assert bad.json()["captcha_required"] is False
+
+        fifth_bad = test_client.post("/api/login", json={"username": "alice", "password": "bad"})
+        assert fifth_bad.status_code == 401
+        fifth_payload = fifth_bad.json()
+        assert fifth_payload["captcha_required"] is True
+        assert fifth_payload["captcha_image"].startswith("data:image/svg+xml;base64,")
+        assert len(auth_calls) == 5
+
+        missing_captcha = test_client.post("/api/login", json={"username": "alice", "password": "ok"})
+        assert missing_captcha.status_code == 400
+        assert missing_captcha.json()["captcha_required"] is True
+        assert len(auth_calls) == 5
+
+        wrong_captcha = test_client.post(
+            "/api/login",
+            json={"username": "alice", "password": "ok", "captcha": "WRONG"},
+        )
+        assert wrong_captcha.status_code == 400
+        assert wrong_captcha.json()["captcha_required"] is True
+        assert len(auth_calls) == 5
+
+        captcha_answer = next(iter(web_server.LOGIN_CAPTCHA_CHALLENGES.values()))["answer"]
+        login = test_client.post(
+            "/api/login",
+            json={"username": "alice", "password": "ok", "captcha": captcha_answer},
+        )
+        assert login.status_code == 200
+        assert login.json()["user"]["username"] == "alice"
+        assert len(auth_calls) == 6
+        assert web_server.LOGIN_FAILURES == {}
+        assert web_server.LOGIN_CAPTCHA_CHALLENGES == {}
 
 
 def test_backup_script_creates_archive_and_manifest(client, isolated_server, tmp_path):

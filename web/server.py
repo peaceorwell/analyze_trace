@@ -1,13 +1,16 @@
 import argparse
 import asyncio
+import base64
 import contextlib
 import csv
 from datetime import datetime, timezone
 import gzip
+import html
 import io
 import json
 import logging
 import os
+import secrets
 import shlex
 import shutil
 import sys
@@ -33,7 +36,7 @@ from db import get_db, init_db, row_to_dict  # noqa: E402
 import auth as ldap_auth  # noqa: E402
 
 STORAGE_DIR = os.path.join(os.path.dirname(__file__), "storage")
-APP_VERSION = "0.1.13"
+APP_VERSION = "0.1.14"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(os.path.dirname(__file__), "backups"))
 
 # Configured at startup via CLI; read-only after that
@@ -48,6 +51,12 @@ analysis_queue: asyncio.Queue[str] = asyncio.Queue()
 analysis_workers: list[asyncio.Task] = []
 APP_STARTED_AT = time.time()
 HTTP_METRICS: dict[tuple[str, str, int], dict[str, float]] = {}
+LOGIN_CAPTCHA_THRESHOLD = max(1, int(os.environ.get("LOGIN_CAPTCHA_THRESHOLD", "5")))
+LOGIN_CAPTCHA_TTL_SECONDS = max(60, int(os.environ.get("LOGIN_CAPTCHA_TTL_SECONDS", "300")))
+LOGIN_FAILURE_TTL_SECONDS = max(60, int(os.environ.get("LOGIN_FAILURE_TTL_SECONDS", "900")))
+LOGIN_FAILURES: dict[str, dict[str, float]] = {}
+LOGIN_CAPTCHA_CHALLENGES: dict[str, dict[str, float | str]] = {}
+CAPTCHA_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
 
 class JsonLogFormatter(logging.Formatter):
@@ -118,6 +127,135 @@ def request_ip(request: Request) -> str:
     return request.client.host if request.client else ""
 
 
+def _login_username_key(username: str) -> str:
+    return (username or "").strip().lower()
+
+
+def _login_failure_key(request: Request, username: str) -> str:
+    return f"{request_ip(request)}:{_login_username_key(username)}"
+
+
+def _prune_login_state(now: Optional[float] = None):
+    now = now or time.time()
+    for key, state in list(LOGIN_FAILURES.items()):
+        if now - float(state.get("updated_at", 0)) > LOGIN_FAILURE_TTL_SECONDS:
+            LOGIN_FAILURES.pop(key, None)
+    for key, state in list(LOGIN_CAPTCHA_CHALLENGES.items()):
+        if now > float(state.get("expires_at", 0)):
+            LOGIN_CAPTCHA_CHALLENGES.pop(key, None)
+
+
+def _login_failure_count(key: str) -> int:
+    _prune_login_state()
+    state = LOGIN_FAILURES.get(key) or {}
+    return int(state.get("count", 0))
+
+
+def _record_login_failure(key: str) -> int:
+    _prune_login_state()
+    state = LOGIN_FAILURES.get(key) or {}
+    count = int(state.get("count", 0)) + 1
+    LOGIN_FAILURES[key] = {"count": count, "updated_at": time.time()}
+    return count
+
+
+def _clear_login_failure(key: str):
+    LOGIN_FAILURES.pop(key, None)
+
+
+def _captcha_required_for(request: Request, username: str) -> bool:
+    return _login_failure_count(_login_failure_key(request, username)) >= LOGIN_CAPTCHA_THRESHOLD
+
+
+def _clear_login_captcha(request: Request):
+    captcha_id = request.session.pop("login_captcha_id", None)
+    request.session.pop("login_captcha_user", None)
+    if captcha_id:
+        LOGIN_CAPTCHA_CHALLENGES.pop(captcha_id, None)
+
+
+def _captcha_svg_data_url(code: str) -> str:
+    lines = []
+    for idx in range(5):
+        y = 8 + idx * 7 + secrets.randbelow(5)
+        lines.append(
+            f'<path d="M8 {y} C 42 {secrets.randbelow(42)}, '
+            f'88 {secrets.randbelow(42)}, 142 {y + secrets.randbelow(9) - 4}" />'
+        )
+    chars = []
+    for idx, char in enumerate(code):
+        x = 18 + idx * 24 + secrets.randbelow(4)
+        y = 30 + secrets.randbelow(8)
+        angle = secrets.randbelow(19) - 9
+        chars.append(
+            f'<text x="{x}" y="{y}" transform="rotate({angle} {x} {y})">'
+            f'{html.escape(char)}</text>'
+        )
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="150" height="44" viewBox="0 0 150 44">'
+        '<rect width="150" height="44" rx="8" fill="#eef2ff"/>'
+        '<g fill="none" stroke="#c7d2fe" stroke-width="1.2" stroke-linecap="round">'
+        + "".join(lines)
+        + '</g><g font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="24" '
+        'font-weight="800" fill="#4f46e5">'
+        + "".join(chars)
+        + "</g></svg>"
+    )
+    encoded = base64.b64encode(svg.encode("utf-8")).decode("ascii")
+    return f"data:image/svg+xml;base64,{encoded}"
+
+
+def _issue_login_captcha(request: Request, username: str) -> dict:
+    _clear_login_captcha(request)
+    code = "".join(CAPTCHA_ALPHABET[secrets.randbelow(len(CAPTCHA_ALPHABET))] for _ in range(5))
+    captcha_id = secrets.token_urlsafe(24)
+    username_key = _login_username_key(username)
+    LOGIN_CAPTCHA_CHALLENGES[captcha_id] = {
+        "answer": code,
+        "username": username_key,
+        "expires_at": time.time() + LOGIN_CAPTCHA_TTL_SECONDS,
+    }
+    request.session["login_captcha_id"] = captcha_id
+    request.session["login_captcha_user"] = username_key
+    return {
+        "captcha_required": True,
+        "captcha_image": _captcha_svg_data_url(code),
+        "captcha_ttl_seconds": LOGIN_CAPTCHA_TTL_SECONDS,
+    }
+
+
+def _verify_login_captcha(request: Request, username: str, answer: str) -> bool:
+    _prune_login_state()
+    captcha_id = request.session.get("login_captcha_id")
+    challenge = LOGIN_CAPTCHA_CHALLENGES.get(captcha_id or "")
+    if not captcha_id or not challenge:
+        return False
+    if challenge.get("username") != _login_username_key(username):
+        return False
+    if time.time() > float(challenge.get("expires_at", 0)):
+        _clear_login_captcha(request)
+        return False
+    expected = str(challenge.get("answer") or "")
+    actual = (answer or "").strip().upper()
+    if not actual or not secrets.compare_digest(actual, expected):
+        return False
+    _clear_login_captcha(request)
+    return True
+
+
+def _login_error_response(
+    request: Request,
+    username: str,
+    detail: str,
+    status_code: int = 401,
+    include_captcha: bool = False,
+) -> JSONResponse:
+    payload = {"detail": detail, "captcha_required": bool(include_captcha)}
+    if include_captcha:
+        payload.update(_issue_login_captcha(request, username))
+    return JSONResponse(payload, status_code=status_code)
+
+
 def _auth_public_path(path: str) -> bool:
     return (
         path == "/"
@@ -128,6 +266,7 @@ def _auth_public_path(path: str) -> bool:
             "/metrics",
             "/api/config",
             "/api/login",
+            "/api/login-captcha",
             "/api/logout",
             "/api/me",
         }
@@ -1369,20 +1508,49 @@ async def get_me(request: Request):
     }
 
 
+@app.get("/api/login-captcha")
+async def get_login_captcha(request: Request, username: str = ""):
+    if not AUTH_ENABLED or not _captcha_required_for(request, username):
+        _clear_login_captcha(request)
+        return {"captcha_required": False}
+    return _issue_login_captcha(request, username)
+
+
 @app.post("/api/login")
 async def login(request: Request, body: dict):
     if not AUTH_ENABLED:
         return {"authenticated": True, "auth_mode": AUTH_MODE, "user": None}
     username = (body.get("username") or "").strip()
     password = body.get("password") or ""
+    failure_key = _login_failure_key(request, username)
+    if _captcha_required_for(request, username):
+        captcha = body.get("captcha") or ""
+        if not _verify_login_captcha(request, username, captcha):
+            logger.info(
+                "login_captcha_failed",
+                extra={"event": "login_captcha_failed", "username": username, "ip": request_ip(request)},
+            )
+            return _login_error_response(
+                request, username, "验证码错误或已过期", status_code=400, include_captcha=True
+            )
     try:
         user = await asyncio.to_thread(ldap_auth.authenticate, username, password)
     except ldap_auth.AuthError as e:
+        failed_count = _record_login_failure(failure_key)
+        captcha_required = failed_count >= LOGIN_CAPTCHA_THRESHOLD
         logger.info(
             "login_failed",
-            extra={"event": "login_failed", "username": username, "ip": request_ip(request)},
+            extra={
+                "event": "login_failed",
+                "username": username,
+                "ip": request_ip(request),
+                "failed_count": failed_count,
+                "captcha_required": captcha_required,
+            },
         )
-        raise HTTPException(401, str(e))
+        return _login_error_response(request, username, str(e), status_code=401, include_captcha=captcha_required)
+    _clear_login_failure(failure_key)
+    _clear_login_captcha(request)
     request.session["user"] = {
         "username": user["username"],
         "display_name": user.get("display_name") or user["username"],
