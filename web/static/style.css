@@ -242,6 +242,7 @@ body {
 .job-item.selected { background: var(--card2); border-left-color: var(--purple); }
 .job-item.bulk-selected { background: var(--purple-bg); border-left-color: var(--purple); }
 .job-item.compare-selected { background: rgba(234,179,8,.08); border-left-color: var(--yellow); }
+.job-item.compare-baseline { background: var(--purple-bg); border-left-color: var(--purple); }
 .job-item.file-deleted { opacity: .45; }
 .job-item-top { display: flex; align-items: center; gap: 5px; }
 .job-label {
@@ -282,6 +283,8 @@ body {
 }
 
 .compare-form { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+.compare-mode-toggle { width: 100%; margin-top: 8px; }
+.compare-mode-toggle .mode-toggle-btn { flex: 1; }
 .selected-compare-list {
   display: flex; flex-direction: column; gap: 4px;
   margin: 4px 0 8px;
@@ -291,6 +294,17 @@ body {
   padding: 5px 8px; border-radius: 6px;
   border: 1px solid rgba(234,179,8,.28); background: rgba(234,179,8,.08);
   color: var(--text2); font-size: 11px;
+}
+.selected-compare-item.baseline {
+  border-color: rgba(99,102,241,.3); background: var(--purple-bg);
+}
+.compare-role-badge {
+  flex-shrink: 0; font-size: 9px; font-weight: 700;
+  border-radius: 999px; padding: 1px 5px;
+  background: rgba(234,179,8,.14); color: var(--yellow);
+}
+.job-item.compare-baseline .compare-role-badge {
+  background: var(--purple-bg); color: var(--purple-l);
 }
 .selected-compare-remove {
   border: none; background: transparent; color: var(--text3);

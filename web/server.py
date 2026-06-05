@@ -36,8 +36,9 @@ from db import get_db, init_db, row_to_dict  # noqa: E402
 import auth as ldap_auth  # noqa: E402
 
 STORAGE_DIR = os.path.join(os.path.dirname(__file__), "storage")
-APP_VERSION = "0.1.20"
+APP_VERSION = "0.1.21"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(os.path.dirname(__file__), "backups"))
+MAX_BATCH_COMPARE_JOBS = 50
 
 # Configured at startup via CLI; read-only after that
 AUTH_MODE = os.environ.get("AUTH_MODE", "none").strip().lower()
@@ -2555,13 +2556,10 @@ async def compare_jobs(request: Request, body: dict):
         await db.close()
         raise HTTPException(404, "Source job not found")
 
-    # Verify actual file existence on disk (DB flag may be stale)
-    path_a = src_a.get("file_a_gzip_path") or src_a.get("file_a_path")
-    path_b = src_b.get("file_a_gzip_path") or src_b.get("file_a_path")
-    if not path_a or not os.path.exists(path_a):
+    if not _trace_path_exists(src_a):
         await db.close()
         raise HTTPException(409, f"Source file A has been deleted")
-    if not path_b or not os.path.exists(path_b):
+    if not _trace_path_exists(src_b):
         await db.close()
         raise HTTPException(409, f"Source file B has been deleted")
 
@@ -2600,8 +2598,92 @@ async def compare_jobs(request: Request, body: dict):
     return dict(row)
 
 
+@app.post("/api/jobs/batch-compare", status_code=201)
+async def batch_compare_jobs(request: Request, body: dict):
+    baseline_job_id = body.get("baseline_job_id")
+    candidate_job_ids = []
+    for job_id in body.get("candidate_job_ids") or []:
+        if job_id and job_id not in candidate_job_ids:
+            candidate_job_ids.append(job_id)
+
+    if not baseline_job_id or not candidate_job_ids:
+        raise HTTPException(400, "baseline_job_id and candidate_job_ids are required")
+    if baseline_job_id in candidate_job_ids:
+        raise HTTPException(400, "baseline job cannot also be a candidate")
+    if len(candidate_job_ids) > MAX_BATCH_COMPARE_JOBS:
+        raise HTTPException(400, f"Too many candidates; max is {MAX_BATCH_COMPARE_JOBS}")
+
+    db = await get_db()
+    user_token = await ensure_user_row(db, request)
+    project_id = body.get("project_id") or None
+    await validate_project_access(db, request, project_id)
+
+    baseline = await load_accessible_job(db, request, baseline_job_id)
+    if not baseline:
+        await db.close()
+        raise HTTPException(404, "Baseline job not found")
+    if not _trace_path_exists(baseline):
+        await db.close()
+        raise HTTPException(409, "Baseline source file has been deleted")
+
+    candidates = []
+    for candidate_id in candidate_job_ids:
+        src = await load_accessible_job(db, request, candidate_id)
+        if not src:
+            await db.close()
+            raise HTTPException(404, f"Candidate job not found: {candidate_id}")
+        if not _trace_path_exists(src):
+            await db.close()
+            raise HTTPException(409, f"Candidate source file has been deleted: {src.get('label') or candidate_id}")
+        candidates.append(src)
+
+    label_prefix = str(body.get("label_prefix") or "").strip()
+    created = []
+    for src_b in candidates:
+        jid = str(uuid.uuid4())
+        pair_label = f"{baseline['label']} vs {src_b['label']}"
+        eff_label = f"{label_prefix} - {pair_label}" if label_prefix else pair_label
+        await db.execute(
+            """INSERT INTO jobs(id, project_id, user_token, label, mode,
+                   file_a_name, file_b_name,
+                   source_job_a, source_job_b,
+                   save_triton_csv, save_triton_code)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            (jid, project_id, user_token, eff_label, "compare",
+             baseline["file_a_name"], src_b["file_a_name"],
+             baseline_job_id, src_b["id"],
+             0, 0),
+        )
+        await _refresh_job_storage_cache(db, jid)
+        await write_audit(
+            db, request, "job.batch_compare_create",
+            resource_type="job", resource_id=jid,
+            details={
+                "baseline_job_id": baseline_job_id,
+                "candidate_job_id": src_b["id"],
+                "project_id": project_id,
+                "label": eff_label,
+                "batch_size": len(candidates),
+            },
+        )
+        cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
+        created.append(dict(await cursor.fetchone()))
+
+    await db.commit()
+    await db.close()
+
+    for job in created:
+        await enqueue_analysis_job(job["id"])
+    return {"data": created, "count": len(created)}
+
+
 def _primary_trace_path(row: dict, slot: str = "a") -> Optional[str]:
     return row.get(f"file_{slot}_gzip_path") or row.get(f"file_{slot}_path")
+
+
+def _trace_path_exists(row: dict, slot: str = "a") -> bool:
+    path = _primary_trace_path(row, slot)
+    return bool(path and os.path.exists(path))
 
 
 def _copy_trace_reference(src_path: str, dest_json: str) -> tuple[Optional[str], Optional[str]]:

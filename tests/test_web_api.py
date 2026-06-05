@@ -49,7 +49,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.1.20",
+        "version": "0.1.21",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -761,6 +761,55 @@ def test_compare_from_history_accepts_tar_gzip_sources(
     compare_job = created.json()
     assert compare_job["mode"] == "compare"
     assert compare_job["status"] in {"pending", "running", "done"}
+
+
+def test_batch_compare_creates_jobs_from_baseline(client, sample_trace_file, monkeypatch):
+    queued = []
+
+    async def fake_enqueue(job_id):
+        queued.append(job_id)
+
+    monkeypatch.setattr(web_server, "enqueue_analysis_job", fake_enqueue)
+
+    async def insert_jobs():
+        db = await web_db.get_db()
+        try:
+            await db.executemany(
+                """
+                INSERT INTO jobs(
+                    id, label, mode, status, file_a_name, file_a_path, file_a_exists
+                ) VALUES(?,?,?,?,?,?,?)
+                """,
+                [
+                    ("baseline-job", "baseline", "single", "done", "base.json", sample_trace_file, 1),
+                    ("candidate-a", "candidate-a", "single", "done", "a.json", sample_trace_file, 1),
+                    ("candidate-b", "candidate-b", "single", "done", "b.json", sample_trace_file, 1),
+                ],
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_jobs())
+
+    response = client.post(
+        "/api/jobs/batch-compare",
+        json={
+            "baseline_job_id": "baseline-job",
+            "candidate_job_ids": ["candidate-a", "candidate-b"],
+            "label_prefix": "batch",
+        },
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["count"] == 2
+    assert len(payload["data"]) == 2
+    assert {job["source_job_a"] for job in payload["data"]} == {"baseline-job"}
+    assert {job["source_job_b"] for job in payload["data"]} == {"candidate-a", "candidate-b"}
+    assert all(job["mode"] == "compare" for job in payload["data"])
+    assert all(job["label"].startswith("batch - baseline vs ") for job in payload["data"])
+    assert queued == [job["id"] for job in payload["data"]]
 
 
 def test_perfetto_json_download_extracts_tar_gzip_source(
