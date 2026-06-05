@@ -57,7 +57,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.4",
+        "version": "0.2.5",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -188,6 +188,56 @@ def test_ai_analysis_supports_compare_jobs(client, tmp_path, monkeypatch):
     assert "# Compare OK" in payload["content"]
     assert "compare-skill" in payload["content"]
     assert str(trace_b) in payload["content"]
+
+
+def test_feedback_board_supports_images_and_replies(client):
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 24
+
+    created = client.post(
+        "/api/feedback",
+        data={"body": "建议增加批量导出"},
+        files=[("images", ("idea.png", png_bytes, "image/png"))],
+        headers={"X-Remote-User": "alice"},
+    )
+
+    assert created.status_code == 201
+    message = created.json()
+    assert message["body"] == "建议增加批量导出"
+    assert message["user_display"] == "alice"
+    assert len(message["attachments"]) == 1
+
+    attachment = client.get(message["attachments"][0]["url"], headers={"X-Remote-User": "alice"})
+    assert attachment.status_code == 200
+    assert attachment.headers["content-type"].startswith("image/png")
+    assert attachment.headers["content-disposition"].startswith("inline")
+    assert attachment.content == png_bytes
+
+    reply = client.post(
+        "/api/feedback",
+        data={"body": "这个确实有用", "parent_id": message["id"]},
+        headers={"X-Remote-User": "bob"},
+    )
+
+    assert reply.status_code == 201
+
+    listed = client.get("/api/feedback")
+    assert listed.status_code == 200
+    payload = listed.json()
+    assert payload["total"] == 1
+    assert payload["data"][0]["id"] == message["id"]
+    assert payload["data"][0]["attachments"][0]["filename"] == "idea.png"
+    assert payload["data"][0]["replies"][0]["body"] == "这个确实有用"
+    assert payload["data"][0]["replies"][0]["user_display"] == "bob"
+
+
+def test_feedback_board_rejects_non_images(client):
+    response = client.post(
+        "/api/feedback",
+        data={"body": "bad file"},
+        files=[("images", ("note.txt", b"not an image", "text/plain"))],
+    )
+
+    assert response.status_code == 400
 
 
 def test_ops_endpoints_and_audit_logs(client):

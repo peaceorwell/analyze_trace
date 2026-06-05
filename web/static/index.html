@@ -126,6 +126,7 @@
                   aria-label="更多入口"
                   @click="toggleActionMenu('header')">...</button>
           <div v-if="openActionMenu==='header'" class="action-menu">
+            <button type="button" @click="openFeedbackBoard(); closeActionMenu()">改进留言板</button>
             <button type="button" @click="openStorageManager(); closeActionMenu()">存储</button>
             <button type="button" @click="showGuide=true; closeActionMenu()">使用指南</button>
             <button type="button" @click="showDeletedProjects=true; loadDeletedProjects(); closeActionMenu()">找回项目</button>
@@ -438,6 +439,104 @@
       </div>
     </div>
 
+    <!-- ── Feedback board modal ── -->
+    <div v-if="showFeedbackBoard" class="modal-mask" @click.self="showFeedbackBoard=false">
+      <div class="modal modal-wide feedback-modal">
+        <div class="modal-title feedback-title">
+          <span>改进留言板</span>
+          <button class="btn btn-xs btn-outline" :disabled="feedbackLoading" @click="loadFeedback({ reset: true })">
+            {{ feedbackLoading ? '刷新中...' : '刷新' }}
+          </button>
+        </div>
+
+        <div class="feedback-composer">
+          <textarea v-model="feedbackForm.body" class="feedback-textarea" placeholder="写下改进建议、问题现象或使用体验..." maxlength="2000"></textarea>
+          <div v-if="feedbackForm.previews.length" class="feedback-preview-grid">
+            <div v-for="img in feedbackForm.previews" :key="img.url" class="feedback-preview">
+              <img :src="img.url" :alt="img.name" />
+            </div>
+          </div>
+          <div class="feedback-composer-actions">
+            <label class="btn btn-sm btn-outline">
+              添加图片
+              <input class="hidden-file-input" type="file" accept="image/*" multiple @change="setFeedbackFiles($event)" />
+            </label>
+            <span class="feedback-hint">最多 4 张，每张 8MB</span>
+            <span class="flex-spacer"></span>
+            <button class="btn btn-sm btn-outline" @click="clearFeedbackForm()" :disabled="feedbackSubmitting">清空</button>
+            <button class="btn btn-sm btn-primary" @click="submitFeedback()" :disabled="feedbackSubmitting">
+              {{ feedbackSubmitting ? '发布中...' : '发布留言' }}
+            </button>
+          </div>
+        </div>
+
+        <div class="feedback-list">
+          <div v-if="feedbackLoading && !feedbackItems.length" class="empty-tip">加载中...</div>
+          <div v-else-if="!feedbackItems.length" class="empty-tip">暂无留言</div>
+          <article v-for="item in feedbackItems" :key="item.id" class="feedback-card">
+            <div class="feedback-card-head">
+              <strong>{{ item.user_display }}</strong>
+              <span>{{ fmtDate(item.created_at) }}</span>
+            </div>
+            <div v-if="item.body" class="feedback-body">{{ item.body }}</div>
+            <div v-if="item.attachments.length" class="feedback-image-grid">
+              <a v-for="img in item.attachments" :key="img.id" :href="img.url" target="_blank" rel="noopener" class="feedback-image">
+                <img :src="img.url" :alt="img.filename || 'feedback image'" />
+              </a>
+            </div>
+            <div class="feedback-actions">
+              <button class="btn btn-xs btn-outline" @click="toggleFeedbackReply(item.id)">
+                {{ feedbackReplies[item.id]?.open ? '收起回复' : '回复' }}
+              </button>
+              <span v-if="item.replies.length" class="feedback-reply-count">{{ item.replies.length }} 条回复</span>
+            </div>
+
+            <div v-if="item.replies.length" class="feedback-replies">
+              <div v-for="reply in item.replies" :key="reply.id" class="feedback-reply">
+                <div class="feedback-card-head">
+                  <strong>{{ reply.user_display }}</strong>
+                  <span>{{ fmtDate(reply.created_at) }}</span>
+                </div>
+                <div v-if="reply.body" class="feedback-body">{{ reply.body }}</div>
+                <div v-if="reply.attachments.length" class="feedback-image-grid compact">
+                  <a v-for="img in reply.attachments" :key="img.id" :href="img.url" target="_blank" rel="noopener" class="feedback-image">
+                    <img :src="img.url" :alt="img.filename || 'feedback image'" />
+                  </a>
+                </div>
+              </div>
+            </div>
+
+            <div v-if="feedbackReplies[item.id]?.open" class="feedback-reply-form">
+              <textarea v-model="feedbackReplies[item.id].body" class="feedback-textarea feedback-reply-textarea" placeholder="回复这条留言..." maxlength="2000"></textarea>
+              <div v-if="feedbackReplies[item.id].previews.length" class="feedback-preview-grid compact">
+                <div v-for="img in feedbackReplies[item.id].previews" :key="img.url" class="feedback-preview">
+                  <img :src="img.url" :alt="img.name" />
+                </div>
+              </div>
+              <div class="feedback-composer-actions">
+                <label class="btn btn-xs btn-outline">
+                  添加图片
+                  <input class="hidden-file-input" type="file" accept="image/*" multiple @change="setFeedbackFiles($event, item.id)" />
+                </label>
+                <span class="flex-spacer"></span>
+                <button class="btn btn-xs btn-outline" @click="clearFeedbackForm(item.id)" :disabled="feedbackReplies[item.id].submitting">取消</button>
+                <button class="btn btn-xs btn-primary" @click="submitFeedback(item.id)" :disabled="feedbackReplies[item.id].submitting">
+                  {{ feedbackReplies[item.id].submitting ? '回复中...' : '发布回复' }}
+                </button>
+              </div>
+            </div>
+          </article>
+          <button v-if="feedbackHasMore" class="btn btn-sm btn-outline w-full" :disabled="feedbackLoading" @click="loadFeedback()">
+            {{ feedbackLoading ? '加载中...' : '加载更多' }}
+          </button>
+        </div>
+
+        <div class="modal-actions">
+          <button class="btn btn-outline" @click="showFeedbackBoard=false">关闭</button>
+        </div>
+      </div>
+    </div>
+
     <!-- ── Storage manager modal ── -->
     <div v-if="showStorageManager" class="modal-mask" @click.self="showStorageManager=false">
       <div class="modal modal-wide">
@@ -647,6 +746,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=6"></script>
+  <script src="/static/app.js?v=7"></script>
 </body>
 </html>

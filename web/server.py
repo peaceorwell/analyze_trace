@@ -24,7 +24,7 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 import aiofiles
-from fastapi import FastAPI, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
@@ -37,9 +37,12 @@ import auth as ldap_auth  # noqa: E402
 
 DEFAULT_STORAGE_DIR = os.path.join(os.path.dirname(__file__), "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.4"
+APP_VERSION = "0.2.5"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(os.path.dirname(__file__), "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
+FEEDBACK_DIRNAME = "feedback"
+FEEDBACK_MAX_IMAGES = 4
+FEEDBACK_MAX_IMAGE_BYTES = 8 * 1024 * 1024
 AI_ANALYSIS_DIRNAME = "ai_analysis"
 AI_ANALYSIS_STATUS_FILE = "ai_analysis_status.json"
 AI_ANALYSIS_REPORT_FILE = "ai_analysis.md"
@@ -616,6 +619,14 @@ def ai_analysis_status_path(job_id: str) -> str:
 
 def ai_analysis_report_path(job_id: str) -> str:
     return os.path.join(ai_analysis_dir(job_id), AI_ANALYSIS_REPORT_FILE)
+
+
+def feedback_dir() -> str:
+    return os.path.join(STORAGE_DIR, FEEDBACK_DIRNAME)
+
+
+def feedback_message_dir(message_id: str) -> str:
+    return os.path.join(feedback_dir(), message_id)
 
 
 def require_code_execution_enabled():
@@ -2154,6 +2165,273 @@ async def list_audit_logs(
         "limit": limit,
         "offset": offset,
     }
+
+
+# ── Routes: feedback board ───────────────────────────────────────────────────
+
+def _feedback_author(request: Request) -> tuple[str, str]:
+    user = current_user(request)
+    token = user.get("username") or request_user(request)
+    display = user.get("display_name") or token
+    return token, display
+
+
+def _detect_image_type(data: bytes, content_type: str = "") -> tuple[str, str]:
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png", ".png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg", ".jpg"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif", ".gif"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp", ".webp"
+    raise HTTPException(400, "只支持 PNG、JPEG、GIF 或 WebP 图片")
+
+
+async def _read_feedback_image(upload: UploadFile) -> tuple[bytes, str, str]:
+    data = await upload.read(FEEDBACK_MAX_IMAGE_BYTES + 1)
+    if len(data) > FEEDBACK_MAX_IMAGE_BYTES:
+        raise HTTPException(413, f"图片不能超过 {FEEDBACK_MAX_IMAGE_BYTES // 1024 // 1024}MB")
+    if not data:
+        raise HTTPException(400, "图片内容为空")
+    content_type, ext = _detect_image_type(data, (upload.content_type or "").lower())
+    return data, content_type, ext
+
+
+def _feedback_attachment_response(row: dict) -> dict:
+    return {
+        "id": row["id"],
+        "filename": row.get("filename") or "",
+        "content_type": row.get("content_type") or "",
+        "size_bytes": row.get("size_bytes") or 0,
+        "url": f"/api/feedback/images/{row['id']}",
+    }
+
+
+def _feedback_message_response(row: dict, attachments_by_message: dict, replies: Optional[list] = None) -> dict:
+    return {
+        "id": row["id"],
+        "parent_id": row.get("parent_id"),
+        "user_display": row.get("user_display") or row.get("user_token") or "local",
+        "body": row.get("body") or "",
+        "created_at": row.get("created_at") or "",
+        "updated_at": row.get("updated_at") or "",
+        "attachments": attachments_by_message.get(row["id"], []),
+        "replies": replies or [],
+    }
+
+
+async def _feedback_attachments_for(db, message_ids: list[str]) -> dict:
+    if not message_ids:
+        return {}
+    placeholders = ",".join("?" * len(message_ids))
+    rows = await (
+        await db.execute(
+            f"""
+            SELECT id, message_id, filename, content_type, size_bytes
+            FROM feedback_attachments
+            WHERE message_id IN ({placeholders})
+            ORDER BY created_at ASC
+            """,
+            tuple(message_ids),
+        )
+    ).fetchall()
+    result: dict[str, list[dict]] = {}
+    for row in rows:
+        item = dict(row)
+        result.setdefault(item["message_id"], []).append(_feedback_attachment_response(item))
+    return result
+
+
+@app.get("/api/feedback")
+async def list_feedback(request: Request, limit: int = 30, offset: int = 0):
+    if AUTH_ENABLED:
+        current_user_token(request)
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+    db = await get_db()
+    try:
+        total_row = await (
+            await db.execute("SELECT COUNT(*) AS total FROM feedback_messages WHERE parent_id IS NULL")
+        ).fetchone()
+        parent_rows = await (
+            await db.execute(
+                """
+                SELECT *
+                FROM feedback_messages
+                WHERE parent_id IS NULL
+                ORDER BY created_at DESC
+                LIMIT ? OFFSET ?
+                """,
+                (limit, offset),
+            )
+        ).fetchall()
+        parents = [dict(row) for row in parent_rows]
+        parent_ids = [row["id"] for row in parents]
+
+        reply_rows = []
+        if parent_ids:
+            placeholders = ",".join("?" * len(parent_ids))
+            reply_rows = await (
+                await db.execute(
+                    f"""
+                    SELECT *
+                    FROM feedback_messages
+                    WHERE parent_id IN ({placeholders})
+                    ORDER BY created_at ASC
+                    """,
+                    tuple(parent_ids),
+                )
+            ).fetchall()
+
+        replies_by_parent: dict[str, list[dict]] = {}
+        replies = [dict(row) for row in reply_rows]
+        message_ids = parent_ids + [row["id"] for row in replies]
+        attachments_by_message = await _feedback_attachments_for(db, message_ids)
+        for reply in replies:
+            replies_by_parent.setdefault(reply["parent_id"], []).append(
+                _feedback_message_response(reply, attachments_by_message)
+            )
+    finally:
+        await db.close()
+
+    return {
+        "data": [
+            _feedback_message_response(parent, attachments_by_message, replies_by_parent.get(parent["id"], []))
+            for parent in parents
+        ],
+        "total": total_row["total"] if total_row else 0,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@app.post("/api/feedback", status_code=201)
+async def create_feedback(
+    request: Request,
+    body: str = Form(""),
+    parent_id: Optional[str] = Form(None),
+    images: Optional[list[UploadFile]] = File(None),
+):
+    if AUTH_ENABLED:
+        current_user_token(request)
+    text = (body or "").strip()
+    image_files = [img for img in (images or []) if img and img.filename]
+    if len(image_files) > FEEDBACK_MAX_IMAGES:
+        raise HTTPException(400, f"最多上传 {FEEDBACK_MAX_IMAGES} 张图片")
+    if not text and not image_files:
+        raise HTTPException(400, "请输入留言内容或上传图片")
+
+    db = await get_db()
+    message_id = str(uuid.uuid4())
+    saved_paths: list[str] = []
+    try:
+        root_parent_id = parent_id or None
+        if root_parent_id:
+            parent = await row_to_dict(
+                await (await db.execute(
+                    "SELECT id, parent_id FROM feedback_messages WHERE id=?",
+                    (root_parent_id,),
+                )).fetchone()
+            )
+            if not parent:
+                raise HTTPException(404, "留言不存在")
+            if parent.get("parent_id"):
+                root_parent_id = parent["parent_id"]
+
+        user_token, user_display = _feedback_author(request)
+        await db.execute(
+            """
+            INSERT INTO feedback_messages(id, parent_id, user_token, user_display, body)
+            VALUES(?,?,?,?,?)
+            """,
+            (message_id, root_parent_id, user_token, user_display, text),
+        )
+
+        target_dir = feedback_message_dir(message_id)
+        os.makedirs(target_dir, exist_ok=True)
+        for upload in image_files:
+            data, content_type, ext = await _read_feedback_image(upload)
+            attachment_id = str(uuid.uuid4())
+            stored_path = os.path.join(target_dir, f"{attachment_id}{ext}")
+            async with aiofiles.open(stored_path, "wb") as f:
+                await f.write(data)
+            saved_paths.append(stored_path)
+            await db.execute(
+                """
+                INSERT INTO feedback_attachments(id, message_id, filename, stored_path, content_type, size_bytes)
+                VALUES(?,?,?,?,?,?)
+                """,
+                (
+                    attachment_id,
+                    message_id,
+                    _safe_download_name(upload.filename, f"image{ext}")[:240],
+                    stored_path,
+                    content_type,
+                    len(data),
+                ),
+            )
+
+        await write_audit(
+            db, request, "feedback.create",
+            resource_type="feedback", resource_id=message_id,
+            details={"parent_id": root_parent_id, "image_count": len(image_files)},
+        )
+        await db.commit()
+
+        message = await row_to_dict(
+            await (await db.execute("SELECT * FROM feedback_messages WHERE id=?", (message_id,))).fetchone()
+        )
+        attachments_by_message = await _feedback_attachments_for(db, [message_id])
+    except HTTPException:
+        await db.rollback()
+        for path in saved_paths:
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(path)
+        raise
+    except Exception:
+        await db.rollback()
+        for path in saved_paths:
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(path)
+        raise
+    finally:
+        await db.close()
+
+    return _feedback_message_response(message, attachments_by_message)
+
+
+@app.get("/api/feedback/images/{attachment_id}")
+async def get_feedback_image(request: Request, attachment_id: str):
+    if AUTH_ENABLED:
+        current_user_token(request)
+    db = await get_db()
+    try:
+        row = await row_to_dict(
+            await (await db.execute(
+                "SELECT filename, stored_path, content_type FROM feedback_attachments WHERE id=?",
+                (attachment_id,),
+            )).fetchone()
+        )
+    finally:
+        await db.close()
+    if not row:
+        raise HTTPException(404)
+    path = row["stored_path"]
+    root = os.path.abspath(feedback_dir())
+    full = os.path.abspath(path)
+    if os.path.commonpath([root, full]) != root or not os.path.exists(full):
+        raise HTTPException(404)
+    return FileResponse(
+        full,
+        media_type=row.get("content_type") or "application/octet-stream",
+        headers={
+            "Content-Disposition": _content_disposition(
+                _safe_download_name(row.get("filename"), os.path.basename(full)),
+                disposition="inline",
+            ),
+        },
+    )
 
 
 # ── Routes: projects ──────────────────────────────────────────────────────────

@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.4");
+const appVersion = ref("0.2.5");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -351,6 +351,15 @@ const renameJobName = ref("");
 
 const showDeletedProjects = ref(false);
 const deletedProjects = ref([]);
+const showFeedbackBoard = ref(false);
+const feedbackItems = ref([]);
+const feedbackTotal = ref(0);
+const feedbackLimit = ref(30);
+const feedbackOffset = ref(0);
+const feedbackLoading = ref(false);
+const feedbackSubmitting = ref(false);
+const feedbackForm = ref({ body: "", files: [], previews: [] });
+const feedbackReplies = ref({});
 
 const selectedFilterProject = computed(() =>
   projects.value.find(project => project.id === filterProject.value) || null
@@ -774,7 +783,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.4";
+  appVersion.value = cfg.version || "0.2.5";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -895,6 +904,147 @@ const loadStorageSummary = async () => {
 const openStorageManager = async () => {
   await loadStorageSummary();
   showStorageManager.value = true;
+};
+
+const feedbackHasMore = computed(() => feedbackOffset.value + feedbackItems.value.length < feedbackTotal.value);
+
+const revokeFeedbackPreviews = previews => {
+  for (const preview of previews || []) {
+    if (preview.url) URL.revokeObjectURL(preview.url);
+  }
+};
+
+const feedbackFilePreviews = files =>
+  files.map(file => ({
+    name: file.name,
+    url: URL.createObjectURL(file),
+  }));
+
+const setFeedbackFiles = (event, parentId = null) => {
+  const selected = Array.from(event.target.files || []).filter(file => file.type.startsWith("image/"));
+  if (selected.length !== (event.target.files || []).length) {
+    showToast("仅支持图片文件", "error");
+  }
+  const files = selected.slice(0, 4);
+  if (selected.length > 4) showToast("最多选择 4 张图片", "error");
+  if (parentId) {
+    const form = feedbackReplies.value[parentId] || { open: true, body: "", files: [], previews: [], submitting: false };
+    revokeFeedbackPreviews(form.previews);
+    feedbackReplies.value = {
+      ...feedbackReplies.value,
+      [parentId]: { ...form, files, previews: feedbackFilePreviews(files) },
+    };
+  } else {
+    revokeFeedbackPreviews(feedbackForm.value.previews);
+    feedbackForm.value = { ...feedbackForm.value, files, previews: feedbackFilePreviews(files) };
+  }
+  event.target.value = "";
+};
+
+const clearFeedbackForm = (parentId = null) => {
+  if (parentId) {
+    const form = feedbackReplies.value[parentId];
+    revokeFeedbackPreviews(form?.previews || []);
+    feedbackReplies.value = {
+      ...feedbackReplies.value,
+      [parentId]: { open: false, body: "", files: [], previews: [], submitting: false },
+    };
+    return;
+  }
+  revokeFeedbackPreviews(feedbackForm.value.previews);
+  feedbackForm.value = { body: "", files: [], previews: [] };
+};
+
+const ensureFeedbackReplyForm = id => {
+  if (feedbackReplies.value[id]) return feedbackReplies.value[id];
+  const form = { open: false, body: "", files: [], previews: [], submitting: false };
+  feedbackReplies.value = { ...feedbackReplies.value, [id]: form };
+  return form;
+};
+
+const toggleFeedbackReply = id => {
+  const form = ensureFeedbackReplyForm(id);
+  feedbackReplies.value = {
+    ...feedbackReplies.value,
+    [id]: { ...form, open: !form.open },
+  };
+};
+
+const loadFeedback = async ({ reset = false } = {}) => {
+  if (feedbackLoading.value) return;
+  feedbackLoading.value = true;
+  if (reset) {
+    feedbackOffset.value = 0;
+    feedbackItems.value = [];
+  }
+  const params = new URLSearchParams({
+    limit: String(feedbackLimit.value),
+    offset: String(feedbackOffset.value),
+  });
+  try {
+    const r = await fetch(`/api/feedback?${params}`, { credentials: "include" });
+    const payload = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(payload.detail || "加载留言失败");
+    const rows = payload.data || [];
+    feedbackItems.value = reset ? rows : [...feedbackItems.value, ...rows];
+    feedbackTotal.value = payload.total || 0;
+    feedbackOffset.value = feedbackItems.value.length;
+  } catch (e) {
+    showToast(e.message || "加载留言失败", "error");
+  } finally {
+    feedbackLoading.value = false;
+  }
+};
+
+const openFeedbackBoard = async () => {
+  showFeedbackBoard.value = true;
+  await loadFeedback({ reset: true });
+};
+
+const submitFeedback = async (parentId = null) => {
+  const isReply = Boolean(parentId);
+  const form = isReply ? ensureFeedbackReplyForm(parentId) : feedbackForm.value;
+  const body = (form.body || "").trim();
+  if (!body && !(form.files || []).length) {
+    showToast("请输入文字或选择图片", "error");
+    return;
+  }
+  if (isReply) {
+    feedbackReplies.value = {
+      ...feedbackReplies.value,
+      [parentId]: { ...form, submitting: true },
+    };
+  } else {
+    feedbackSubmitting.value = true;
+  }
+  const fd = new FormData();
+  fd.append("body", body);
+  if (parentId) fd.append("parent_id", parentId);
+  for (const file of form.files || []) fd.append("images", file);
+  try {
+    const r = await fetch("/api/feedback", {
+      method: "POST",
+      credentials: "include",
+      body: fd,
+    });
+    const payload = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(payload.detail || "提交留言失败");
+    clearFeedbackForm(parentId);
+    await loadFeedback({ reset: true });
+    showToast(isReply ? "回复已发布" : "留言已发布", "success");
+  } catch (e) {
+    showToast(e.message || "提交留言失败", "error");
+  } finally {
+    if (isReply) {
+      const latest = feedbackReplies.value[parentId] || form;
+      feedbackReplies.value = {
+        ...feedbackReplies.value,
+        [parentId]: { ...latest, submitting: false },
+      };
+    } else {
+      feedbackSubmitting.value = false;
+    }
+  }
 };
 
 const toggleStorageSelection = jobId => {
@@ -4254,6 +4404,10 @@ const App = {
       showRenameJob, renameJobName, confirmRenameJob,
       showDeletedProjects, deletedProjects, loadDeletedProjects,
       isDeletedOver10Days, restoreProject, permanentlyDeleteProject,
+      showFeedbackBoard, feedbackItems, feedbackTotal, feedbackLoading,
+      feedbackSubmitting, feedbackForm, feedbackReplies, feedbackHasMore,
+      openFeedbackBoard, loadFeedback, setFeedbackFiles, clearFeedbackForm,
+      toggleFeedbackReply, submitFeedback,
       showStorageManager, storageSummary, storageSelection, storageJobsWithTrace,
       openStorageManager, toggleStorageSelection, toggleAllStorageSelection,
       deleteSelectedStorageFiles, fmtBytes,
