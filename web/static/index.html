@@ -440,38 +440,25 @@
     </div>
 
     <!-- ── Feedback board modal ── -->
-    <div v-if="showFeedbackBoard" class="modal-mask" @click.self="showFeedbackBoard=false">
+    <div v-if="showFeedbackBoard" class="modal-mask" @click.self="closeFeedbackBoard()">
       <div class="modal modal-wide feedback-modal">
         <div class="modal-title feedback-title">
-          <span>改进意见帖子</span>
-          <button class="btn btn-xs btn-outline" :disabled="feedbackLoading" @click="loadFeedback({ reset: true })">
-            {{ feedbackLoading ? '刷新中...' : '刷新' }}
-          </button>
+          <span>{{ selectedFeedbackPost ? '帖子详情' : '改进意见帖子' }}</span>
+          <div class="feedback-title-actions">
+            <button v-if="selectedFeedbackPost" class="btn btn-xs btn-outline" @click="closeFeedbackPost()">返回列表</button>
+            <button v-if="!selectedFeedbackPost" class="btn btn-xs btn-primary" @click="openFeedbackComposer()">发帖</button>
+            <button
+              class="btn btn-xs btn-outline"
+              :disabled="feedbackLoading || feedbackDetailLoading"
+              @click="selectedFeedbackPost ? selectFeedbackPost(selectedFeedbackPost.id) : loadFeedback({ reset: true })"
+            >
+              {{ (feedbackLoading || feedbackDetailLoading) ? '刷新中...' : '刷新' }}
+            </button>
+          </div>
         </div>
 
-        <div class="feedback-board-shell">
-          <section class="feedback-thread-list">
-            <div v-if="!selectedFeedbackPost" class="feedback-composer">
-              <textarea v-model="feedbackForm.body" class="feedback-textarea" placeholder="发布一个改进帖子，描述问题、建议或使用体验..." maxlength="2000"></textarea>
-              <div v-if="feedbackForm.previews.length" class="feedback-preview-grid">
-                <div v-for="img in feedbackForm.previews" :key="img.url" class="feedback-preview">
-                  <img :src="img.url" :alt="img.name" />
-                </div>
-              </div>
-              <div class="feedback-composer-actions">
-                <label class="btn btn-sm btn-outline">
-                  添加图片
-                  <input class="hidden-file-input" type="file" accept="image/*" multiple @change="setFeedbackFiles($event)" />
-                </label>
-                <span class="feedback-hint">最多 4 张，每张 8MB</span>
-                <span class="flex-spacer"></span>
-                <button class="btn btn-sm btn-outline" @click="clearFeedbackForm()" :disabled="feedbackSubmitting">清空</button>
-                <button class="btn btn-sm btn-primary" @click="submitFeedback()" :disabled="feedbackSubmitting">
-                  {{ feedbackSubmitting ? '发布中...' : '发布帖子' }}
-                </button>
-              </div>
-            </div>
-
+        <div v-if="!selectedFeedbackPost" class="feedback-board-shell feedback-board-list-mode">
+          <section class="feedback-thread-list feedback-thread-list-full">
             <div class="feedback-list feedback-post-list">
               <div v-if="feedbackLoading && !feedbackItems.length" class="empty-tip">加载中...</div>
               <div v-else-if="!feedbackItems.length" class="empty-tip">暂无帖子</div>
@@ -480,7 +467,6 @@
                 :key="item.id"
                 type="button"
                 class="feedback-post-card"
-                :class="{ active: selectedFeedbackPostId === item.id }"
                 @click="selectFeedbackPost(item.id)"
               >
                 <div class="feedback-post-card-head">
@@ -499,82 +485,105 @@
               </button>
             </div>
           </section>
-
-          <section class="feedback-thread-detail">
-            <div v-if="!selectedFeedbackPost" class="feedback-detail-empty">
-              选择左侧帖子查看交流，或发布一个新帖子
-            </div>
-            <template v-else>
-              <div class="feedback-detail-head">
-                <div>
-                  <h3>{{ feedbackPostTitle(selectedFeedbackPost) }}</h3>
-                  <div class="feedback-post-meta">
-                    <span>{{ selectedFeedbackPost.user_display }}</span>
-                    <span>发布于 {{ fmtDate(selectedFeedbackPost.created_at) }}</span>
-                    <span v-if="feedbackPostReplyCount(selectedFeedbackPost)">最近 {{ fmtDate(feedbackPostActivity(selectedFeedbackPost)) }}</span>
-                  </div>
-                </div>
-                <button class="btn btn-xs btn-outline feedback-detail-back" @click="closeFeedbackPost()">返回列表</button>
-              </div>
-
-              <div class="feedback-detail-scroll">
-                <article class="feedback-card feedback-original-post">
-                  <div v-if="selectedFeedbackPost.body" class="feedback-body">{{ selectedFeedbackPost.body }}</div>
-                  <div v-if="selectedFeedbackPost.attachments.length" class="feedback-image-grid">
-                    <a v-for="img in selectedFeedbackPost.attachments" :key="img.id" :href="img.url" target="_blank" rel="noopener" class="feedback-image">
-                      <img :src="img.url" :alt="img.filename || 'feedback image'" />
-                    </a>
-                  </div>
-                </article>
-
-                <div class="feedback-conversation-title">
-                  <span>帖子交流</span>
-                  <span>{{ feedbackPostReplyCount(selectedFeedbackPost) }} 条</span>
-                </div>
-
-                <div v-if="feedbackDetailLoading" class="empty-tip">刷新帖子中...</div>
-                <div v-else-if="!selectedFeedbackPost.replies.length" class="empty-tip">还没有交流，来补充第一条</div>
-                <div v-else class="feedback-replies feedback-thread-replies">
-                  <div v-for="reply in selectedFeedbackPost.replies" :key="reply.id" class="feedback-reply">
-                    <div class="feedback-card-head">
-                      <strong>{{ reply.user_display }}</strong>
-                      <span>{{ fmtDate(reply.created_at) }}</span>
-                    </div>
-                    <div v-if="reply.body" class="feedback-body">{{ reply.body }}</div>
-                    <div v-if="reply.attachments.length" class="feedback-image-grid compact">
-                      <a v-for="img in reply.attachments" :key="img.id" :href="img.url" target="_blank" rel="noopener" class="feedback-image">
-                        <img :src="img.url" :alt="img.filename || 'feedback image'" />
-                      </a>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div v-if="feedbackReplies[selectedFeedbackPost.id]" class="feedback-reply-form feedback-thread-reply-form">
-                <textarea v-model="feedbackReplies[selectedFeedbackPost.id].body" class="feedback-textarea feedback-reply-textarea" placeholder="在这个帖子里交流..." maxlength="2000"></textarea>
-                <div v-if="feedbackReplies[selectedFeedbackPost.id].previews.length" class="feedback-preview-grid compact">
-                  <div v-for="img in feedbackReplies[selectedFeedbackPost.id].previews" :key="img.url" class="feedback-preview">
-                    <img :src="img.url" :alt="img.name" />
-                  </div>
-                </div>
-                <div class="feedback-composer-actions">
-                  <label class="btn btn-xs btn-outline">
-                    添加图片
-                    <input class="hidden-file-input" type="file" accept="image/*" multiple @change="setFeedbackFiles($event, selectedFeedbackPost.id)" />
-                  </label>
-                  <span class="flex-spacer"></span>
-                  <button class="btn btn-xs btn-outline" @click="clearFeedbackForm(selectedFeedbackPost.id)" :disabled="feedbackReplies[selectedFeedbackPost.id].submitting">清空</button>
-                  <button class="btn btn-xs btn-primary" @click="submitFeedback(selectedFeedbackPost.id)" :disabled="feedbackReplies[selectedFeedbackPost.id].submitting">
-                    {{ feedbackReplies[selectedFeedbackPost.id].submitting ? '发送中...' : '发送交流' }}
-                  </button>
-                </div>
-              </div>
-            </template>
-          </section>
         </div>
 
+        <section v-else class="feedback-thread-detail feedback-thread-detail-full">
+          <div class="feedback-detail-head">
+            <div>
+              <h3>{{ feedbackPostTitle(selectedFeedbackPost) }}</h3>
+              <div class="feedback-post-meta">
+                <span>{{ selectedFeedbackPost.user_display }}</span>
+                <span>发布于 {{ fmtDate(selectedFeedbackPost.created_at) }}</span>
+                <span v-if="feedbackPostReplyCount(selectedFeedbackPost)">最近 {{ fmtDate(feedbackPostActivity(selectedFeedbackPost)) }}</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="feedback-detail-scroll">
+            <article class="feedback-card feedback-original-post">
+              <div v-if="selectedFeedbackPost.body" class="feedback-body">{{ selectedFeedbackPost.body }}</div>
+              <div v-if="selectedFeedbackPost.attachments.length" class="feedback-image-grid">
+                <a v-for="img in selectedFeedbackPost.attachments" :key="img.id" :href="img.url" target="_blank" rel="noopener" class="feedback-image">
+                  <img :src="img.url" :alt="img.filename || 'feedback image'" />
+                </a>
+              </div>
+            </article>
+
+            <div class="feedback-conversation-title">
+              <span>帖子交流</span>
+              <span>{{ feedbackPostReplyCount(selectedFeedbackPost) }} 条</span>
+            </div>
+
+            <div v-if="feedbackDetailLoading" class="empty-tip">刷新帖子中...</div>
+            <div v-else-if="!selectedFeedbackPost.replies.length" class="empty-tip">还没有交流，来补充第一条</div>
+            <div v-else class="feedback-replies feedback-thread-replies">
+              <div v-for="reply in selectedFeedbackPost.replies" :key="reply.id" class="feedback-reply">
+                <div class="feedback-card-head">
+                  <strong>{{ reply.user_display }}</strong>
+                  <span>{{ fmtDate(reply.created_at) }}</span>
+                </div>
+                <div v-if="reply.body" class="feedback-body">{{ reply.body }}</div>
+                <div v-if="reply.attachments.length" class="feedback-image-grid compact">
+                  <a v-for="img in reply.attachments" :key="img.id" :href="img.url" target="_blank" rel="noopener" class="feedback-image">
+                    <img :src="img.url" :alt="img.filename || 'feedback image'" />
+                  </a>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="feedbackReplies[selectedFeedbackPost.id]" class="feedback-reply-form feedback-thread-reply-form">
+            <textarea v-model="feedbackReplies[selectedFeedbackPost.id].body" class="feedback-textarea feedback-reply-textarea" placeholder="在这个帖子里交流..." maxlength="2000"></textarea>
+            <div v-if="feedbackReplies[selectedFeedbackPost.id].previews.length" class="feedback-preview-grid compact">
+              <div v-for="img in feedbackReplies[selectedFeedbackPost.id].previews" :key="img.url" class="feedback-preview">
+                <img :src="img.url" :alt="img.name" />
+              </div>
+            </div>
+            <div class="feedback-composer-actions">
+              <label class="btn btn-xs btn-outline">
+                添加图片
+                <input class="hidden-file-input" type="file" accept="image/*" multiple @change="setFeedbackFiles($event, selectedFeedbackPost.id)" />
+              </label>
+              <span class="flex-spacer"></span>
+              <button class="btn btn-xs btn-outline" @click="clearFeedbackForm(selectedFeedbackPost.id)" :disabled="feedbackReplies[selectedFeedbackPost.id].submitting">清空</button>
+              <button class="btn btn-xs btn-primary" @click="submitFeedback(selectedFeedbackPost.id)" :disabled="feedbackReplies[selectedFeedbackPost.id].submitting">
+                {{ feedbackReplies[selectedFeedbackPost.id].submitting ? '发送中...' : '发送交流' }}
+              </button>
+            </div>
+          </div>
+        </section>
+
         <div class="modal-actions">
-          <button class="btn btn-outline" @click="showFeedbackBoard=false">关闭</button>
+          <button class="btn btn-outline" @click="closeFeedbackBoard()">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="showFeedbackComposer" class="modal-mask modal-mask-front" @click.self="closeFeedbackComposer()">
+      <div class="modal feedback-compose-modal">
+        <div class="modal-title feedback-title">
+          <span>发布新帖</span>
+          <button class="btn btn-xs btn-outline" @click="closeFeedbackComposer()">关闭</button>
+        </div>
+        <div class="feedback-composer feedback-composer-dialog">
+          <textarea v-model="feedbackForm.body" class="feedback-textarea" placeholder="描述问题、建议或使用体验..." maxlength="2000"></textarea>
+          <div v-if="feedbackForm.previews.length" class="feedback-preview-grid">
+            <div v-for="img in feedbackForm.previews" :key="img.url" class="feedback-preview">
+              <img :src="img.url" :alt="img.name" />
+            </div>
+          </div>
+          <div class="feedback-composer-actions">
+            <label class="btn btn-sm btn-outline">
+              添加图片
+              <input class="hidden-file-input" type="file" accept="image/*" multiple @change="setFeedbackFiles($event)" />
+            </label>
+            <span class="feedback-hint">最多 4 张，每张 8MB</span>
+            <span class="flex-spacer"></span>
+            <button class="btn btn-sm btn-outline" @click="clearFeedbackForm()" :disabled="feedbackSubmitting">清空</button>
+            <button class="btn btn-sm btn-primary" @click="submitFeedback()" :disabled="feedbackSubmitting">
+              {{ feedbackSubmitting ? '发布中...' : '发布帖子' }}
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -788,6 +797,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=9"></script>
+  <script src="/static/app.js?v=10"></script>
 </body>
 </html>

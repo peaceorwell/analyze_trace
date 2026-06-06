@@ -1155,6 +1155,7 @@ body.result-reading-active { overflow: hidden; }
   display: flex; align-items: center; justify-content: center; z-index: 100;
   backdrop-filter: blur(2px);
 }
+.modal-mask-front { z-index: 140; }
 .modal {
   background-color: var(--card); border: 1px solid var(--border2);
   border-radius: 12px; padding: 22px; min-width: 320px;
@@ -1194,13 +1195,20 @@ body.result-reading-active { overflow: hidden; }
   box-sizing: border-box;
 }
 .feedback-title { justify-content: space-between; margin-bottom: 10px; flex-wrap: wrap; }
+.feedback-title-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
 .feedback-board-shell {
-  display: grid;
-  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
-  gap: 12px;
+  display: flex;
   min-height: 0;
   flex: 1 1 auto;
   overflow: hidden;
+}
+.feedback-board-list-mode {
+  min-height: min(58vh, 620px);
 }
 .feedback-thread-list,
 .feedback-thread-detail {
@@ -1210,6 +1218,10 @@ body.result-reading-active { overflow: hidden; }
 .feedback-thread-list {
   display: flex;
   flex-direction: column;
+  width: 100%;
+}
+.feedback-thread-list-full {
+  flex: 1 1 auto;
 }
 .feedback-thread-detail {
   display: flex;
@@ -1219,12 +1231,23 @@ body.result-reading-active { overflow: hidden; }
   border-radius: 10px;
   padding: 12px;
 }
+.feedback-thread-detail-full {
+  flex: 1 1 auto;
+  min-height: min(58vh, 620px);
+}
+.feedback-compose-modal {
+  width: min(640px, calc(100vw - 24px));
+  padding: 18px;
+}
 .feedback-composer {
   border: 1px solid var(--border);
   background: var(--bg);
   border-radius: 10px;
   padding: 12px;
   flex-shrink: 0;
+}
+.feedback-composer-dialog {
+  background: var(--card2);
 }
 .feedback-textarea {
   width: 100%;

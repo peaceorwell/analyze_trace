@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.7");
+const appVersion = ref("0.2.8");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -352,6 +352,7 @@ const renameJobName = ref("");
 const showDeletedProjects = ref(false);
 const deletedProjects = ref([]);
 const showFeedbackBoard = ref(false);
+const showFeedbackComposer = ref(false);
 const feedbackItems = ref([]);
 const feedbackTotal = ref(0);
 const feedbackLimit = ref(30);
@@ -785,7 +786,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.7";
+  appVersion.value = cfg.version || "0.2.8";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -1029,6 +1030,22 @@ const closeFeedbackPost = () => {
   selectedFeedbackPostId.value = "";
 };
 
+const openFeedbackComposer = () => {
+  clearFeedbackForm();
+  showFeedbackComposer.value = true;
+};
+
+const closeFeedbackComposer = () => {
+  clearFeedbackForm();
+  showFeedbackComposer.value = false;
+};
+
+const closeFeedbackBoard = () => {
+  closeFeedbackComposer();
+  selectedFeedbackPostId.value = "";
+  showFeedbackBoard.value = false;
+};
+
 const loadFeedback = async ({ reset = false, selectId = "" } = {}) => {
   if (feedbackLoading.value) return;
   feedbackLoading.value = true;
@@ -1098,6 +1115,7 @@ const submitFeedback = async (parentId = null) => {
     if (!r.ok) throw new Error(payload.detail || "提交留言失败");
     const targetPostId = isReply ? parentId : payload.id;
     clearFeedbackForm(parentId);
+    if (!isReply) showFeedbackComposer.value = false;
     await loadFeedback({ reset: true, selectId: targetPostId });
     if (targetPostId) await selectFeedbackPost(targetPostId, { refresh: true });
     showToast(isReply ? "回复已发布" : "帖子已发布", "success");
@@ -4473,12 +4491,13 @@ const App = {
       showRenameJob, renameJobName, confirmRenameJob,
       showDeletedProjects, deletedProjects, loadDeletedProjects,
       isDeletedOver10Days, restoreProject, permanentlyDeleteProject,
-      showFeedbackBoard, feedbackItems, feedbackTotal, feedbackLoading,
+      showFeedbackBoard, showFeedbackComposer, feedbackItems, feedbackTotal, feedbackLoading,
       feedbackSubmitting, feedbackForm, feedbackReplies, feedbackHasMore,
       selectedFeedbackPostId, selectedFeedbackPost, feedbackDetailLoading,
       feedbackPostTitle, feedbackPostExcerpt, feedbackPostReplyCount, feedbackPostActivity,
       openFeedbackBoard, loadFeedback, setFeedbackFiles, clearFeedbackForm,
-      toggleFeedbackReply, selectFeedbackPost, closeFeedbackPost, submitFeedback,
+      toggleFeedbackReply, selectFeedbackPost, closeFeedbackPost,
+      openFeedbackComposer, closeFeedbackComposer, closeFeedbackBoard, submitFeedback,
       showStorageManager, storageSummary, storageSelection, storageJobsWithTrace,
       openStorageManager, toggleStorageSelection, toggleAllStorageSelection,
       deleteSelectedStorageFiles, fmtBytes,

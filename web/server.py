@@ -37,7 +37,7 @@ import auth as ldap_auth  # noqa: E402
 
 DEFAULT_STORAGE_DIR = os.path.join(os.path.dirname(__file__), "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.7"
+APP_VERSION = "0.2.8"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(os.path.dirname(__file__), "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
 FEEDBACK_DIRNAME = "feedback"
