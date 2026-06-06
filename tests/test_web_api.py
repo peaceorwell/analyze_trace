@@ -40,6 +40,7 @@ def isolated_server(tmp_path, monkeypatch):
     monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_TIMEOUT_SECONDS", 30)
     monkeypatch.setattr(web_server, "AUTH_MODE", "none")
     monkeypatch.setattr(web_server, "AUTH_ENABLED", False)
+    monkeypatch.setattr(web_server, "ADMIN_USERS", set())
     web_server.LOGIN_FAILURES.clear()
     web_server.LOGIN_CAPTCHA_CHALLENGES.clear()
     web_server.ai_analysis_tasks.clear()
@@ -57,7 +58,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.8",
+        "version": "0.2.9",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -241,6 +242,49 @@ def test_feedback_board_supports_images_and_replies(client):
     detail_from_reply = client.get(f"/api/feedback/{reply.json()['id']}")
     assert detail_from_reply.status_code == 200
     assert detail_from_reply.json()["id"] == message["id"]
+
+
+def test_feedback_delete_requires_admin_and_removes_files(client, isolated_server, monkeypatch):
+    monkeypatch.setattr(isolated_server, "ADMIN_USERS", {"admin"})
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 24
+
+    created = client.post(
+        "/api/feedback",
+        data={"body": "需要管理员清理"},
+        files=[("images", ("cleanup.png", png_bytes, "image/png"))],
+        headers={"X-Remote-User": "alice"},
+    )
+    assert created.status_code == 201
+    post = created.json()
+    attachment_url = post["attachments"][0]["url"]
+
+    reply = client.post(
+        "/api/feedback",
+        data={"body": "一条回复", "parent_id": post["id"]},
+        headers={"X-Remote-User": "bob"},
+    )
+    assert reply.status_code == 201
+
+    denied = client.delete(f"/api/feedback/{post['id']}", headers={"X-Remote-User": "alice"})
+    assert denied.status_code == 403
+
+    deleted_reply = client.delete(
+        f"/api/feedback/{reply.json()['id']}",
+        headers={"X-Remote-User": "admin"},
+    )
+    assert deleted_reply.status_code == 200
+    assert deleted_reply.json()["deleted"] == 1
+    detail = client.get(f"/api/feedback/{post['id']}")
+    assert detail.status_code == 200
+    assert detail.json()["reply_count"] == 0
+
+    deleted_post = client.delete(f"/api/feedback/{post['id']}", headers={"X-Remote-User": "admin"})
+    assert deleted_post.status_code == 200
+    assert deleted_post.json()["deleted"] == 1
+    assert client.get(attachment_url).status_code == 404
+    listed = client.get("/api/feedback")
+    assert listed.status_code == 200
+    assert listed.json()["total"] == 0
 
 
 def test_feedback_board_rejects_non_images(client):

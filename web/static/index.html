@@ -462,16 +462,21 @@
             <div class="feedback-list feedback-post-list">
               <div v-if="feedbackLoading && !feedbackItems.length" class="empty-tip">加载中...</div>
               <div v-else-if="!feedbackItems.length" class="empty-tip">暂无帖子</div>
-              <button
+              <div
                 v-for="item in feedbackItems"
                 :key="item.id"
-                type="button"
                 class="feedback-post-card"
+                role="button"
+                tabindex="0"
                 @click="selectFeedbackPost(item.id)"
+                @keyup.enter="selectFeedbackPost(item.id)"
               >
                 <div class="feedback-post-card-head">
                   <strong>{{ feedbackPostTitle(item) }}</strong>
-                  <span>{{ feedbackPostReplyCount(item) }} 条交流</span>
+                  <div class="feedback-post-card-stats">
+                    <span>{{ feedbackPostReplyCount(item) }} 条交流</span>
+                    <button v-if="isAdmin" type="button" class="btn btn-xs btn-danger feedback-admin-delete" @click.stop="deleteFeedbackPost(item)">删除</button>
+                  </div>
                 </div>
                 <div class="feedback-post-excerpt">{{ feedbackPostExcerpt(item) }}</div>
                 <div class="feedback-post-meta">
@@ -479,7 +484,7 @@
                   <span>{{ fmtDate(feedbackPostActivity(item)) }}</span>
                   <span v-if="item.attachments.length">{{ item.attachments.length }} 图</span>
                 </div>
-              </button>
+              </div>
               <button v-if="feedbackHasMore" class="btn btn-sm btn-outline w-full" :disabled="feedbackLoading" @click="loadFeedback()">
                 {{ feedbackLoading ? '加载中...' : '加载更多' }}
               </button>
@@ -496,6 +501,9 @@
                 <span>发布于 {{ fmtDate(selectedFeedbackPost.created_at) }}</span>
                 <span v-if="feedbackPostReplyCount(selectedFeedbackPost)">最近 {{ fmtDate(feedbackPostActivity(selectedFeedbackPost)) }}</span>
               </div>
+            </div>
+            <div v-if="isAdmin" class="feedback-detail-actions">
+              <button type="button" class="btn btn-xs btn-danger" @click="deleteFeedbackPost(selectedFeedbackPost)">删除帖子</button>
             </div>
           </div>
 
@@ -520,7 +528,10 @@
               <div v-for="reply in selectedFeedbackPost.replies" :key="reply.id" class="feedback-reply">
                 <div class="feedback-card-head">
                   <strong>{{ reply.user_display }}</strong>
-                  <span>{{ fmtDate(reply.created_at) }}</span>
+                  <div class="feedback-card-meta">
+                    <span>{{ fmtDate(reply.created_at) }}</span>
+                    <button v-if="isAdmin" type="button" class="btn btn-xs btn-danger" @click="deleteFeedbackReply(reply)">删除</button>
+                  </div>
                 </div>
                 <div v-if="reply.body" class="feedback-body">{{ reply.body }}</div>
                 <div v-if="reply.attachments.length" class="feedback-image-grid compact">
@@ -797,6 +808,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=10"></script>
+  <script src="/static/app.js?v=11"></script>
 </body>
 </html>

@@ -146,7 +146,7 @@ AI 分析产物保存在任务目录下的 `results/ai_analysis/`，删除任务
 
 ### LDAP 认证与用户隔离
 
-默认 `AUTH_MODE=none`，保持单用户本地模式。对内开放时设置 `AUTH_MODE=ldap` 后会启用登录页和后端会话校验；个人项目、个人任务、对比候选、结果 CSV、trace 下载和文件删除都会按 LDAP 用户隔离。用户也可以创建共享项目，或把自己的个人项目转为共享项目；共享项目内的任务对所有登录用户可读并可用于对比，但任务重命名、移动、删除和文件删除仍只允许任务创建者执行。
+默认 `AUTH_MODE=none`，保持单用户本地模式。对内开放时设置 `AUTH_MODE=ldap` 后会启用登录页和后端会话校验；个人项目、个人任务、对比候选、结果 CSV、trace 下载和文件删除都会按 LDAP 用户隔离。用户也可以创建共享项目，或把自己的个人项目转为共享项目；共享项目内的任务对所有登录用户可读并可用于对比，但任务重命名、移动、删除和文件删除仍只允许任务创建者执行。设置 `TRACE_ADMIN_USERS` 后，名单内用户拥有全局管理能力，例如删除留言板帖子和回复。
 
 服务账号搜索用户的推荐配置：
 
@@ -177,6 +177,7 @@ LDAP_USER_DN_TEMPLATE={username}@example.com
 |------|------|
 | `LDAP_DISPLAY_NAME_ATTR` | 显示名属性，默认 `displayName` |
 | `LDAP_MAIL_ATTR` | 邮箱属性，默认 `mail` |
+| `TRACE_ADMIN_USERS` | 管理员用户名，多个用逗号分隔，例如 `zhouysong,admin2` |
 | `SESSION_COOKIE_SECURE=1` | HTTPS 部署时建议开启 |
 
 ### 运维能力

@@ -37,7 +37,7 @@ import auth as ldap_auth  # noqa: E402
 
 DEFAULT_STORAGE_DIR = os.path.join(os.path.dirname(__file__), "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.8"
+APP_VERSION = "0.2.9"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(os.path.dirname(__file__), "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
 FEEDBACK_DIRNAME = "feedback"
@@ -63,6 +63,17 @@ CLAUDE_ANALYSIS_TIMEOUT_SECONDS = max(30, int(os.environ.get("TRACE_CLAUDE_TIMEO
 CLAUDE_ANALYSIS_SKILLS_DIR = os.environ.get("TRACE_CLAUDE_SKILLS_DIR", "")
 CLAUDE_SINGLE_TRACE_SKILL = os.environ.get("TRACE_CLAUDE_SINGLE_SKILL", "e2e-profiling-analyzer")
 CLAUDE_COMPARE_TRACE_SKILL = os.environ.get("TRACE_CLAUDE_COMPARE_SKILL", "e2e-profiling-comparator")
+
+
+def _parse_user_list_env(value: str) -> set[str]:
+    return {
+        item.strip().lower()
+        for item in (value or "").replace(";", ",").split(",")
+        if item.strip()
+    }
+
+
+ADMIN_USERS = _parse_user_list_env(os.environ.get("TRACE_ADMIN_USERS", ""))
 analysis_queue: asyncio.Queue[str] = asyncio.Queue()
 analysis_workers: list[asyncio.Task] = []
 ai_analysis_tasks: dict[str, asyncio.Task] = {}
@@ -307,6 +318,28 @@ def current_user_token(request: Request) -> Optional[str]:
     if not username:
         raise HTTPException(401, "Authentication required")
     return username
+
+
+def is_admin_user(user_token: str) -> bool:
+    return (user_token or "").strip().lower() in ADMIN_USERS
+
+
+def request_is_admin(request: Request) -> bool:
+    user = current_user(request)
+    if AUTH_ENABLED and not user.get("username"):
+        return False
+    token = user.get("username") or request_user(request)
+    return is_admin_user(token)
+
+
+def require_admin(request: Request) -> str:
+    if AUTH_ENABLED:
+        current_user_token(request)
+    user = current_user(request)
+    token = user.get("username") or request_user(request)
+    if not is_admin_user(token):
+        raise HTTPException(403, "需要管理员权限")
+    return token
 
 
 def _owner_clause(request: Request, alias: str = "") -> tuple[str, list[str]]:
@@ -627,6 +660,31 @@ def feedback_dir() -> str:
 
 def feedback_message_dir(message_id: str) -> str:
     return os.path.join(feedback_dir(), message_id)
+
+
+def _safe_feedback_storage_path(path: str) -> Optional[str]:
+    if not path:
+        return None
+    root = os.path.abspath(feedback_dir())
+    full = os.path.abspath(path)
+    try:
+        if os.path.commonpath([root, full]) != root:
+            return None
+    except ValueError:
+        return None
+    return full
+
+
+def _remove_feedback_storage(paths: list[str], message_ids: list[str]):
+    for path in paths:
+        full = _safe_feedback_storage_path(path)
+        if full and os.path.isfile(full):
+            with contextlib.suppress(OSError):
+                os.remove(full)
+    for message_id in message_ids:
+        full = _safe_feedback_storage_path(feedback_message_dir(message_id))
+        if full and os.path.isdir(full):
+            shutil.rmtree(full, ignore_errors=True)
 
 
 def require_code_execution_enabled():
@@ -2028,6 +2086,7 @@ async def get_me(request: Request):
         "authenticated": bool(user),
         "auth_mode": AUTH_MODE,
         "user": user or None,
+        "is_admin": request_is_admin(request),
     }
 
 
@@ -2042,7 +2101,12 @@ async def get_login_captcha(request: Request, username: str = ""):
 @app.post("/api/login")
 async def login(request: Request, body: dict):
     if not AUTH_ENABLED:
-        return {"authenticated": True, "auth_mode": AUTH_MODE, "user": None}
+        return {
+            "authenticated": True,
+            "auth_mode": AUTH_MODE,
+            "user": None,
+            "is_admin": request_is_admin(request),
+        }
     username = (body.get("username") or "").strip()
     password = body.get("password") or ""
     failure_key = _login_failure_key(request, username)
@@ -2092,7 +2156,12 @@ async def login(request: Request, body: dict):
     finally:
         await db.close()
     logger.info("login_success", extra={"event": "login_success", "username": user["username"]})
-    return {"authenticated": True, "auth_mode": AUTH_MODE, "user": request.session["user"]}
+    return {
+        "authenticated": True,
+        "auth_mode": AUTH_MODE,
+        "user": request.session["user"],
+        "is_admin": request_is_admin(request),
+    }
 
 
 @app.post("/api/logout")
@@ -2499,6 +2568,84 @@ async def create_feedback(
         await db.close()
 
     return _feedback_message_response(message, attachments_by_message)
+
+
+@app.delete("/api/feedback/{message_id}")
+async def delete_feedback_message(request: Request, message_id: str):
+    admin_user = require_admin(request)
+    db = await get_db()
+    deleted_ids: list[str] = []
+    deleted_paths: list[str] = []
+    root_parent_id: Optional[str] = None
+    try:
+        target = await row_to_dict(
+            await (await db.execute(
+                "SELECT id, parent_id FROM feedback_messages WHERE id=?",
+                (message_id,),
+            )).fetchone()
+        )
+        if not target:
+            raise HTTPException(404, "帖子不存在")
+
+        if target.get("parent_id"):
+            deleted_ids = [target["id"]]
+            root_parent_id = target["parent_id"]
+            delete_scope = "reply"
+        else:
+            reply_rows = await (
+                await db.execute(
+                    "SELECT id FROM feedback_messages WHERE parent_id=?",
+                    (target["id"],),
+                )
+            ).fetchall()
+            deleted_ids = [target["id"]] + [row["id"] for row in reply_rows]
+            delete_scope = "post"
+
+        placeholders = ",".join("?" * len(deleted_ids))
+        attachment_rows = await (
+            await db.execute(
+                f"SELECT stored_path FROM feedback_attachments WHERE message_id IN ({placeholders})",
+                tuple(deleted_ids),
+            )
+        ).fetchall()
+        deleted_paths = [row["stored_path"] for row in attachment_rows if row["stored_path"]]
+
+        await db.execute(
+            f"DELETE FROM feedback_attachments WHERE message_id IN ({placeholders})",
+            tuple(deleted_ids),
+        )
+        await db.execute(
+            f"DELETE FROM feedback_messages WHERE id IN ({placeholders})",
+            tuple(deleted_ids),
+        )
+        if root_parent_id:
+            await db.execute(
+                "UPDATE feedback_messages SET updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (root_parent_id,),
+            )
+
+        await write_audit(
+            db, request, "feedback.delete",
+            resource_type="feedback", resource_id=target["id"],
+            details={
+                "admin_user": admin_user,
+                "scope": delete_scope,
+                "deleted_ids": deleted_ids,
+                "root_parent_id": root_parent_id,
+            },
+        )
+        await db.commit()
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception:
+        await db.rollback()
+        raise
+    finally:
+        await db.close()
+
+    _remove_feedback_storage(deleted_paths, deleted_ids)
+    return {"ok": True, "deleted": len(deleted_ids), "ids": deleted_ids}
 
 
 @app.get("/api/feedback/images/{attachment_id}")

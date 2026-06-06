@@ -123,10 +123,11 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.8");
+const appVersion = ref("0.2.9");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
+const currentUserIsAdmin = ref(false);
 const LOGIN_USERNAME_KEY = "tpa-login-username";
 const LOGIN_REMEMBER_USERNAME_KEY = "tpa-login-remember-username";
 const loginRememberUsername = ref(readStoredBool(LOGIN_REMEMBER_USERNAME_KEY, true));
@@ -147,6 +148,7 @@ const aiAnalysisError = ref("");
 const aiAnalysisContent = ref("");
 let activeResultStateJobId = null;
 let aiAnalysisPollTimer = null;
+const isAdmin = computed(() => currentUserIsAdmin.value);
 
 const toggleActionMenu = key => {
   openActionMenu.value = openActionMenu.value === key ? "" : key;
@@ -786,7 +788,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.8";
+  appVersion.value = cfg.version || "0.2.9";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -797,11 +799,13 @@ const loadMe = async () => {
   const r = await fetch("/api/me", { credentials: "include" });
   if (!r.ok) {
     currentUser.value = null;
+    currentUserIsAdmin.value = false;
     authChecked.value = true;
     return null;
   }
   const data = await r.json();
   currentUser.value = data.authenticated ? data.user : null;
+  currentUserIsAdmin.value = Boolean(data.is_admin);
   authChecked.value = true;
   return currentUser.value;
 };
@@ -848,6 +852,7 @@ const submitLogin = async () => {
       localStorage.removeItem(LOGIN_USERNAME_KEY);
     }
     currentUser.value = data.user || null;
+    currentUserIsAdmin.value = Boolean(data.is_admin);
     window.setTimeout(() => {
       loginForm.value.password = "";
       loginForm.value.captcha = "";
@@ -867,6 +872,7 @@ const submitLogin = async () => {
 const logout = async () => {
   await fetch("/api/logout", { method: "POST", credentials: "include" }).catch(() => {});
   currentUser.value = null;
+  currentUserIsAdmin.value = false;
   appInitialized = false;
   projects.value = [];
   historyGroups.value = [];
@@ -1133,6 +1139,58 @@ const submitFeedback = async (parentId = null) => {
     }
   }
 };
+
+const deleteFeedbackMessage = async (message, kind = "post") => {
+  if (!isAdmin.value || !message?.id) return;
+  const isReply = kind === "reply" || Boolean(message.parent_id);
+  const ok = await askConfirm(
+    isReply
+      ? "确定删除这条交流？图片附件也会一起删除。"
+      : "确定删除这个帖子？帖子里的所有交流和图片附件都会一起删除。",
+    {
+      title: "管理员删除",
+      confirmText: "删除",
+      tone: "danger",
+    },
+  );
+  if (!ok) return;
+
+  try {
+    const r = await fetch(`/api/feedback/${encodeURIComponent(message.id)}`, {
+      method: "DELETE",
+      credentials: "include",
+    });
+    const payload = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(payload.detail || "删除失败");
+
+    const deletedIds = new Set(payload.ids || [message.id]);
+    if (isReply) {
+      feedbackItems.value = feedbackItems.value.map(post => {
+        const removedReplies = (post.replies || []).filter(reply => deletedIds.has(reply.id)).length;
+        if (!removedReplies) return post;
+        return {
+          ...post,
+          replies: (post.replies || []).filter(reply => !deletedIds.has(reply.id)),
+          reply_count: Math.max(0, Number(post.reply_count || 0) - removedReplies),
+        };
+      });
+      if (selectedFeedbackPostId.value) {
+        await selectFeedbackPost(selectedFeedbackPostId.value, { refresh: true });
+      }
+    } else {
+      feedbackItems.value = feedbackItems.value.filter(post => !deletedIds.has(post.id));
+      feedbackTotal.value = Math.max(0, feedbackTotal.value - 1);
+      feedbackOffset.value = feedbackItems.value.length;
+      if (deletedIds.has(selectedFeedbackPostId.value)) selectedFeedbackPostId.value = "";
+    }
+    showToast(isReply ? "交流已删除" : "帖子已删除", "success");
+  } catch (e) {
+    showToast(e.message || "删除失败", "error");
+  }
+};
+
+const deleteFeedbackPost = post => deleteFeedbackMessage(post, "post");
+const deleteFeedbackReply = reply => deleteFeedbackMessage(reply, "reply");
 
 const toggleStorageSelection = jobId => {
   const idx = storageSelection.value.indexOf(jobId);
@@ -4457,7 +4515,7 @@ const App = {
       // Layout/theme
       isDark, toggleTheme, sidebarWidth, sidebarCollapsed, appVersion,
       toggleSidebar, startSidebarResize,
-      authRequired, authChecked, currentUser, loginForm, loginRememberUsername, loginLoading, loginError,
+      authRequired, authChecked, currentUser, isAdmin, loginForm, loginRememberUsername, loginLoading, loginError,
       loginCaptchaRequired, loginCaptchaImage,
       submitLogin, refreshLoginCaptcha, logout,
 
@@ -4498,6 +4556,7 @@ const App = {
       openFeedbackBoard, loadFeedback, setFeedbackFiles, clearFeedbackForm,
       toggleFeedbackReply, selectFeedbackPost, closeFeedbackPost,
       openFeedbackComposer, closeFeedbackComposer, closeFeedbackBoard, submitFeedback,
+      deleteFeedbackPost, deleteFeedbackReply,
       showStorageManager, storageSummary, storageSelection, storageJobsWithTrace,
       openStorageManager, toggleStorageSelection, toggleAllStorageSelection,
       deleteSelectedStorageFiles, fmtBytes,
