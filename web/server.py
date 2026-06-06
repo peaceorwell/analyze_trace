@@ -37,7 +37,7 @@ import auth as ldap_auth  # noqa: E402
 
 DEFAULT_STORAGE_DIR = os.path.join(os.path.dirname(__file__), "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.5"
+APP_VERSION = "0.2.6"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(os.path.dirname(__file__), "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
 FEEDBACK_DIRNAME = "feedback"
@@ -2208,7 +2208,14 @@ def _feedback_attachment_response(row: dict) -> dict:
     }
 
 
-def _feedback_message_response(row: dict, attachments_by_message: dict, replies: Optional[list] = None) -> dict:
+def _feedback_message_response(
+    row: dict,
+    attachments_by_message: dict,
+    replies: Optional[list] = None,
+    reply_count: Optional[int] = None,
+    last_activity_at: Optional[str] = None,
+) -> dict:
+    normalized_replies = replies or []
     return {
         "id": row["id"],
         "parent_id": row.get("parent_id"),
@@ -2217,7 +2224,9 @@ def _feedback_message_response(row: dict, attachments_by_message: dict, replies:
         "created_at": row.get("created_at") or "",
         "updated_at": row.get("updated_at") or "",
         "attachments": attachments_by_message.get(row["id"], []),
-        "replies": replies or [],
+        "replies": normalized_replies,
+        "reply_count": reply_count if reply_count is not None else len(normalized_replies),
+        "last_activity_at": last_activity_at or row.get("last_activity_at") or row.get("updated_at") or row.get("created_at") or "",
     }
 
 
@@ -2257,10 +2266,24 @@ async def list_feedback(request: Request, limit: int = 30, offset: int = 0):
         parent_rows = await (
             await db.execute(
                 """
-                SELECT *
-                FROM feedback_messages
-                WHERE parent_id IS NULL
-                ORDER BY created_at DESC
+                SELECT p.*,
+                       (
+                           SELECT COUNT(*)
+                           FROM feedback_messages r
+                           WHERE r.parent_id = p.id
+                       ) AS reply_count,
+                       COALESCE(
+                           (
+                               SELECT MAX(r.created_at)
+                               FROM feedback_messages r
+                               WHERE r.parent_id = p.id
+                           ),
+                           p.updated_at,
+                           p.created_at
+                       ) AS last_activity_at
+                FROM feedback_messages p
+                WHERE p.parent_id IS NULL
+                ORDER BY last_activity_at DESC, p.created_at DESC
                 LIMIT ? OFFSET ?
                 """,
                 (limit, offset),
@@ -2297,13 +2320,84 @@ async def list_feedback(request: Request, limit: int = 30, offset: int = 0):
 
     return {
         "data": [
-            _feedback_message_response(parent, attachments_by_message, replies_by_parent.get(parent["id"], []))
+            _feedback_message_response(
+                parent,
+                attachments_by_message,
+                replies_by_parent.get(parent["id"], []),
+                reply_count=parent.get("reply_count"),
+                last_activity_at=parent.get("last_activity_at"),
+            )
             for parent in parents
         ],
         "total": total_row["total"] if total_row else 0,
         "limit": limit,
         "offset": offset,
     }
+
+
+@app.get("/api/feedback/{post_id}")
+async def get_feedback_post(request: Request, post_id: str):
+    if AUTH_ENABLED:
+        current_user_token(request)
+    db = await get_db()
+    try:
+        found = await row_to_dict(
+            await (await db.execute(
+                "SELECT id, parent_id FROM feedback_messages WHERE id=?",
+                (post_id,),
+            )).fetchone()
+        )
+        if not found:
+            raise HTTPException(404, "帖子不存在")
+        root_id = found.get("parent_id") or found["id"]
+        parent = await row_to_dict(
+            await (await db.execute(
+                """
+                SELECT p.*,
+                       (
+                           SELECT COUNT(*)
+                           FROM feedback_messages r
+                           WHERE r.parent_id = p.id
+                       ) AS reply_count,
+                       COALESCE(
+                           (
+                               SELECT MAX(r.created_at)
+                               FROM feedback_messages r
+                               WHERE r.parent_id = p.id
+                           ),
+                           p.updated_at,
+                           p.created_at
+                       ) AS last_activity_at
+                FROM feedback_messages p
+                WHERE p.id=?
+                """,
+                (root_id,),
+            )).fetchone()
+        )
+        reply_rows = await (
+            await db.execute(
+                """
+                SELECT *
+                FROM feedback_messages
+                WHERE parent_id=?
+                ORDER BY created_at ASC
+                """,
+                (root_id,),
+            )
+        ).fetchall()
+        replies = [dict(row) for row in reply_rows]
+        message_ids = [root_id] + [row["id"] for row in replies]
+        attachments_by_message = await _feedback_attachments_for(db, message_ids)
+    finally:
+        await db.close()
+
+    return _feedback_message_response(
+        parent,
+        attachments_by_message,
+        [_feedback_message_response(reply, attachments_by_message) for reply in replies],
+        reply_count=parent.get("reply_count"),
+        last_activity_at=parent.get("last_activity_at"),
+    )
 
 
 @app.post("/api/feedback", status_code=201)
@@ -2370,6 +2464,12 @@ async def create_feedback(
                     content_type,
                     len(data),
                 ),
+            )
+
+        if root_parent_id:
+            await db.execute(
+                "UPDATE feedback_messages SET updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (root_parent_id,),
             )
 
         await write_audit(

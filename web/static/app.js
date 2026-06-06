@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.5");
+const appVersion = ref("0.2.6");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -360,6 +360,8 @@ const feedbackLoading = ref(false);
 const feedbackSubmitting = ref(false);
 const feedbackForm = ref({ body: "", files: [], previews: [] });
 const feedbackReplies = ref({});
+const selectedFeedbackPostId = ref("");
+const feedbackDetailLoading = ref(false);
 
 const selectedFilterProject = computed(() =>
   projects.value.find(project => project.id === filterProject.value) || null
@@ -783,7 +785,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.5";
+  appVersion.value = cfg.version || "0.2.6";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -907,6 +909,39 @@ const openStorageManager = async () => {
 };
 
 const feedbackHasMore = computed(() => feedbackOffset.value + feedbackItems.value.length < feedbackTotal.value);
+const selectedFeedbackPost = computed(() =>
+  feedbackItems.value.find(item => item.id === selectedFeedbackPostId.value) || null
+);
+
+const feedbackPostTitle = item => {
+  const text = (item?.body || "").trim();
+  if (!text) return (item?.attachments || []).length ? "图片帖子" : "无标题帖子";
+  const firstLine = text.split(/\r?\n/).map(line => line.trim()).find(Boolean) || text;
+  return firstLine.length > 58 ? `${firstLine.slice(0, 58)}...` : firstLine;
+};
+
+const feedbackPostExcerpt = item => {
+  const text = (item?.body || "").replace(/\s+/g, " ").trim();
+  if (!text) return (item?.attachments || []).length ? "包含图片附件" : "暂无正文";
+  return text.length > 110 ? `${text.slice(0, 110)}...` : text;
+};
+
+const feedbackPostReplyCount = item => Number(item?.reply_count ?? item?.replies?.length ?? 0);
+const feedbackPostActivity = item => item?.last_activity_at || item?.updated_at || item?.created_at || "";
+
+const mergeFeedbackPost = post => {
+  if (!post?.id) return;
+  const idx = feedbackItems.value.findIndex(item => item.id === post.id);
+  if (idx >= 0) {
+    const next = [...feedbackItems.value];
+    next[idx] = { ...next[idx], ...post };
+    feedbackItems.value = next;
+    return;
+  }
+  feedbackItems.value = [post, ...feedbackItems.value];
+  feedbackTotal.value += 1;
+  feedbackOffset.value = feedbackItems.value.length;
+};
 
 const revokeFeedbackPreviews = previews => {
   for (const preview of previews || []) {
@@ -970,7 +1005,31 @@ const toggleFeedbackReply = id => {
   };
 };
 
-const loadFeedback = async ({ reset = false } = {}) => {
+const selectFeedbackPost = async (id, { refresh = true } = {}) => {
+  if (!id) return;
+  selectedFeedbackPostId.value = id;
+  ensureFeedbackReplyForm(id);
+  if (!refresh) return;
+  feedbackDetailLoading.value = true;
+  try {
+    const r = await fetch(`/api/feedback/${encodeURIComponent(id)}`, { credentials: "include" });
+    const payload = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(payload.detail || "加载帖子失败");
+    mergeFeedbackPost(payload);
+    selectedFeedbackPostId.value = payload.id || id;
+    ensureFeedbackReplyForm(selectedFeedbackPostId.value);
+  } catch (e) {
+    showToast(e.message || "加载帖子失败", "error");
+  } finally {
+    feedbackDetailLoading.value = false;
+  }
+};
+
+const closeFeedbackPost = () => {
+  selectedFeedbackPostId.value = "";
+};
+
+const loadFeedback = async ({ reset = false, selectId = "" } = {}) => {
   if (feedbackLoading.value) return;
   feedbackLoading.value = true;
   if (reset) {
@@ -989,6 +1048,16 @@ const loadFeedback = async ({ reset = false } = {}) => {
     feedbackItems.value = reset ? rows : [...feedbackItems.value, ...rows];
     feedbackTotal.value = payload.total || 0;
     feedbackOffset.value = feedbackItems.value.length;
+    const desiredId = selectId || selectedFeedbackPostId.value;
+    if (desiredId && feedbackItems.value.some(item => item.id === desiredId)) {
+      selectedFeedbackPostId.value = desiredId;
+      ensureFeedbackReplyForm(desiredId);
+    } else if (reset && feedbackItems.value.length) {
+      selectedFeedbackPostId.value = feedbackItems.value[0].id;
+      ensureFeedbackReplyForm(selectedFeedbackPostId.value);
+    } else if (reset) {
+      selectedFeedbackPostId.value = "";
+    }
   } catch (e) {
     showToast(e.message || "加载留言失败", "error");
   } finally {
@@ -1029,9 +1098,11 @@ const submitFeedback = async (parentId = null) => {
     });
     const payload = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(payload.detail || "提交留言失败");
+    const targetPostId = isReply ? parentId : payload.id;
     clearFeedbackForm(parentId);
-    await loadFeedback({ reset: true });
-    showToast(isReply ? "回复已发布" : "留言已发布", "success");
+    await loadFeedback({ reset: true, selectId: targetPostId });
+    if (targetPostId) await selectFeedbackPost(targetPostId, { refresh: true });
+    showToast(isReply ? "回复已发布" : "帖子已发布", "success");
   } catch (e) {
     showToast(e.message || "提交留言失败", "error");
   } finally {
@@ -4406,8 +4477,10 @@ const App = {
       isDeletedOver10Days, restoreProject, permanentlyDeleteProject,
       showFeedbackBoard, feedbackItems, feedbackTotal, feedbackLoading,
       feedbackSubmitting, feedbackForm, feedbackReplies, feedbackHasMore,
+      selectedFeedbackPostId, selectedFeedbackPost, feedbackDetailLoading,
+      feedbackPostTitle, feedbackPostExcerpt, feedbackPostReplyCount, feedbackPostActivity,
       openFeedbackBoard, loadFeedback, setFeedbackFiles, clearFeedbackForm,
-      toggleFeedbackReply, submitFeedback,
+      toggleFeedbackReply, selectFeedbackPost, closeFeedbackPost, submitFeedback,
       showStorageManager, storageSummary, storageSelection, storageJobsWithTrace,
       openStorageManager, toggleStorageSelection, toggleAllStorageSelection,
       deleteSelectedStorageFiles, fmtBytes,

@@ -57,7 +57,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.5",
+        "version": "0.2.6",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -226,8 +226,21 @@ def test_feedback_board_supports_images_and_replies(client):
     assert payload["total"] == 1
     assert payload["data"][0]["id"] == message["id"]
     assert payload["data"][0]["attachments"][0]["filename"] == "idea.png"
+    assert payload["data"][0]["reply_count"] == 1
+    assert payload["data"][0]["last_activity_at"]
     assert payload["data"][0]["replies"][0]["body"] == "这个确实有用"
     assert payload["data"][0]["replies"][0]["user_display"] == "bob"
+
+    detail = client.get(f"/api/feedback/{message['id']}")
+    assert detail.status_code == 200
+    detail_payload = detail.json()
+    assert detail_payload["id"] == message["id"]
+    assert detail_payload["reply_count"] == 1
+    assert detail_payload["replies"][0]["body"] == "这个确实有用"
+
+    detail_from_reply = client.get(f"/api/feedback/{reply.json()['id']}")
+    assert detail_from_reply.status_code == 200
+    assert detail_from_reply.json()["id"] == message["id"]
 
 
 def test_feedback_board_rejects_non_images(client):
