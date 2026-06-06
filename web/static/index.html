@@ -710,21 +710,25 @@
           <section class="guide-section">
             <h3>1. 提交分析</h3>
             <ul>
-              <li>在主区域上传区拖拽或点击上传一个或多个 <code>.json</code> / <code>.json.gz</code> 文件（PyTorch Profiler 导出的 Chrome Trace 格式）</li>
-              <li>选择所属项目（可选），填写别名（可选）</li>
-              <li>勾选 <strong>Triton CSV 详情</strong>：输出逐 step 的 Triton kernel 详情表格</li>
-              <li>勾选 <strong>Triton 代码保存</strong>：保存每个 Triton kernel 的生成源码，可在结果中查看和执行</li>
-              <li>点击"提交分析"，后台异步处理，实时显示上传进度和运行状态</li>
+              <li>在 <strong>单文件/批量</strong> 模式下，拖拽或点击上传一个或多个 trace 文件；支持 <code>.json</code>、<code>.json.gz</code>、<code>.json.zip</code>、<code>.tar.gz</code>、<code>.tgz</code> 格式</li>
+              <li>上传文件应为 PyTorch Profiler 导出的 Chrome Trace JSON；压缩包中会自动提取可用的 JSON trace</li>
+              <li>选择所属项目（可选），填写别名（可选）；批量上传时会按文件名自动区分任务</li>
+              <li>点击 <strong>提交分析</strong> 或 <strong>批量提交</strong> 后，任务进入后台队列，页面会显示上传进度和运行状态</li>
+              <li>单文件/批量分析会生成性能总览、控制台摘要和 CSV 结果；如果 trace 中包含 Triton 代码信息，也可在结果中查看和运行相关代码</li>
+              <li>需要直接比较两个新 trace 时，切换到 <strong>快速对比</strong>，分别上传 A/B 后点击 <strong>提交对比</strong></li>
             </ul>
           </section>
           <section class="guide-section">
             <h3>2. 查看结果</h3>
             <ul>
-              <li><strong>控制台</strong>：原始文本输出，含 Per-Step 摘要、Top 10 热点 kernel、Kernel 类型分布</li>
-              <li><strong>图表</strong>：Kernel 类型耗时柱状图（横向）和占比饼图，collective 类型不计入 compute 分析</li>
-              <li><strong>CSV 表格</strong>：按页加载，支持搜索、列排序、列宽拖拽、列显隐、超长内容截断并 hover 显示全文</li>
-              <li>会按任务记住上次打开的结果页签，以及各表格的搜索、排序、列宽、列筛选和列显隐</li>
-              <li><strong>下载当前页 CSV</strong>：表格右上角可下载当前分页中的 CSV 内容</li>
+              <li><strong>性能总览</strong>：默认打开，支持切换数据源、指标和 TopN；柱状图、占比图、摘要卡片和对比 Delta 列表都支持点击下钻到对应 CSV 表格</li>
+              <li><strong>控制台</strong>：展示脚本原始输出，包含 Per-Step 摘要、热点 kernel 和文件生成信息；支持搜索、section 跳转、折叠低价值输出和 Delta 着色</li>
+              <li><strong>Kernel 类型 / 类型对比</strong>：按 kernel family 聚合，点击类型行可跳到相关 Kernel 表格并自动筛选</li>
+              <li><strong>CSV 表格</strong>：支持全局搜索、列筛选、排序、列宽拖拽、列显隐、分页大小调整和快捷显示全部</li>
+              <li><strong>下载当前页 CSV</strong>：表格右上角可下载当前筛选和分页结果</li>
+              <li><strong>阅读模式</strong>：结果区域右上角可进入全屏阅读，适合查看控制台、表格或图表</li>
+              <li><strong>AI 分析</strong>：服务端开启 Claude Code 后会出现该页签，可对单 trace 或对比 trace 生成分析报告</li>
+              <li>应用会按任务记住上次打开的结果页签，以及表格搜索、排序、列宽、列筛选和列显隐</li>
             </ul>
           </section>
           <section class="guide-section">
@@ -746,6 +750,8 @@
             <ul>
               <li>点击"+ 新建项目"创建项目，用于归类管理分析任务</li>
               <li>支持<strong>重命名项目</strong>、<strong>移动任务</strong>到其他项目</li>
+              <li>登录模式下项目默认为个人项目；可以创建共享项目，也可以把自己的个人项目转为共享项目</li>
+              <li>共享项目中的任务对所有登录用户可见并可用于对比，但重命名、移动、删除任务和删除文件仍只允许任务创建者操作</li>
               <li><strong>删除项目</strong>：项目及其下的所有任务保存到回收站（10 天内可恢复）</li>
               <li><strong>找回项目</strong>：在"找回项目"中可恢复近 10 天内删除的项目，任务会一起恢复</li>
               <li>超过 10 天的已删除项目会显示"已过期"标签，只能永久删除</li>
@@ -754,31 +760,32 @@
           <section class="guide-section">
             <h3>5. 历史对比</h3>
             <ul>
-              <li>在侧栏"对比"标签页选择两个已完成的单文件任务</li>
-              <li>候选任务支持独立搜索和分页，已选任务会固定显示在列表上方</li>
-              <li>可选填别名和所属项目</li>
-              <li>点击"发起对比"，系统直接复用已有数据，无需重新上传文件</li>
+              <li>在侧栏 <strong>对比</strong> 标签页，可以选择两个已完成的单文件任务进行两两对比</li>
+              <li>也可以切换到 <strong>批量基线</strong>：先选一个基线任务，再选择多个候选任务，一次创建多个对比</li>
+              <li>候选任务支持独立搜索和分页，已选任务会固定显示在列表上方，便于确认 A/B 或基线/候选关系</li>
+              <li>可选填别名、别名前缀和所属项目；系统复用已上传的 trace，无需重新上传文件</li>
               <li>对比结果页会显示 A/B 来源任务，可跳回源任务，也可交换 A/B 重新发起对比</li>
-              <li>对比结果含 Kernel 对比、Triton 对比、Aten 对比、类型对比、CNCL 对比等多个维度</li>
+              <li>对比结果包含性能总览、控制台、类型对比、Kernel 对比、Triton 对比、Aten 对比、CNCL 对比等多个维度</li>
               <li>源文件被删除后对应任务将标记"已删除"标签，无法参与对比</li>
             </ul>
           </section>
           <section class="guide-section">
             <h3>6. 文件操作</h3>
             <ul>
-              <li><strong>下载</strong>：可下载原始 trace 文件（受服务器 <code>--no-download</code> 参数控制）</li>
-              <li><strong>Perfetto</strong>：点击"Perfetto ↗"按钮在 Perfetto UI 中打开 trace 文件进行深入分析</li>
+              <li><strong>下载</strong>：默认下载 gzip 压缩后的 trace JSON（通常为 <code>.json.gz</code>），便于保存大文件并保持工具兼容性；是否允许下载受服务器下载开关控制</li>
+              <li><strong>Perfetto</strong>：点击 <strong>Perfetto ↗</strong> 按钮会打开 Perfetto UI，并尝试自动载入当前 trace；大文件载入需要等待一段时间</li>
               <li><strong>删除文件</strong>：删除原始 trace 文件后，对应任务会标记"已删除"，无法再参与对比</li>
               <li>删除前会提示受影响的历史对比数量，便于确认清理范围</li>
+              <li><strong>删除任务</strong> 会同时清理该任务目录下的 trace、压缩 trace、结果 CSV、AI 分析产物和 Triton 代码等文件</li>
             </ul>
           </section>
           <section class="guide-section">
             <h3>7. 运行 Triton 代码</h3>
             <ul>
-              <li>在 <strong>Triton</strong> 或 <strong>Triton Step N</strong> 表格中，每行有"运行"按钮</li>
-              <li>点击运行后会执行对应的 Triton kernel 代码，弹出执行结果</li>
-              <li>效率值会显示在行内（单位 GB/s），旁边有 ↻ 按钮可重新运行</li>
-              <li><strong>清除 Cache</strong>：在 Triton Step N 表格右上角有"清除 Cache"按钮，可清除 <code>/tmp/torchinductor_*</code> 缓存目录，重新运行以获得准确性能数据</li>
+              <li>当 trace 中包含 Triton 生成代码，且服务端开启 <code>TRACE_ENABLE_CODE_EXEC=1</code> 后，可在 <strong>Triton</strong> 或 <strong>Triton Step N</strong> 表格中查看并运行对应代码</li>
+              <li>点击运行后会在服务端执行对应 Triton kernel，弹窗展示 stdout、stderr 和环境信息</li>
+              <li>执行成功时，效率值会显示在行内（单位 GB/s），旁边的 ↻ 按钮可重新运行</li>
+              <li><strong>清除 Cache</strong>：Triton Step 表格可清除 <code>/tmp/torchinductor_*</code> 缓存目录，重新运行以获得更稳定的性能数据</li>
             </ul>
             <p class="guide-note">
               <strong>注意</strong>：此功能依赖 MLU（寒武纪）硬件环境。需要已安装 <code>torch_mlu</code> 驱动并有物理 MLU 加速卡。
@@ -790,6 +797,7 @@
             <ul>
               <li><strong>深色/浅色模式</strong>：右上角切换按钮，自动记忆偏好</li>
               <li><strong>存储管理</strong>：查看原始 trace / 结果文件占用，并集中清理原始文件</li>
+              <li><strong>改进留言板</strong>：可以发布文字和图片帖子，也可以进入帖子内交流；管理员可删除帖子和回复</li>
               <li><strong>侧栏可拖拽调整宽度</strong>，可折叠以扩大主区域可视范围</li>
               <li>点击标题栏可返回上传页面</li>
             </ul>
@@ -808,6 +816,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=11"></script>
+  <script src="/static/app.js?v=12"></script>
 </body>
 </html>
