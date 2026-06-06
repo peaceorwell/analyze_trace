@@ -121,12 +121,12 @@
       <div class="header-actions">
         <span v-if="authRequired && currentUser" class="header-user">{{ currentUser.display_name || currentUser.username }}</span>
         <button class="btn btn-sm btn-primary" @click="showNewProject=true">+ 新建项目</button>
+        <button class="btn btn-sm btn-outline" @click="openFeedbackBoard()">改进留言板</button>
         <div class="action-menu-wrap header-more-menu" @click.stop>
           <button class="action-icon-btn" type="button" title="更多入口"
                   aria-label="更多入口"
                   @click="toggleActionMenu('header')">...</button>
           <div v-if="openActionMenu==='header'" class="action-menu">
-            <button type="button" @click="openFeedbackBoard(); closeActionMenu()">改进留言板</button>
             <button type="button" @click="openStorageManager(); closeActionMenu()">存储</button>
             <button type="button" @click="showGuide=true; closeActionMenu()">使用指南</button>
             <button type="button" @click="showDeletedProjects=true; loadDeletedProjects(); closeActionMenu()">找回项目</button>
@@ -816,6 +816,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=12"></script>
+  <script src="/static/app.js?v=13"></script>
 </body>
 </html>
