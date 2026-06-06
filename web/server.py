@@ -35,10 +35,13 @@ from trace_analyzer import compute_avgs, extract_kernel_family, parse_trace, run
 from db import get_db, init_db, row_to_dict  # noqa: E402
 import auth as ldap_auth  # noqa: E402
 
-DEFAULT_STORAGE_DIR = os.path.join(os.path.dirname(__file__), "storage")
+WEB_DIR = os.path.dirname(__file__)
+PROJECT_ROOT = os.path.dirname(WEB_DIR)
+PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
+DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.12"
-BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(os.path.dirname(__file__), "backups"))
+APP_VERSION = "0.2.13"
+BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
 FEEDBACK_DIRNAME = "feedback"
 FEEDBACK_MAX_IMAGES = 4
@@ -60,7 +63,7 @@ CLAUDE_ANALYSIS_COMMAND = os.environ.get("TRACE_CLAUDE_COMMAND", "claude")
 CLAUDE_ANALYSIS_COMMAND_TEMPLATE = os.environ.get("TRACE_CLAUDE_COMMAND_TEMPLATE", "")
 CLAUDE_ANALYSIS_EXTRA_ARGS = os.environ.get("TRACE_CLAUDE_EXTRA_ARGS", "")
 CLAUDE_ANALYSIS_TIMEOUT_SECONDS = max(30, int(os.environ.get("TRACE_CLAUDE_TIMEOUT_SECONDS", "1800")))
-CLAUDE_ANALYSIS_SKILLS_DIR = os.environ.get("TRACE_CLAUDE_SKILLS_DIR", "")
+CLAUDE_ANALYSIS_SKILLS_DIR = os.environ.get("TRACE_CLAUDE_SKILLS_DIR", PROJECT_CLAUDE_SKILLS_DIR)
 CLAUDE_SINGLE_TRACE_SKILL = os.environ.get("TRACE_CLAUDE_SINGLE_SKILL", "e2e-profiling-analyzer")
 CLAUDE_COMPARE_TRACE_SKILL = os.environ.get("TRACE_CLAUDE_COMPARE_SKILL", "e2e-profiling-comparator")
 
@@ -1170,6 +1173,66 @@ def _build_claude_command(prompt: str, values: dict) -> list[str]:
     return command
 
 
+def _validate_claude_command(command: list[str]) -> None:
+    executable = command[0] if command else ""
+    if not executable:
+        raise RuntimeError("Claude analysis command is empty. Check TRACE_CLAUDE_COMMAND_TEMPLATE.")
+    if os.path.sep in executable or (os.path.altsep and os.path.altsep in executable):
+        if not os.path.exists(executable):
+            raise RuntimeError(
+                f"Claude Code command not found: {executable}. "
+                "Install Claude Code on the deployment host or set TRACE_CLAUDE_COMMAND to a valid absolute path."
+            )
+        if not os.access(executable, os.X_OK):
+            raise RuntimeError(f"Claude Code command is not executable: {executable}")
+        return
+    if shutil.which(executable):
+        return
+    raise RuntimeError(
+        f"Claude Code command not found: {executable}. "
+        "Install Claude Code on the deployment host, add it to the service PATH, "
+        "or set TRACE_CLAUDE_COMMAND / TRACE_CLAUDE_COMMAND_TEMPLATE to the absolute command path."
+    )
+
+
+def _resolve_claude_skills_dir() -> str:
+    skills_dir = (CLAUDE_ANALYSIS_SKILLS_DIR or "").strip()
+    if not skills_dir:
+        return ""
+    return os.path.abspath(os.path.expanduser(skills_dir))
+
+
+def _validate_claude_skill(skill: str, skills_dir: str) -> None:
+    if not skills_dir:
+        return
+    if not os.path.isdir(skills_dir):
+        raise RuntimeError(
+            f"Claude skills directory not found: {skills_dir}. "
+            "Set TRACE_CLAUDE_SKILLS_DIR to the directory containing e2e-profiling-analyzer "
+            "and e2e-profiling-comparator."
+        )
+    skill_file = os.path.join(skills_dir, skill, "SKILL.md")
+    if not os.path.isfile(skill_file):
+        raise RuntimeError(
+            f"Claude skill not found: {skill} in {skills_dir}. "
+            "Check TRACE_CLAUDE_SINGLE_SKILL / TRACE_CLAUDE_COMPARE_SKILL and the skills directory."
+        )
+
+
+def _mount_claude_skills_for_analysis(analysis_dir: str, skills_dir: str) -> None:
+    if not skills_dir:
+        return
+    claude_dir = os.path.join(analysis_dir, ".claude")
+    target = os.path.join(claude_dir, "skills")
+    if os.path.exists(target):
+        return
+    os.makedirs(claude_dir, exist_ok=True)
+    try:
+        os.symlink(skills_dir, target, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        shutil.copytree(skills_dir, target, dirs_exist_ok=True)
+
+
 async def _source_trace_for_ai(db, source_id: Optional[str]) -> tuple[Optional[str], Optional[str]]:
     if not source_id:
         return None, None
@@ -1203,9 +1266,9 @@ async def _resolve_ai_trace_inputs(job: dict) -> dict:
         await db.close()
 
     if not trace_a or not os.path.exists(trace_a):
-        raise ValueError("Trace A file not found")
+        raise ValueError(f"Trace A file not found: {trace_a or '<empty>'}")
     if job.get("mode") == "compare" and (not trace_b or not os.path.exists(trace_b)):
-        raise ValueError("Trace B file not found")
+        raise ValueError(f"Trace B file not found: {trace_b or '<empty>'}")
 
     return {
         "trace_a": trace_a,
@@ -1215,7 +1278,7 @@ async def _resolve_ai_trace_inputs(job: dict) -> dict:
     }
 
 
-def _render_claude_prompt(job: dict, trace_inputs: dict, skill: str, report_path: str) -> str:
+def _render_claude_prompt(job: dict, trace_inputs: dict, skill: str, report_path: str, skills_dir: str = "") -> str:
     rdir = result_dir(job["id"])
     mode_text = "双 trace 对比" if job.get("mode") == "compare" else "单 trace 分析"
     lines = [
@@ -1249,10 +1312,11 @@ def _render_claude_prompt(job: dict, trace_inputs: dict, skill: str, report_path
         "- 对不确定结论明确写出依据和不确定性。",
         "- 最后给出可执行优化建议，按收益和排查成本排序。",
     ])
-    if CLAUDE_ANALYSIS_SKILLS_DIR:
+    if skills_dir:
         lines.extend([
             "",
-            f"自定义 skills 目录提示: {CLAUDE_ANALYSIS_SKILLS_DIR}",
+            f"自定义 skills 目录提示: {skills_dir}",
+            f"当前工作目录已挂载 `.claude/skills`，其中应包含 `{skill}`。",
         ])
     return "\n".join(lines)
 
@@ -1305,20 +1369,25 @@ async def _run_ai_analysis_task(jid: str):
 
         trace_inputs = await _resolve_ai_trace_inputs(job)
         skill = CLAUDE_COMPARE_TRACE_SKILL if job.get("mode") == "compare" else CLAUDE_SINGLE_TRACE_SKILL
+        skills_dir = _resolve_claude_skills_dir()
+        _validate_claude_skill(skill, skills_dir)
+        _mount_claude_skills_for_analysis(analysis_dir, skills_dir)
         status = {
             "status": "running",
             "mode": job.get("mode"),
             "skill": skill,
+            "skills_dir": skills_dir,
             "started_at": _utc_now_iso(),
             "updated_at": _utc_now_iso(),
         }
         _write_ai_analysis_status(jid, status)
 
-        prompt = _render_claude_prompt(job, trace_inputs, skill, report_path)
+        prompt = _render_claude_prompt(job, trace_inputs, skill, report_path, skills_dir)
         command = _build_claude_command(prompt, {
             "job_id": jid,
             "mode": job.get("mode") or "",
             "skill": skill,
+            "skills_dir": skills_dir,
             "trace_a": trace_inputs["trace_a"],
             "trace_b": trace_inputs["trace_b"],
             "results_dir": result_dir(jid),
@@ -1332,6 +1401,7 @@ async def _run_ai_analysis_task(jid: str):
                     "command": command,
                     "display_command": _format_command(command),
                     "skill": skill,
+                    "skills_dir": skills_dir,
                     "trace_a": trace_inputs["trace_a"],
                     "trace_b": trace_inputs["trace_b"],
                 },
@@ -1339,6 +1409,8 @@ async def _run_ai_analysis_task(jid: str):
                 ensure_ascii=False,
                 indent=2,
             )
+
+        _validate_claude_command(command)
 
         env = os.environ.copy()
         env.update({
@@ -1351,16 +1423,24 @@ async def _run_ai_analysis_task(jid: str):
             "TRACE_AI_ANALYSIS_DIR": analysis_dir,
             "TRACE_AI_REPORT_PATH": report_path,
         })
-        if CLAUDE_ANALYSIS_SKILLS_DIR:
-            env["TRACE_CLAUDE_SKILLS_DIR"] = CLAUDE_ANALYSIS_SKILLS_DIR
+        if skills_dir:
+            env["TRACE_CLAUDE_SKILLS_DIR"] = skills_dir
 
-        proc = await asyncio.create_subprocess_exec(
-            *command,
-            cwd=analysis_dir,
-            env=env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *command,
+                cwd=analysis_dir,
+                env=env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError as e:
+            executable = command[0] if command else str(e)
+            raise RuntimeError(
+                f"Claude Code command not found: {executable}. "
+                "Install Claude Code on the deployment host, add it to the service PATH, "
+                "or set TRACE_CLAUDE_COMMAND / TRACE_CLAUDE_COMMAND_TEMPLATE to the absolute command path."
+            ) from e
         try:
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(),

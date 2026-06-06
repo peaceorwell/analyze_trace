@@ -106,7 +106,7 @@ TRACE_ENABLE_CODE_EXEC=1 docker-compose up -d
 
 ### Claude Code AI 分析
 
-Web 端支持把已完成任务交给服务端 Claude Code 做二次分析，并在结果页展示“AI 分析”页签。该能力默认关闭；开启前请先把自定义 skills 安装到服务端 Claude Code 可发现的位置，例如：
+Web 端支持把已完成任务交给服务端 Claude Code 做二次分析，并在结果页展示“AI 分析”页签。该能力默认关闭；仓库内置的 `.claude/skills/e2e-profiling-analyzer` 和 `.claude/skills/e2e-profiling-comparator` 会默认用于单 trace 分析和双 trace 对比。也可以把自定义 skills 安装到其他位置，例如：
 
 ```bash
 mkdir -p ~/.claude
@@ -121,7 +121,8 @@ tar -xzf e2e-profiling.tar.gz -C ~/.claude
 | `TRACE_ENABLE_CLAUDE_ANALYSIS=1` | off | 开启 Web AI 分析入口 |
 | `TRACE_CLAUDE_COMMAND` | `claude` | Claude Code 命令 |
 | `TRACE_CLAUDE_EXTRA_ARGS` | 空 | 追加给 Claude Code 的参数，例如权限或模型参数 |
-| `TRACE_CLAUDE_COMMAND_TEMPLATE` | 空 | 完整命令模板；可使用 `{prompt}`、`{trace_a}`、`{trace_b}`、`{skill}`、`{results_dir}`、`{analysis_dir}`、`{report_path}` |
+| `TRACE_CLAUDE_COMMAND_TEMPLATE` | 空 | 完整命令模板；可使用 `{prompt}`、`{trace_a}`、`{trace_b}`、`{skill}`、`{skills_dir}`、`{results_dir}`、`{analysis_dir}`、`{report_path}` |
+| `TRACE_CLAUDE_SKILLS_DIR` | `.claude/skills` | Claude skills 目录；每次 AI 分析都会挂载到任务分析目录的 `.claude/skills` |
 | `TRACE_CLAUDE_SINGLE_SKILL` | `e2e-profiling-analyzer` | 单 trace 分析 skill 名称 |
 | `TRACE_CLAUDE_COMPARE_SKILL` | `e2e-profiling-comparator` | 双 trace 对比 skill 名称 |
 | `TRACE_CLAUDE_TIMEOUT_SECONDS` | `1800` | 单次 AI 分析超时 |
@@ -142,7 +143,7 @@ TRACE_CLAUDE_COMMAND_TEMPLATE='claude -p {prompt}' \
 uv run --extra web python web/server.py
 ```
 
-AI 分析产物保存在任务目录下的 `results/ai_analysis/`，删除任务时会随任务文件一起删除。后台会把 `TRACE_AI_TRACE_A`、`TRACE_AI_TRACE_B`、`TRACE_AI_RESULT_DIR`、`TRACE_AI_REPORT_PATH` 等环境变量传给 Claude 进程，便于自定义 wrapper 或 skill 使用。
+AI 分析产物保存在任务目录下的 `results/ai_analysis/`，删除任务时会随任务文件一起删除。后台会把 `TRACE_AI_TRACE_A`、`TRACE_AI_TRACE_B`、`TRACE_AI_RESULT_DIR`、`TRACE_AI_REPORT_PATH`、`TRACE_CLAUDE_SKILLS_DIR` 等环境变量传给 Claude 进程，便于自定义 wrapper 或 skill 使用。
 
 ### LDAP 认证与用户隔离
 

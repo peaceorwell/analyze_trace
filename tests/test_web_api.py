@@ -58,7 +58,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.12",
+        "version": "0.2.13",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -134,6 +134,104 @@ def test_ai_analysis_runs_configured_command(client, isolated_server, tmp_path, 
     assert detail["ai_analysis"]["report_exists"] is True
 
 
+def test_ai_analysis_mounts_configured_claude_skills(client, tmp_path, monkeypatch):
+    trace_path = tmp_path / "trace.pt.trace.json.gz"
+    with gzip.open(trace_path, "wt", encoding="utf-8") as f:
+        f.write("{}")
+    skills_dir = tmp_path / "skills"
+    skill_dir = skills_dir / "e2e-profiling-analyzer"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("---\nname: e2e-profiling-analyzer\n---\n", encoding="utf-8")
+
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO jobs(id, label, mode, status, file_a_name, file_a_gzip_path)
+                VALUES(?,?,?,?,?,?)
+                """,
+                ("ai-skills-job", "AI skills job", "single", "done", trace_path.name, str(trace_path)),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+    Path(web_server.result_dir("ai-skills-job")).mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_ENABLED", True)
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_SKILLS_DIR", str(skills_dir))
+    monkeypatch.setattr(
+        web_server,
+        "CLAUDE_ANALYSIS_COMMAND_TEMPLATE",
+        (
+            f"{shlex.quote(sys.executable)} -c "
+            "\"import os; "
+            "print(os.path.exists('.claude/skills/e2e-profiling-analyzer/SKILL.md')); "
+            "print(os.environ['TRACE_CLAUDE_SKILLS_DIR'])\""
+        ),
+    )
+
+    started = client.post("/api/jobs/ai-skills-job/ai-analysis", json={})
+
+    assert started.status_code == 202
+
+    payload = {}
+    for _ in range(80):
+        payload = client.get("/api/jobs/ai-skills-job/ai-analysis").json()
+        if payload["status"] != "running":
+            break
+        time.sleep(0.05)
+
+    assert payload["status"] == "done"
+    assert "True" in payload["content"]
+    assert str(skills_dir) in payload["content"]
+
+
+def test_ai_analysis_reports_missing_claude_command(client, tmp_path, monkeypatch):
+    trace_path = tmp_path / "trace.pt.trace.json.gz"
+    with gzip.open(trace_path, "wt", encoding="utf-8") as f:
+        f.write("{}")
+
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO jobs(id, label, mode, status, file_a_name, file_a_gzip_path)
+                VALUES(?,?,?,?,?,?)
+                """,
+                ("ai-missing-command", "AI missing command", "single", "done", trace_path.name, str(trace_path)),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+    Path(web_server.result_dir("ai-missing-command")).mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_ENABLED", True)
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_COMMAND_TEMPLATE", "")
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_COMMAND", "__missing_claude_code_for_test__")
+
+    started = client.post("/api/jobs/ai-missing-command/ai-analysis", json={})
+
+    assert started.status_code == 202
+
+    payload = {}
+    for _ in range(80):
+        payload = client.get("/api/jobs/ai-missing-command/ai-analysis").json()
+        if payload["status"] != "running":
+            break
+        time.sleep(0.05)
+
+    assert payload["status"] == "error"
+    assert "Claude Code command not found" in payload["content"]
+    assert "__missing_claude_code_for_test__" in payload["content"]
+    assert "TRACE_CLAUDE_COMMAND" in payload["content"]
+
+
 def test_ai_analysis_supports_compare_jobs(client, tmp_path, monkeypatch):
     trace_a = tmp_path / "a.pt.trace.json.gz"
     trace_b = tmp_path / "b.pt.trace.json.gz"
@@ -165,9 +263,14 @@ def test_ai_analysis_supports_compare_jobs(client, tmp_path, monkeypatch):
 
     asyncio.run(insert_job())
     Path(web_server.result_dir("ai-compare-job")).mkdir(parents=True, exist_ok=True)
+    skills_dir = tmp_path / "skills"
+    skill_dir = skills_dir / "compare-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("---\nname: compare-skill\n---\n", encoding="utf-8")
 
     monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_ENABLED", True)
     monkeypatch.setattr(web_server, "CLAUDE_COMPARE_TRACE_SKILL", "compare-skill")
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_SKILLS_DIR", str(skills_dir))
     monkeypatch.setattr(
         web_server,
         "CLAUDE_ANALYSIS_COMMAND_TEMPLATE",
