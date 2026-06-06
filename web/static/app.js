@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.13");
+const appVersion = ref("0.2.14");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -146,6 +146,9 @@ const aiAnalysisLoading = ref(false);
 const aiAnalysisStarting = ref(false);
 const aiAnalysisError = ref("");
 const aiAnalysisContent = ref("");
+const aiDiagnosticsLoading = ref(false);
+const aiDiagnosticsError = ref("");
+const aiDiagnosticsResult = ref(null);
 let activeResultStateJobId = null;
 let aiAnalysisPollTimer = null;
 const isAdmin = computed(() => currentUserIsAdmin.value);
@@ -788,7 +791,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.13";
+  appVersion.value = cfg.version || "0.2.14";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -1535,6 +1538,64 @@ const copyAiAnalysisReport = async () => {
   if (!aiAnalysisContent.value) return;
   await copyTextToClipboard(aiAnalysisContent.value);
   showToast("AI 分析报告已复制", "success");
+};
+
+const aiDiagnosticStatusText = status => ({
+  ok: "OK",
+  error: "失败",
+  skipped: "跳过",
+}[status || ""] || status || "");
+
+const formatAiDiagnostics = payload => {
+  if (!payload) return "";
+  const lines = [
+    `AI 环境诊断：${payload.ok ? "通过" : "未通过"}`,
+    `skills_dir: ${payload.skills_dir || "-"}`,
+    `single_skill: ${payload.single_skill || "-"}`,
+    `compare_skill: ${payload.compare_skill || "-"}`,
+    `duration_ms: ${payload.duration_ms ?? "-"}`,
+    "",
+  ];
+  for (const check of payload.checks || []) {
+    lines.push(`[${aiDiagnosticStatusText(check.status)}] ${check.label || check.name}: ${check.detail || ""}`);
+    if (check.command) lines.push(`command: ${check.command}`);
+    if (check.stdout_tail) lines.push(`stdout:\n${check.stdout_tail}`);
+    if (check.stderr_tail) lines.push(`stderr:\n${check.stderr_tail}`);
+    lines.push("");
+  }
+  return lines.join("\n").trim();
+};
+
+const runAiDiagnostics = async () => {
+  if (aiDiagnosticsLoading.value) return;
+  if (!claudeAnalysisEnabled.value) {
+    showToast("AI 分析未启用，请先设置 TRACE_ENABLE_CLAUDE_ANALYSIS=1", "error");
+    return;
+  }
+  aiDiagnosticsLoading.value = true;
+  aiDiagnosticsError.value = "";
+  aiDiagnosticsResult.value = null;
+  try {
+    const r = await fetch("/api/ai/diagnostics", {
+      method: "POST",
+      credentials: "include",
+    });
+    const payload = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(payload.detail || "AI 环境诊断失败");
+    aiDiagnosticsResult.value = payload;
+    showToast(payload.ok ? "AI 环境诊断通过" : "AI 环境诊断未通过", payload.ok ? "success" : "error");
+  } catch (e) {
+    aiDiagnosticsError.value = e.message || "AI 环境诊断失败";
+    showToast(aiDiagnosticsError.value, "error");
+  } finally {
+    aiDiagnosticsLoading.value = false;
+  }
+};
+
+const copyAiDiagnostics = async () => {
+  if (!aiDiagnosticsResult.value) return;
+  await copyTextToClipboard(formatAiDiagnostics(aiDiagnosticsResult.value));
+  showToast("AI 诊断结果已复制", "success");
 };
 
 const activeColumnFilters = (state = null) => {
@@ -4033,6 +4094,11 @@ const JobDetail = {
                       @click="refreshAiAnalysis()">
                 {{ aiAnalysisLoading ? '刷新中...' : '刷新' }}
               </button>
+              <button class="btn btn-sm btn-outline"
+                      :disabled="!claudeAnalysisEnabled || aiDiagnosticsLoading"
+                      @click="runAiDiagnostics()">
+                {{ aiDiagnosticsLoading ? '诊断中...' : '环境诊断' }}
+              </button>
               <button v-if="aiAnalysisContent" class="btn btn-sm btn-outline" @click="copyAiAnalysisReport">
                 复制
               </button>
@@ -4046,6 +4112,34 @@ const JobDetail = {
 
           <div v-if="!claudeAnalysisEnabled && !aiAnalysisMeta.report_exists" class="info-box">
             AI 分析未启用。服务端设置 TRACE_ENABLE_CLAUDE_ANALYSIS=1 后可使用。
+          </div>
+          <div v-if="aiDiagnosticsError" class="error-box mb-2">{{ aiDiagnosticsError }}</div>
+          <div v-if="aiDiagnosticsResult" class="ai-diagnostics-panel">
+            <div class="ai-diagnostics-head">
+              <div>
+                <strong>AI 环境诊断</strong>
+                <span :class="['ai-diagnostic-overall', aiDiagnosticsResult.ok ? 'ok' : 'error']">
+                  {{ aiDiagnosticsResult.ok ? '通过' : '未通过' }}
+                </span>
+              </div>
+              <button class="btn btn-xs btn-outline" @click="copyAiDiagnostics">复制诊断</button>
+            </div>
+            <div class="ai-diagnostic-meta">
+              <span>skills: {{ aiDiagnosticsResult.skills_dir || '-' }}</span>
+              <span>耗时 {{ aiDiagnosticsResult.duration_ms }} ms</span>
+            </div>
+            <div class="ai-diagnostic-checks">
+              <div v-for="check in aiDiagnosticsResult.checks || []"
+                   :key="check.name"
+                   :class="['ai-diagnostic-check', 'status-' + check.status]">
+                <div class="ai-diagnostic-check-main">
+                  <span class="ai-diagnostic-status">{{ aiDiagnosticStatusText(check.status) }}</span>
+                  <strong>{{ check.label || check.name }}</strong>
+                  <span>{{ check.detail }}</span>
+                </div>
+                <pre v-if="check.stdout_tail || check.stderr_tail" class="ai-diagnostic-output">{{ [check.stdout_tail ? 'stdout:\\n' + check.stdout_tail : '', check.stderr_tail ? 'stderr:\\n' + check.stderr_tail : ''].filter(Boolean).join('\\n\\n') }}</pre>
+              </div>
+            </div>
           </div>
           <div v-if="aiAnalysisError" class="error-box mb-2">{{ aiAnalysisError }}</div>
           <div v-if="aiAnalysisMeta.status==='running'" class="ai-analysis-running">
@@ -4258,7 +4352,9 @@ const JobDetail = {
       isTritonStepTab, tritonStatus, allowFileDownload, allowCodeExecution,
       claudeAnalysisEnabled, aiAnalysisMeta, aiAnalysisLoading, aiAnalysisStarting,
       aiAnalysisError, aiAnalysisContent, aiAnalysisStatusText,
+      aiDiagnosticsLoading, aiDiagnosticsError, aiDiagnosticsResult, aiDiagnosticStatusText,
       refreshAiAnalysis, startAiAnalysis, copyAiAnalysisReport,
+      runAiDiagnostics, copyAiDiagnostics,
       openActionMenu, toggleActionMenu, closeActionMenu,
       switchTab,
       statusIcon,

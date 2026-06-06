@@ -58,7 +58,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.13",
+        "version": "0.2.14",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -230,6 +230,60 @@ def test_ai_analysis_reports_missing_claude_command(client, tmp_path, monkeypatc
     assert "Claude Code command not found" in payload["content"]
     assert "__missing_claude_code_for_test__" in payload["content"]
     assert "TRACE_CLAUDE_COMMAND" in payload["content"]
+
+
+def test_ai_diagnostics_runs_command_and_skill_smoke(client, tmp_path, monkeypatch):
+    skills_dir = tmp_path / "skills"
+    for skill_name in ("e2e-profiling-analyzer", "e2e-profiling-comparator"):
+        skill_dir = skills_dir / skill_name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(f"---\nname: {skill_name}\n---\n", encoding="utf-8")
+
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_ENABLED", True)
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_SKILLS_DIR", str(skills_dir))
+    monkeypatch.setattr(web_server, "CLAUDE_DIAGNOSTIC_TIMEOUT_SECONDS", 5)
+    monkeypatch.setattr(
+        web_server,
+        "CLAUDE_ANALYSIS_COMMAND_TEMPLATE",
+        (
+            f"{shlex.quote(sys.executable)} -c "
+            "\"import os; "
+            "print('OK'); "
+            "print(os.path.exists('.claude/skills/e2e-profiling-analyzer/SKILL.md'))\" "
+            "{prompt}"
+        ),
+    )
+
+    response = client.post("/api/ai/diagnostics")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    checks = {item["name"]: item for item in payload["checks"]}
+    assert checks["command"]["status"] == "ok"
+    assert checks["skills_dir"]["status"] == "ok"
+    assert checks["single_skill"]["status"] == "ok"
+    assert checks["compare_skill"]["status"] == "ok"
+    assert checks["skills_mount"]["status"] == "ok"
+    assert checks["base_smoke"]["status"] == "ok"
+    assert checks["skill_smoke"]["status"] == "ok"
+    assert "True" in checks["skill_smoke"]["stdout_tail"]
+
+
+def test_ai_diagnostics_reports_missing_command(client, monkeypatch):
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_ENABLED", True)
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_COMMAND_TEMPLATE", "")
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_COMMAND", "__missing_claude_diag_for_test__")
+
+    response = client.post("/api/ai/diagnostics")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    checks = {item["name"]: item for item in payload["checks"]}
+    assert checks["command"]["status"] == "error"
+    assert "__missing_claude_diag_for_test__" in checks["command"]["detail"]
+    assert checks["base_smoke"]["status"] == "skipped"
 
 
 def test_ai_analysis_supports_compare_jobs(client, tmp_path, monkeypatch):

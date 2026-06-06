@@ -15,6 +15,7 @@ import shlex
 import shutil
 import sys
 import tarfile
+import tempfile
 import time
 import types
 import uuid
@@ -40,7 +41,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.13"
+APP_VERSION = "0.2.14"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
 FEEDBACK_DIRNAME = "feedback"
@@ -63,6 +64,7 @@ CLAUDE_ANALYSIS_COMMAND = os.environ.get("TRACE_CLAUDE_COMMAND", "claude")
 CLAUDE_ANALYSIS_COMMAND_TEMPLATE = os.environ.get("TRACE_CLAUDE_COMMAND_TEMPLATE", "")
 CLAUDE_ANALYSIS_EXTRA_ARGS = os.environ.get("TRACE_CLAUDE_EXTRA_ARGS", "")
 CLAUDE_ANALYSIS_TIMEOUT_SECONDS = max(30, int(os.environ.get("TRACE_CLAUDE_TIMEOUT_SECONDS", "1800")))
+CLAUDE_DIAGNOSTIC_TIMEOUT_SECONDS = max(5, int(os.environ.get("TRACE_CLAUDE_DIAGNOSTIC_TIMEOUT_SECONDS", "60")))
 CLAUDE_ANALYSIS_SKILLS_DIR = os.environ.get("TRACE_CLAUDE_SKILLS_DIR", PROJECT_CLAUDE_SKILLS_DIR)
 CLAUDE_SINGLE_TRACE_SKILL = os.environ.get("TRACE_CLAUDE_SINGLE_SKILL", "e2e-profiling-analyzer")
 CLAUDE_COMPARE_TRACE_SKILL = os.environ.get("TRACE_CLAUDE_COMPARE_SKILL", "e2e-profiling-comparator")
@@ -1231,6 +1233,103 @@ def _mount_claude_skills_for_analysis(analysis_dir: str, skills_dir: str) -> Non
         os.symlink(skills_dir, target, target_is_directory=True)
     except (OSError, NotImplementedError):
         shutil.copytree(skills_dir, target, dirs_exist_ok=True)
+
+
+def _tail_text(text: str, limit: int = 4000) -> str:
+    if len(text) <= limit:
+        return text
+    return text[-limit:]
+
+
+def _diagnostic_check(name: str, label: str, status: str, detail: str = "", **extra) -> dict:
+    return {
+        "name": name,
+        "label": label,
+        "status": status,
+        "detail": detail,
+        **extra,
+    }
+
+
+async def _run_claude_diagnostic_prompt(
+    name: str,
+    label: str,
+    prompt: str,
+    cwd: str,
+    env: dict,
+    values: dict,
+) -> dict:
+    started = time.time()
+    command = _build_claude_command(prompt, values)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *command,
+            cwd=cwd,
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(),
+                timeout=CLAUDE_DIAGNOSTIC_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            stdout, stderr = await proc.communicate()
+            stdout_text = stdout.decode("utf-8", errors="replace")
+            stderr_text = stderr.decode("utf-8", errors="replace")
+            return _diagnostic_check(
+                name,
+                label,
+                "error",
+                f"Timed out after {CLAUDE_DIAGNOSTIC_TIMEOUT_SECONDS}s",
+                exit_code=None,
+                duration_ms=round((time.time() - started) * 1000, 3),
+                command=_format_command(command),
+                stdout_tail=_tail_text(stdout_text),
+                stderr_tail=_tail_text(stderr_text),
+            )
+
+        stdout_text = stdout.decode("utf-8", errors="replace")
+        stderr_text = stderr.decode("utf-8", errors="replace")
+        ok = proc.returncode == 0
+        return _diagnostic_check(
+            name,
+            label,
+            "ok" if ok else "error",
+            "Command completed" if ok else f"Command exited with code {proc.returncode}",
+            exit_code=proc.returncode,
+            duration_ms=round((time.time() - started) * 1000, 3),
+            command=_format_command(command),
+            stdout_tail=_tail_text(stdout_text),
+            stderr_tail=_tail_text(stderr_text),
+        )
+    except FileNotFoundError as e:
+        executable = command[0] if command else str(e)
+        return _diagnostic_check(
+            name,
+            label,
+            "error",
+            f"Claude Code command not found: {executable}",
+            exit_code=None,
+            duration_ms=round((time.time() - started) * 1000, 3),
+            command=_format_command(command),
+            stdout_tail="",
+            stderr_tail="",
+        )
+    except Exception as e:
+        return _diagnostic_check(
+            name,
+            label,
+            "error",
+            str(e),
+            exit_code=None,
+            duration_ms=round((time.time() - started) * 1000, 3),
+            command=_format_command(command),
+            stdout_tail="",
+            stderr_tail="",
+        )
 
 
 async def _source_trace_for_ai(db, source_id: Optional[str]) -> tuple[Optional[str], Optional[str]]:
@@ -4011,6 +4110,151 @@ async def get_job_ai_analysis(request: Request, jid: str):
     payload = collect_ai_analysis(jid)
     payload["content"] = _read_ai_analysis_report(jid) if payload["report_exists"] else ""
     return payload
+
+
+@app.post("/api/ai/diagnostics")
+async def run_ai_diagnostics(request: Request):
+    if not CLAUDE_ANALYSIS_ENABLED:
+        raise HTTPException(403, "Claude analysis is disabled")
+    if AUTH_ENABLED:
+        current_user_token(request)
+
+    started = time.time()
+    started_at = _utc_now_iso()
+    skills_dir = _resolve_claude_skills_dir()
+    values = {
+        "job_id": "diagnostic",
+        "mode": "diagnostic",
+        "skill": CLAUDE_SINGLE_TRACE_SKILL,
+        "skills_dir": skills_dir,
+        "trace_a": "",
+        "trace_b": "",
+        "results_dir": "",
+        "analysis_dir": "",
+        "report_path": "",
+    }
+    checks: list[dict] = []
+
+    base_prompt = "请不要使用任何 skill，不要调用工具，只回复一行 OK。"
+    base_command = _build_claude_command(base_prompt, values)
+    command_ok = False
+    try:
+        _validate_claude_command(base_command)
+        command_ok = True
+        checks.append(_diagnostic_check(
+            "command",
+            "Claude 命令",
+            "ok",
+            f"Resolved command: {_format_command(base_command)}",
+            command=_format_command(base_command),
+        ))
+    except Exception as e:
+        checks.append(_diagnostic_check(
+            "command",
+            "Claude 命令",
+            "error",
+            str(e),
+            command=_format_command(base_command),
+        ))
+
+    skills_ok = True
+    if skills_dir:
+        if os.path.isdir(skills_dir):
+            checks.append(_diagnostic_check("skills_dir", "Skills 目录", "ok", skills_dir))
+        else:
+            skills_ok = False
+            checks.append(_diagnostic_check("skills_dir", "Skills 目录", "error", f"Directory not found: {skills_dir}"))
+    else:
+        checks.append(_diagnostic_check("skills_dir", "Skills 目录", "skipped", "TRACE_CLAUDE_SKILLS_DIR is empty"))
+
+    for name, label, skill_name in (
+        ("single_skill", "单 trace skill", CLAUDE_SINGLE_TRACE_SKILL),
+        ("compare_skill", "对比 skill", CLAUDE_COMPARE_TRACE_SKILL),
+    ):
+        try:
+            _validate_claude_skill(skill_name, skills_dir)
+            checks.append(_diagnostic_check(name, label, "ok", f"{skill_name}"))
+        except Exception as e:
+            skills_ok = False
+            checks.append(_diagnostic_check(name, label, "error", str(e)))
+
+    with tempfile.TemporaryDirectory(prefix="analyze_trace_ai_diag_") as tmp_dir:
+        env = os.environ.copy()
+        env.update({
+            "TRACE_AI_JOB_ID": "diagnostic",
+            "TRACE_AI_MODE": "diagnostic",
+            "TRACE_AI_SKILL": CLAUDE_SINGLE_TRACE_SKILL,
+            "TRACE_AI_TRACE_A": "",
+            "TRACE_AI_TRACE_B": "",
+            "TRACE_AI_RESULT_DIR": tmp_dir,
+            "TRACE_AI_ANALYSIS_DIR": tmp_dir,
+            "TRACE_AI_REPORT_PATH": os.path.join(tmp_dir, "diagnostic.md"),
+        })
+        if skills_dir:
+            env["TRACE_CLAUDE_SKILLS_DIR"] = skills_dir
+        if skills_ok:
+            try:
+                _mount_claude_skills_for_analysis(tmp_dir, skills_dir)
+            except Exception as e:
+                skills_ok = False
+                checks.append(_diagnostic_check("skills_mount", "Skills 挂载", "error", str(e)))
+            else:
+                checks.append(_diagnostic_check(
+                    "skills_mount",
+                    "Skills 挂载",
+                    "ok",
+                    os.path.join(tmp_dir, ".claude", "skills"),
+                ))
+
+        base_smoke_ok = False
+        if command_ok:
+            base_smoke = await _run_claude_diagnostic_prompt(
+                "base_smoke",
+                "基础 Claude 调用",
+                base_prompt,
+                tmp_dir,
+                env,
+                values,
+            )
+            base_smoke_ok = base_smoke.get("status") == "ok"
+            checks.append(base_smoke)
+        else:
+            checks.append(_diagnostic_check("base_smoke", "基础 Claude 调用", "skipped", "Claude command is invalid"))
+
+        if command_ok and skills_ok and base_smoke_ok:
+            skill_values = {**values, "skill": CLAUDE_SINGLE_TRACE_SKILL, "analysis_dir": tmp_dir, "results_dir": tmp_dir}
+            skill_prompt = (
+                f"请使用 Claude Code skill `{CLAUDE_SINGLE_TRACE_SKILL}`，automatic-final 模式。"
+                "这是环境诊断，不要读取 trace，不要运行重型分析脚本；如果 skill 可用，只回复一行 OK。"
+            )
+            checks.append(await _run_claude_diagnostic_prompt(
+                "skill_smoke",
+                "单 trace skill 调用",
+                skill_prompt,
+                tmp_dir,
+                env,
+                skill_values,
+            ))
+        else:
+            reason = "基础 Claude 调用失败" if not base_smoke_ok else "skills check failed"
+            checks.append(_diagnostic_check("skill_smoke", "单 trace skill 调用", "skipped", reason))
+
+    ok = all(check["status"] in {"ok", "skipped"} for check in checks) and any(
+        check["name"] == "base_smoke" and check["status"] == "ok" for check in checks
+    )
+    finished_at = _utc_now_iso()
+    return {
+        "ok": ok,
+        "enabled": CLAUDE_ANALYSIS_ENABLED,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "duration_ms": round((time.time() - started) * 1000, 3),
+        "timeout_seconds": CLAUDE_DIAGNOSTIC_TIMEOUT_SECONDS,
+        "skills_dir": skills_dir,
+        "single_skill": CLAUDE_SINGLE_TRACE_SKILL,
+        "compare_skill": CLAUDE_COMPARE_TRACE_SKILL,
+        "checks": checks,
+    }
 
 
 @app.post("/api/jobs/{jid}/ai-analysis")

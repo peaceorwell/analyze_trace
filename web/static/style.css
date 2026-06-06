@@ -889,6 +889,64 @@ body.result-reading-active { overflow: hidden; }
   color: var(--text2); background: var(--bg);
   font-size: 12px; font-weight: 600;
 }
+.ai-diagnostics-panel {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--card);
+  padding: 12px;
+}
+.ai-diagnostics-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin-bottom: 6px;
+}
+.ai-diagnostics-head > div {
+  display: flex; align-items: center; gap: 8px;
+}
+.ai-diagnostic-overall {
+  display: inline-flex; align-items: center; height: 22px;
+  padding: 0 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 800;
+}
+.ai-diagnostic-overall.ok { background: rgba(34,197,94,.14); color: var(--green); }
+.ai-diagnostic-overall.error { background: rgba(239,68,68,.14); color: var(--red); }
+.ai-diagnostic-meta {
+  display: flex; flex-wrap: wrap; gap: 12px;
+  color: var(--text3); font-size: 11px; margin-bottom: 8px;
+}
+.ai-diagnostic-checks { display: flex; flex-direction: column; gap: 6px; }
+.ai-diagnostic-check {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg);
+  padding: 8px 10px;
+}
+.ai-diagnostic-check.status-error {
+  border-color: rgba(239,68,68,.28);
+  background: var(--red-bg);
+}
+.ai-diagnostic-check.status-skipped {
+  opacity: .78;
+}
+.ai-diagnostic-check-main {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  color: var(--text2); font-size: 12px;
+}
+.ai-diagnostic-check-main strong { color: var(--text1); }
+.ai-diagnostic-status {
+  min-width: 42px;
+  font-size: 10px; font-weight: 900; text-align: center;
+  padding: 3px 6px; border-radius: 999px;
+  background: rgba(99,102,241,.12); color: var(--purple-l);
+}
+.status-ok .ai-diagnostic-status { background: rgba(34,197,94,.14); color: var(--green); }
+.status-error .ai-diagnostic-status { background: rgba(239,68,68,.14); color: var(--red); }
+.status-skipped .ai-diagnostic-status { background: rgba(148,163,184,.18); color: var(--text3); }
+.ai-diagnostic-output {
+  margin: 8px 0 0; padding: 8px;
+  border-radius: 6px; background: var(--card2);
+  color: var(--text1); font-family: var(--mono); font-size: 11.5px;
+  line-height: 1.6; white-space: pre-wrap; max-height: 180px; overflow: auto;
+}
 .ai-analysis-report {
   flex: 1; min-height: 320px; margin: 0;
   padding: 18px 20px;
