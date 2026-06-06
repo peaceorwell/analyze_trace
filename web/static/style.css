@@ -1401,8 +1401,8 @@ body.result-reading-active { overflow: hidden; }
   flex-shrink: 0;
   margin-top: 0;
 }
-.feedback-mobile-back {
-  display: none;
+.feedback-detail-back {
+  display: inline-flex;
   flex-shrink: 0;
 }
 .feedback-card {
@@ -1470,9 +1470,6 @@ body.result-reading-active { overflow: hidden; }
   }
   .feedback-thread-detail {
     min-height: 420px;
-  }
-  .feedback-mobile-back {
-    display: inline-flex;
   }
 }
 .storage-total-grid {

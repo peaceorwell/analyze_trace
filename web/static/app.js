@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.6");
+const appVersion = ref("0.2.7");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -785,7 +785,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.6";
+  appVersion.value = cfg.version || "0.2.7";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -1052,9 +1052,6 @@ const loadFeedback = async ({ reset = false, selectId = "" } = {}) => {
     if (desiredId && feedbackItems.value.some(item => item.id === desiredId)) {
       selectedFeedbackPostId.value = desiredId;
       ensureFeedbackReplyForm(desiredId);
-    } else if (reset && feedbackItems.value.length) {
-      selectedFeedbackPostId.value = feedbackItems.value[0].id;
-      ensureFeedbackReplyForm(selectedFeedbackPostId.value);
     } else if (reset) {
       selectedFeedbackPostId.value = "";
     }
@@ -1067,6 +1064,7 @@ const loadFeedback = async ({ reset = false, selectId = "" } = {}) => {
 
 const openFeedbackBoard = async () => {
   showFeedbackBoard.value = true;
+  selectedFeedbackPostId.value = "";
   await loadFeedback({ reset: true });
 };
 

@@ -451,7 +451,7 @@
 
         <div class="feedback-board-shell">
           <section class="feedback-thread-list">
-            <div class="feedback-composer">
+            <div v-if="!selectedFeedbackPost" class="feedback-composer">
               <textarea v-model="feedbackForm.body" class="feedback-textarea" placeholder="发布一个改进帖子，描述问题、建议或使用体验..." maxlength="2000"></textarea>
               <div v-if="feedbackForm.previews.length" class="feedback-preview-grid">
                 <div v-for="img in feedbackForm.previews" :key="img.url" class="feedback-preview">
@@ -514,7 +514,7 @@
                     <span v-if="feedbackPostReplyCount(selectedFeedbackPost)">最近 {{ fmtDate(feedbackPostActivity(selectedFeedbackPost)) }}</span>
                   </div>
                 </div>
-                <button class="btn btn-xs btn-outline feedback-mobile-back" @click="closeFeedbackPost()">返回列表</button>
+                <button class="btn btn-xs btn-outline feedback-detail-back" @click="closeFeedbackPost()">返回列表</button>
               </div>
 
               <div class="feedback-detail-scroll">
@@ -788,6 +788,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=8"></script>
+  <script src="/static/app.js?v=9"></script>
 </body>
 </html>
