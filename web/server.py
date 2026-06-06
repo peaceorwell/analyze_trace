@@ -1266,6 +1266,7 @@ async def _run_claude_diagnostic_prompt(
             *command,
             cwd=cwd,
             env=env,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
