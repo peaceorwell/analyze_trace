@@ -450,7 +450,7 @@
             <button
               class="btn btn-xs btn-outline"
               :disabled="feedbackLoading || feedbackDetailLoading"
-              @click="selectedFeedbackPost ? selectFeedbackPost(selectedFeedbackPost.id) : loadFeedback({ reset: true })"
+              @click="refreshFeedbackBoard()"
             >
               {{ (feedbackLoading || feedbackDetailLoading) ? '刷新中...' : '刷新' }}
             </button>
@@ -816,6 +816,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=13"></script>
+  <script src="/static/app.js?v=14"></script>
 </body>
 </html>

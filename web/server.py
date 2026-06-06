@@ -37,7 +37,7 @@ import auth as ldap_auth  # noqa: E402
 
 DEFAULT_STORAGE_DIR = os.path.join(os.path.dirname(__file__), "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.11"
+APP_VERSION = "0.2.12"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(os.path.dirname(__file__), "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
 FEEDBACK_DIRNAME = "feedback"
@@ -324,22 +324,49 @@ def is_admin_user(user_token: str) -> bool:
     return (user_token or "").strip().lower() in ADMIN_USERS
 
 
-def request_is_admin(request: Request) -> bool:
+def admin_identity_candidates(request: Request) -> list[str]:
+    user = current_user(request)
+    candidates = [
+        user.get("username"),
+        user.get("email"),
+        user.get("display_name"),
+    ]
+    if not user.get("username"):
+        candidates.append(request_user(request))
+
+    seen = set()
+    identities = []
+    for candidate in candidates:
+        token = (candidate or "").strip()
+        key = token.lower()
+        if token and key not in seen:
+            seen.add(key)
+            identities.append(token)
+    return identities
+
+
+def request_admin_identity(request: Request) -> Optional[str]:
     user = current_user(request)
     if AUTH_ENABLED and not user.get("username"):
-        return False
-    token = user.get("username") or request_user(request)
-    return is_admin_user(token)
+        return None
+    for token in admin_identity_candidates(request):
+        if is_admin_user(token):
+            return token
+    return None
+
+
+def request_is_admin(request: Request) -> bool:
+    return request_admin_identity(request) is not None
 
 
 def require_admin(request: Request) -> str:
     if AUTH_ENABLED:
         current_user_token(request)
-    user = current_user(request)
-    token = user.get("username") or request_user(request)
-    if not is_admin_user(token):
+    admin_identity = request_admin_identity(request)
+    if not admin_identity:
         raise HTTPException(403, "需要管理员权限")
-    return token
+    user = current_user(request)
+    return user.get("username") or admin_identity
 
 
 def _owner_clause(request: Request, alias: str = "") -> tuple[str, list[str]]:

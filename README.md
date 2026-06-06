@@ -177,7 +177,7 @@ LDAP_USER_DN_TEMPLATE={username}@example.com
 |------|------|
 | `LDAP_DISPLAY_NAME_ATTR` | 显示名属性，默认 `displayName` |
 | `LDAP_MAIL_ATTR` | 邮箱属性，默认 `mail` |
-| `TRACE_ADMIN_USERS` | 管理员用户名，多个用逗号分隔，例如 `zhouysong,admin2` |
+| `TRACE_ADMIN_USERS` | 管理员账号标识，支持 LDAP 用户名、邮箱或显示名，多个用逗号分隔，例如 `zhouysong,zhouysong@example.com` |
 | `SESSION_COOKIE_SECURE=1` | HTTPS 部署时建议开启 |
 
 ### 运维能力

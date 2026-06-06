@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.11");
+const appVersion = ref("0.2.12");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -788,7 +788,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.11";
+  appVersion.value = cfg.version || "0.2.12";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -1086,9 +1086,19 @@ const loadFeedback = async ({ reset = false, selectId = "" } = {}) => {
 };
 
 const openFeedbackBoard = async () => {
+  await loadMe().catch(() => {});
   showFeedbackBoard.value = true;
   selectedFeedbackPostId.value = "";
   await loadFeedback({ reset: true });
+};
+
+const refreshFeedbackBoard = async () => {
+  await loadMe().catch(() => {});
+  if (selectedFeedbackPostId.value) {
+    await selectFeedbackPost(selectedFeedbackPostId.value, { refresh: true });
+  } else {
+    await loadFeedback({ reset: true });
+  }
 };
 
 const submitFeedback = async (parentId = null) => {
@@ -4553,7 +4563,7 @@ const App = {
       feedbackSubmitting, feedbackForm, feedbackReplies, feedbackHasMore,
       selectedFeedbackPostId, selectedFeedbackPost, feedbackDetailLoading,
       feedbackPostTitle, feedbackPostExcerpt, feedbackPostReplyCount, feedbackPostActivity,
-      openFeedbackBoard, loadFeedback, setFeedbackFiles, clearFeedbackForm,
+      openFeedbackBoard, refreshFeedbackBoard, loadFeedback, setFeedbackFiles, clearFeedbackForm,
       toggleFeedbackReply, selectFeedbackPost, closeFeedbackPost,
       openFeedbackComposer, closeFeedbackComposer, closeFeedbackBoard, submitFeedback,
       deleteFeedbackPost, deleteFeedbackReply,

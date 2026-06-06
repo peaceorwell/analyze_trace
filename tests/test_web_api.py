@@ -58,7 +58,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.11",
+        "version": "0.2.12",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -431,6 +431,44 @@ def test_ldap_auth_requires_login_and_isolates_user_data(isolated_server, monkey
         candidates = test_client.get(f"/api/compare-candidates?project_id={shared_project['id']}")
         assert candidates.status_code == 200
         assert [item["id"] for item in candidates.json()["data"]] == ["shared-job"]
+
+
+@pytest.mark.parametrize(
+    ("admin_identity", "expected"),
+    [
+        ("alice", True),
+        ("alice@example.com", True),
+        ("Alice User", True),
+        ("bob", False),
+    ],
+)
+def test_ldap_me_reports_admin_for_configured_identity(isolated_server, monkeypatch, admin_identity, expected):
+    def fake_authenticate(username, password):
+        return {
+            "username": username,
+            "display_name": f"{username.title()} User",
+            "email": f"{username}@example.com",
+            "dn": f"CN={username},DC=example,DC=com",
+        }
+
+    monkeypatch.setattr(web_server, "AUTH_MODE", "ldap")
+    monkeypatch.setattr(web_server, "AUTH_ENABLED", True)
+    monkeypatch.setattr(web_server, "ADMIN_USERS", {admin_identity.lower()})
+    monkeypatch.setattr(web_server.ldap_auth, "authenticate", fake_authenticate)
+
+    with TestClient(isolated_server.app) as test_client:
+        before_login = test_client.get("/api/me")
+        assert before_login.status_code == 200
+        assert before_login.json()["is_admin"] is False
+
+        login = test_client.post("/api/login", json={"username": "alice", "password": "ok"})
+        assert login.status_code == 200
+        assert login.json()["is_admin"] is expected
+
+        me = test_client.get("/api/me")
+        assert me.status_code == 200
+        assert me.json()["authenticated"] is True
+        assert me.json()["is_admin"] is expected
 
 
 def test_ldap_login_requires_captcha_after_repeated_failures(isolated_server, monkeypatch):
