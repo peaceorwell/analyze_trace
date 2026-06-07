@@ -41,7 +41,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.19"
+APP_VERSION = "0.2.20"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
 FEEDBACK_DIRNAME = "feedback"
@@ -59,6 +59,15 @@ AI_ANALYSIS_INTERNAL_FILES = {
     AI_ANALYSIS_STATUS_FILE,
     "command.json",
 }
+AI_ANALYSIS_FAILURE_PATTERNS = (
+    "all tool calls are being denied",
+    "cannot proceed because the execution environment has restricted permissions",
+    "claude did not create the bash probe file",
+    "eacces - cannot create",
+    "error: tool denied",
+    "permission denied for all files outside",
+    "tool permissions may be denied",
+)
 
 # Configured at startup via CLI; read-only after that
 AUTH_MODE = os.environ.get("AUTH_MODE", "none").strip().lower()
@@ -1124,6 +1133,21 @@ def _find_latest_ai_report(analysis_dir: str) -> Optional[str]:
     return candidates[0][2]
 
 
+def _read_text_file(path: str) -> str:
+    if not os.path.exists(path):
+        return ""
+    with open(path, encoding="utf-8", errors="replace") as f:
+        return f.read()
+
+
+def _detect_ai_analysis_failure(content: str) -> str:
+    lowered = (content or "").lower()
+    for pattern in AI_ANALYSIS_FAILURE_PATTERNS:
+        if pattern in lowered:
+            return pattern
+    return ""
+
+
 def _ai_artifact_priority(path: str) -> tuple[int, str]:
     basename = os.path.basename(path)
     if path == AI_ANALYSIS_REPORT_FILE:
@@ -1216,11 +1240,7 @@ def collect_ai_analysis(jid: str) -> dict:
 
 
 def _read_ai_analysis_report(jid: str) -> str:
-    path = ai_analysis_report_path(jid)
-    if not os.path.exists(path):
-        return ""
-    with open(path, encoding="utf-8", errors="replace") as f:
-        return f.read()
+    return _read_text_file(ai_analysis_report_path(jid))
 
 
 class _SafeFormatDict(dict):
@@ -1513,7 +1533,10 @@ def _render_claude_prompt(job: dict, trace_inputs: dict, skill: str, report_path
     lines = [
         f"请使用 Claude Code skill `{skill}` 执行一次{mode_text}，不要向用户追问。",
         "如果 skill 文档区分交互模式和自动模式，请选择 automatic-final / 自动最终报告模式。",
-        "分析完成后，请把最终 Markdown 报告输出到 stdout；如果需要写文件，也请写到当前工作目录的 report.md。",
+        "分析完成后，必须生成一份用户可直接阅读的最终 Markdown 报告。",
+        f"请把同一份最终报告写入 `{report_path}` 和当前工作目录的 `report.md`，并把最终报告内容输出到 stdout。",
+        "最终报告中不要包含 Claude 执行过程、工具权限解释、原始 prompt、命令行流水或无关调试日志。",
+        "如果工具权限、文件权限或输入文件导致无法分析，请明确写成失败报告，不要伪造成性能结论。",
         "",
         "任务信息:",
         f"- job_id: {job['id']}",
@@ -1692,12 +1715,19 @@ async def _run_ai_analysis_task(jid: str):
             tail = stderr_text[-2000:] or stdout_text[-2000:] or "no output"
             raise RuntimeError(f"Claude analysis failed with exit code {proc.returncode}: {tail}")
 
-        candidate_report = _find_latest_ai_report(analysis_dir)
-        if candidate_report:
-            with open(candidate_report, encoding="utf-8", errors="replace") as f:
-                content = f.read()
-        else:
-            content = stdout_text.strip()
+        content = _read_text_file(report_path).strip()
+        if not content:
+            candidate_report = _find_latest_ai_report(analysis_dir)
+            if candidate_report:
+                content = _read_text_file(candidate_report).strip()
+            else:
+                content = stdout_text.strip()
+        failure_pattern = _detect_ai_analysis_failure("\n".join([content, stdout_text]))
+        if failure_pattern:
+            raise RuntimeError(
+                "Claude produced a failure report instead of a usable analysis "
+                f"(matched: {failure_pattern})"
+            )
         if not content:
             content = "Claude command completed, but no report content was produced."
         _write_ai_report(report_path, content)

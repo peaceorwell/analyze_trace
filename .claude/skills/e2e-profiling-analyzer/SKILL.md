@@ -7,10 +7,24 @@ description: Analyze cnperf SQLite databases and torch profiler Chrome trace JSO
 
 Analyze `cnperf` SQLite DBs from the viewpoint that compute kernels are effective device utilization. If the input is a torch profiler Chrome trace JSON/JSON.GZ file, first convert it to a cnperf-compatible SQLite DB, then analyze the converted DB exactly like native cnperf data.
 
-At the start, ask the user whether they want automatic analysis or specified-branch analysis:
+## Mode Selection
 
-- `automatic analysis`: use Phase 1 evidence to choose branch analyses automatically, run independent branches in parallel when possible, and produce stage reports plus the final synthesis. Internal mode name: `automatic-final`.
-- `specified-branch analysis`: write a report after each stage, stop after Phase 1 for branch selection, then run the branch or branches selected by the user. Internal mode name: `interactive-phased`.
+Use `automatic-final` immediately when any of these are true:
+
+- The prompt says `automatic-final`, `自动最终报告`, `不要向用户追问`, or that this is a Web/server-side/background analysis.
+- Environment variables such as `TRACE_AI_JOB_ID`, `TRACE_AI_ANALYSIS_DIR`, `TRACE_AI_REPORT_PATH`, or `TRACE_AI_TRACE_A` are present.
+- The user asks for an end-to-end report instead of a phased investigation.
+
+Use `interactive-phased` only when the user is actively chatting and explicitly wants to choose branches step by step.
+
+In `automatic-final`, never ask follow-up questions. If required evidence is missing, continue with available evidence and record the missing input under `Open Questions`.
+
+If the prompt is an environment diagnostic or smoke test and asks to reply only `OK`, reply exactly `OK` and do not run tools or load references.
+
+Mode meanings:
+
+- `automatic-final`: use Phase 1 evidence to choose branch analyses automatically, run independent branches in parallel when possible, and produce stage reports plus the final synthesis.
+- `interactive-phased`: write a report after each stage, stop after Phase 1 for branch selection, then run the branch or branches selected by the user.
 
 If the user explicitly requested automatic analysis or automatic execution of all relevant analyses, use `automatic-final`. Otherwise default to specified-branch analysis (`interactive-phased`). If the user already specified a branch or branches to analyze, use `interactive-phased` and run those branches after Phase 1.
 
@@ -40,9 +54,48 @@ Do not assume the bottleneck is communication, a specific kernel family, TCDP, o
 - `host_blocking` does not explain itself; trace the host-side blocker before naming a cause.
 - Keep different `threadId` timelines separate. Do not merge overlapping threads into one call tree.
 
+## Web Output Contract
+
+When running in `automatic-final` for the Web app, produce a stable, user-facing result:
+
+- Write the final user-visible report to `$TRACE_AI_REPORT_PATH` when that environment variable is set.
+- Also write the same final report to `report.md` in the current working directory.
+- Print the same final report to stdout. Do not print tool logs, raw command output, prompt text, or progress narration to stdout.
+- Save supporting evidence as separate files in the analysis directory, such as `phase1_report.md`, `phase2_<branch>_report.md`, `evidence_summary.md`, and script logs.
+- If analysis cannot proceed because a trace file, DB table, Python dependency, or tool permission is missing, write a concise failure report instead of a partial or fabricated performance report.
+- Prefer Chinese report text when the request is Chinese.
+
+The final `report.md` should use this exact high-level structure:
+
+1. `# AI 性能分析报告`
+2. `## 结论概览`
+   - 3-6 bullets. Start each bullet with `结论`, `证据`, and `建议` fragments when possible.
+3. `## 关键指标`
+   - Compact Markdown table with metric, value, source file/log, and interpretation.
+4. `## 主要发现`
+   - Prioritized findings with evidence, counter-evidence, estimated impact, confidence, and affected ranks/devices.
+5. `## 优化建议`
+   - Prioritized actions with expected benefit, implementation cost, risk, and validation method.
+6. `## 不确定性与下一步`
+   - Missing evidence and the next check that would reduce uncertainty.
+7. `## 产物`
+   - Generated DBs, stage reports, evidence logs, and analysis directory.
+
+Keep the final report concise enough for Web reading. Move large raw tables and long logs into artifact files, then cite those files from the report.
+
 ## Setup And Inputs
 
-Create all generated artifacts under one temporary analysis directory in the current working directory:
+Create all generated artifacts under one analysis directory.
+
+For Web/server-side automatic analysis, use the existing working directory:
+
+```bash
+SKILL_DIR=<absolute-path-to-this-skill>
+ANALYSIS_DIR="${TRACE_AI_ANALYSIS_DIR:-$PWD}"
+REPORT_MD="${TRACE_AI_REPORT_PATH:-$ANALYSIS_DIR/report.md}"
+```
+
+For interactive local analysis, create a temporary analysis directory in the current working directory:
 
 ```bash
 SKILL_DIR=<absolute-path-to-this-skill>
@@ -51,7 +104,7 @@ mkdir "$ANALYSIS_DIR"
 REPORT_MD="$ANALYSIS_DIR/report.md"
 ```
 
-Use the exact directory name format `e2e_profiling_analysis_YYYYMMDD_HHMMSS`; if it collides, append `_NN`. Put generated DBs, conversion reports, script logs, ad hoc query outputs, stage reports, and final reports directly in this directory. If trace conversion needs a venv, create it as `<analysis_dir>/.venv-trace-convert`; this is a dependency environment, not an analysis artifact.
+For interactive local analysis, use the exact directory name format `e2e_profiling_analysis_YYYYMMDD_HHMMSS`; if it collides, append `_NN`. Put generated DBs, conversion reports, script logs, ad hoc query outputs, stage reports, and final reports directly in this directory. If trace conversion needs a venv, create it as `<analysis_dir>/.venv-trace-convert`; this is a dependency environment, not an analysis artifact.
 
 Resolve `SKILL_DIR` to this skill directory's absolute path. Do not call scripts from repository-level `tools/`, `.trae/`, or any path outside this skill.
 

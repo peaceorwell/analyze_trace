@@ -7,6 +7,48 @@ description: Use when comparing E2E profiling captures from different versions, 
 
 Use this skill to compare profiling captures by collecting the same breakdown tables for a baseline and current run, then reasoning from those tables. The main objective is to find where current is slower, heavier, or less efficient than baseline; current advantages can be noted briefly.
 
+## Web / Automatic Mode
+
+Use non-interactive automatic mode immediately when any of these are true:
+
+- The prompt says `automatic-final`, `自动最终报告`, `不要向用户追问`, or that this is a Web/server-side/background analysis.
+- Environment variables such as `TRACE_AI_JOB_ID`, `TRACE_AI_ANALYSIS_DIR`, `TRACE_AI_REPORT_PATH`, `TRACE_AI_TRACE_A`, or `TRACE_AI_TRACE_B` are present.
+
+In this mode, never ask follow-up questions. Treat trace A as baseline, trace B as current, and use `Delta = B - A`. If required evidence is missing, continue with available evidence and record the missing input under `Open Questions`.
+
+If the prompt is an environment diagnostic or smoke test and asks to reply only `OK`, reply exactly `OK` and do not run tools or load references.
+
+## Web Output Contract
+
+When running for the Web app, produce a stable, user-facing result:
+
+- Write the final user-visible report to `$TRACE_AI_REPORT_PATH` when that environment variable is set.
+- Also write the same final report to `report.md` in the current working directory.
+- Print the same final report to stdout. Do not print tool logs, raw command output, prompt text, or progress narration to stdout.
+- Save supporting evidence as separate files in the analysis directory, such as `baseline.tables.json`, `current.tables.json`, `comparison_evidence.md`, and conversion logs.
+- If analysis cannot proceed because a trace file, DB table, Python dependency, or tool permission is missing, write a concise failure report instead of a partial or fabricated comparison.
+- Prefer Chinese report text when the request is Chinese.
+
+The final `report.md` should use this exact high-level structure:
+
+1. `# AI 对比分析报告`
+2. `## 结论概览`
+   - 3-6 bullets focused on regressions first, then meaningful improvements.
+3. `## 对比口径`
+   - Baseline/current files, selected windows, devices, and `Delta = B - A`.
+4. `## 关键 Delta`
+   - Compact Markdown table with metric, A, B, delta, interpretation, and source.
+5. `## 主要回退与原因假设`
+   - Prioritized findings with evidence, counter-evidence, estimated impact, confidence, and affected ranks/devices.
+6. `## 优化建议`
+   - Prioritized actions with expected benefit, implementation cost, risk, and validation method.
+7. `## 不确定性与下一步`
+   - Missing evidence and the next check that would reduce uncertainty.
+8. `## 产物`
+   - Converted DBs, collected table JSON files, evidence logs, and analysis directory.
+
+Keep the final report concise enough for Web reading. Move large raw tables and long logs into artifact files, then cite those files from the report.
+
 ## Resources
 
 - `scripts/collect_profile_tables.py`: collect host summaries and device breakdown tables for one cnperf DB over one explicit time range.
@@ -16,11 +58,12 @@ Use this skill to compare profiling captures by collecting the same breakdown ta
 
 ## Workflow
 
-1. Create the temporary analysis directory.
-   - Before converting inputs, collecting tables, or writing the comparison report, create one directory under the current working directory.
-   - Use the exact directory name format `e2e_profiling_compare_YYYYMMDD_HHMMSS`; if a collision occurs, append `_NN`.
+1. Create or choose the analysis directory.
+   - In Web/server-side automatic mode, use `ANALYSIS_DIR="${TRACE_AI_ANALYSIS_DIR:-$PWD}"` and `REPORT_MD="${TRACE_AI_REPORT_PATH:-$ANALYSIS_DIR/report.md}"`; do not create an extra nested timestamp directory.
+   - In interactive local mode, before converting inputs, collecting tables, or writing the comparison report, create one directory under the current working directory.
+   - For interactive local mode, use the exact directory name format `e2e_profiling_compare_YYYYMMDD_HHMMSS`; if a collision occurs, append `_NN`.
    - Put all generated artifacts directly in this one directory: converted DBs, conversion report JSON files, table collection outputs, script stdout/stderr logs, ad hoc query outputs, and the final Markdown report.
-   - The default final report path is `<analysis_dir>/report.md`.
+   - The final report path is `$TRACE_AI_REPORT_PATH` in Web mode, otherwise `<analysis_dir>/report.md`.
 2. Define the comparison goal.
    - Version regression: baseline = known-good run; current = run under investigation.
    - Device comparison: baseline = expected-aligned or faster device; current = device under analysis.
@@ -49,7 +92,17 @@ Use this skill to compare profiling captures by collecting the same breakdown ta
 
 ## Commands
 
-Create the temporary analysis directory before any analysis:
+Create or choose the analysis directory before any analysis.
+
+For Web/server-side automatic analysis:
+
+```bash
+SKILL_DIR=<absolute-path-to-this-skill>
+ANALYSIS_DIR="${TRACE_AI_ANALYSIS_DIR:-$PWD}"
+REPORT_MD="${TRACE_AI_REPORT_PATH:-$ANALYSIS_DIR/report.md}"
+```
+
+For interactive local analysis:
 
 ```bash
 SKILL_DIR=<absolute-path-to-this-skill>

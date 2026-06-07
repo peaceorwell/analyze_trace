@@ -58,7 +58,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.19",
+        "version": "0.2.20",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -114,9 +114,11 @@ def test_ai_analysis_runs_configured_command(client, isolated_server, tmp_path, 
         "CLAUDE_ANALYSIS_COMMAND_TEMPLATE",
         (
             f"{shlex.quote(sys.executable)} -c "
-            "\"import pathlib, sys; "
+            "\"import os, pathlib, sys; "
             "pathlib.Path('details.txt').write_text('Detail Artifact\\n', encoding='utf-8'); "
             "pathlib.Path('metrics.json').write_text('{{\\\"ok\\\": true}}\\n', encoding='utf-8'); "
+            "pathlib.Path('report.md').write_text('# Local Report\\n', encoding='utf-8'); "
+            "pathlib.Path(os.environ['TRACE_AI_REPORT_PATH']).write_text('# Final Report\\n', encoding='utf-8'); "
             "print('# AI OK'); "
             "print('prompt_len=' + str(len(sys.argv[1])))\" "
             "{prompt}"
@@ -135,9 +137,10 @@ def test_ai_analysis_runs_configured_command(client, isolated_server, tmp_path, 
         time.sleep(0.05)
 
     assert payload["status"] == "done"
-    assert "# AI OK" in payload["content"]
+    assert payload["content"].strip() == "# Final Report"
     artifact_paths = {item["path"] for item in payload["artifacts"]}
     assert "ai_analysis.md" in artifact_paths
+    assert "report.md" in artifact_paths
     assert "details.txt" in artifact_paths
     assert "metrics.json" in artifact_paths
     assert "stdout.txt" in artifact_paths
@@ -205,6 +208,55 @@ def test_ai_analysis_mounts_configured_claude_skills(client, tmp_path, monkeypat
     assert payload["status"] == "done"
     assert "True" in payload["content"]
     assert str(skills_dir) in payload["content"]
+
+
+def test_ai_analysis_marks_permission_failure_output_as_error(client, isolated_server, tmp_path, monkeypatch):
+    trace_path = tmp_path / "trace.pt.trace.json.gz"
+    with gzip.open(trace_path, "wt", encoding="utf-8") as f:
+        f.write("{}")
+
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO jobs(id, label, mode, status, file_a_name, file_a_gzip_path)
+                VALUES(?,?,?,?,?,?)
+                """,
+                ("ai-permission-job", "AI permission job", "single", "done", trace_path.name, str(trace_path)),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+    Path(web_server.result_dir("ai-permission-job")).mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_ENABLED", True)
+    monkeypatch.setattr(
+        web_server,
+        "CLAUDE_ANALYSIS_COMMAND_TEMPLATE",
+        (
+            f"{shlex.quote(sys.executable)} -c "
+            "\"print('ERROR: tool denied'); "
+            "print('All tool calls are being denied.')\""
+        ),
+    )
+
+    started = client.post("/api/jobs/ai-permission-job/ai-analysis", json={})
+
+    assert started.status_code == 202
+
+    payload = {}
+    for _ in range(80):
+        payload = client.get("/api/jobs/ai-permission-job/ai-analysis").json()
+        if payload["status"] != "running":
+            break
+        time.sleep(0.05)
+
+    assert payload["status"] == "error"
+    assert "failure report instead of a usable analysis" in payload["error"]
+    assert "AI 分析失败" in payload["content"]
 
 
 def test_ai_analysis_reports_missing_claude_command(client, tmp_path, monkeypatch):
