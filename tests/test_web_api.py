@@ -58,7 +58,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.20",
+        "version": "0.2.21",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -84,6 +84,28 @@ def test_ai_analysis_is_disabled_by_default(client):
     r = client.post("/api/jobs/ai-disabled-job/ai-analysis", json={})
 
     assert r.status_code == 403
+
+
+def test_claude_command_normalizes_legacy_permission_args(isolated_server, monkeypatch):
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_COMMAND", "/usr/local/node20/bin/claude")
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_COMMAND_TEMPLATE", "")
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_EXTRA_ARGS", "--permission-mode bypassPermissions")
+
+    command = web_server._build_claude_command("OK", {})
+
+    assert command == ["/usr/local/node20/bin/claude", "--dangerously-skip-permissions", "-p", "OK"]
+
+
+def test_claude_command_template_normalizes_legacy_permission_args(isolated_server, monkeypatch):
+    monkeypatch.setattr(
+        web_server,
+        "CLAUDE_ANALYSIS_COMMAND_TEMPLATE",
+        "/usr/local/node20/bin/claude --permission-mode=bypassPermissions -p {prompt}",
+    )
+
+    command = web_server._build_claude_command("OK", {})
+
+    assert command == ["/usr/local/node20/bin/claude", "--dangerously-skip-permissions", "-p", "OK"]
 
 
 def test_ai_analysis_runs_configured_command(client, isolated_server, tmp_path, monkeypatch):

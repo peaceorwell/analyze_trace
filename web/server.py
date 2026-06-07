@@ -41,7 +41,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.20"
+APP_VERSION = "0.2.21"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
 FEEDBACK_DIRNAME = "feedback"
@@ -1260,7 +1260,7 @@ def _build_claude_command(prompt: str, values: dict) -> list[str]:
         command = [part.format_map(_SafeFormatDict(values)) for part in raw_parts]
         if "{prompt}" not in CLAUDE_ANALYSIS_COMMAND_TEMPLATE:
             command.append(prompt)
-        return command
+        return _normalize_claude_command(command)
 
     command = shlex.split(CLAUDE_ANALYSIS_COMMAND) or ["claude"]
     if CLAUDE_ANALYSIS_EXTRA_ARGS.strip():
@@ -1269,7 +1269,30 @@ def _build_claude_command(prompt: str, values: dict) -> list[str]:
             for part in shlex.split(CLAUDE_ANALYSIS_EXTRA_ARGS)
         )
     command.extend(["-p", prompt])
-    return command
+    return _normalize_claude_command(command)
+
+
+def _normalize_claude_command(command: list[str]) -> list[str]:
+    normalized = []
+    has_skip_permissions = "--dangerously-skip-permissions" in command
+    i = 0
+    while i < len(command):
+        part = command[i]
+        if part == "--permission-mode" and i + 1 < len(command) and command[i + 1] == "bypassPermissions":
+            if not has_skip_permissions:
+                normalized.append("--dangerously-skip-permissions")
+                has_skip_permissions = True
+            i += 2
+            continue
+        if part == "--permission-mode=bypassPermissions":
+            if not has_skip_permissions:
+                normalized.append("--dangerously-skip-permissions")
+                has_skip_permissions = True
+            i += 1
+            continue
+        normalized.append(part)
+        i += 1
+    return normalized
 
 
 def _validate_claude_command(command: list[str]) -> None:
