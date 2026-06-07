@@ -41,7 +41,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.22"
+APP_VERSION = "0.2.24"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
 FEEDBACK_DIRNAME = "feedback"
@@ -4306,6 +4306,34 @@ async def get_job_ai_analysis(request: Request, jid: str):
     payload["content"] = _read_ai_analysis_report(jid) if payload["report_exists"] else ""
     payload["artifacts"] = _collect_ai_analysis_artifacts(jid)
     return payload
+
+
+@app.get("/api/jobs/{jid}/ai-analysis/report.md")
+async def download_job_ai_analysis_report(request: Request, jid: str):
+    db = await get_db()
+    try:
+        row = await load_accessible_job(db, request, jid, "id, label, status")
+    finally:
+        await db.close()
+    if not row:
+        raise HTTPException(404)
+
+    content = _read_ai_analysis_report(jid)
+    if not content:
+        raise HTTPException(404, "AI analysis report not found")
+
+    filename = _safe_download_name(row.get("label"), f"{jid}-ai-analysis")
+    lower = filename.lower()
+    for suffix in (".markdown", ".md"):
+        if lower.endswith(suffix):
+            filename = filename[:-len(suffix)]
+            break
+    filename = f"{filename}-ai-analysis.md"
+    return PlainTextResponse(
+        content.rstrip() + "\n",
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": _content_disposition(filename)},
+    )
 
 
 @app.post("/api/ai/diagnostics")

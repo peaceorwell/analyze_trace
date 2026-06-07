@@ -58,7 +58,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.22",
+        "version": "0.2.24",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -298,6 +298,33 @@ def test_ai_analysis_marks_permission_failure_output_as_error(client, isolated_s
     assert payload["status"] == "error"
     assert "failure report instead of a usable analysis" in payload["error"]
     assert "AI 分析失败" in payload["content"]
+
+
+def test_ai_analysis_report_markdown_download(client):
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                "INSERT INTO jobs(id, label, mode, status) VALUES(?,?,?,?)",
+                ("ai-download-job", "AI report", "single", "done"),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+    Path(web_server.ai_analysis_dir("ai-download-job")).mkdir(parents=True, exist_ok=True)
+    Path(web_server.ai_analysis_report_path("ai-download-job")).write_text(
+        "# AI 性能分析报告\n\n## 结论概览\n\n- ok\n",
+        encoding="utf-8",
+    )
+
+    response = client.get("/api/jobs/ai-download-job/ai-analysis/report.md")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/markdown")
+    assert "AI report-ai-analysis.md" in response.headers["content-disposition"]
+    assert "# AI 性能分析报告" in response.text
 
 
 def test_ai_analysis_reports_missing_claude_command(client, tmp_path, monkeypatch):

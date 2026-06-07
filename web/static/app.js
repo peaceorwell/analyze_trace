@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.22");
+const appVersion = ref("0.2.24");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -804,7 +804,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.22";
+  appVersion.value = cfg.version || "0.2.24";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -1470,6 +1470,7 @@ const aiAnalysisVisibleArtifacts = computed(() => {
   if (!aiAnalysisContent.value) return artifacts;
   return artifacts.filter(item => item.path !== "ai_analysis.md");
 });
+const aiAnalysisHtml = computed(() => renderMarkdown(aiAnalysisContent.value));
 
 const aiAnalysisStatusText = status => ({
   not_started: "未开始",
@@ -1565,6 +1566,13 @@ const copyAiAnalysisReport = async () => {
   if (!aiAnalysisContent.value) return;
   await copyTextToClipboard(aiAnalysisContent.value);
   showToast("AI 分析报告已复制", "success");
+};
+
+const downloadAiAnalysisReport = () => {
+  if (!selectedJobId.value || !aiAnalysisContent.value) return;
+  const a = document.createElement("a");
+  a.href = `/api/jobs/${selectedJobId.value}/ai-analysis/report.md`;
+  a.click();
 };
 
 const copyAiAnalysisArtifact = async artifact => {
@@ -3025,6 +3033,159 @@ const escapeHtml = value => String(value ?? "")
   .replace(/>/g, "&gt;")
   .replace(/"/g, "&quot;");
 
+const safeMarkdownUrl = value => {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (/^(https?:|mailto:|#)/i.test(raw)) return raw.replace(/"/g, "%22");
+  return "";
+};
+
+const renderInlineMarkdown = text => {
+  const tokens = [];
+  const stash = html => {
+    const key = `\u0000MD${tokens.length}\u0000`;
+    tokens.push(html);
+    return key;
+  };
+  let value = String(text ?? "");
+  value = value.replace(/`([^`]+)`/g, (_, code) => stash(`<code>${escapeHtml(code)}</code>`));
+  value = value.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => {
+    const safeUrl = safeMarkdownUrl(url);
+    const safeLabel = escapeHtml(label);
+    return safeUrl
+      ? stash(`<a href="${escapeHtml(safeUrl)}" target="_blank" rel="noopener noreferrer">${safeLabel}</a>`)
+      : safeLabel;
+  });
+  value = escapeHtml(value);
+  value = value
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/__([^_]+)__/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>")
+    .replace(/(^|[^_])_([^_]+)_/g, "$1<em>$2</em>");
+  tokens.forEach((html, index) => {
+    value = value.replaceAll(`\u0000MD${index}\u0000`, html);
+  });
+  return value;
+};
+
+const parseMarkdownCells = line => {
+  let value = line.trim();
+  if (value.startsWith("|")) value = value.slice(1);
+  if (value.endsWith("|")) value = value.slice(0, -1);
+  return value.split("|").map(cell => cell.trim());
+};
+
+const isMarkdownTableSep = line => {
+  const cells = parseMarkdownCells(line);
+  return cells.length > 1 && cells.every(cell => /^:?-{3,}:?$/.test(cell));
+};
+
+function renderMarkdown(markdown) {
+  const lines = String(markdown || "").replace(/\r\n/g, "\n").split("\n");
+  const html = [];
+  let i = 0;
+  const nextIsBlock = line =>
+    !line.trim()
+    || /^```/.test(line.trim())
+    || /^#{1,6}\s+/.test(line)
+    || /^>\s?/.test(line)
+    || /^[-*_]\s*[-*_]\s*[-*_][\s\-*_]*$/.test(line.trim())
+    || /^\s*[-*+]\s+/.test(line)
+    || /^\s*\d+\.\s+/.test(line)
+    || (i + 1 < lines.length && isMarkdownTableSep(lines[i + 1]));
+
+  while (i < lines.length) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    if (!trimmed) {
+      i += 1;
+      continue;
+    }
+
+    const fence = trimmed.match(/^```(\w+)?/);
+    if (fence) {
+      const lang = fence[1] ? ` data-lang="${escapeHtml(fence[1])}"` : "";
+      i += 1;
+      const code = [];
+      while (i < lines.length && !lines[i].trim().startsWith("```")) {
+        code.push(lines[i]);
+        i += 1;
+      }
+      if (i < lines.length) i += 1;
+      html.push(`<pre class="md-code"${lang}><code>${escapeHtml(code.join("\n"))}</code></pre>`);
+      continue;
+    }
+
+    const heading = line.match(/^(#{1,6})\s+(.+)$/);
+    if (heading) {
+      const level = heading[1].length;
+      html.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
+      i += 1;
+      continue;
+    }
+
+    if (/^[-*_]\s*[-*_]\s*[-*_][\s\-*_]*$/.test(trimmed)) {
+      html.push("<hr>");
+      i += 1;
+      continue;
+    }
+
+    if (i + 1 < lines.length && isMarkdownTableSep(lines[i + 1])) {
+      const headers = parseMarkdownCells(line);
+      i += 2;
+      const rows = [];
+      while (i < lines.length && lines[i].includes("|") && lines[i].trim()) {
+        rows.push(parseMarkdownCells(lines[i]));
+        i += 1;
+      }
+      html.push(
+        `<div class="md-table-wrap"><table><thead><tr>${headers.map(cell => `<th>${renderInlineMarkdown(cell)}</th>`).join("")}</tr></thead>`
+        + `<tbody>${rows.map(row => `<tr>${headers.map((_, index) => `<td>${renderInlineMarkdown(row[index] || "")}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`
+      );
+      continue;
+    }
+
+    if (/^\s*[-*+]\s+/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*[-*+]\s+/, ""));
+        i += 1;
+      }
+      html.push(`<ul>${items.map(item => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</ul>`);
+      continue;
+    }
+
+    if (/^\s*\d+\.\s+/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*\d+\.\s+/, ""));
+        i += 1;
+      }
+      html.push(`<ol>${items.map(item => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</ol>`);
+      continue;
+    }
+
+    if (/^>\s?/.test(line)) {
+      const quote = [];
+      while (i < lines.length && /^>\s?/.test(lines[i])) {
+        quote.push(lines[i].replace(/^>\s?/, ""));
+        i += 1;
+      }
+      html.push(`<blockquote>${quote.map(part => `<p>${renderInlineMarkdown(part)}</p>`).join("")}</blockquote>`);
+      continue;
+    }
+
+    const para = [line];
+    i += 1;
+    while (i < lines.length && !nextIsBlock(lines[i])) {
+      para.push(lines[i]);
+      i += 1;
+    }
+    html.push(`<p>${renderInlineMarkdown(para.join(" "))}</p>`);
+  }
+  return html.join("\n");
+}
+
 const perfettoButtonLabel = (slot) => {
   const prefix = selectedJob.value?.mode === "compare" ? `Perfetto ${slot.toUpperCase()}` : "Perfetto";
   return perfettoOpening.value[slot] ? `${prefix} 打开中...` : `${prefix} ↗`;
@@ -4135,6 +4296,9 @@ const JobDetail = {
               <button v-if="aiAnalysisContent" class="btn btn-sm btn-outline" @click="copyAiAnalysisReport">
                 复制
               </button>
+              <button v-if="aiAnalysisContent" class="btn btn-sm btn-outline" @click="downloadAiAnalysisReport">
+                下载 Markdown
+              </button>
               <button class="btn btn-sm btn-primary"
                       :disabled="!claudeAnalysisEnabled || aiAnalysisStarting || aiAnalysisMeta.status==='running'"
                       @click="startAiAnalysis(aiAnalysisMeta.report_exists || aiAnalysisMeta.status==='done')">
@@ -4179,7 +4343,7 @@ const JobDetail = {
             <span class="spinner-small"></span>
             Claude Code 正在分析 trace，完成后这里会自动刷新。
           </div>
-          <pre v-if="aiAnalysisContent" class="ai-analysis-report">{{ aiAnalysisContent }}</pre>
+          <div v-if="aiAnalysisContent" class="ai-analysis-report markdown-body" v-html="aiAnalysisHtml"></div>
           <div v-if="aiAnalysisVisibleArtifacts.length" class="ai-artifacts-panel">
             <div class="ai-artifacts-head">
               <div>
@@ -4412,10 +4576,10 @@ const JobDetail = {
       isTritonStepTab, tritonStatus, allowFileDownload, allowCodeExecution,
       claudeAnalysisEnabled, aiAnalysisMeta, aiAnalysisLoading, aiAnalysisStarting,
       aiAnalysisError, aiAnalysisContent, aiAnalysisArtifacts, aiAnalysisVisibleArtifacts,
-      aiAnalysisStatusText,
+      aiAnalysisHtml, aiAnalysisStatusText,
       aiDiagnosticsLoading, aiDiagnosticsError, aiDiagnosticsResult, aiDiagnosticStatusText,
       refreshAiAnalysis, startAiAnalysis, copyAiAnalysisReport,
-      copyAiAnalysisArtifact,
+      downloadAiAnalysisReport, copyAiAnalysisArtifact,
       runAiDiagnostics, copyAiDiagnostics,
       openActionMenu, toggleActionMenu, closeActionMenu,
       switchTab,
