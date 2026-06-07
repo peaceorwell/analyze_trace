@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.26");
+const appVersion = ref("0.2.28");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -153,6 +153,8 @@ const aiDiagnosticsError = ref("");
 const aiDiagnosticsResult = ref(null);
 let activeResultStateJobId = null;
 let aiAnalysisPollTimer = null;
+let aiCompletionTitleResetTimer = null;
+const defaultDocumentTitle = document.title || "torch profiler analyzer";
 const isAdmin = computed(() => currentUserIsAdmin.value);
 
 const toggleActionMenu = key => {
@@ -805,7 +807,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.26";
+  appVersion.value = cfg.version || "0.2.28";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -1519,15 +1521,85 @@ const clearAiDiagnostics = () => {
   aiDiagnosticsResult.value = null;
 };
 
+const requestAiCompletionNotificationPermission = () => {
+  if (!("Notification" in window)) return;
+  if (Notification.permission !== "default") return;
+  Notification.requestPermission().catch(() => {});
+};
+
+const resetAiCompletionTitle = () => {
+  if (aiCompletionTitleResetTimer) {
+    clearTimeout(aiCompletionTitleResetTimer);
+    aiCompletionTitleResetTimer = null;
+  }
+  if (document.title !== defaultDocumentTitle) document.title = defaultDocumentTitle;
+};
+
+const markAiCompletionTitle = title => {
+  if (aiCompletionTitleResetTimer) clearTimeout(aiCompletionTitleResetTimer);
+  document.title = `${title} - ${defaultDocumentTitle}`;
+  aiCompletionTitleResetTimer = setTimeout(resetAiCompletionTitle, 15000);
+};
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) resetAiCompletionTitle();
+});
+
+const notifyAiAnalysisCompleted = ({ jobId, label, status, error }) => {
+  const ok = status === "done";
+  const title = ok ? "AI 分析已完成" : "AI 分析失败";
+  const kind = ok ? "success" : "error";
+  const taskName = label || jobId || "当前任务";
+  const body = ok
+    ? `任务「${taskName}」的 AI 分析报告已生成。`
+    : `任务「${taskName}」AI 分析失败，请返回查看诊断信息。`;
+  const pageInForeground = !document.hidden && document.hasFocus();
+  if (pageInForeground) {
+    showToast(title, kind, 5000);
+    return;
+  }
+
+  markAiCompletionTitle(title);
+  let notified = false;
+  if ("Notification" in window && Notification.permission === "granted") {
+    try {
+      const notification = new Notification(title, {
+        body: error ? `${body}\n${error}` : body,
+        tag: `tpa-ai-analysis-${jobId || "current"}`,
+      });
+      notification.onclick = () => {
+        window.focus();
+        if (jobId) window.location.hash = `#/job/${encodeURIComponent(jobId)}/ai`;
+        notification.close();
+      };
+      notified = true;
+    } catch {
+      notified = false;
+    }
+  }
+  if (!notified) showToast(title, kind, 10000);
+};
+
 const refreshAiAnalysis = async ({ silent = false } = {}) => {
   if (!selectedJobId.value) return;
+  const jobId = selectedJobId.value;
+  const previousStatus = selectedJob.value?.ai_analysis?.status || "not_started";
+  const jobLabel = selectedJob.value?.label || selectedJob.value?.file_a_name || jobId;
   if (!silent) aiAnalysisLoading.value = true;
   aiAnalysisError.value = "";
   try {
-    const r = await fetch(`/api/jobs/${selectedJobId.value}/ai-analysis`, { credentials: "include" });
+    const r = await fetch(`/api/jobs/${jobId}/ai-analysis`, { credentials: "include" });
     const payload = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(payload.detail || "加载 AI 分析失败");
     updateAiAnalysisState(payload);
+    if (previousStatus === "running" && payload.status && payload.status !== "running") {
+      notifyAiAnalysisCompleted({
+        jobId,
+        label: jobLabel,
+        status: payload.status,
+        error: payload.error || "",
+      });
+    }
     if (payload.status === "running") startAiAnalysisPolling();
     else stopAiAnalysisPolling();
   } catch (e) {
@@ -1554,6 +1626,7 @@ const startAiAnalysis = async (force = false) => {
     showToast("AI 分析未启用，请在服务端设置 TRACE_ENABLE_CLAUDE_ANALYSIS=1", "error");
     return;
   }
+  requestAiCompletionNotificationPermission();
   aiAnalysisStarting.value = true;
   aiAnalysisError.value = "";
   aiArtifactsExpanded.value = false;
@@ -4179,9 +4252,9 @@ const JobDetail = {
           </button>
           <span class="result-tabs-spacer"></span>
           <button class="tab reading-toggle"
-                  :title="isReadingMode ? '退出阅读模式' : '进入阅读模式'"
+                  :title="isReadingMode ? '退出全屏' : '进入全屏'"
                   @click="toggleReadingMode">
-            {{ isReadingMode ? '退出阅读' : '阅读模式' }}
+            {{ isReadingMode ? '退出全屏' : '全屏' }}
           </button>
         </div>
 

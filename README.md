@@ -1,395 +1,428 @@
-# Trace Analyzer
+# Torch Profiler Analyzer
 
-GPU 性能分析工具，解析 PyTorch Profiler 生成的 Chrome Trace JSON 文件，提取并统计 GPU kernel、Triton kernel、ATen 算子、CNCL/NCCL 通信算子的耗时数据，支持单文件分析与双文件对比。
+Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/内网性能分析工具。它可以解析 `.json`、`.json.gz`、`.json.zip`、`.tar.gz` 和 `.tgz` trace 文件，统计 GPU kernel、Triton kernel、ATen Ops、CNCL/NCCL 通信算子，并提供单 trace 分析、双 trace 对比、历史管理、AI 分析和 Web 可视化界面。
 
-提供命令行脚本和 Web 可视化界面两种使用方式。
+当前版本：`0.2.28`
 
----
+## 主要功能
+
+- 单文件、批量上传和两个 trace 快速对比。
+- 历史任务按项目分组，支持搜索、分页、置顶、多选、移动、删除任务和删除原始文件。
+- 结果页包含性能总览、控制台、Kernel 类型、所有 Kernel、Triton、ATen Ops、CNCL Ops、Triton Step 等页签。
+- 表格支持搜索、列筛选、排序、列宽拖拽、列显隐、每页数量调整和快捷显示全部。
+- 图表页支持数据源、指标、TopN 切换，摘要卡片、Delta 列表和 Kernel 类型行可点击下钻到相关表格。
+- 对比任务支持 Kernel/Triton/ATen/CNCL 维度的 delta 展示，并支持交换 A/B 重新对比。
+- Perfetto 集成支持从 Web 页面直接打开 trace。
+- Claude Code AI 分析支持单 trace 和对比 trace，生成 Markdown 报告并在页面渲染，也可下载报告。
+- AI 分析开始前会自动做环境诊断；如果诊断失败，会展示具体诊断明细。
+- AI 分析耗时较长时，浏览器后台或切到其他应用后，完成/失败会通过浏览器通知或页面标题提醒。
+- 改进留言板支持发帖、图片附件、帖子内回复，管理员可删除帖子和回复。
+- 可选 LDAP 登录、用户隔离、共享项目和管理员权限。
+- 提供 JSON 日志、审计日志、备份脚本、健康检查和 Prometheus 指标。
 
 ## 目录结构
 
-```
+```text
 .
-├── analyze_trace.py       # 命令行入口兼容包装
+├── analyze_trace.py
 ├── trace_analyzer/
-│   ├── __init__.py        # Python 包导出
-│   └── core.py            # 核心分析逻辑
+│   ├── __init__.py
+│   └── core.py
 ├── web/
-│   ├── server.py          # Web 服务器（FastAPI）
-│   ├── db.py              # SQLite 数据库操作
-│   ├── requirements.txt   # Python 依赖
-│   ├── Dockerfile         # Docker 镜像构建
+│   ├── auth.py
+│   ├── backup.py
+│   ├── db.py
+│   ├── server.py
 │   └── static/
-│       ├── index.html     # 前端页面
-│       ├── app.js         # Vue 3 前端逻辑
-│       ├── style.css      # 样式
-│       └── favicon.svg    # 图标
-├── docker-compose.yml     # Docker Compose 部署配置
-└── tests/                 # 测试
+│       ├── app.js
+│       ├── favicon.svg
+│       ├── index.html
+│       └── style.css
+├── tests/
+├── scripts/init_deploy_dirs.sh
+├── docker-compose.yml
+├── pyproject.toml
+└── uv.lock
 ```
-
----
 
 ## 快速开始
 
-```bash
-# 命令行分析
-python analyze_trace.py trace.json -o ./output
-# 或安装为命令
-pip install -e .
-analyze-trace trace.json -o ./output
-
-# Web 界面
-cd web && pip install -r requirements.txt && python server.py
-```
-
-浏览器访问 `http://127.0.0.1:8181`。
-
-使用 `uv`：
+推荐使用 `uv`：
 
 ```bash
 uv sync --extra web
-uv run python web/server.py
+uv run --extra web python web/server.py
+```
 
-# 启用测试依赖
+浏览器访问：
+
+```text
+http://127.0.0.1:8181
+```
+
+指定监听地址和端口：
+
+```bash
+uv run --extra web python web/server.py --host 0.0.0.0 --port 8181
+```
+
+启用开发和测试依赖：
+
+```bash
 uv sync --extra web --extra dev
-uv run pytest -q
+uv run --extra web --extra dev pytest -q
 ```
 
----
-
-## Web 界面
-
-提供完整的前端操作界面，支持文件上传、分析结果查看、历史管理和双文件对比。
-
-### 启动
+也可以使用 pip：
 
 ```bash
-cd web
-pip install -r requirements.txt
-
-python server.py                        # 默认 127.0.0.1:8181
-python server.py --host 0.0.0.0 --port 8080
-python server.py --no-download          # 禁止用户下载原始 trace 文件
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[web]"
+python web/server.py
 ```
 
-`uv` 启动：
+## Web 使用
 
-```bash
-uv sync --extra web
-uv run python web/server.py
-```
+### 提交分析
 
-### Docker 部署
+Web 首页有两种上传模式：
 
-```bash
-# 使用 docker-compose（推荐）
-docker-compose up -d
+- `单文件/批量`：拖拽或选择一个或多个 trace 文件，批量提交后每个文件生成一个任务。
+- `快速对比`：同时上传 A/B 两个 trace，直接生成对比任务。
 
-# 或手动构建运行
-cd web
-docker build -t trace-analyzer .
-docker run -d -p 8181:8181 --name trace-analyzer -v trace_data:/app/storage trace-analyzer
-```
+支持的输入格式：
 
-**数据持久化**：SQLite 数据库和上传的文件存储在 `/app/storage` 目录，挂载 volume 后数据不会丢失。
+- `.json`
+- `.json.gz`
+- `.json.zip`
+- `.tar.gz`
+- `.tgz`
 
-**禁用文件下载**：设置环境变量 `TRACE_NO_DOWNLOAD=1`：
-```bash
-TRACE_NO_DOWNLOAD=1 docker-compose up -d
-```
+上传时可以选择项目和填写别名。服务端内部会保留压缩格式；下载原始 trace 时默认提供 `.json.gz`，便于保存大文件并保持工具兼容性。
 
-**启用本地代码执行**：Triton 代码运行和清除 cache 默认关闭；在可信本机环境中设置环境变量 `TRACE_ENABLE_CODE_EXEC=1`：
-```bash
-TRACE_ENABLE_CODE_EXEC=1 docker-compose up -d
-```
+### 结果页
 
-### Claude Code AI 分析
+任务完成后默认打开 `性能总览`：
 
-Web 端支持把已完成任务交给服务端 Claude Code 做二次分析，并在结果页展示“AI 分析”页签。该能力默认关闭；仓库内置的 `.claude/skills/e2e-profiling-analyzer` 和 `.claude/skills/e2e-profiling-comparator` 会默认用于单 trace 分析和双 trace 对比。也可以把自定义 skills 安装到其他位置，例如：
+- `性能总览`：摘要卡片、TopN 柱状图、占比图、对比回退/优化列表，支持点击下钻到相关表格。
+- `控制台`：展示分析脚本输出，支持搜索、section 跳转、折叠生成文件日志和 Delta 着色。
+- `Kernel 类型` / `类型对比`：按 family 聚合，点击类型行可跳到相关 Kernel 表格。
+- `所有 Kernel`、`Triton`、`ATen Ops`、`CNCL Ops`：表格化查看明细。
+- `Triton Step N`：当保存了 per-step Triton CSV 时显示。
+- `AI 分析`：服务端启用 Claude Code 后显示。
 
-```bash
-mkdir -p ~/.claude
-tar -xzf e2e-profiling.tar.gz -C ~/.claude
-# 解压后应包含 ~/.claude/skills/e2e-profiling-analyzer 和 ~/.claude/skills/e2e-profiling-comparator
-```
+表格能力：
 
-推荐环境变量：
+- 全局搜索、列筛选、排序。
+- 列宽拖拽和列显隐。
+- 每页数量可选，也支持快捷显示全部。
+- 下载当前页 CSV。
+- 下钻打开的 Kernel 表默认隐藏冗余列，方便聚焦相关 kernel。
+
+其他结果页能力：
+
+- 右上角 `全屏` 可让结果区域覆盖页面，适合看长表格、控制台和 AI 报告。
+- 每个任务会记住上次停留的页签，以及表格搜索、排序、列宽、列筛选和列显隐。
+- Perfetto 按钮可把 trace 打开到 Perfetto UI。
+- AI 分析产物默认折叠在报告末尾，不抢占报告阅读空间。
+
+### 历史、项目和对比
+
+- 左侧侧栏包含 `历史` 和 `对比` 两个页签。
+- 历史按项目分组展示，默认折叠时按项目条目分页。
+- 侧栏支持项目过滤和任务/文件/项目搜索。
+- 展开项目后按需加载任务，避免大量历史一次性渲染。
+- 多选模式支持批量移动任务、删除任务、删除原始文件。
+- 删除任务会清理该任务对应的 trace、压缩 trace、结果 CSV、Triton 代码、AI 分析产物等文件。
+- 项目删除后进入回收站，可在保留期内恢复；也支持永久删除。
+- `对比` 页签可选择两个已完成单文件任务创建对比，也可使用 `批量基线` 一次创建多个对比任务。
+- 对比结果可交换 A/B 重新对比。
+
+### 改进留言板
+
+右上角 `改进留言板` 用于收集内部用户反馈：
+
+- 用户可以发布帖子，支持文字和最多 4 张图片。
+- 进入帖子后可在帖子内回复交流。
+- 管理员可以删除帖子和回复。
+
+## Claude Code AI 分析
+
+AI 分析默认关闭。开启后，已完成任务会出现 `AI 分析` 页签。点击开始分析后流程如下：
+
+1. 服务端先运行 AI 环境诊断。
+2. 诊断检查 Claude 命令、skills 目录、单 trace skill、对比 skill、skills 挂载、基础 Claude 调用和工具权限探针。
+3. 如果诊断失败，页面展示 Markdown 诊断报告和具体 stdout/stderr。
+4. 如果诊断通过，调用 Claude Code 和对应 skill 生成 Markdown 分析报告。
+5. 页面渲染 Markdown 报告，并支持复制和下载。
+6. 如果页面不在前台，分析完成或失败时会触发浏览器通知；如果通知权限不可用，会退回到页面 toast 和标题提示。
+
+仓库默认使用：
+
+- 单 trace skill：`.claude/skills/e2e-profiling-analyzer`
+- 对比 skill：`.claude/skills/e2e-profiling-comparator`
+
+常用环境变量：
 
 | 环境变量 | 默认值 | 说明 |
-|------|------|------|
-| `TRACE_ENABLE_CLAUDE_ANALYSIS=1` | off | 开启 Web AI 分析入口 |
+| --- | --- | --- |
+| `TRACE_ENABLE_CLAUDE_ANALYSIS` | off | 设置为 `1` 后开启 AI 分析 |
 | `TRACE_CLAUDE_COMMAND` | `claude` | Claude Code 命令 |
-| `TRACE_CLAUDE_EXTRA_ARGS` | `--dangerously-skip-permissions` | 追加给 Claude Code 的参数；后台服务需要非交互工具权限，也可追加模型或 `--add-dir {results_dir}` 等参数 |
-| `TRACE_CLAUDE_COMMAND_TEMPLATE` | 空 | 完整命令模板；可使用 `{prompt}`、`{trace_a}`、`{trace_b}`、`{skill}`、`{skills_dir}`、`{results_dir}`、`{analysis_dir}`、`{report_path}` |
-| `TRACE_CLAUDE_SKILLS_DIR` | `.claude/skills` | Claude skills 目录；每次 AI 分析都会挂载到任务分析目录的 `.claude/skills` |
-| `TRACE_CLAUDE_SINGLE_SKILL` | `e2e-profiling-analyzer` | 单 trace 分析 skill 名称 |
-| `TRACE_CLAUDE_COMPARE_SKILL` | `e2e-profiling-comparator` | 双 trace 对比 skill 名称 |
-| `TRACE_CLAUDE_TIMEOUT_SECONDS` | `1800` | 单次 AI 分析超时 |
+| `TRACE_CLAUDE_EXTRA_ARGS` | `--dangerously-skip-permissions` | 追加给 Claude Code 的参数 |
+| `TRACE_CLAUDE_COMMAND_TEMPLATE` | 空 | 完整命令模板，可使用 `{prompt}`、`{trace_a}`、`{trace_b}`、`{skill}`、`{skills_dir}`、`{results_dir}`、`{analysis_dir}`、`{report_path}` |
+| `TRACE_CLAUDE_SKILLS_DIR` | `.claude/skills` | Claude skills 目录 |
+| `TRACE_CLAUDE_SINGLE_SKILL` | `e2e-profiling-analyzer` | 单 trace skill 名称 |
+| `TRACE_CLAUDE_COMPARE_SKILL` | `e2e-profiling-comparator` | 对比 skill 名称 |
+| `TRACE_CLAUDE_TIMEOUT_SECONDS` | `1800` | AI 分析超时时间 |
+| `TRACE_CLAUDE_DIAGNOSTIC_TIMEOUT_SECONDS` | `60` | AI 环境诊断超时时间 |
 
-默认命令等价于：
-
-```bash
-TRACE_ENABLE_CLAUDE_ANALYSIS=1 \
-TRACE_CLAUDE_COMMAND=claude \
-uv run --extra web python web/server.py
-```
-
-如果内部部署需要自定义 Claude 启动方式，可以改用模板：
+示例：
 
 ```bash
 TRACE_ENABLE_CLAUDE_ANALYSIS=1 \
-TRACE_CLAUDE_COMMAND_TEMPLATE='claude --dangerously-skip-permissions -p {prompt}' \
+TRACE_CLAUDE_COMMAND=/usr/local/node20/bin/claude \
+TRACE_CLAUDE_EXTRA_ARGS=--dangerously-skip-permissions \
+uv run --extra web python web/server.py --host 0.0.0.0 --port 8181
+```
+
+使用命令模板：
+
+```bash
+TRACE_ENABLE_CLAUDE_ANALYSIS=1 \
+TRACE_CLAUDE_COMMAND_TEMPLATE='/usr/local/node20/bin/claude --dangerously-skip-permissions -p {prompt}' \
 uv run --extra web python web/server.py
 ```
 
-AI 分析产物保存在任务目录下的 `results/ai_analysis/`，删除任务时会随任务文件一起删除。后台会把 `TRACE_AI_TRACE_A`、`TRACE_AI_TRACE_B`、`TRACE_AI_RESULT_DIR`、`TRACE_AI_REPORT_PATH`、`TRACE_CLAUDE_SKILLS_DIR` 等环境变量传给 Claude 进程，便于自定义 wrapper 或 skill 使用。环境诊断会额外执行一次安全的 Bash 写文件探针，用来确认后台 Claude Code 具备运行 skill 所需的工具权限。
+AI 分析目录位于任务结果目录下的 `ai_analysis/`。其中 `ai_analysis.md` 是最终报告；其他小文本产物会在页面末尾折叠展示。
 
-### LDAP 认证与用户隔离
+## 认证、用户隔离和管理员
 
-默认 `AUTH_MODE=none`，保持单用户本地模式。对内开放时设置 `AUTH_MODE=ldap` 后会启用登录页和后端会话校验；个人项目、个人任务、对比候选、结果 CSV、trace 下载和文件删除都会按 LDAP 用户隔离。用户也可以创建共享项目，或把自己的个人项目转为共享项目；共享项目内的任务对所有登录用户可读并可用于对比，但任务重命名、移动、删除和文件删除仍只允许任务创建者执行。设置 `TRACE_ADMIN_USERS` 后，名单内用户拥有全局管理能力，例如删除留言板帖子和回复。
-
-服务账号搜索用户的推荐配置：
+默认 `AUTH_MODE=none`，适合单用户本地使用。内网部署可启用 LDAP：
 
 ```bash
 AUTH_MODE=ldap
-SESSION_SECRET=replace-with-a-long-random-secret
-LDAP_URL=ldaps://ldap.example.com:636
-LDAP_BASE_DN=DC=example,DC=com
-LDAP_BIND_DN=CN=svc_analyze_trace,OU=Service Accounts,DC=example,DC=com
-LDAP_BIND_PASSWORD=replace-with-service-account-password
-LDAP_USER_FILTER=(sAMAccountName={username})
-LDAP_REQUIRE_GROUP_DN=CN=analyze_trace_users,OU=Groups,DC=example,DC=com
-LDAP_TLS_CA_FILE=/etc/ssl/certs/company-ca.pem
+SESSION_SECRET="replace-with-a-long-random-secret"
+LDAP_URL="ldaps://ldap.example.com:636"
+LDAP_BASE_DN="DC=example,DC=com"
+LDAP_BIND_DN="CN=svc_analyze_trace,OU=Service Accounts,DC=example,DC=com"
+LDAP_BIND_PASSWORD="replace-with-service-account-password"
+LDAP_USER_FILTER="(sAMAccountName={username})"
+LDAP_REQUIRE_GROUP_DN="CN=analyze_trace_users,OU=Groups,DC=example,DC=com"
 ```
 
-如果 IT 提供的是 UPN 直连绑定方式，也可以用：
+也可以使用 UPN 直连绑定：
 
 ```bash
 AUTH_MODE=ldap
-SESSION_SECRET=replace-with-a-long-random-secret
-LDAP_URL=ldaps://ldap.example.com:636
-LDAP_USER_DN_TEMPLATE={username}@example.com
+SESSION_SECRET="replace-with-a-long-random-secret"
+LDAP_URL="ldaps://ldap.example.com:636"
+LDAP_USER_DN_TEMPLATE="{username}@example.com"
 ```
 
 可选项：
 
 | 环境变量 | 说明 |
-|------|------|
+| --- | --- |
 | `LDAP_DISPLAY_NAME_ATTR` | 显示名属性，默认 `displayName` |
 | `LDAP_MAIL_ATTR` | 邮箱属性，默认 `mail` |
-| `TRACE_ADMIN_USERS` | 管理员账号标识，支持 LDAP 用户名、邮箱或显示名，多个用逗号分隔，例如 `zhouysong,zhouysong@example.com` |
-| `SESSION_COOKIE_SECURE=1` | HTTPS 部署时建议开启 |
+| `LDAP_TLS_CA_FILE` | LDAPS CA 证书路径 |
+| `SESSION_COOKIE_SECURE=1` | HTTPS 部署建议开启 |
+| `TRACE_ADMIN_USERS` | 管理员账号，支持用户名、邮箱或显示名，多个用逗号分隔 |
+| `LOGIN_CAPTCHA_THRESHOLD` | 连续登录失败后要求验证码，默认 5 |
+| `LOGIN_CAPTCHA_TTL_SECONDS` | 验证码有效期，默认 300 秒 |
 
-### 运维能力
+启用认证后：
 
-#### 日志与审计
+- 个人项目和任务按登录用户隔离。
+- 用户可以创建共享项目，或把自己的项目转为共享项目。
+- 共享项目对所有登录用户可读，可用于对比。
+- 任务重命名、移动、删除和文件删除仍限制为任务创建者。
+- 管理员可进行全局管理操作，例如删除留言板内容。
 
-- Web 服务会输出 JSON 格式请求日志，包含 `request_id`、用户、IP、路由、状态码和耗时等字段。
-- 设置 `TRACE_LOG_FILE=/path/to/analyze-trace.log` 可同时写入日志文件，便于接入 ELK / Loki / Splunk。
-- 关键操作会写入 SQLite 的 `audit_logs` 表，包括项目创建/删除/恢复、任务创建/移动/删除、文件删除/下载、历史对比和交换 A/B。
-- 可通过 `GET /api/audit-logs?limit=100` 查看最近审计记录。
+## 运维
 
-#### 备份
+### 目录和权限
 
-备份对象包括 SQLite 数据库和整个 storage 文件目录。脚本会先用 SQLite backup API 生成一致性数据库快照，再打包为 `.tar.gz`：
+建议生产环境使用独立数据目录：
+
+```bash
+sudo mkdir -p /data/analyze_trace/storage /data/analyze_trace/logs /data/analyze_trace/backups
+sudo chown -R cambricon:cambricon /data/analyze_trace
+```
+
+关键环境变量：
+
+| 环境变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `TRACE_STORAGE_DIR` | `web/storage` | 数据库、上传文件和结果目录 |
+| `TRACE_BACKUP_DIR` | `web/backups` | 备份目录 |
+| `TRACE_LOG_FILE` | 空 | JSONL 日志文件 |
+| `TRACE_LOG_LEVEL` | `INFO` | 日志级别 |
+| `TRACE_ANALYSIS_CONCURRENCY` | `1` | 并发分析任务数 |
+| `TRACE_NO_DOWNLOAD` | 空 | 设置后禁止下载原始 trace |
+| `TRACE_ENABLE_CODE_EXEC` | off | 设置为 `1` 后允许运行 Triton 代码和清除 cache |
+
+### systemd 示例
+
+`/etc/analyze_trace.env`：
+
+```bash
+TRACE_STORAGE_DIR=/data/analyze_trace/storage
+TRACE_BACKUP_DIR=/data/analyze_trace/backups
+TRACE_LOG_FILE=/data/analyze_trace/logs/app.jsonl
+TRACE_ENABLE_CLAUDE_ANALYSIS=1
+TRACE_CLAUDE_COMMAND=/usr/local/node20/bin/claude
+TRACE_CLAUDE_EXTRA_ARGS=--dangerously-skip-permissions
+```
+
+`/etc/systemd/system/analyze-trace.service`：
+
+```ini
+[Unit]
+Description=Torch Profiler Analyzer
+After=network-online.target
+
+[Service]
+User=cambricon
+Group=cambricon
+WorkingDirectory=/opt/analyze_trace
+EnvironmentFile=/etc/analyze_trace.env
+ExecStart=/opt/analyze_trace/.venv/bin/python web/server.py --host 0.0.0.0 --port 8181
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+```
+
+启动：
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now analyze-trace
+sudo systemctl status analyze-trace --no-pager
+```
+
+### 日志和审计
+
+- 服务输出 JSON 请求日志，字段包含 `request_id`、用户、IP、方法、路径、状态码和耗时。
+- 设置 `TRACE_LOG_FILE` 后会同时写入 JSONL 文件。
+- 关键操作会写入 SQLite 的 `audit_logs` 表。
+- 可通过 `GET /api/audit-logs?limit=100` 查看审计记录。
+
+### 备份
+
+备份脚本会使用 SQLite backup API 生成一致性数据库快照，并打包 storage：
 
 ```bash
 uv run python web/backup.py \
-  --storage-dir web/storage \
+  --storage-dir /data/analyze_trace/storage \
   --backup-dir /data/analyze_trace/backups \
   --retention-days 14
 ```
 
-建议由 cron、systemd timer 或公司统一备份平台每天执行一次，并将备份目录放到 NAS / 对象存储等持久化位置。脚本会生成 `latest.json`，监控接口会读取最近一次备份时间和大小。
+建议使用 cron、systemd timer 或公司备份平台定时执行，并把备份目录同步到 NAS 或对象存储。
 
-#### 监控
-
-服务提供以下探测接口：
+### 监控接口
 
 | 接口 | 用途 |
-|------|------|
-| `/healthz` | 进程存活检查 |
-| `/readyz` | DB 与 storage 可用性检查 |
+| --- | --- |
+| `/healthz` | 存活检查 |
+| `/readyz` | DB、storage、backup、log file 可用性检查 |
 | `/metrics` | Prometheus 文本指标 |
 
-`/metrics` 包含请求量、请求耗时、任务状态数量、分析队列长度、磁盘容量和最近一次备份状态。设置 `TRACE_BACKUP_DIR=/data/analyze_trace/backups` 可让服务读取指定备份目录下的 `latest.json`。
+`/metrics` 包含请求量、请求耗时、任务状态数量、分析队列长度、磁盘容量和最近一次备份信息。
 
-### CLI 参数
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `--host` | `127.0.0.1` | 监听地址 |
-| `--port` | `8181` | 监听端口 |
-| `--analysis-concurrency` | `1` | 同时运行的分析任务数 |
-| `--no-download` | off | 禁止下载上传的原始 trace 文件 |
-
-### 功能特性
-
-#### 提交分析
-- 拖拽或点击上传 `.json`、`.json.gz`、`.json.zip` 或 `.tar.gz/.tgz` 文件（PyTorch Profiler 导出的 Chrome Trace 格式）
-- 选择所属项目（可选）、填写别名（可选）
-- 点击"提交分析"，任务进入分析队列，实时显示上传进度和运行状态
-
-#### 结果查看
-- **控制台**：原始文本输出，含 Per-Step 摘要、Top 10 热点 kernel、Kernel 类型分布
-- **图表**：Kernel 类型耗时柱状图（横向）和占比饼图，collective 类型不计入 compute 分析
-- **CSV 表格**：按页加载，支持搜索、列排序、列宽拖拽调整、列显隐、超长内容截断并 hover 显示全文
-- **结果记忆**：按任务记住上次打开的结果页签，以及各表格的搜索、排序、列宽、列筛选和列显隐
-- **下载当前页 CSV**：表格右上角可下载当前分页中的 CSV 内容
-- **Triton 代码执行**：设置 `TRACE_ENABLE_CODE_EXEC=1` 后，在 Triton 或 Triton Step N 表格中点击"运行"执行 kernel 代码，显示效率（GB/s）
-- **清除 Cache**：设置 `TRACE_ENABLE_CODE_EXEC=1` 后，Triton Step N 表格中可清除 `/tmp/torchinductor_*` 缓存目录
-
-#### 历史管理
-- 侧栏按项目分组显示历史任务，支持折叠/展开
-- 可选择项目过滤器筛选特定项目的历史记录
-- 支持按任务、文件或项目搜索历史记录
-- 展开项目后按需加载任务，较大的项目支持继续加载
-- 支持批量移动任务、删除任务、删除原始文件
-- 支持分页浏览
-- 点击任务可查看详情
-
-#### 项目管理
-- 点击"+ 新建项目"创建项目，用于归类管理分析任务
-- 支持重命名项目、删除项目
-- 可将任务移动到其他项目
-
-#### 项目恢复
-- **删除项目时**：项目及其下的所有任务保存到回收站，而非真正删除
-- **恢复项目**：在"找回项目"中可恢复近 10 天内删除的项目，任务会一起恢复
-- **永久删除**：超过 10 天的已删除项目会显示"已过期"标签，只能永久删除
-
-#### 历史对比
-- 在侧栏"对比"标签页选择两个已完成的单文件任务
-- 可选填别名和所属项目
-- 发起对比分析，无需重新上传文件，直接复用已有数据
-- 源文件删除后无法参与对比，会显示"已删除"标签
-
-#### 文件操作
-- **下载**：默认下载 gzip 压缩的 JSON trace（`.json.gz`，受 `--no-download` 控制）
-- **Perfetto 集成**：点击"Perfetto ↗"按钮在 Perfetto UI 中打开 trace 文件
-- **删除文件**：删除原始 trace 文件，对应任务会标记"已删除"，无法再参与对比
-
-#### 其他
-- **深色/浅色模式切换**
-- **侧栏可拖拽调整宽度**，可折叠
-- **点击标题可返回上传页面**
-- **界面内嵌使用指南**：右上角"使用指南"按钮
-
-### 反向代理部署
-
-使用 Docker 部署后，可通过 Caddy 配置域名 + 自动 HTTPS：
-
-```yaml
-# docker-compose.yml
-services:
-  trace-analyzer:
-    build:
-      context: ./web
-      dockerfile: Dockerfile
-    volumes:
-      - trace_analyzer_data:/app/storage
-    restart: unless-stopped
-
-  caddy:
-    image: caddy:2-alpine
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile
-      - ./data/caddy:/data
-    depends_on:
-      - trace-analyzer
-    restart: unless-stopped
-
-volumes:
-  trace_analyzer_data:
-```
-
-```nginx
-# Caddyfile
-trace.example.com {
-    reverse_proxy trace-analyzer:8181
-}
-```
-
-Caddy 会自动从 Let's Encrypt 申请 SSL 证书并续期。
-
----
-
-## 命令行使用
-
-### 依赖
-
-仅依赖 Python 标准库，无需额外安装。
-
-### 单文件分析
+## Docker
 
 ```bash
-python analyze_trace.py trace.json -o ./output
+docker-compose up -d
 ```
 
-### 双文件对比
+或者手动构建：
 
 ```bash
-python analyze_trace.py baseline.json optimized.json -o ./output
+cd web
+docker build -t trace-analyzer .
+docker run -d -p 8181:8181 --name trace-analyzer -v trace_data:/app/storage trace-analyzer
 ```
 
-### 参数说明
+使用反向代理时，建议启用 HTTPS；如果启用 LDAP 登录，生产环境请设置 `SESSION_COOKIE_SECURE=1`。
+
+## CLI 使用
+
+安装：
+
+```bash
+pip install -e .
+```
+
+单文件分析：
+
+```bash
+analyze-trace trace.json.gz -o ./output
+```
+
+双文件对比：
+
+```bash
+analyze-trace baseline.json.gz optimized.json.gz -o ./output
+```
+
+参数：
 
 | 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `trace_files` | — | 1 或 2 个 PyTorch Profiler trace JSON 文件 |
+| --- | --- | --- |
+| `trace_files` | 无 | 1 或 2 个 PyTorch Profiler trace 文件 |
 | `-o, --output-dir` | `.` | 输出目录 |
 | `-s, --save-triton-csv` | off | 输出逐 step 的 Triton kernel 详情 CSV |
-| `-c, --save-triton-code` | off | 将每个 Triton kernel 的生成代码保存为 `.py` 文件 |
+| `-c, --save-triton-code` | off | 保存每个 Triton kernel 的生成源码 |
 
-### 输出文件
+## 输出文件
 
-**单文件模式：**
+单文件分析：
 
 | 文件 | 内容 |
-|------|------|
+| --- | --- |
 | `all_kernels_avg.csv` | 所有 GPU kernel 按名称聚合的平均耗时和调用次数 |
-| `triton_kernels_avg.csv` | Triton kernel 的平均耗时、IO 量、IO 效率 |
-| `aten_ops_avg.csv` | ATen 算子的平均耗时和调用次数 |
-| `kernel_types_avg.csv` | 各 kernel 类型（triton / gemm / … / other）的平均耗时汇总 |
-| `cncl_ops_avg.csv` | CNCL/NCCL 通信算子的平均耗时 |
-| `step_N_triton_kernels.csv` | （`-s`）每个 ProfilerStep 的 Triton kernel 详情 |
-| `step_N_triton_codes/` | （`-c`）每个 Triton kernel 的生成源码 `.py` 文件 |
+| `triton_kernels_avg.csv` | Triton kernel 的平均耗时、IO 量和平均 IO 效率 |
+| `aten_ops_avg.csv` | ATen Ops 的平均耗时和调用次数 |
+| `kernel_types_avg.csv` | Kernel family 聚合结果 |
+| `cncl_ops_avg.csv` | CNCL/NCCL 通信算子聚合结果 |
+| `step_N_triton_kernels.csv` | 开启 `-s` 后输出的逐 step Triton 明细 |
+| `step_N_triton_codes/` | 开启 `-c` 后保存的 Triton 代码 |
 
-**双文件对比模式**（额外输出 `*_cmp.csv`）：
+双文件对比会额外输出：
 
 | 文件 | 内容 |
-|------|------|
-| `all_kernels_cmp.csv` | 两个 trace 的 kernel 耗时对比，含 delta 变化 |
+| --- | --- |
+| `all_kernels_cmp.csv` | 两个 trace 的 kernel 耗时和调用次数 delta |
 | `triton_kernels_cmp.csv` | Triton kernel 对比 |
-| `aten_ops_cmp.csv` | ATen 算子对比 |
-| `kernel_types_cmp.csv` | kernel 类型汇总对比 |
-| `cncl_ops_cmp.csv` | CNCL 算子对比 |
+| `aten_ops_cmp.csv` | ATen Ops 对比 |
+| `kernel_types_cmp.csv` | Kernel family 对比 |
+| `cncl_ops_cmp.csv` | CNCL/NCCL 通信算子对比 |
 
----
+## 解析逻辑
 
-## 工作原理
+分析流程会先识别 step 区间，再把 kernel、ATen 和通信事件归属到对应 step：
 
-`analyze_trace.py` 对 Chrome Trace 格式的 JSON 执行两遍扫描：
+1. 优先识别 `ProfilerStep#N` 和 `step_N`。
+2. 如果没有标准 step 标记，会 fallback 到 `run_step` 或整体可分析事件范围。
+3. 每个 step 内先聚合，再对所有 step 求平均，降低单步抖动影响。
 
-1. **Pass 1** — 收集所有 `ProfilerStep#N` / `step_N` 事件，建立 `step_num → (start_ts, end_ts)` 映射；若 trace 没有标准 step 标记，则 fallback 到 `run_step` 区间或全部可分析事件范围
-2. **Pass 2** — 遍历 `kernel` / `aten::*` / CNCL 事件，通过时间戳二分查找将每个事件归属到对应的 ProfilerStep
+Kernel family 规则：
 
-每个 ProfilerStep 内按 kernel 名称聚合耗时后，再对所有 step 求均值，消除单步抖动。
+- `triton`：名称以 `triton_` 开头，并进一步细分为 `triton_mm`、`triton_reduce`、`triton_pointwise` 等。
+- `collective`：TCDP 前缀或包含 `nccl`、`cncl`、`allreduce`、`allgather` 等通信关键词，单独统计，不计入 compute 分析。
+- 语义聚类：匹配 `gemm`、`conv`、`embedding`、`pool`、`norm`、`attention` 等常见类型。
+- fallback：无法匹配规则的 kernel 按名称前缀归类，兜底归入 `other`。
 
-kernel 自动分类逻辑：
+## 安全说明
 
-- **triton**：名称以 `triton_` 开头，进一步细分为 `triton_mm`、`triton_reduce`、`triton_pointwise` 等子类型
-- **collective**：TCDP 前缀或包含 `nccl`、`cncl`、`allreduce`、`allgather` 等集合通信关键词，单独统计，**不计入** compute 分析
-- **语义聚类**：通过内置规则匹配 `gemm`、`conv`、`embedding`、`pool`、`norm`、`attention` 等常见类型
-- **fallback**：无法匹配规则的 kernel 按名称前缀归入对应 family（保留原始大小写），兜底归入 `other`
-
-所有非 collective 的 kernel family 均在 Kernel Type Breakdown 和图表中展示。
-
----
+- `TRACE_ENABLE_CODE_EXEC=1` 会允许执行 trace 中保存的 Triton 代码，只建议在可信环境使用。
+- Claude Code AI 分析会让服务端进程调用本机 `claude` 命令，并需要对任务结果目录有读写权限。
+- 对内开放时建议启用 LDAP、HTTPS、日志、备份和监控。
 
 ## 开源协议
 
