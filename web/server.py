@@ -41,7 +41,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.18"
+APP_VERSION = "0.2.19"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
 FEEDBACK_DIRNAME = "feedback"
@@ -50,6 +50,15 @@ FEEDBACK_MAX_IMAGE_BYTES = 8 * 1024 * 1024
 AI_ANALYSIS_DIRNAME = "ai_analysis"
 AI_ANALYSIS_STATUS_FILE = "ai_analysis_status.json"
 AI_ANALYSIS_REPORT_FILE = "ai_analysis.md"
+AI_ANALYSIS_ARTIFACT_MAX_BYTES = 256 * 1024
+AI_ANALYSIS_ARTIFACT_MAX_TOTAL_BYTES = 1024 * 1024
+AI_ANALYSIS_ARTIFACT_EXTENSIONS = {
+    ".csv", ".json", ".log", ".md", ".text", ".tsv", ".txt", ".yaml", ".yml",
+}
+AI_ANALYSIS_INTERNAL_FILES = {
+    AI_ANALYSIS_STATUS_FILE,
+    "command.json",
+}
 
 # Configured at startup via CLI; read-only after that
 AUTH_MODE = os.environ.get("AUTH_MODE", "none").strip().lower()
@@ -1113,6 +1122,70 @@ def _find_latest_ai_report(analysis_dir: str) -> Optional[str]:
         return None
     candidates.sort(reverse=True)
     return candidates[0][2]
+
+
+def _ai_artifact_priority(path: str) -> tuple[int, str]:
+    basename = os.path.basename(path)
+    if path == AI_ANALYSIS_REPORT_FILE:
+        return (0, path)
+    if basename == "report.md":
+        return (1, path)
+    if basename == "stdout.txt":
+        return (2, path)
+    if basename == "stderr.txt":
+        return (3, path)
+    if basename.lower().endswith(".md"):
+        return (4, path)
+    return (5, path)
+
+
+def _collect_ai_analysis_artifacts(jid: str) -> list[dict]:
+    analysis_dir = ai_analysis_dir(jid)
+    if not os.path.isdir(analysis_dir):
+        return []
+
+    root_abs = os.path.abspath(analysis_dir)
+    artifacts = []
+    total_read = 0
+    for root, dirs, files in os.walk(root_abs):
+        dirs[:] = [name for name in dirs if not name.startswith(".")]
+        for filename in sorted(files):
+            if filename.startswith(".") or filename.endswith(".tmp"):
+                continue
+            if filename in AI_ANALYSIS_INTERNAL_FILES:
+                continue
+            ext = os.path.splitext(filename)[1].lower()
+            if ext not in AI_ANALYSIS_ARTIFACT_EXTENSIONS:
+                continue
+
+            full = os.path.abspath(os.path.join(root, filename))
+            try:
+                if os.path.commonpath([root_abs, full]) != root_abs:
+                    continue
+            except ValueError:
+                continue
+            rel_path = os.path.relpath(full, root_abs)
+            size = _path_size(full)
+            remaining = max(0, AI_ANALYSIS_ARTIFACT_MAX_TOTAL_BYTES - total_read)
+            read_limit = min(size, AI_ANALYSIS_ARTIFACT_MAX_BYTES, remaining)
+            content = ""
+            truncated = size > read_limit
+            if read_limit > 0:
+                with open(full, "rb") as f:
+                    data = f.read(read_limit)
+                total_read += len(data)
+                content = data.decode("utf-8", errors="replace")
+            artifacts.append({
+                "path": rel_path,
+                "name": filename,
+                "size": size,
+                "mtime": datetime.fromtimestamp(os.path.getmtime(full), timezone.utc).isoformat(),
+                "truncated": truncated,
+                "content": content,
+            })
+
+    artifacts.sort(key=lambda item: _ai_artifact_priority(item["path"]))
+    return artifacts
 
 
 def collect_ai_analysis(jid: str) -> dict:
@@ -4167,6 +4240,7 @@ async def get_job_ai_analysis(request: Request, jid: str):
 
     payload = collect_ai_analysis(jid)
     payload["content"] = _read_ai_analysis_report(jid) if payload["report_exists"] else ""
+    payload["artifacts"] = _collect_ai_analysis_artifacts(jid)
     return payload
 
 
@@ -4350,6 +4424,7 @@ async def start_job_ai_analysis(request: Request, jid: str, body: Optional[dict]
             raise HTTPException(409, "AI analysis is already running")
         if current.get("status") == "done" and not force:
             current["content"] = _read_ai_analysis_report(jid)
+            current["artifacts"] = _collect_ai_analysis_artifacts(jid)
             return current
 
         _write_ai_analysis_status(jid, {
@@ -4375,6 +4450,7 @@ async def start_job_ai_analysis(request: Request, jid: str, body: Optional[dict]
     _track_ai_analysis_task(jid, task)
     payload = collect_ai_analysis(jid)
     payload["content"] = _read_ai_analysis_report(jid) if payload["report_exists"] else ""
+    payload["artifacts"] = _collect_ai_analysis_artifacts(jid)
     return JSONResponse(payload, status_code=202)
 
 

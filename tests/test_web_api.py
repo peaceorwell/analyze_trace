@@ -58,7 +58,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.18",
+        "version": "0.2.19",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -112,7 +112,15 @@ def test_ai_analysis_runs_configured_command(client, isolated_server, tmp_path, 
     monkeypatch.setattr(
         web_server,
         "CLAUDE_ANALYSIS_COMMAND_TEMPLATE",
-        f"{shlex.quote(sys.executable)} -c \"import sys; print('# AI OK'); print('prompt_len=' + str(len(sys.argv[1])))\" {{prompt}}",
+        (
+            f"{shlex.quote(sys.executable)} -c "
+            "\"import pathlib, sys; "
+            "pathlib.Path('details.txt').write_text('Detail Artifact\\n', encoding='utf-8'); "
+            "pathlib.Path('metrics.json').write_text('{{\\\"ok\\\": true}}\\n', encoding='utf-8'); "
+            "print('# AI OK'); "
+            "print('prompt_len=' + str(len(sys.argv[1])))\" "
+            "{prompt}"
+        ),
     )
 
     started = client.post("/api/jobs/ai-job/ai-analysis", json={})
@@ -128,6 +136,16 @@ def test_ai_analysis_runs_configured_command(client, isolated_server, tmp_path, 
 
     assert payload["status"] == "done"
     assert "# AI OK" in payload["content"]
+    artifact_paths = {item["path"] for item in payload["artifacts"]}
+    assert "ai_analysis.md" in artifact_paths
+    assert "details.txt" in artifact_paths
+    assert "metrics.json" in artifact_paths
+    assert "stdout.txt" in artifact_paths
+    assert "stderr.txt" in artifact_paths
+    assert "command.json" not in artifact_paths
+    assert "ai_analysis_status.json" not in artifact_paths
+    details_artifact = next(item for item in payload["artifacts"] if item["path"] == "details.txt")
+    assert "Detail Artifact" in details_artifact["content"]
 
     detail = client.get("/api/jobs/ai-job").json()
     assert detail["ai_analysis"]["status"] == "done"

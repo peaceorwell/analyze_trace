@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.18");
+const appVersion = ref("0.2.19");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -146,6 +146,7 @@ const aiAnalysisLoading = ref(false);
 const aiAnalysisStarting = ref(false);
 const aiAnalysisError = ref("");
 const aiAnalysisContent = ref("");
+const aiAnalysisArtifacts = ref([]);
 const aiDiagnosticsLoading = ref(false);
 const aiDiagnosticsError = ref("");
 const aiDiagnosticsResult = ref(null);
@@ -803,7 +804,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.18";
+  appVersion.value = cfg.version || "0.2.19";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -1449,6 +1450,7 @@ const loadJob = async id => {
   chartPieRows.value = [];
   aiAnalysisError.value = "";
   aiAnalysisContent.value = "";
+  aiAnalysisArtifacts.value = [];
   if (selectedJob.value?.ai_analysis?.status === "running") {
     startAiAnalysisPolling();
   } else {
@@ -1463,6 +1465,11 @@ const aiAnalysisMeta = computed(() => selectedJob.value?.ai_analysis || {
   status: "not_started",
   report_exists: false,
 });
+const aiAnalysisVisibleArtifacts = computed(() => {
+  const artifacts = aiAnalysisArtifacts.value || [];
+  if (!aiAnalysisContent.value) return artifacts;
+  return artifacts.filter(item => item.path !== "ai_analysis.md");
+});
 
 const aiAnalysisStatusText = status => ({
   not_started: "未开始",
@@ -1473,12 +1480,13 @@ const aiAnalysisStatusText = status => ({
 
 const updateAiAnalysisState = payload => {
   if (!payload || !selectedJob.value) return;
-  const { content, ...meta } = payload;
+  const { content, artifacts, ...meta } = payload;
   selectedJob.value = {
     ...selectedJob.value,
     ai_analysis: meta,
   };
   aiAnalysisContent.value = content || "";
+  aiAnalysisArtifacts.value = Array.isArray(artifacts) ? artifacts : [];
 };
 
 const stopAiAnalysisPolling = () => {
@@ -1557,6 +1565,12 @@ const copyAiAnalysisReport = async () => {
   if (!aiAnalysisContent.value) return;
   await copyTextToClipboard(aiAnalysisContent.value);
   showToast("AI 分析报告已复制", "success");
+};
+
+const copyAiAnalysisArtifact = async artifact => {
+  if (!artifact?.content) return;
+  await copyTextToClipboard(artifact.content);
+  showToast(`${artifact.path || "AI 产物"} 已复制`, "success");
 };
 
 const aiDiagnosticStatusText = status => ({
@@ -4166,7 +4180,34 @@ const JobDetail = {
             Claude Code 正在分析 trace，完成后这里会自动刷新。
           </div>
           <pre v-if="aiAnalysisContent" class="ai-analysis-report">{{ aiAnalysisContent }}</pre>
-          <div v-else-if="aiAnalysisMeta.status!=='running'" class="ai-analysis-empty">
+          <div v-if="aiAnalysisVisibleArtifacts.length" class="ai-artifacts-panel">
+            <div class="ai-artifacts-head">
+              <div>
+                <strong>分析产物</strong>
+                <span>{{ aiAnalysisVisibleArtifacts.length }} 个文本文件</span>
+              </div>
+            </div>
+            <div class="ai-artifact-list">
+              <div v-for="artifact in aiAnalysisVisibleArtifacts"
+                   :key="artifact.path"
+                   class="ai-artifact-card">
+                <div class="ai-artifact-head">
+                  <div class="ai-artifact-title">{{ artifact.path }}</div>
+                  <div class="ai-artifact-meta">
+                    <span>{{ fmtBytes(artifact.size) }}</span>
+                    <span v-if="artifact.truncated">已截断</span>
+                    <button v-if="artifact.content"
+                            class="btn btn-xs btn-outline"
+                            @click="copyAiAnalysisArtifact(artifact)">
+                      复制
+                    </button>
+                  </div>
+                </div>
+                <pre class="ai-artifact-content">{{ artifact.content || '(空文件)' }}</pre>
+              </div>
+            </div>
+          </div>
+          <div v-if="!aiAnalysisContent && !aiAnalysisVisibleArtifacts.length && aiAnalysisMeta.status!=='running'" class="ai-analysis-empty">
             点击“开始分析”后，会调用服务端 Claude Code 和自定义 skill 生成报告。
           </div>
         </div>
@@ -4370,9 +4411,11 @@ const JobDetail = {
       hasColFilters, colSums, isKernelTypeTab, canDrillKernelTypeRow, drillDownKernelType,
       isTritonStepTab, tritonStatus, allowFileDownload, allowCodeExecution,
       claudeAnalysisEnabled, aiAnalysisMeta, aiAnalysisLoading, aiAnalysisStarting,
-      aiAnalysisError, aiAnalysisContent, aiAnalysisStatusText,
+      aiAnalysisError, aiAnalysisContent, aiAnalysisArtifacts, aiAnalysisVisibleArtifacts,
+      aiAnalysisStatusText,
       aiDiagnosticsLoading, aiDiagnosticsError, aiDiagnosticsResult, aiDiagnosticStatusText,
       refreshAiAnalysis, startAiAnalysis, copyAiAnalysisReport,
+      copyAiAnalysisArtifact,
       runAiDiagnostics, copyAiDiagnostics,
       openActionMenu, toggleActionMenu, closeActionMenu,
       switchTab,
@@ -4382,7 +4425,7 @@ const JobDetail = {
       downloadTraceFile, downloadReport, openInPerfetto, perfettoOpening, perfettoButtonLabel,
       setSort, startResize, downloadCsv,
       viewTritonCode, runSingleTriton, clearInductorCache,
-      fmtDate, fmtSum, deltaCellClass, clearColFilters,
+      fmtDate, fmtSum, fmtBytes, deltaCellClass, clearColFilters,
       isColumnVisible, resetVisibleColumns, applyCoreColumnPreset, toggleColumnVisibility,
       formatConsole,
     };
