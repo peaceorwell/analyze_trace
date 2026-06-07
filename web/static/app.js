@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.14");
+const appVersion = ref("0.2.15");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -791,7 +791,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.14";
+  appVersion.value = cfg.version || "0.2.15";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -882,6 +882,7 @@ const logout = async () => {
   compareJobs.value = [];
   selectedJobId.value = null;
   selectedJob.value = null;
+  clearAiDiagnostics();
   router.push({ path: "/" });
 };
 
@@ -1473,6 +1474,12 @@ const stopAiAnalysisPolling = () => {
     clearInterval(aiAnalysisPollTimer);
     aiAnalysisPollTimer = null;
   }
+};
+
+const clearAiDiagnostics = () => {
+  aiDiagnosticsLoading.value = false;
+  aiDiagnosticsError.value = "";
+  aiDiagnosticsResult.value = null;
 };
 
 const refreshAiAnalysis = async ({ silent = false } = {}) => {
@@ -4416,6 +4423,7 @@ router.beforeEach(async (to, from) => {
     pollTimer = null;
     stopAiAnalysisPolling();
     cancelResultTableRequest();
+    clearAiDiagnostics();
     selectedJobId.value = null;
     selectedJob.value = null;
     jobLoading.value = false;
@@ -4450,6 +4458,7 @@ router.beforeEach(async (to, from) => {
   if (ktPieChartInstB.value) { ktPieChartInstB.value.destroy(); ktPieChartInstB.value = null; }
   stopAiAnalysisPolling();
   cancelResultTableRequest();
+  clearAiDiagnostics();
 
   selectedJobId.value = newJobId;
   selectedJob.value = null;
@@ -4459,6 +4468,7 @@ router.beforeEach(async (to, from) => {
 
   if (!loaded) {
     selectedJobId.value = null;
+    clearAiDiagnostics();
     jobLoading.value = false;
     return { path: "/" };
   }
