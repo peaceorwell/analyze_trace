@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.25");
+const appVersion = ref("0.2.26");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -147,6 +147,7 @@ const aiAnalysisStarting = ref(false);
 const aiAnalysisError = ref("");
 const aiAnalysisContent = ref("");
 const aiAnalysisArtifacts = ref([]);
+const aiArtifactsExpanded = ref(false);
 const aiDiagnosticsLoading = ref(false);
 const aiDiagnosticsError = ref("");
 const aiDiagnosticsResult = ref(null);
@@ -804,7 +805,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.25";
+  appVersion.value = cfg.version || "0.2.26";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -1451,6 +1452,7 @@ const loadJob = async id => {
   aiAnalysisError.value = "";
   aiAnalysisContent.value = "";
   aiAnalysisArtifacts.value = [];
+  aiArtifactsExpanded.value = false;
   aiDiagnosticsLoading.value = false;
   aiDiagnosticsError.value = "";
   aiDiagnosticsResult.value = null;
@@ -1473,6 +1475,11 @@ const aiAnalysisVisibleArtifacts = computed(() => {
   if (!aiAnalysisContent.value) return artifacts;
   return artifacts.filter(item => item.path !== "ai_analysis.md");
 });
+const aiArtifactSummary = computed(() =>
+  aiAnalysisVisibleArtifacts.value
+    .map(item => `${item.path} (${fmtBytes(item.size)})`)
+    .join(" · ")
+);
 const aiAnalysisHtml = computed(() => renderMarkdown(aiAnalysisContent.value));
 
 const aiAnalysisStatusText = status => ({
@@ -1549,6 +1556,7 @@ const startAiAnalysis = async (force = false) => {
   }
   aiAnalysisStarting.value = true;
   aiAnalysisError.value = "";
+  aiArtifactsExpanded.value = false;
   aiDiagnosticsLoading.value = false;
   aiDiagnosticsError.value = "";
   aiDiagnosticsResult.value = null;
@@ -4353,14 +4361,20 @@ const JobDetail = {
               : 'Claude Code 正在分析 trace，完成后这里会自动刷新。' }}
           </div>
           <div v-if="aiAnalysisContent" class="ai-analysis-report markdown-body" v-html="aiAnalysisHtml"></div>
-          <div v-if="aiAnalysisVisibleArtifacts.length" class="ai-artifacts-panel">
-            <div class="ai-artifacts-head">
+          <div v-if="aiAnalysisVisibleArtifacts.length"
+               :class="['ai-artifacts-panel', { collapsed: !aiArtifactsExpanded }]">
+            <button type="button"
+                    class="ai-artifacts-toggle"
+                    :aria-expanded="String(aiArtifactsExpanded)"
+                    @click="aiArtifactsExpanded = !aiArtifactsExpanded">
               <div>
                 <strong>分析产物</strong>
                 <span>{{ aiAnalysisVisibleArtifacts.length }} 个文本文件</span>
               </div>
-            </div>
-            <div class="ai-artifact-list">
+              <span class="ai-artifacts-summary">{{ aiArtifactSummary }}</span>
+              <span class="ai-artifacts-toggle-label">{{ aiArtifactsExpanded ? '收起' : '展开' }}</span>
+            </button>
+            <div v-if="aiArtifactsExpanded" class="ai-artifact-list">
               <div v-for="artifact in aiAnalysisVisibleArtifacts"
                    :key="artifact.path"
                    class="ai-artifact-card">
@@ -4585,7 +4599,7 @@ const JobDetail = {
       isTritonStepTab, tritonStatus, allowFileDownload, allowCodeExecution,
       claudeAnalysisEnabled, aiAnalysisMeta, aiAnalysisLoading, aiAnalysisStarting,
       aiAnalysisError, aiAnalysisContent, aiAnalysisArtifacts, aiAnalysisVisibleArtifacts,
-      aiAnalysisHtml, aiAnalysisStatusText,
+      aiArtifactsExpanded, aiArtifactSummary, aiAnalysisHtml, aiAnalysisStatusText,
       aiDiagnosticsLoading, aiDiagnosticsError, aiDiagnosticsResult, aiDiagnosticStatusText,
       refreshAiAnalysis, startAiAnalysis, copyAiAnalysisReport,
       downloadAiAnalysisReport, copyAiAnalysisArtifact,
