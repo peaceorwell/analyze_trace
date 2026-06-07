@@ -5,6 +5,7 @@ import os
 import shlex
 import sys
 import tarfile
+import textwrap
 import time
 from pathlib import Path
 import shutil
@@ -58,7 +59,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.24",
+        "version": "0.2.25",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -127,6 +128,32 @@ def test_claude_skills_mount_is_writable_copy(tmp_path):
     assert env["CLAUDE_CODE_PROJECT_DIR"] == str(analysis_dir)
 
 
+def _fake_claude_template(tmp_path: Path, analysis_body: str) -> str:
+    script = tmp_path / "fake_claude.py"
+    body = textwrap.indent(textwrap.dedent(analysis_body).strip() or "pass", "    ")
+    script.write_text(
+        "import os\n"
+        "import pathlib\n"
+        "import sys\n"
+        "\n"
+        "prompt = sys.argv[1] if len(sys.argv) > 1 else \"\"\n"
+        "if \"claude_tool_probe.txt\" in prompt:\n"
+        "    pathlib.Path(\"claude_tool_probe.txt\").write_text(\n"
+        "        os.environ.get(\"TRACE_AI_TOOL_PROBE_TOKEN\", \"\"),\n"
+        "        encoding=\"utf-8\",\n"
+        "    )\n"
+        "    print(\"OK\")\n"
+        "elif \"这是环境诊断\" in prompt:\n"
+        "    skill = os.environ.get(\"TRACE_AI_SKILL\", \"\")\n"
+        "    print(\"OK\")\n"
+        "    print(os.path.exists(pathlib.Path(\".claude\") / \"skills\" / skill / \"SKILL.md\"))\n"
+        "else:\n"
+        f"{body}\n",
+        encoding="utf-8",
+    )
+    return f"{shlex.quote(sys.executable)} {shlex.quote(str(script))} {{prompt}}"
+
+
 def test_ai_analysis_runs_configured_command(client, isolated_server, tmp_path, monkeypatch):
     trace_path = tmp_path / "trace.pt.trace.json.gz"
     with gzip.open(trace_path, "wt", encoding="utf-8") as f:
@@ -153,16 +180,16 @@ def test_ai_analysis_runs_configured_command(client, isolated_server, tmp_path, 
     monkeypatch.setattr(
         web_server,
         "CLAUDE_ANALYSIS_COMMAND_TEMPLATE",
-        (
-            f"{shlex.quote(sys.executable)} -c "
-            "\"import os, pathlib, sys; "
-            "pathlib.Path('details.txt').write_text('Detail Artifact\\n', encoding='utf-8'); "
-            "pathlib.Path('metrics.json').write_text('{{\\\"ok\\\": true}}\\n', encoding='utf-8'); "
-            "pathlib.Path('report.md').write_text('# Local Report\\n', encoding='utf-8'); "
-            "pathlib.Path(os.environ['TRACE_AI_REPORT_PATH']).write_text('# Final Report\\n', encoding='utf-8'); "
-            "print('# AI OK'); "
-            "print('prompt_len=' + str(len(sys.argv[1])))\" "
-            "{prompt}"
+        _fake_claude_template(
+            tmp_path,
+            """
+            pathlib.Path('details.txt').write_text('Detail Artifact\\n', encoding='utf-8')
+            pathlib.Path('metrics.json').write_text('{\"ok\": true}\\n', encoding='utf-8')
+            pathlib.Path('report.md').write_text('# Local Report\\n', encoding='utf-8')
+            pathlib.Path(os.environ['TRACE_AI_REPORT_PATH']).write_text('# Final Report\\n', encoding='utf-8')
+            print('# AI OK')
+            print('prompt_len=' + str(len(prompt)))
+            """,
         ),
     )
 
@@ -178,6 +205,7 @@ def test_ai_analysis_runs_configured_command(client, isolated_server, tmp_path, 
         time.sleep(0.05)
 
     assert payload["status"] == "done"
+    assert payload["diagnostics"]["ok"] is True
     assert payload["content"].strip() == "# Final Report"
     artifact_paths = {item["path"] for item in payload["artifacts"]}
     assert "ai_analysis.md" in artifact_paths
@@ -204,6 +232,9 @@ def test_ai_analysis_mounts_configured_claude_skills(client, tmp_path, monkeypat
     skill_dir = skills_dir / "e2e-profiling-analyzer"
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text("---\nname: e2e-profiling-analyzer\n---\n", encoding="utf-8")
+    compare_skill_dir = skills_dir / "e2e-profiling-comparator"
+    compare_skill_dir.mkdir(parents=True)
+    (compare_skill_dir / "SKILL.md").write_text("---\nname: e2e-profiling-comparator\n---\n", encoding="utf-8")
 
     async def insert_job():
         db = await web_db.get_db()
@@ -227,11 +258,12 @@ def test_ai_analysis_mounts_configured_claude_skills(client, tmp_path, monkeypat
     monkeypatch.setattr(
         web_server,
         "CLAUDE_ANALYSIS_COMMAND_TEMPLATE",
-        (
-            f"{shlex.quote(sys.executable)} -c "
-            "\"import os; "
-            "print(os.path.exists('.claude/skills/e2e-profiling-analyzer/SKILL.md')); "
-            "print(os.environ['TRACE_CLAUDE_SKILLS_DIR'])\""
+        _fake_claude_template(
+            tmp_path,
+            """
+            print(os.path.exists('.claude/skills/e2e-profiling-analyzer/SKILL.md'))
+            print(os.environ['TRACE_CLAUDE_SKILLS_DIR'])
+            """,
         ),
     )
 
@@ -247,6 +279,7 @@ def test_ai_analysis_mounts_configured_claude_skills(client, tmp_path, monkeypat
         time.sleep(0.05)
 
     assert payload["status"] == "done"
+    assert payload["diagnostics"]["ok"] is True
     assert "True" in payload["content"]
     assert str(skills_dir) in payload["content"]
 
@@ -296,8 +329,12 @@ def test_ai_analysis_marks_permission_failure_output_as_error(client, isolated_s
         time.sleep(0.05)
 
     assert payload["status"] == "error"
-    assert "failure report instead of a usable analysis" in payload["error"]
-    assert "AI 分析失败" in payload["content"]
+    assert payload["phase"] == "diagnostics_failed"
+    assert payload["diagnostics"]["ok"] is False
+    assert "AI environment diagnostics failed" in payload["error"]
+    assert "AI 环境诊断未通过" in payload["content"]
+    assert "工具权限探针" in payload["content"]
+    assert "ERROR: tool denied" in payload["content"]
 
 
 def test_ai_analysis_report_markdown_download(client):
@@ -365,6 +402,9 @@ def test_ai_analysis_reports_missing_claude_command(client, tmp_path, monkeypatc
         time.sleep(0.05)
 
     assert payload["status"] == "error"
+    assert payload["phase"] == "diagnostics_failed"
+    assert payload["diagnostics"]["ok"] is False
+    assert "AI 环境诊断未通过" in payload["content"]
     assert "Claude Code command not found" in payload["content"]
     assert "__missing_claude_code_for_test__" in payload["content"]
     assert "TRACE_CLAUDE_COMMAND" in payload["content"]
@@ -459,6 +499,9 @@ def test_ai_analysis_supports_compare_jobs(client, tmp_path, monkeypatch):
     asyncio.run(insert_job())
     Path(web_server.result_dir("ai-compare-job")).mkdir(parents=True, exist_ok=True)
     skills_dir = tmp_path / "skills"
+    single_skill_dir = skills_dir / "e2e-profiling-analyzer"
+    single_skill_dir.mkdir(parents=True)
+    (single_skill_dir / "SKILL.md").write_text("---\nname: e2e-profiling-analyzer\n---\n", encoding="utf-8")
     skill_dir = skills_dir / "compare-skill"
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text("---\nname: compare-skill\n---\n", encoding="utf-8")
@@ -469,7 +512,15 @@ def test_ai_analysis_supports_compare_jobs(client, tmp_path, monkeypatch):
     monkeypatch.setattr(
         web_server,
         "CLAUDE_ANALYSIS_COMMAND_TEMPLATE",
-        f"{shlex.quote(sys.executable)} -c \"import os; print('# Compare OK'); print(os.environ['TRACE_AI_MODE']); print(os.environ['TRACE_AI_SKILL']); print(os.environ['TRACE_AI_TRACE_B'])\"",
+        _fake_claude_template(
+            tmp_path,
+            """
+            print('# Compare OK')
+            print(os.environ['TRACE_AI_MODE'])
+            print(os.environ['TRACE_AI_SKILL'])
+            print(os.environ['TRACE_AI_TRACE_B'])
+            """,
+        ),
     )
 
     started = client.post("/api/jobs/ai-compare-job/ai-analysis", json={})
@@ -484,6 +535,7 @@ def test_ai_analysis_supports_compare_jobs(client, tmp_path, monkeypatch):
         time.sleep(0.05)
 
     assert payload["status"] == "done"
+    assert payload["diagnostics"]["ok"] is True
     assert "# Compare OK" in payload["content"]
     assert "compare-skill" in payload["content"]
     assert str(trace_b) in payload["content"]

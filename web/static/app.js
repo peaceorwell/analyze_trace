@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.24");
+const appVersion = ref("0.2.25");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -804,7 +804,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.24";
+  appVersion.value = cfg.version || "0.2.25";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -1451,6 +1451,9 @@ const loadJob = async id => {
   aiAnalysisError.value = "";
   aiAnalysisContent.value = "";
   aiAnalysisArtifacts.value = [];
+  aiDiagnosticsLoading.value = false;
+  aiDiagnosticsError.value = "";
+  aiDiagnosticsResult.value = null;
   if (selectedJob.value?.ai_analysis?.status === "running") {
     startAiAnalysisPolling();
   } else {
@@ -1481,13 +1484,19 @@ const aiAnalysisStatusText = status => ({
 
 const updateAiAnalysisState = payload => {
   if (!payload || !selectedJob.value) return;
-  const { content, artifacts, ...meta } = payload;
+  const { content, artifacts, diagnostics, ...meta } = payload;
   selectedJob.value = {
     ...selectedJob.value,
-    ai_analysis: meta,
+    ai_analysis: {
+      ...meta,
+      diagnostics,
+    },
   };
   aiAnalysisContent.value = content || "";
   aiAnalysisArtifacts.value = Array.isArray(artifacts) ? artifacts : [];
+  aiDiagnosticsLoading.value = false;
+  aiDiagnosticsError.value = "";
+  aiDiagnosticsResult.value = diagnostics || null;
 };
 
 const stopAiAnalysisPolling = () => {
@@ -1540,6 +1549,9 @@ const startAiAnalysis = async (force = false) => {
   }
   aiAnalysisStarting.value = true;
   aiAnalysisError.value = "";
+  aiDiagnosticsLoading.value = false;
+  aiDiagnosticsError.value = "";
+  aiDiagnosticsResult.value = null;
   try {
     const r = await fetch(`/api/jobs/${selectedJobId.value}/ai-analysis`, {
       method: "POST",
@@ -4288,11 +4300,6 @@ const JobDetail = {
                       @click="refreshAiAnalysis()">
                 {{ aiAnalysisLoading ? '刷新中...' : '刷新' }}
               </button>
-              <button class="btn btn-sm btn-outline"
-                      :disabled="!claudeAnalysisEnabled || aiDiagnosticsLoading"
-                      @click="runAiDiagnostics()">
-                {{ aiDiagnosticsLoading ? '诊断中...' : '环境诊断' }}
-              </button>
               <button v-if="aiAnalysisContent" class="btn btn-sm btn-outline" @click="copyAiAnalysisReport">
                 复制
               </button>
@@ -4311,7 +4318,7 @@ const JobDetail = {
             AI 分析未启用。服务端设置 TRACE_ENABLE_CLAUDE_ANALYSIS=1 后可使用。
           </div>
           <div v-if="aiDiagnosticsError" class="error-box mb-2">{{ aiDiagnosticsError }}</div>
-          <div v-if="aiDiagnosticsResult" class="ai-diagnostics-panel">
+          <div v-if="aiDiagnosticsResult && !aiDiagnosticsResult.ok" class="ai-diagnostics-panel">
             <div class="ai-diagnostics-head">
               <div>
                 <strong>AI 环境诊断</strong>
@@ -4341,7 +4348,9 @@ const JobDetail = {
           <div v-if="aiAnalysisError" class="error-box mb-2">{{ aiAnalysisError }}</div>
           <div v-if="aiAnalysisMeta.status==='running'" class="ai-analysis-running">
             <span class="spinner-small"></span>
-            Claude Code 正在分析 trace，完成后这里会自动刷新。
+            {{ aiAnalysisMeta.phase === 'diagnosing'
+              ? '正在进行 AI 环境诊断，诊断通过后会自动开始分析。'
+              : 'Claude Code 正在分析 trace，完成后这里会自动刷新。' }}
           </div>
           <div v-if="aiAnalysisContent" class="ai-analysis-report markdown-body" v-html="aiAnalysisHtml"></div>
           <div v-if="aiAnalysisVisibleArtifacts.length" class="ai-artifacts-panel">
