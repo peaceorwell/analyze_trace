@@ -41,7 +41,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.16"
+APP_VERSION = "0.2.17"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
 FEEDBACK_DIRNAME = "feedback"
@@ -62,7 +62,8 @@ ANALYSIS_CONCURRENCY = max(1, int(os.environ.get("TRACE_ANALYSIS_CONCURRENCY", "
 CLAUDE_ANALYSIS_ENABLED = os.environ.get("TRACE_ENABLE_CLAUDE_ANALYSIS", "") == "1"
 CLAUDE_ANALYSIS_COMMAND = os.environ.get("TRACE_CLAUDE_COMMAND", "claude")
 CLAUDE_ANALYSIS_COMMAND_TEMPLATE = os.environ.get("TRACE_CLAUDE_COMMAND_TEMPLATE", "")
-CLAUDE_ANALYSIS_EXTRA_ARGS = os.environ.get("TRACE_CLAUDE_EXTRA_ARGS", "")
+DEFAULT_CLAUDE_ANALYSIS_EXTRA_ARGS = "--permission-mode bypassPermissions"
+CLAUDE_ANALYSIS_EXTRA_ARGS = os.environ.get("TRACE_CLAUDE_EXTRA_ARGS", DEFAULT_CLAUDE_ANALYSIS_EXTRA_ARGS)
 CLAUDE_ANALYSIS_TIMEOUT_SECONDS = max(30, int(os.environ.get("TRACE_CLAUDE_TIMEOUT_SECONDS", "1800")))
 CLAUDE_DIAGNOSTIC_TIMEOUT_SECONDS = max(5, int(os.environ.get("TRACE_CLAUDE_DIAGNOSTIC_TIMEOUT_SECONDS", "60")))
 CLAUDE_ANALYSIS_SKILLS_DIR = os.environ.get("TRACE_CLAUDE_SKILLS_DIR", PROJECT_CLAUDE_SKILLS_DIR)
@@ -1170,7 +1171,10 @@ def _build_claude_command(prompt: str, values: dict) -> list[str]:
 
     command = shlex.split(CLAUDE_ANALYSIS_COMMAND) or ["claude"]
     if CLAUDE_ANALYSIS_EXTRA_ARGS.strip():
-        command.extend(shlex.split(CLAUDE_ANALYSIS_EXTRA_ARGS))
+        command.extend(
+            part.format_map(_SafeFormatDict(values))
+            for part in shlex.split(CLAUDE_ANALYSIS_EXTRA_ARGS)
+        )
     command.extend(["-p", prompt])
     return command
 
@@ -1331,6 +1335,49 @@ async def _run_claude_diagnostic_prompt(
             stdout_tail="",
             stderr_tail="",
         )
+
+
+async def _run_claude_tool_probe(cwd: str, env: dict, values: dict) -> dict:
+    probe_file = "claude_tool_probe.txt"
+    probe_path = os.path.join(cwd, probe_file)
+    with contextlib.suppress(FileNotFoundError):
+        os.remove(probe_path)
+    prompt = (
+        "请不要使用任何 skill。必须调用 Bash 工具执行下面这条命令，"
+        "完成后只回复一行 OK。\n\n"
+        f"printf OK > {shlex.quote(probe_file)}"
+    )
+    check = await _run_claude_diagnostic_prompt(
+        "tool_probe",
+        "工具权限探针",
+        prompt,
+        cwd,
+        env,
+        values,
+    )
+    probe_ok = False
+    try:
+        with open(probe_path, encoding="utf-8") as f:
+            probe_ok = f.read().strip() == "OK"
+    except OSError:
+        probe_ok = False
+    if check.get("status") == "ok" and probe_ok:
+        return {
+            **check,
+            "detail": "Command completed and Bash probe file was created",
+            "probe_path": probe_path,
+        }
+    hint = (
+        "Claude did not create the Bash probe file. Tool permissions may be denied; "
+        "keep TRACE_CLAUDE_EXTRA_ARGS='--permission-mode bypassPermissions' for server-side analysis, "
+        "or use TRACE_CLAUDE_COMMAND_TEMPLATE with equivalent non-interactive permissions."
+    )
+    return {
+        **check,
+        "status": "error",
+        "detail": f"{check.get('detail') or 'Command completed'}; {hint}",
+        "probe_path": probe_path,
+    }
 
 
 async def _source_trace_for_ai(db, source_id: Optional[str]) -> tuple[Optional[str], Optional[str]]:
@@ -1531,6 +1578,7 @@ async def _run_ai_analysis_task(jid: str):
                 *command,
                 cwd=analysis_dir,
                 env=env,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -4222,7 +4270,16 @@ async def run_ai_diagnostics(request: Request):
         else:
             checks.append(_diagnostic_check("base_smoke", "基础 Claude 调用", "skipped", "Claude command is invalid"))
 
-        if command_ok and skills_ok and base_smoke_ok:
+        tool_probe_ok = False
+        if command_ok and base_smoke_ok:
+            tool_probe = await _run_claude_tool_probe(tmp_dir, env, values)
+            tool_probe_ok = tool_probe.get("status") == "ok"
+            checks.append(tool_probe)
+        else:
+            reason = "基础 Claude 调用失败" if not base_smoke_ok else "Claude command is invalid"
+            checks.append(_diagnostic_check("tool_probe", "工具权限探针", "skipped", reason))
+
+        if command_ok and skills_ok and base_smoke_ok and tool_probe_ok:
             skill_values = {**values, "skill": CLAUDE_SINGLE_TRACE_SKILL, "analysis_dir": tmp_dir, "results_dir": tmp_dir}
             skill_prompt = (
                 f"请使用 Claude Code skill `{CLAUDE_SINGLE_TRACE_SKILL}`，automatic-final 模式。"
@@ -4237,11 +4294,18 @@ async def run_ai_diagnostics(request: Request):
                 skill_values,
             ))
         else:
-            reason = "基础 Claude 调用失败" if not base_smoke_ok else "skills check failed"
+            if not base_smoke_ok:
+                reason = "基础 Claude 调用失败"
+            elif not tool_probe_ok:
+                reason = "工具权限探针失败"
+            else:
+                reason = "skills check failed"
             checks.append(_diagnostic_check("skill_smoke", "单 trace skill 调用", "skipped", reason))
 
     ok = all(check["status"] in {"ok", "skipped"} for check in checks) and any(
         check["name"] == "base_smoke" and check["status"] == "ok" for check in checks
+    ) and any(
+        check["name"] == "tool_probe" and check["status"] == "ok" for check in checks
     )
     finished_at = _utc_now_iso()
     return {
