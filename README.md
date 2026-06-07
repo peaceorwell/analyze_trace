@@ -120,7 +120,7 @@ tar -xzf e2e-profiling.tar.gz -C ~/.claude
 |------|------|------|
 | `TRACE_ENABLE_CLAUDE_ANALYSIS=1` | off | 开启 Web AI 分析入口 |
 | `TRACE_CLAUDE_COMMAND` | `claude` | Claude Code 命令 |
-| `TRACE_CLAUDE_EXTRA_ARGS` | `--permission-mode bypassPermissions` | 追加给 Claude Code 的参数；后台服务需要非交互工具权限，也可追加模型或 `--add-dir {results_dir}` 等参数 |
+| `TRACE_CLAUDE_EXTRA_ARGS` | `--dangerously-skip-permissions` | 追加给 Claude Code 的参数；后台服务需要非交互工具权限，也可追加模型或 `--add-dir {results_dir}` 等参数 |
 | `TRACE_CLAUDE_COMMAND_TEMPLATE` | 空 | 完整命令模板；可使用 `{prompt}`、`{trace_a}`、`{trace_b}`、`{skill}`、`{skills_dir}`、`{results_dir}`、`{analysis_dir}`、`{report_path}` |
 | `TRACE_CLAUDE_SKILLS_DIR` | `.claude/skills` | Claude skills 目录；每次 AI 分析都会挂载到任务分析目录的 `.claude/skills` |
 | `TRACE_CLAUDE_SINGLE_SKILL` | `e2e-profiling-analyzer` | 单 trace 分析 skill 名称 |
@@ -139,7 +139,7 @@ uv run --extra web python web/server.py
 
 ```bash
 TRACE_ENABLE_CLAUDE_ANALYSIS=1 \
-TRACE_CLAUDE_COMMAND_TEMPLATE='claude --permission-mode bypassPermissions -p {prompt}' \
+TRACE_CLAUDE_COMMAND_TEMPLATE='claude --dangerously-skip-permissions -p {prompt}' \
 uv run --extra web python web/server.py
 ```
 

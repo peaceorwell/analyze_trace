@@ -41,7 +41,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.17"
+APP_VERSION = "0.2.18"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
 FEEDBACK_DIRNAME = "feedback"
@@ -62,7 +62,7 @@ ANALYSIS_CONCURRENCY = max(1, int(os.environ.get("TRACE_ANALYSIS_CONCURRENCY", "
 CLAUDE_ANALYSIS_ENABLED = os.environ.get("TRACE_ENABLE_CLAUDE_ANALYSIS", "") == "1"
 CLAUDE_ANALYSIS_COMMAND = os.environ.get("TRACE_CLAUDE_COMMAND", "claude")
 CLAUDE_ANALYSIS_COMMAND_TEMPLATE = os.environ.get("TRACE_CLAUDE_COMMAND_TEMPLATE", "")
-DEFAULT_CLAUDE_ANALYSIS_EXTRA_ARGS = "--permission-mode bypassPermissions"
+DEFAULT_CLAUDE_ANALYSIS_EXTRA_ARGS = "--dangerously-skip-permissions"
 CLAUDE_ANALYSIS_EXTRA_ARGS = os.environ.get("TRACE_CLAUDE_EXTRA_ARGS", DEFAULT_CLAUDE_ANALYSIS_EXTRA_ARGS)
 CLAUDE_ANALYSIS_TIMEOUT_SECONDS = max(30, int(os.environ.get("TRACE_CLAUDE_TIMEOUT_SECONDS", "1800")))
 CLAUDE_DIAGNOSTIC_TIMEOUT_SECONDS = max(5, int(os.environ.get("TRACE_CLAUDE_DIAGNOSTIC_TIMEOUT_SECONDS", "60")))
@@ -1340,36 +1340,45 @@ async def _run_claude_diagnostic_prompt(
 async def _run_claude_tool_probe(cwd: str, env: dict, values: dict) -> dict:
     probe_file = "claude_tool_probe.txt"
     probe_path = os.path.join(cwd, probe_file)
+    probe_token = secrets.token_hex(16)
+    probe_env = {**env, "TRACE_AI_TOOL_PROBE_TOKEN": probe_token}
     with contextlib.suppress(FileNotFoundError):
         os.remove(probe_path)
+    probe_python = (
+        "import os; "
+        f"open({probe_file!r}, 'w', encoding='utf-8').write(os.environ['TRACE_AI_TOOL_PROBE_TOKEN'])"
+    )
+    probe_command = f"python3 -c {shlex.quote(probe_python)}"
     prompt = (
-        "请不要使用任何 skill。必须调用 Bash 工具执行下面这条命令，"
-        "完成后只回复一行 OK。\n\n"
-        f"printf OK > {shlex.quote(probe_file)}"
+        "这是一个 Claude Code 工具权限诊断，请不要使用任何 skill。\n"
+        "环境变量 TRACE_AI_TOOL_PROBE_TOKEN 中有一个服务端随机 token，提示词里没有该 token 的值。\n"
+        "请必须调用 Bash 工具，在当前工作目录执行下面这条命令，把 token 写入探针文件。\n"
+        "命令执行成功后只回复一行 OK；如果不能调用 Bash 工具，请回复 ERROR: tool denied。\n\n"
+        f"{probe_command}"
     )
     check = await _run_claude_diagnostic_prompt(
         "tool_probe",
         "工具权限探针",
         prompt,
         cwd,
-        env,
+        probe_env,
         values,
     )
     probe_ok = False
     try:
         with open(probe_path, encoding="utf-8") as f:
-            probe_ok = f.read().strip() == "OK"
+            probe_ok = secrets.compare_digest(f.read().strip(), probe_token)
     except OSError:
         probe_ok = False
     if check.get("status") == "ok" and probe_ok:
         return {
             **check,
-            "detail": "Command completed and Bash probe file was created",
+            "detail": "Command completed and Bash probe file was created with the expected token",
             "probe_path": probe_path,
         }
     hint = (
         "Claude did not create the Bash probe file. Tool permissions may be denied; "
-        "keep TRACE_CLAUDE_EXTRA_ARGS='--permission-mode bypassPermissions' for server-side analysis, "
+        "keep TRACE_CLAUDE_EXTRA_ARGS='--dangerously-skip-permissions' for server-side analysis, "
         "or use TRACE_CLAUDE_COMMAND_TEMPLATE with equivalent non-interactive permissions."
     )
     return {

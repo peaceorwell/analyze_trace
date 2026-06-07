@@ -58,7 +58,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.17",
+        "version": "0.2.18",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -249,7 +249,7 @@ def test_ai_diagnostics_runs_command_and_skill_smoke(client, tmp_path, monkeypat
             f"{shlex.quote(sys.executable)} -c "
             "\"import os, sys; "
             "prompt = sys.argv[1] if len(sys.argv) > 1 else ''; "
-            "open('claude_tool_probe.txt', 'w').write('OK') if 'claude_tool_probe.txt' in prompt else None; "
+            "open('claude_tool_probe.txt', 'w').write(os.environ['TRACE_AI_TOOL_PROBE_TOKEN']) if 'claude_tool_probe.txt' in prompt else None; "
             "print('OK'); "
             "print(os.path.exists('.claude/skills/e2e-profiling-analyzer/SKILL.md'))\" "
             "{prompt}"
