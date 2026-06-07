@@ -44,7 +44,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.30"
+APP_VERSION = "0.2.31"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
 FEEDBACK_DIRNAME = "feedback"
@@ -3180,11 +3180,19 @@ async def _feedback_attachments_for(db, message_ids: list[str]) -> dict:
 
 
 @app.get("/api/feedback")
-async def list_feedback(request: Request, limit: int = 30, offset: int = 0):
+async def list_feedback(request: Request, limit: int = 30, offset: int = 0, sort: str = "updated"):
     if AUTH_ENABLED:
         current_user_token(request)
     limit = max(1, min(limit, 100))
     offset = max(0, offset)
+    sort_key = (sort or "updated").strip().lower()
+    if sort_key not in {"updated", "created", "hot"}:
+        sort_key = "updated"
+    order_by = {
+        "updated": "last_activity_at DESC, p.created_at DESC",
+        "created": "p.created_at DESC",
+        "hot": "reply_count DESC, last_activity_at DESC, p.created_at DESC",
+    }[sort_key]
     db = await get_db()
     try:
         total_row = await (
@@ -3192,7 +3200,7 @@ async def list_feedback(request: Request, limit: int = 30, offset: int = 0):
         ).fetchone()
         parent_rows = await (
             await db.execute(
-                """
+                f"""
                 SELECT p.*,
                        (
                            SELECT COUNT(*)
@@ -3210,7 +3218,7 @@ async def list_feedback(request: Request, limit: int = 30, offset: int = 0):
                        ) AS last_activity_at
                 FROM feedback_messages p
                 WHERE p.parent_id IS NULL
-                ORDER BY last_activity_at DESC, p.created_at DESC
+                ORDER BY {order_by}
                 LIMIT ? OFFSET ?
                 """,
                 (limit, offset),
@@ -3259,6 +3267,7 @@ async def list_feedback(request: Request, limit: int = 30, offset: int = 0):
         "total": total_row["total"] if total_row else 0,
         "limit": limit,
         "offset": offset,
+        "sort": sort_key,
     }
 
 

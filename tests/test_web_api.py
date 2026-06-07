@@ -59,7 +59,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.30",
+        "version": "0.2.31",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -629,6 +629,44 @@ def test_feedback_create_schedules_email_notification(client, isolated_server, m
     assert payload["parent_id"] is None
     assert payload["recipients"] == ["admin@cambricon.com", "alice@cambricon.com"]
     assert payload["mentioned_emails"] == ["alice@cambricon.com"]
+
+
+def test_feedback_list_supports_sort_modes(client):
+    async def insert_feedback_rows():
+        db = await web_db.get_db()
+        try:
+            await db.executemany(
+                """
+                INSERT INTO feedback_messages(id, parent_id, user_token, user_display, body, created_at, updated_at)
+                VALUES(?,?,?,?,?,?,?)
+                """,
+                [
+                    ("post-active", None, "alice", "alice", "最近有回复", "2026-06-01 09:00:00", "2026-06-01 09:00:00"),
+                    ("post-hot", None, "bob", "bob", "讨论很多", "2026-06-01 10:00:00", "2026-06-01 10:00:00"),
+                    ("post-new", None, "carol", "carol", "发布时间最新", "2026-06-01 12:00:00", "2026-06-01 12:00:00"),
+                    ("reply-active", "post-active", "dave", "dave", "最近回复", "2026-06-01 13:00:00", "2026-06-01 13:00:00"),
+                    ("reply-hot-a", "post-hot", "erin", "erin", "热度一", "2026-06-01 10:30:00", "2026-06-01 10:30:00"),
+                    ("reply-hot-b", "post-hot", "frank", "frank", "热度二", "2026-06-01 10:40:00", "2026-06-01 10:40:00"),
+                ],
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_feedback_rows())
+
+    updated = client.get("/api/feedback").json()
+    created = client.get("/api/feedback?sort=created").json()
+    hot = client.get("/api/feedback?sort=hot").json()
+    invalid = client.get("/api/feedback?sort=unknown").json()
+
+    assert updated["sort"] == "updated"
+    assert [item["id"] for item in updated["data"]] == ["post-active", "post-new", "post-hot"]
+    assert created["sort"] == "created"
+    assert [item["id"] for item in created["data"]] == ["post-new", "post-hot", "post-active"]
+    assert hot["sort"] == "hot"
+    assert [item["id"] for item in hot["data"]] == ["post-hot", "post-active", "post-new"]
+    assert invalid["sort"] == "updated"
 
 
 def test_feedback_delete_requires_admin_and_removes_files(client, isolated_server, monkeypatch):

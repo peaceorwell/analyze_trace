@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.30");
+const appVersion = ref("0.2.31");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -378,6 +378,7 @@ const feedbackItems = ref([]);
 const feedbackTotal = ref(0);
 const feedbackLimit = ref(30);
 const feedbackOffset = ref(0);
+const feedbackSort = ref("updated");
 const feedbackLoading = ref(false);
 const feedbackSubmitting = ref(false);
 const feedbackForm = ref({ body: "", files: [], previews: [] });
@@ -807,7 +808,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.30";
+  appVersion.value = cfg.version || "0.2.31";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -935,10 +936,15 @@ const openStorageManager = async () => {
   showStorageManager.value = true;
 };
 
-const feedbackHasMore = computed(() => feedbackOffset.value + feedbackItems.value.length < feedbackTotal.value);
+const feedbackHasMore = computed(() => feedbackItems.value.length < feedbackTotal.value);
 const selectedFeedbackPost = computed(() =>
   feedbackItems.value.find(item => item.id === selectedFeedbackPostId.value) || null
 );
+const feedbackSortOptions = [
+  { key: "updated", label: "最新更新" },
+  { key: "created", label: "发布时间" },
+  { key: "hot", label: "热度" },
+];
 
 const feedbackPostTitle = item => {
   const text = (item?.body || "").trim();
@@ -1072,6 +1078,13 @@ const closeFeedbackBoard = () => {
   showFeedbackBoard.value = false;
 };
 
+const setFeedbackSort = async sortKey => {
+  if (!sortKey || feedbackSort.value === sortKey) return;
+  feedbackSort.value = sortKey;
+  selectedFeedbackPostId.value = "";
+  await loadFeedback({ reset: true });
+};
+
 const loadFeedback = async ({ reset = false, selectId = "" } = {}) => {
   if (feedbackLoading.value) return;
   feedbackLoading.value = true;
@@ -1082,6 +1095,7 @@ const loadFeedback = async ({ reset = false, selectId = "" } = {}) => {
   const params = new URLSearchParams({
     limit: String(feedbackLimit.value),
     offset: String(feedbackOffset.value),
+    sort: feedbackSort.value,
   });
   try {
     const r = await fetch(`/api/feedback?${params}`, { credentials: "include" });
@@ -4981,10 +4995,11 @@ const App = {
       showDeletedProjects, deletedProjects, loadDeletedProjects,
       isDeletedOver10Days, restoreProject, permanentlyDeleteProject,
       showFeedbackBoard, showFeedbackComposer, feedbackItems, feedbackTotal, feedbackLoading,
+      feedbackSort, feedbackSortOptions,
       feedbackSubmitting, feedbackForm, feedbackReplies, feedbackHasMore,
       selectedFeedbackPostId, selectedFeedbackPost, feedbackDetailLoading,
       feedbackPostTitle, feedbackPostExcerpt, feedbackPostReplyCount, feedbackPostActivity,
-      openFeedbackBoard, refreshFeedbackBoard, loadFeedback, setFeedbackFiles, clearFeedbackForm,
+      openFeedbackBoard, refreshFeedbackBoard, loadFeedback, setFeedbackSort, setFeedbackFiles, clearFeedbackForm,
       toggleFeedbackReply, selectFeedbackPost, closeFeedbackPost,
       openFeedbackComposer, closeFeedbackComposer, closeFeedbackBoard, submitFeedback,
       deleteFeedbackPost, deleteFeedbackReply,

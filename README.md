@@ -2,7 +2,7 @@
 
 Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/内网性能分析工具。它可以解析 `.json`、`.json.gz`、`.json.zip`、`.tar.gz` 和 `.tgz` trace 文件，统计 GPU kernel、Triton kernel、ATen Ops、CNCL/NCCL 通信算子，并提供单 trace 分析、双 trace 对比、历史管理、AI 分析和 Web 可视化界面。
 
-当前版本：`0.2.30`
+当前版本：`0.2.31`
 
 ## 主要功能
 
@@ -16,7 +16,7 @@ Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/
 - Claude Code AI 分析支持单 trace 和对比 trace，生成 Markdown 报告并在页面渲染，也可下载报告。
 - AI 分析开始前会自动做环境诊断；如果诊断失败，会展示具体诊断明细。
 - AI 分析耗时较长时，浏览器后台或切到其他应用后，完成/失败会通过浏览器通知或页面标题提醒。
-- 改进留言板支持发帖、图片附件、帖子内回复、邮件通知，管理员可删除帖子和回复。
+- 改进留言板支持发帖、图片附件、帖子内回复、列表排序、邮件通知，管理员可删除帖子和回复。
 - 可选 LDAP 登录、用户隔离、共享项目和管理员权限。
 - 提供 JSON 日志、审计日志、备份脚本、健康检查和 Prometheus 指标。
 
@@ -145,6 +145,7 @@ Web 首页有两种上传模式：
 
 - 用户可以发布帖子，支持文字和最多 4 张图片。
 - 进入帖子后可在帖子内回复交流。
+- 帖子列表默认按最新更新时间排序，也可切换为发布时间或热度排序。
 - 新增帖子或回复会邮件通知管理员；正文里写 `@英文名` 时，会额外通知 `英文名@cambricon.com`。
 - 管理员可以删除帖子和回复。
 
