@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.15");
+const appVersion = ref("0.2.16");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -164,6 +164,7 @@ document.addEventListener("click", closeActionMenu);
 const resultStateKey = jobId => `tpa-result-state:${jobId}`;
 const readResultMemory = jobId =>
   jobId ? readStoredJson(resultStateKey(jobId), { lastTab: DEFAULT_RESULT_TAB, tabs: {} }) : { lastTab: DEFAULT_RESULT_TAB, tabs: {} };
+const hasResultMemory = jobId => Boolean(jobId && localStorage.getItem(resultStateKey(jobId)) !== null);
 const writeResultMemory = (jobId, memory) => {
   if (!jobId) return;
   localStorage.setItem(resultStateKey(jobId), JSON.stringify(memory));
@@ -213,6 +214,17 @@ const rememberResultTabSelection = (jobId, tab) => {
   const memory = readResultMemory(jobId);
   memory.lastTab = tab;
   writeResultMemory(jobId, memory);
+};
+const resolveResultTab = (jobId, requestedTab, validTabs) => {
+  const fallback = validTabs.includes(DEFAULT_RESULT_TAB)
+    ? DEFAULT_RESULT_TAB
+    : (validTabs[0] || "console");
+  if (requestedTab) return validTabs.includes(requestedTab) ? requestedTab : fallback;
+  if (hasResultMemory(jobId)) {
+    const remembered = readResultMemory(jobId).lastTab;
+    if (validTabs.includes(remembered)) return remembered;
+  }
+  return fallback;
 };
 const defaultResultViewState = () => ({
   tableSearch: "",
@@ -791,7 +803,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.15";
+  appVersion.value = cfg.version || "0.2.16";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -4433,12 +4445,12 @@ router.beforeEach(async (to, from) => {
     return;
   }
 
-  const tab = to.params?.tab || DEFAULT_RESULT_TAB;
+  const requestedTabForSameJob = to.params?.tab || "";
 
   // Same job, just switch tab
   if (newJobId === selectedJobId.value) {
     const validTabs = availableTabs.value.map(t => t.key);
-    const targetTab = validTabs.includes(tab) ? tab : (validTabs.includes(DEFAULT_RESULT_TAB) ? DEFAULT_RESULT_TAB : "console");
+    const targetTab = resolveResultTab(newJobId, requestedTabForSameJob, validTabs);
     if (targetTab !== resultTab.value) {
       if (targetTab.endsWith(".csv")) {
         await activateCsvTab(targetTab, { updateRoute: false });
@@ -4473,9 +4485,9 @@ router.beforeEach(async (to, from) => {
     return { path: "/" };
   }
 
-  const requestedTab = to.params?.tab || DEFAULT_RESULT_TAB;
+  const requestedTab = to.params?.tab || "";
   const validTabs = availableTabs.value.map(t => t.key);
-  const targetTab = validTabs.includes(requestedTab) ? requestedTab : (validTabs.includes(DEFAULT_RESULT_TAB) ? DEFAULT_RESULT_TAB : "console");
+  const targetTab = resolveResultTab(newJobId, requestedTab, validTabs);
   activeResultStateJobId = newJobId;
   if (targetTab.endsWith(".csv")) {
     await activateCsvTab(targetTab, { updateRoute: false, savePrevious: false });
