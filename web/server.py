@@ -41,7 +41,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.21"
+APP_VERSION = "0.2.22"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
 FEEDBACK_DIRNAME = "feedback"
@@ -1120,7 +1120,8 @@ def _write_ai_analysis_status(jid: str, status: dict):
 
 def _find_latest_ai_report(analysis_dir: str) -> Optional[str]:
     candidates = []
-    for root, _, files in os.walk(analysis_dir):
+    for root, dirs, files in os.walk(analysis_dir):
+        dirs[:] = [name for name in dirs if not name.startswith(".")]
         for filename in files:
             if not filename.lower().endswith(".md") or filename == AI_ANALYSIS_REPORT_FILE:
                 continue
@@ -1346,13 +1347,24 @@ def _mount_claude_skills_for_analysis(analysis_dir: str, skills_dir: str) -> Non
         return
     claude_dir = os.path.join(analysis_dir, ".claude")
     target = os.path.join(claude_dir, "skills")
+    if os.path.islink(target):
+        os.unlink(target)
     if os.path.exists(target):
         return
     os.makedirs(claude_dir, exist_ok=True)
-    try:
-        os.symlink(skills_dir, target, target_is_directory=True)
-    except (OSError, NotImplementedError):
-        shutil.copytree(skills_dir, target, dirs_exist_ok=True)
+    shutil.copytree(skills_dir, target, dirs_exist_ok=True)
+
+
+def _build_claude_env(base_env: dict, analysis_dir: str, extra: Optional[dict] = None) -> dict:
+    env = base_env.copy()
+    if extra:
+        env.update(extra)
+    claude_dir = os.path.join(analysis_dir, ".claude")
+    os.makedirs(claude_dir, exist_ok=True)
+    env.setdefault("CLAUDE_PROJECT_DIR", analysis_dir)
+    env.setdefault("CLAUDE_CODE_PROJECT_DIR", analysis_dir)
+    env.setdefault("TRACE_CLAUDE_PROJECT_DIR", analysis_dir)
+    return env
 
 
 def _tail_text(text: str, limit: int = 4000) -> str:
@@ -1687,8 +1699,7 @@ async def _run_ai_analysis_task(jid: str):
 
         _validate_claude_command(command)
 
-        env = os.environ.copy()
-        env.update({
+        env = _build_claude_env(os.environ, analysis_dir, {
             "TRACE_AI_JOB_ID": jid,
             "TRACE_AI_MODE": job.get("mode") or "",
             "TRACE_AI_SKILL": skill,
@@ -4364,8 +4375,7 @@ async def run_ai_diagnostics(request: Request):
             checks.append(_diagnostic_check(name, label, "error", str(e)))
 
     with tempfile.TemporaryDirectory(prefix="analyze_trace_ai_diag_") as tmp_dir:
-        env = os.environ.copy()
-        env.update({
+        env = _build_claude_env(os.environ, tmp_dir, {
             "TRACE_AI_JOB_ID": "diagnostic",
             "TRACE_AI_MODE": "diagnostic",
             "TRACE_AI_SKILL": CLAUDE_SINGLE_TRACE_SKILL,

@@ -58,7 +58,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.21",
+        "version": "0.2.22",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -106,6 +106,25 @@ def test_claude_command_template_normalizes_legacy_permission_args(isolated_serv
     command = web_server._build_claude_command("OK", {})
 
     assert command == ["/usr/local/node20/bin/claude", "--dangerously-skip-permissions", "-p", "OK"]
+
+
+def test_claude_skills_mount_is_writable_copy(tmp_path):
+    skills_dir = tmp_path / "source-skills"
+    skill_dir = skills_dir / "e2e-profiling-analyzer"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("---\nname: e2e-profiling-analyzer\n---\n", encoding="utf-8")
+    analysis_dir = tmp_path / "analysis"
+
+    web_server._mount_claude_skills_for_analysis(str(analysis_dir), str(skills_dir))
+
+    target = analysis_dir / ".claude" / "skills"
+    assert target.exists()
+    assert not target.is_symlink()
+    assert (target / "e2e-profiling-analyzer" / "SKILL.md").exists()
+    (analysis_dir / ".claude" / "session-env").mkdir()
+    env = web_server._build_claude_env({"HOME": str(tmp_path)}, str(analysis_dir), {"TRACE_AI_JOB_ID": "x"})
+    assert env["CLAUDE_PROJECT_DIR"] == str(analysis_dir)
+    assert env["CLAUDE_CODE_PROJECT_DIR"] == str(analysis_dir)
 
 
 def test_ai_analysis_runs_configured_command(client, isolated_server, tmp_path, monkeypatch):
