@@ -10,9 +10,11 @@ import io
 import json
 import logging
 import os
+import re
 import secrets
 import shlex
 import shutil
+import smtplib
 import sys
 import tarfile
 import tempfile
@@ -22,6 +24,7 @@ import uuid
 import zipfile
 import zlib
 from contextlib import asynccontextmanager
+from email.message import EmailMessage
 from typing import Optional
 
 import aiofiles
@@ -41,12 +44,13 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.29"
+APP_VERSION = "0.2.30"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
 FEEDBACK_DIRNAME = "feedback"
 FEEDBACK_MAX_IMAGES = 4
 FEEDBACK_MAX_IMAGE_BYTES = 8 * 1024 * 1024
+FEEDBACK_MENTION_RE = re.compile(r"(?<![\w.%-])@([A-Za-z][A-Za-z0-9_-]{0,62})\b")
 AI_ANALYSIS_DIRNAME = "ai_analysis"
 AI_ANALYSIS_STATUS_FILE = "ai_analysis_status.json"
 AI_ANALYSIS_REPORT_FILE = "ai_analysis.md"
@@ -99,7 +103,66 @@ def _parse_user_list_env(value: str) -> set[str]:
     }
 
 
+def _truthy_env(value: str, default: bool = False) -> bool:
+    if value is None or value == "":
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name, "")
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _normalize_email(value: str, domain: str = "cambricon.com") -> str:
+    token = (value or "").strip().strip("<>,;")
+    if not token:
+        return ""
+    if "@" not in token:
+        token = f"{token}@{domain}"
+    token = token.lower()
+    if not re.fullmatch(r"[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}", token):
+        return ""
+    return token
+
+
+def _parse_email_list_env(value: str, domain: str = "cambricon.com") -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in (value or "").replace(";", ",").split(","):
+        email = _normalize_email(item, domain)
+        if email and email not in seen:
+            seen.add(email)
+            result.append(email)
+    return result
+
+
 ADMIN_USERS = _parse_user_list_env(os.environ.get("TRACE_ADMIN_USERS", ""))
+FEEDBACK_MENTION_DOMAIN = os.environ.get("TRACE_FEEDBACK_MENTION_DOMAIN", "cambricon.com").strip().lower() or "cambricon.com"
+FEEDBACK_NOTIFICATION_ADMIN_EMAILS = _parse_email_list_env(
+    os.environ.get("TRACE_FEEDBACK_ADMIN_EMAILS", os.environ.get("TRACE_FEEDBACK_ADMIN_EMAIL", "zhouyusong@cambricon.com")),
+    FEEDBACK_MENTION_DOMAIN,
+)
+FEEDBACK_EMAIL_NOTIFICATIONS_ENABLED = not _truthy_env(os.environ.get("TRACE_DISABLE_FEEDBACK_EMAIL", ""), False)
+PUBLIC_BASE_URL = os.environ.get("TRACE_PUBLIC_BASE_URL", "").strip().rstrip("/")
+SMTP_HOST = os.environ.get("TRACE_SMTP_HOST", os.environ.get("SMTP_HOST", "")).strip()
+SMTP_PORT = _int_env("TRACE_SMTP_PORT", _int_env("SMTP_PORT", 25))
+SMTP_USERNAME = os.environ.get("TRACE_SMTP_USERNAME", os.environ.get("SMTP_USERNAME", "")).strip()
+SMTP_PASSWORD = os.environ.get("TRACE_SMTP_PASSWORD", os.environ.get("SMTP_PASSWORD", ""))
+SMTP_FROM_RAW = (
+    os.environ.get("TRACE_SMTP_FROM", "")
+    or SMTP_USERNAME
+    or f"trace-analyzer@{FEEDBACK_MENTION_DOMAIN}"
+).strip()
+SMTP_FROM = _normalize_email(SMTP_FROM_RAW, FEEDBACK_MENTION_DOMAIN) or f"trace-analyzer@{FEEDBACK_MENTION_DOMAIN}"
+SMTP_USE_SSL = _truthy_env(os.environ.get("TRACE_SMTP_SSL", os.environ.get("SMTP_SSL", "")), False)
+SMTP_USE_STARTTLS = _truthy_env(os.environ.get("TRACE_SMTP_STARTTLS", os.environ.get("SMTP_STARTTLS", "")), False)
+SMTP_TIMEOUT_SECONDS = max(1, _int_env("TRACE_SMTP_TIMEOUT_SECONDS", _int_env("SMTP_TIMEOUT_SECONDS", 10)))
 analysis_queue: asyncio.Queue[str] = asyncio.Queue()
 analysis_workers: list[asyncio.Task] = []
 ai_analysis_tasks: dict[str, asyncio.Task] = {}
@@ -2953,6 +3016,147 @@ def _feedback_message_response(
     }
 
 
+def _feedback_title(body: str, fallback: str = "无标题留言") -> str:
+    first_line = " ".join((body or "").strip().splitlines()).strip()
+    if not first_line:
+        return fallback
+    return first_line[:60] + ("..." if len(first_line) > 60 else "")
+
+
+def _feedback_mentioned_emails(body: str) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for match in FEEDBACK_MENTION_RE.finditer(body or ""):
+        email = _normalize_email(match.group(1), FEEDBACK_MENTION_DOMAIN)
+        if email and email not in seen:
+            seen.add(email)
+            result.append(email)
+    return result
+
+
+def _feedback_notification_recipients(body: str) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for email in [*FEEDBACK_NOTIFICATION_ADMIN_EMAILS, *_feedback_mentioned_emails(body)]:
+        normalized = _normalize_email(email, FEEDBACK_MENTION_DOMAIN)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            result.append(normalized)
+    return result
+
+
+def _feedback_notification_subject(payload: dict) -> str:
+    kind = "回复" if payload.get("parent_id") else "新帖子"
+    title = payload.get("post_title") or _feedback_title(payload.get("body", ""))
+    return f"[Torch Profiler Analyzer] 留言板{kind}: {title}"
+
+
+def _feedback_notification_body(payload: dict) -> str:
+    kind = "回复" if payload.get("parent_id") else "新帖子"
+    lines = [
+        f"留言板有一条{kind}",
+        "",
+        f"作者: {payload.get('author') or 'local'}",
+        f"时间: {payload.get('created_at') or _utc_now_iso()}",
+        f"帖子: {payload.get('post_title') or _feedback_title(payload.get('body', ''))}",
+        f"帖子 ID: {payload.get('post_id') or ''}",
+        f"消息 ID: {payload.get('message_id') or ''}",
+        f"图片: {payload.get('image_count', 0)} 张",
+        "",
+        "内容:",
+        payload.get("body") or "(仅图片)",
+    ]
+    mentions = payload.get("mentioned_emails") or []
+    if mentions:
+        lines.extend(["", "提及:", ", ".join(mentions)])
+    if PUBLIC_BASE_URL:
+        lines.extend(["", f"打开应用: {PUBLIC_BASE_URL}"])
+    else:
+        lines.extend(["", "请打开 Torch Profiler Analyzer 右上角的“改进留言板”查看详情。"])
+    return "\n".join(lines)
+
+
+def _send_email_sync(to_addrs: list[str], subject: str, body: str):
+    if not FEEDBACK_EMAIL_NOTIFICATIONS_ENABLED:
+        logger.info("feedback_email_disabled", extra={"event": "feedback_email_disabled"})
+        return
+    recipients = []
+    seen = set()
+    for addr in to_addrs:
+        email = _normalize_email(addr, FEEDBACK_MENTION_DOMAIN)
+        if email and email not in seen:
+            seen.add(email)
+            recipients.append(email)
+    if not recipients:
+        return
+    if not SMTP_HOST:
+        logger.warning(
+            "feedback_email_smtp_missing",
+            extra={"event": "feedback_email_smtp_missing", "recipients": recipients},
+        )
+        return
+
+    message = EmailMessage()
+    message["From"] = SMTP_FROM
+    message["To"] = ", ".join(recipients)
+    message["Subject"] = subject
+    message.set_content(body, charset="utf-8")
+
+    smtp_cls = smtplib.SMTP_SSL if SMTP_USE_SSL else smtplib.SMTP
+    with smtp_cls(SMTP_HOST, SMTP_PORT, timeout=SMTP_TIMEOUT_SECONDS) as smtp:
+        if SMTP_USE_STARTTLS and not SMTP_USE_SSL:
+            smtp.starttls()
+        if SMTP_USERNAME:
+            smtp.login(SMTP_USERNAME, SMTP_PASSWORD)
+        smtp.send_message(message)
+
+
+async def _send_feedback_email_notification(payload: dict):
+    recipients = payload.get("recipients") or []
+    try:
+        await asyncio.to_thread(
+            _send_email_sync,
+            recipients,
+            _feedback_notification_subject(payload),
+            _feedback_notification_body(payload),
+        )
+        if SMTP_HOST and FEEDBACK_EMAIL_NOTIFICATIONS_ENABLED and recipients:
+            logger.info(
+                "feedback_email_sent",
+                extra={
+                    "event": "feedback_email_sent",
+                    "message_id": payload.get("message_id"),
+                    "recipients": recipients,
+                },
+            )
+    except Exception as exc:
+        logger.warning(
+            "feedback_email_failed",
+            extra={
+                "event": "feedback_email_failed",
+                "message_id": payload.get("message_id"),
+                "error": str(exc),
+            },
+            exc_info=True,
+        )
+
+
+def _schedule_feedback_email_notification(payload: dict):
+    recipients = payload.get("recipients") or []
+    if not recipients or not FEEDBACK_EMAIL_NOTIFICATIONS_ENABLED:
+        return
+    if not SMTP_HOST:
+        logger.warning(
+            "feedback_email_smtp_missing",
+            extra={"event": "feedback_email_smtp_missing", "recipients": recipients},
+        )
+        return
+    try:
+        asyncio.get_running_loop().create_task(_send_feedback_email_notification(payload))
+    except RuntimeError:
+        asyncio.run(_send_feedback_email_notification(payload))
+
+
 async def _feedback_attachments_for(db, message_ids: list[str]) -> dict:
     if not message_ids:
         return {}
@@ -3142,8 +3346,10 @@ async def create_feedback(
     db = await get_db()
     message_id = str(uuid.uuid4())
     saved_paths: list[str] = []
+    notification_payload: Optional[dict] = None
     try:
         root_parent_id = parent_id or None
+        parent_post: Optional[dict] = None
         if root_parent_id:
             parent = await row_to_dict(
                 await (await db.execute(
@@ -3155,6 +3361,12 @@ async def create_feedback(
                 raise HTTPException(404, "留言不存在")
             if parent.get("parent_id"):
                 root_parent_id = parent["parent_id"]
+            parent_post = await row_to_dict(
+                await (await db.execute(
+                    "SELECT id, body FROM feedback_messages WHERE id=?",
+                    (root_parent_id,),
+                )).fetchone()
+            )
 
         user_token, user_display = _feedback_author(request)
         await db.execute(
@@ -3206,6 +3418,20 @@ async def create_feedback(
             await (await db.execute("SELECT * FROM feedback_messages WHERE id=?", (message_id,))).fetchone()
         )
         attachments_by_message = await _feedback_attachments_for(db, [message_id])
+        recipients = _feedback_notification_recipients(text)
+        notification_payload = {
+            "message_id": message_id,
+            "post_id": root_parent_id or message_id,
+            "parent_id": root_parent_id,
+            "author": user_display,
+            "user_token": user_token,
+            "body": text,
+            "created_at": message.get("created_at") if message else _utc_now_iso(),
+            "image_count": len(image_files),
+            "post_title": _feedback_title((parent_post or {}).get("body") or text),
+            "mentioned_emails": _feedback_mentioned_emails(text),
+            "recipients": recipients,
+        }
     except HTTPException:
         await db.rollback()
         for path in saved_paths:
@@ -3220,6 +3446,9 @@ async def create_feedback(
         raise
     finally:
         await db.close()
+
+    if notification_payload:
+        _schedule_feedback_email_notification(notification_payload)
 
     return _feedback_message_response(message, attachments_by_message)
 

@@ -59,7 +59,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.29",
+        "version": "0.2.30",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -592,6 +592,43 @@ def test_feedback_board_supports_images_and_replies(client):
     detail_from_reply = client.get(f"/api/feedback/{reply.json()['id']}")
     assert detail_from_reply.status_code == 200
     assert detail_from_reply.json()["id"] == message["id"]
+
+
+def test_feedback_email_recipients_include_admin_and_mentions(isolated_server, monkeypatch):
+    monkeypatch.setattr(isolated_server, "FEEDBACK_NOTIFICATION_ADMIN_EMAILS", ["admin@cambricon.com"])
+    monkeypatch.setattr(isolated_server, "FEEDBACK_MENTION_DOMAIN", "cambricon.com")
+
+    recipients = isolated_server._feedback_notification_recipients(
+        "请 @alice 和 @bob_1 看下，alice@example.com 不应被误识别，@alice 去重"
+    )
+
+    assert recipients == [
+        "admin@cambricon.com",
+        "alice@cambricon.com",
+        "bob_1@cambricon.com",
+    ]
+
+
+def test_feedback_create_schedules_email_notification(client, isolated_server, monkeypatch):
+    scheduled = []
+    monkeypatch.setattr(isolated_server, "FEEDBACK_NOTIFICATION_ADMIN_EMAILS", ["admin@cambricon.com"])
+    monkeypatch.setattr(isolated_server, "FEEDBACK_MENTION_DOMAIN", "cambricon.com")
+    monkeypatch.setattr(isolated_server, "_schedule_feedback_email_notification", scheduled.append)
+
+    response = client.post(
+        "/api/feedback",
+        data={"body": "这个功能很有用，@alice 帮忙看一下"},
+        headers={"X-Remote-User": "bob"},
+    )
+
+    assert response.status_code == 201
+    assert len(scheduled) == 1
+    payload = scheduled[0]
+    assert payload["author"] == "bob"
+    assert payload["body"] == "这个功能很有用，@alice 帮忙看一下"
+    assert payload["parent_id"] is None
+    assert payload["recipients"] == ["admin@cambricon.com", "alice@cambricon.com"]
+    assert payload["mentioned_emails"] == ["alice@cambricon.com"]
 
 
 def test_feedback_delete_requires_admin_and_removes_files(client, isolated_server, monkeypatch):
