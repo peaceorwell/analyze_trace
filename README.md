@@ -2,7 +2,7 @@
 
 Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/内网性能分析工具。它可以解析 `.json`、`.json.gz`、`.gz`、`.json.zip`、`.zip`、`.tar.gz` 和 `.tgz` trace 文件，统计 GPU kernel、Triton kernel、ATen Ops、CNCL/NCCL 通信算子，并提供单 trace 分析、双 trace 对比、历史管理、AI 分析和 Web 可视化界面。
 
-当前版本：`0.2.46`
+当前版本：`0.2.47`
 
 ## 主要功能
 
@@ -301,7 +301,7 @@ TRACE_LOG_FILE=/data/analyze_trace/logs/app.jsonl
 TRACE_ENABLE_CLAUDE_ANALYSIS=1
 TRACE_CLAUDE_COMMAND=/usr/local/node20/bin/claude
 TRACE_CLAUDE_EXTRA_ARGS=--dangerously-skip-permissions
-TRACE_PUBLIC_BASE_URL=http://172.16.130.149:1818
+TRACE_PUBLIC_BASE_URL=http://tpa.cambricon.com
 # 向 IT 确认真正可解析、可连通的 SMTP 主机；不要直接使用占位示例
 TRACE_SMTP_HOST=<it-provided-smtp-host>
 TRACE_SMTP_PORT=25
@@ -414,6 +414,31 @@ docker run -d -p 8181:8181 --name trace-analyzer -v trace_data:/app/storage trac
 ```
 
 使用反向代理时，建议启用 HTTPS；如果启用 LDAP 登录，生产环境请设置 `SESSION_COOKIE_SECURE=1`。
+
+域名部署时建议应用只监听本机端口，由反向代理对外暴露 `80/443`，不要把应用端口直接开放给用户。例如：
+
+```nginx
+server {
+    listen 80;
+    server_name tpa.cambricon.com;
+
+    client_max_body_size 50g;
+
+    location / {
+        proxy_pass http://127.0.0.1:1818;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+}
+```
+
+对应 systemd 中建议使用 `--host 127.0.0.1 --port 1818`，并在防火墙或安全组里只开放 `80/443`。
 
 ## CLI 使用
 
