@@ -826,7 +826,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.34";
+  appVersion.value = cfg.version || "0.2.35";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -1242,6 +1242,10 @@ const showFeedbackSubmitResult = (payload, fallbackMessage) => {
   const notification = payload?.notification;
   if (!notification) {
     showToast(fallbackMessage, "success");
+    return;
+  }
+  if (notification.status === "sent") {
+    showToast(`${fallbackMessage}，邮件通知已发送`, "success", 4200);
     return;
   }
   if (notification.status === "queued") {

@@ -46,7 +46,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.34"
+APP_VERSION = "0.2.35"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
 FEEDBACK_DIRNAME = "feedback"
@@ -167,7 +167,8 @@ SMTP_USE_SSL = _truthy_env(os.environ.get("TRACE_SMTP_SSL", os.environ.get("SMTP
 SMTP_USE_STARTTLS = _truthy_env(os.environ.get("TRACE_SMTP_STARTTLS", os.environ.get("SMTP_STARTTLS", "")), False)
 SMTP_TIMEOUT_SECONDS = max(1, _int_env("TRACE_SMTP_TIMEOUT_SECONDS", _int_env("SMTP_TIMEOUT_SECONDS", 10)))
 SENDMAIL_COMMAND = os.environ.get("TRACE_SENDMAIL_COMMAND", "").strip()
-if not SENDMAIL_COMMAND:
+SENDMAIL_AUTODETECT = _truthy_env(os.environ.get("TRACE_ENABLE_SENDMAIL_AUTODETECT", ""), False)
+if not SENDMAIL_COMMAND and SENDMAIL_AUTODETECT:
     for _sendmail_candidate in ("/usr/sbin/sendmail", "/usr/lib/sendmail"):
         if os.path.exists(_sendmail_candidate) and os.access(_sendmail_candidate, os.X_OK):
             SENDMAIL_COMMAND = _sendmail_candidate
@@ -3185,10 +3186,19 @@ def _feedback_notification_status(recipients: list[str]) -> dict:
     if not transport:
         return {
             "status": "missing_transport",
-            "detail": "未配置 TRACE_SMTP_HOST，也没有可用 sendmail，邮件未发送",
+            "detail": "未配置 TRACE_SMTP_HOST 或 TRACE_SENDMAIL_COMMAND，邮件未发送",
             "recipients": recipients,
         }
-    return {"status": "queued", "detail": "邮件通知已提交", "transport": transport, "recipients": recipients}
+    return {"status": "ready", "detail": "邮件通知可发送", "transport": transport, "recipients": recipients}
+
+
+def _email_error_message(exc: Exception) -> str:
+    if isinstance(exc, subprocess.CalledProcessError):
+        stderr = (exc.stderr or b"").decode("utf-8", errors="replace").strip()
+        stdout = (exc.stdout or b"").decode("utf-8", errors="replace").strip()
+        detail = stderr or stdout or str(exc)
+        return detail[:500]
+    return str(exc)[:500]
 
 
 def _send_email_sync(to_addrs: list[str], subject: str, body: str):
@@ -3239,6 +3249,13 @@ def _send_email_sync(to_addrs: list[str], subject: str, body: str):
 
 async def _send_feedback_email_notification(payload: dict):
     recipients = payload.get("recipients") or []
+    status = _feedback_notification_status(recipients)
+    if status["status"] != "ready":
+        logger.warning(
+            "feedback_email_not_sent",
+            extra={"event": "feedback_email_not_sent", **status},
+        )
+        return status
     try:
         await asyncio.to_thread(
             _send_email_sync,
@@ -3246,42 +3263,40 @@ async def _send_feedback_email_notification(payload: dict):
             _feedback_notification_subject(payload),
             _feedback_notification_body(payload),
         )
-        if _feedback_email_transport() and FEEDBACK_EMAIL_NOTIFICATIONS_ENABLED and recipients:
-            logger.info(
-                "feedback_email_sent",
-                extra={
-                    "event": "feedback_email_sent",
-                    "message_id": payload.get("message_id"),
-                    "recipients": recipients,
-                    "transport": _feedback_email_transport(),
-                },
-            )
+        sent_status = {
+            **status,
+            "status": "sent",
+            "detail": "邮件通知已发送",
+        }
+        logger.info(
+            "feedback_email_sent",
+            extra={
+                "event": "feedback_email_sent",
+                "message_id": payload.get("message_id"),
+                "recipients": recipients,
+                "transport": status.get("transport", ""),
+            },
+        )
+        return sent_status
     except Exception as exc:
+        error = _email_error_message(exc)
         logger.warning(
             "feedback_email_failed",
             extra={
                 "event": "feedback_email_failed",
                 "message_id": payload.get("message_id"),
-                "error": str(exc),
+                "error": error,
+                "recipients": recipients,
+                "transport": status.get("transport", ""),
             },
             exc_info=True,
         )
-
-
-def _schedule_feedback_email_notification(payload: dict) -> dict:
-    recipients = payload.get("recipients") or []
-    status = _feedback_notification_status(recipients)
-    if status["status"] != "queued":
-        logger.warning(
-            "feedback_email_not_queued",
-            extra={"event": "feedback_email_not_queued", **status},
-        )
-        return status
-    try:
-        asyncio.get_running_loop().create_task(_send_feedback_email_notification(payload))
-    except RuntimeError:
-        asyncio.run(_send_feedback_email_notification(payload))
-    return status
+        return {
+            **status,
+            "status": "failed",
+            "detail": f"邮件通知发送失败: {error}",
+            "error": error,
+        }
 
 
 async def _feedback_attachments_for(db, message_ids: list[str]) -> dict:
@@ -3749,7 +3764,7 @@ async def create_feedback(
         await db.close()
 
     if notification_payload:
-        notification_status = _schedule_feedback_email_notification(notification_payload)
+        notification_status = await _send_feedback_email_notification(notification_payload)
         logger.info(
             "feedback_created",
             extra={

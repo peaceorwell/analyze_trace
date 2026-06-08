@@ -2,7 +2,7 @@
 
 Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/内网性能分析工具。它可以解析 `.json`、`.json.gz`、`.json.zip`、`.tar.gz` 和 `.tgz` trace 文件，统计 GPU kernel、Triton kernel、ATen Ops、CNCL/NCCL 通信算子，并提供单 trace 分析、双 trace 对比、历史管理、AI 分析和 Web 可视化界面。
 
-当前版本：`0.2.34`
+当前版本：`0.2.35`
 
 ## 主要功能
 
@@ -274,7 +274,7 @@ sudo chown -R cambricon:cambricon /data/analyze_trace
 | `TRACE_FEEDBACK_MENTION_DOMAIN` | `cambricon.com` | 留言中 `@英文名` 映射到邮箱时使用的域名 |
 | `TRACE_DISABLE_FEEDBACK_EMAIL` | off | 设置为 `1` 后关闭留言板邮件通知 |
 | `TRACE_PUBLIC_BASE_URL` | 空 | 邮件中展示的应用访问地址 |
-| `TRACE_SMTP_HOST` / `SMTP_HOST` | 空 | SMTP 服务器；为空且没有 sendmail 时不发送邮件，页面会提示缺少投递通道 |
+| `TRACE_SMTP_HOST` / `SMTP_HOST` | 空 | SMTP 服务器；为空且未显式配置 sendmail 时不发送邮件，页面会提示缺少投递通道 |
 | `TRACE_SMTP_PORT` / `SMTP_PORT` | `25` | SMTP 端口 |
 | `TRACE_SMTP_USERNAME` / `SMTP_USERNAME` | 空 | SMTP 用户名 |
 | `TRACE_SMTP_PASSWORD` / `SMTP_PASSWORD` | 空 | SMTP 密码 |
@@ -282,7 +282,8 @@ sudo chown -R cambricon:cambricon /data/analyze_trace
 | `TRACE_SMTP_SSL` / `SMTP_SSL` | off | 使用 SMTP SSL |
 | `TRACE_SMTP_STARTTLS` / `SMTP_STARTTLS` | off | 使用 STARTTLS |
 | `TRACE_SMTP_TIMEOUT_SECONDS` | `10` | SMTP 连接超时 |
-| `TRACE_SENDMAIL_COMMAND` | 自动探测 | SMTP 为空时的 sendmail 命令路径，例如 `/usr/sbin/sendmail` |
+| `TRACE_SENDMAIL_COMMAND` | 空 | SMTP 为空时的 sendmail 命令路径，例如 `/usr/sbin/sendmail`；需确认该命令能外发到公司邮箱 |
+| `TRACE_ENABLE_SENDMAIL_AUTODETECT` | off | 设置为 `1` 后才自动探测系统 sendmail；默认关闭，避免本地 sendmail 只排队但无法投递时误报成功 |
 
 ### systemd 示例
 

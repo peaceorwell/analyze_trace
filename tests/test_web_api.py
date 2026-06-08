@@ -60,7 +60,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.34",
+        "version": "0.2.35",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -633,12 +633,22 @@ def test_feedback_email_recipients_include_admin_and_mentions(isolated_server, m
     ]
 
 
-def test_feedback_create_schedules_email_notification(client, isolated_server, monkeypatch):
-    scheduled = []
+def test_feedback_create_sends_email_notification(client, isolated_server, monkeypatch):
+    sent = []
     logged = []
     monkeypatch.setattr(isolated_server, "FEEDBACK_NOTIFICATION_ADMIN_EMAILS", ["admin@cambricon.com"])
     monkeypatch.setattr(isolated_server, "FEEDBACK_MENTION_DOMAIN", "cambricon.com")
-    monkeypatch.setattr(isolated_server, "_schedule_feedback_email_notification", scheduled.append)
+    monkeypatch.setattr(isolated_server, "SMTP_HOST", "smtp.test")
+    monkeypatch.setattr(isolated_server, "SENDMAIL_COMMAND", "")
+    monkeypatch.setattr(
+        isolated_server,
+        "_send_email_sync",
+        lambda recipients, subject, body: sent.append({
+            "recipients": recipients,
+            "subject": subject,
+            "body": body,
+        }),
+    )
     monkeypatch.setattr(
         isolated_server.logger,
         "info",
@@ -652,20 +662,45 @@ def test_feedback_create_schedules_email_notification(client, isolated_server, m
     )
 
     assert response.status_code == 201
-    assert len(scheduled) == 1
-    payload = scheduled[0]
-    assert payload["author"] == "bob"
-    assert payload["body"] == "这个功能很有用，@alice 帮忙看一下"
-    assert payload["parent_id"] is None
-    assert payload["recipients"] == ["admin@cambricon.com", "alice@cambricon.com"]
-    assert payload["mentioned_emails"] == ["alice@cambricon.com"]
+    notification = response.json()["notification"]
+    assert notification["status"] == "sent"
+    assert notification["transport"] == "smtp"
+    assert notification["recipients"] == ["admin@cambricon.com", "alice@cambricon.com"]
+    assert len(sent) == 1
+    assert sent[0]["recipients"] == ["admin@cambricon.com", "alice@cambricon.com"]
+    assert "留言板新帖子" in sent[0]["subject"]
+    assert "这个功能很有用，@alice 帮忙看一下" in sent[0]["body"]
     feedback_logs = [extra for msg, extra in logged if msg == "feedback_created"]
     assert feedback_logs
     assert feedback_logs[0]["event"] == "feedback_created"
     assert feedback_logs[0]["feedback_kind"] == "post"
     assert feedback_logs[0]["user"] == "bob"
     assert feedback_logs[0]["mentioned_emails"] == ["alice@cambricon.com"]
+    assert feedback_logs[0]["notification_status"] == "sent"
     assert "这个功能很有用" in feedback_logs[0]["body_preview"]
+
+
+def test_feedback_create_reports_email_send_failure(client, isolated_server, monkeypatch):
+    monkeypatch.setattr(isolated_server, "FEEDBACK_NOTIFICATION_ADMIN_EMAILS", ["admin@cambricon.com"])
+    monkeypatch.setattr(isolated_server, "SMTP_HOST", "smtp.test")
+    monkeypatch.setattr(isolated_server, "SENDMAIL_COMMAND", "")
+
+    def fail_send(*args, **kwargs):
+        raise RuntimeError("smtp rejected")
+
+    monkeypatch.setattr(isolated_server, "_send_email_sync", fail_send)
+
+    response = client.post(
+        "/api/feedback",
+        data={"body": "发送失败需要可见"},
+        headers={"X-Remote-User": "bob"},
+    )
+
+    assert response.status_code == 201
+    notification = response.json()["notification"]
+    assert notification["status"] == "failed"
+    assert notification["transport"] == "smtp"
+    assert "smtp rejected" in notification["detail"]
 
 
 def test_feedback_create_reports_missing_email_transport(client, isolated_server, monkeypatch):
