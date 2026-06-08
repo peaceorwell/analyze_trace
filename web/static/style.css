@@ -882,6 +882,44 @@ body.result-reading-active { overflow: hidden; }
 .ai-status-badge.status-running { background: rgba(99,102,241,.14); color: var(--purple-l); }
 .ai-status-badge.status-done { background: rgba(34,197,94,.14); color: var(--green); }
 .ai-status-badge.status-error { background: rgba(239,68,68,.14); color: var(--red); }
+.ai-version-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+}
+.ai-version-info {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  color: var(--text3);
+  font-size: 11px;
+  font-weight: 800;
+}
+.ai-version-info strong {
+  margin-left: 4px;
+  color: var(--text1);
+  font-weight: 900;
+}
+.ai-version-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--text3);
+  font-size: 11px;
+  font-weight: 800;
+}
+.ai-version-select {
+  min-width: 280px;
+  max-width: min(560px, 60vw);
+}
 .ai-progress-panel {
   border: 1px solid var(--border);
   border-radius: 8px;

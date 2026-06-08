@@ -48,7 +48,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.40"
+APP_VERSION = "0.2.41"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
 FEEDBACK_DIRNAME = "feedback"
@@ -59,6 +59,9 @@ FEEDBACK_MENTION_RE = re.compile(r"(?<![A-Za-z0-9_.%-])@([A-Za-z][A-Za-z0-9_.-]{
 AI_ANALYSIS_DIRNAME = "ai_analysis"
 AI_ANALYSIS_STATUS_FILE = "ai_analysis_status.json"
 AI_ANALYSIS_REPORT_FILE = "ai_analysis.md"
+AI_ANALYSIS_VERSIONS_DIR = "versions"
+AI_ANALYSIS_VERSION_META_FILE = "metadata.json"
+AI_ANALYSIS_VERSION_REPORT_FILE = "report.md"
 AI_ANALYSIS_ARTIFACT_MAX_BYTES = 256 * 1024
 AI_ANALYSIS_ARTIFACT_MAX_TOTAL_BYTES = 1024 * 1024
 AI_ANALYSIS_ARTIFACT_EXTENSIONS = {
@@ -66,10 +69,12 @@ AI_ANALYSIS_ARTIFACT_EXTENSIONS = {
 }
 AI_ANALYSIS_INTERNAL_FILES = {
     AI_ANALYSIS_STATUS_FILE,
+    AI_ANALYSIS_VERSION_META_FILE,
     "ai_diagnostics.json",
     "claude_tool_probe.txt",
     "command.json",
 }
+AI_ANALYSIS_VERSION_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,96}$")
 AI_ANALYSIS_FAILURE_PATTERNS = (
     "all tool calls are being denied",
     "cannot proceed because the execution environment has restricted permissions",
@@ -98,6 +103,11 @@ CLAUDE_DIAGNOSTIC_TIMEOUT_SECONDS = max(5, int(os.environ.get("TRACE_CLAUDE_DIAG
 CLAUDE_ANALYSIS_SKILLS_DIR = os.environ.get("TRACE_CLAUDE_SKILLS_DIR", PROJECT_CLAUDE_SKILLS_DIR)
 CLAUDE_SINGLE_TRACE_SKILL = os.environ.get("TRACE_CLAUDE_SINGLE_SKILL", "e2e-profiling-analyzer")
 CLAUDE_COMPARE_TRACE_SKILL = os.environ.get("TRACE_CLAUDE_COMPARE_SKILL", "e2e-profiling-comparator")
+CLAUDE_ANALYSIS_MODEL = (
+    os.environ.get("TRACE_CLAUDE_MODEL")
+    or os.environ.get("ANTHROPIC_MODEL")
+    or "Claude Code default"
+).strip()
 
 
 def _parse_user_list_env(value: str) -> set[str]:
@@ -808,6 +818,22 @@ def ai_analysis_report_path(job_id: str) -> str:
     return os.path.join(ai_analysis_dir(job_id), AI_ANALYSIS_REPORT_FILE)
 
 
+def ai_analysis_versions_dir(job_id: str) -> str:
+    return os.path.join(ai_analysis_dir(job_id), AI_ANALYSIS_VERSIONS_DIR)
+
+
+def ai_analysis_version_dir(job_id: str, version_id: str) -> str:
+    return os.path.join(ai_analysis_versions_dir(job_id), version_id)
+
+
+def ai_analysis_version_report_path(job_id: str, version_id: str) -> str:
+    return os.path.join(ai_analysis_version_dir(job_id, version_id), AI_ANALYSIS_VERSION_REPORT_FILE)
+
+
+def ai_analysis_version_meta_path(job_id: str, version_id: str) -> str:
+    return os.path.join(ai_analysis_version_dir(job_id, version_id), AI_ANALYSIS_VERSION_META_FILE)
+
+
 def feedback_dir() -> str:
     return os.path.join(STORAGE_DIR, FEEDBACK_DIRNAME)
 
@@ -1221,10 +1247,221 @@ def _write_ai_analysis_status(jid: str, status: dict):
     os.replace(tmp_path, path)
 
 
+def _ai_backend_model_name() -> str:
+    return CLAUDE_ANALYSIS_MODEL or "Claude Code default"
+
+
+def _new_ai_analysis_version_id(generated_at: str = "") -> str:
+    dt = _parse_iso_datetime(generated_at) if generated_at else None
+    stamp = (dt or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%SZ")
+    return f"{stamp}-{secrets.token_hex(4)}"
+
+
+def _safe_ai_analysis_version_id(version_id: str) -> str:
+    value = (version_id or "").strip()
+    if not value or not AI_ANALYSIS_VERSION_ID_RE.match(value):
+        return ""
+    return value
+
+
+def _write_ai_version_metadata(path: str, metadata: dict) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(metadata, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, path)
+
+
+def _ai_version_report_path_from_metadata(jid: str, metadata: dict) -> str:
+    analysis_root = os.path.abspath(ai_analysis_dir(jid))
+    rel_path = metadata.get("report_path") or ""
+    if not rel_path and metadata.get("id") == "current":
+        return ai_analysis_report_path(jid)
+    if not rel_path and metadata.get("id"):
+        rel_path = os.path.join(
+            AI_ANALYSIS_VERSIONS_DIR,
+            metadata["id"],
+            AI_ANALYSIS_VERSION_REPORT_FILE,
+        )
+    full = os.path.abspath(os.path.join(analysis_root, rel_path))
+    try:
+        if os.path.commonpath([analysis_root, full]) != analysis_root:
+            return ""
+    except ValueError:
+        return ""
+    return full
+
+
+def _save_ai_analysis_version(
+    jid: str,
+    content: str,
+    status: dict,
+    job: Optional[dict] = None,
+    notification_context: Optional[dict] = None,
+) -> dict:
+    normalized_content = _normalize_ai_report_markdown(content or "")
+    if not normalized_content.strip():
+        return {}
+
+    context = notification_context or {}
+    job = job or {}
+    generated_at = status.get("finished_at") or status.get("updated_at") or _utc_now_iso()
+    for _ in range(5):
+        version_id = _new_ai_analysis_version_id(generated_at)
+        version_dir = ai_analysis_version_dir(jid, version_id)
+        try:
+            os.makedirs(version_dir, exist_ok=False)
+            break
+        except FileExistsError:
+            continue
+    else:
+        version_id = f"{_new_ai_analysis_version_id(generated_at)}-{secrets.token_hex(2)}"
+        version_dir = ai_analysis_version_dir(jid, version_id)
+        os.makedirs(version_dir, exist_ok=False)
+
+    report_path = ai_analysis_version_report_path(jid, version_id)
+    _write_ai_report(report_path, normalized_content)
+    timing = _ai_analysis_timing(status)
+    metadata = {
+        "id": version_id,
+        "job_id": jid,
+        "status": status.get("status", ""),
+        "error": status.get("error", ""),
+        "mode": status.get("mode") or job.get("mode") or "",
+        "skill": status.get("skill", ""),
+        "model": status.get("model") or _ai_backend_model_name(),
+        "generated_at": generated_at,
+        "started_at": status.get("started_at", ""),
+        "finished_at": status.get("finished_at", generated_at),
+        "updated_at": status.get("updated_at", generated_at),
+        "duration_ms": timing.get("duration_ms") or timing.get("elapsed_ms") or status.get("duration_ms"),
+        "trigger_user_token": status.get("trigger_user_token") or context.get("trigger_user_token") or "",
+        "trigger_user_display": context.get("trigger_user_display") or status.get("trigger_user_display") or "",
+        "trigger_user_email": context.get("trigger_user_email") or status.get("trigger_user_email") or "",
+        "owner_user_token": status.get("owner_user_token") or context.get("owner_user_token") or job.get("user_token") or "",
+        "report_path": os.path.join(
+            AI_ANALYSIS_VERSIONS_DIR,
+            version_id,
+            AI_ANALYSIS_VERSION_REPORT_FILE,
+        ),
+        "report_exists": True,
+    }
+    _write_ai_version_metadata(ai_analysis_version_meta_path(jid, version_id), metadata)
+    logger.info(
+        "ai_analysis_version_saved",
+        extra={
+            "event": "ai_analysis_version_saved",
+            "job_id": jid,
+            "version_id": version_id,
+            "status": metadata["status"],
+            "model": metadata["model"],
+        },
+    )
+    return metadata
+
+
+def _legacy_ai_analysis_version(jid: str, status: dict) -> dict:
+    report_path = ai_analysis_report_path(jid)
+    generated_at = (
+        status.get("finished_at")
+        or status.get("updated_at")
+        or datetime.fromtimestamp(os.path.getmtime(report_path), timezone.utc).isoformat()
+    )
+    timing = _ai_analysis_timing({
+        "started_at": status.get("started_at", ""),
+        "finished_at": status.get("finished_at") or generated_at,
+    })
+    return {
+        "id": "current",
+        "job_id": jid,
+        "status": status.get("status") or "done",
+        "error": status.get("error", ""),
+        "mode": status.get("mode", ""),
+        "skill": status.get("skill", ""),
+        "model": status.get("model") or "未知",
+        "generated_at": generated_at,
+        "started_at": status.get("started_at", ""),
+        "finished_at": status.get("finished_at") or generated_at,
+        "updated_at": status.get("updated_at") or generated_at,
+        "duration_ms": timing.get("duration_ms") or timing.get("elapsed_ms"),
+        "trigger_user_token": status.get("trigger_user_token", ""),
+        "trigger_user_display": status.get("trigger_user_display", ""),
+        "trigger_user_email": status.get("trigger_user_email", ""),
+        "owner_user_token": status.get("owner_user_token", ""),
+        "report_path": AI_ANALYSIS_REPORT_FILE,
+        "report_exists": True,
+        "legacy": True,
+    }
+
+
+def _collect_ai_analysis_versions(jid: str, status: Optional[dict] = None) -> list[dict]:
+    status = status or _read_ai_analysis_status(jid)
+    versions: list[dict] = []
+    versions_root = ai_analysis_versions_dir(jid)
+    if os.path.isdir(versions_root):
+        for version_id in sorted(os.listdir(versions_root)):
+            if not _safe_ai_analysis_version_id(version_id):
+                continue
+            meta_path = ai_analysis_version_meta_path(jid, version_id)
+            if not os.path.isfile(meta_path):
+                continue
+            try:
+                with open(meta_path, encoding="utf-8") as f:
+                    metadata = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(metadata, dict):
+                continue
+            metadata["id"] = version_id
+            report_path = _ai_version_report_path_from_metadata(jid, metadata)
+            metadata["report_exists"] = bool(report_path and os.path.exists(report_path))
+            metadata.setdefault("model", "未知")
+            metadata.setdefault("generated_at", metadata.get("finished_at") or metadata.get("updated_at") or "")
+            versions.append(metadata)
+
+    if not versions and os.path.exists(ai_analysis_report_path(jid)):
+        versions.append(_legacy_ai_analysis_version(jid, status))
+
+    def sort_key(item: dict) -> tuple[datetime, str]:
+        dt = _parse_iso_datetime(item.get("generated_at") or item.get("finished_at") or "")
+        return (dt or datetime.fromtimestamp(0, timezone.utc), item.get("id", ""))
+
+    versions.sort(key=sort_key, reverse=True)
+    return versions
+
+
+def _select_ai_analysis_version(jid: str, version_id: str = "", status: Optional[dict] = None) -> Optional[dict]:
+    versions = _collect_ai_analysis_versions(jid, status)
+    if not versions:
+        return None
+    if not version_id:
+        return versions[0]
+    safe_id = _safe_ai_analysis_version_id(version_id)
+    if not safe_id:
+        return None
+    return next((item for item in versions if item.get("id") == safe_id), None)
+
+
+def _ensure_current_ai_report_versioned(jid: str, status: Optional[dict] = None) -> None:
+    versions_root = ai_analysis_versions_dir(jid)
+    if os.path.isdir(versions_root):
+        for version_id in os.listdir(versions_root):
+            if _safe_ai_analysis_version_id(version_id) and os.path.isfile(ai_analysis_version_meta_path(jid, version_id)):
+                return
+    content = _read_text_file(ai_analysis_report_path(jid))
+    if not content.strip():
+        return
+    status = status or _read_ai_analysis_status(jid) or {"status": "done"}
+    _save_ai_analysis_version(jid, content, status)
+
+
 def _find_latest_ai_report(analysis_dir: str) -> Optional[str]:
     candidates = []
     for root, dirs, files in os.walk(analysis_dir):
-        dirs[:] = [name for name in dirs if not name.startswith(".")]
+        dirs[:] = [
+            name for name in dirs
+            if not name.startswith(".") and name != AI_ANALYSIS_VERSIONS_DIR
+        ]
         for filename in files:
             if not filename.lower().endswith(".md") or filename == AI_ANALYSIS_REPORT_FILE:
                 continue
@@ -1276,7 +1513,10 @@ def _collect_ai_analysis_artifacts(jid: str) -> list[dict]:
     artifacts = []
     total_read = 0
     for root, dirs, files in os.walk(root_abs):
-        dirs[:] = [name for name in dirs if not name.startswith(".")]
+        dirs[:] = [
+            name for name in dirs
+            if not name.startswith(".") and not (root == root_abs and name == AI_ANALYSIS_VERSIONS_DIR)
+        ]
         for filename in sorted(files):
             if filename.startswith(".") or filename.endswith(".tmp"):
                 continue
@@ -1375,12 +1615,16 @@ def collect_ai_analysis(jid: str) -> dict:
             "error": "Server restarted before this AI analysis completed",
         }
     timing = _ai_analysis_timing(status)
+    versions = _collect_ai_analysis_versions(jid, status)
+    selected_version = versions[0] if versions else None
+    report_exists = report_exists or bool(selected_version and selected_version.get("report_exists"))
     return {
         "enabled": CLAUDE_ANALYSIS_ENABLED,
         "status": status.get("status", "not_started"),
         "error": status.get("error", ""),
         "mode": status.get("mode", ""),
         "skill": status.get("skill", ""),
+        "model": status.get("model") or _ai_backend_model_name(),
         "phase": status.get("phase", ""),
         "progress": _ai_analysis_progress(status),
         "diagnostics": status.get("diagnostics"),
@@ -1389,6 +1633,11 @@ def collect_ai_analysis(jid: str) -> dict:
         "updated_at": status.get("updated_at", ""),
         **timing,
         "report_exists": report_exists,
+        "generated_at": selected_version.get("generated_at", "") if selected_version else "",
+        "latest_version_id": selected_version.get("id", "") if selected_version else "",
+        "selected_version_id": selected_version.get("id", "") if selected_version else "",
+        "selected_version": selected_version,
+        "versions": versions,
     }
 
 
@@ -1492,8 +1741,14 @@ def _normalize_ai_report_markdown(content: str) -> str:
     return normalized + ("\n" if source.endswith("\n") else "")
 
 
-def _read_ai_analysis_report(jid: str) -> str:
-    return _normalize_ai_report_markdown(_read_text_file(ai_analysis_report_path(jid)))
+def _read_ai_analysis_report(jid: str, version_id: str = "") -> str:
+    version = _select_ai_analysis_version(jid, version_id)
+    if not version:
+        return ""
+    path = _ai_version_report_path_from_metadata(jid, version)
+    if not path:
+        return ""
+    return _normalize_ai_report_markdown(_read_text_file(path))
 
 
 class _SafeFormatDict(dict):
@@ -2109,6 +2364,9 @@ async def _run_ai_analysis_task(jid: str, notification_context: Optional[dict] =
     analysis_dir = ai_analysis_dir(jid)
     report_path = ai_analysis_report_path(jid)
     os.makedirs(analysis_dir, exist_ok=True)
+    previous_status = _read_ai_analysis_status(jid)
+    with contextlib.suppress(OSError):
+        os.remove(report_path)
     stdout_text = ""
     stderr_text = ""
     job = None
@@ -2136,7 +2394,12 @@ async def _run_ai_analysis_task(jid: str, notification_context: Optional[dict] =
             "progress": 20,
             "mode": job.get("mode"),
             "skill": skill,
+            "model": _ai_backend_model_name(),
             "skills_dir": skills_dir,
+            "trigger_user_token": previous_status.get("trigger_user_token") or (notification_context or {}).get("trigger_user_token") or "",
+            "trigger_user_display": previous_status.get("trigger_user_display") or (notification_context or {}).get("trigger_user_display") or "",
+            "trigger_user_email": previous_status.get("trigger_user_email") or (notification_context or {}).get("trigger_user_email") or "",
+            "owner_user_token": previous_status.get("owner_user_token") or (notification_context or {}).get("owner_user_token") or job.get("user_token") or "",
             "started_at": _utc_now_iso(),
             "updated_at": _utc_now_iso(),
         }
@@ -2155,7 +2418,7 @@ async def _run_ai_analysis_task(jid: str, notification_context: Optional[dict] =
         if not diagnostics.get("ok"):
             content = _format_ai_diagnostics_markdown(diagnostics)
             _write_ai_report(report_path, content)
-            _write_ai_analysis_status(jid, {
+            final_status = {
                 **status,
                 "status": "error",
                 "phase": "diagnostics_failed",
@@ -2164,7 +2427,11 @@ async def _run_ai_analysis_task(jid: str, notification_context: Optional[dict] =
                 "diagnostics": diagnostics,
                 "finished_at": _utc_now_iso(),
                 "updated_at": _utc_now_iso(),
-            })
+            }
+            version_meta = _save_ai_analysis_version(jid, content, final_status, job, notification_context)
+            if version_meta:
+                final_status["latest_version_id"] = version_meta["id"]
+            _write_ai_analysis_status(jid, final_status)
             return
 
         status = {
@@ -2271,14 +2538,19 @@ async def _run_ai_analysis_task(jid: str, notification_context: Optional[dict] =
             )
         if not content:
             content = "Claude command completed, but no report content was produced."
-        _write_ai_report(report_path, _normalize_ai_report_markdown(content))
-        _write_ai_analysis_status(jid, {
+        content = _normalize_ai_report_markdown(content)
+        _write_ai_report(report_path, content)
+        final_status = {
             **status,
             "status": "done",
             "progress": 100,
             "finished_at": _utc_now_iso(),
             "updated_at": _utc_now_iso(),
-        })
+        }
+        version_meta = _save_ai_analysis_version(jid, content, final_status, job, notification_context)
+        if version_meta:
+            final_status["latest_version_id"] = version_meta["id"]
+        _write_ai_analysis_status(jid, final_status)
     except Exception as e:
         error_report = [
             "# AI 分析失败",
@@ -2290,16 +2562,21 @@ async def _run_ai_analysis_task(jid: str, notification_context: Optional[dict] =
             error_report.extend(["", "## stdout", "", "```text", stdout_text[-4000:], "```"])
         if stderr_text.strip():
             error_report.extend(["", "## stderr", "", "```text", stderr_text[-4000:], "```"])
-        _write_ai_report(report_path, "\n".join(error_report))
+        content = "\n".join(error_report)
+        _write_ai_report(report_path, content)
         status = _read_ai_analysis_status(jid)
-        _write_ai_analysis_status(jid, {
+        final_status = {
             **status,
             "status": "error",
             "progress": 100,
             "error": str(e),
             "finished_at": _utc_now_iso(),
             "updated_at": _utc_now_iso(),
-        })
+        }
+        version_meta = _save_ai_analysis_version(jid, content, final_status, job, notification_context)
+        if version_meta:
+            final_status["latest_version_id"] = version_meta["id"]
+        _write_ai_analysis_status(jid, final_status)
         logger.exception(
             "ai_analysis_failed",
             extra={"event": "ai_analysis_failed", "job_id": jid, "error": str(e)},
@@ -5532,8 +5809,17 @@ async def get_job_ai_analysis(request: Request, jid: str):
     if not row:
         raise HTTPException(404)
 
+    version_id = request.query_params.get("version_id", "")
     payload = collect_ai_analysis(jid)
-    payload["content"] = _read_ai_analysis_report(jid) if payload["report_exists"] else ""
+    selected_version = _select_ai_analysis_version(jid, version_id)
+    if version_id and not selected_version:
+        raise HTTPException(404, "AI analysis version not found")
+    if selected_version:
+        payload["selected_version"] = selected_version
+        payload["selected_version_id"] = selected_version.get("id", "")
+        payload["content"] = _read_ai_analysis_report(jid, selected_version.get("id", ""))
+    else:
+        payload["content"] = ""
     payload["artifacts"] = _collect_ai_analysis_artifacts(jid)
     return payload
 
@@ -5548,7 +5834,11 @@ async def download_job_ai_analysis_report(request: Request, jid: str):
     if not row:
         raise HTTPException(404)
 
-    content = _read_ai_analysis_report(jid)
+    version_id = request.query_params.get("version_id", "")
+    selected_version = _select_ai_analysis_version(jid, version_id)
+    if version_id and not selected_version:
+        raise HTTPException(404, "AI analysis version not found")
+    content = _read_ai_analysis_report(jid, selected_version.get("id", "") if selected_version else "")
     if not content:
         raise HTTPException(404, "AI analysis report not found")
 
@@ -5558,7 +5848,11 @@ async def download_job_ai_analysis_report(request: Request, jid: str):
         if lower.endswith(suffix):
             filename = filename[:-len(suffix)]
             break
-    filename = f"{filename}-ai-analysis.md"
+    generated = ""
+    if selected_version and selected_version.get("generated_at"):
+        generated = selected_version["generated_at"].replace(":", "").replace("-", "")[:15]
+    suffix = f"-{generated}" if generated else ""
+    filename = f"{filename}-ai-analysis{suffix}.md"
     return PlainTextResponse(
         content.rstrip() + "\n",
         media_type="text/markdown; charset=utf-8",
@@ -5597,6 +5891,7 @@ async def start_job_ai_analysis(request: Request, jid: str, body: Optional[dict]
             current["content"] = _read_ai_analysis_report(jid)
             current["artifacts"] = _collect_ai_analysis_artifacts(jid)
             return current
+        _ensure_current_ai_report_versioned(jid, _read_ai_analysis_status(jid))
 
         user = current_user(request)
         trigger_user_token = user.get("username") or request_user(request)
@@ -5614,7 +5909,10 @@ async def start_job_ai_analysis(request: Request, jid: str, body: Optional[dict]
             "progress": 5,
             "mode": row.get("mode"),
             "skill": CLAUDE_COMPARE_TRACE_SKILL if row.get("mode") == "compare" else CLAUDE_SINGLE_TRACE_SKILL,
+            "model": _ai_backend_model_name(),
             "trigger_user_token": notification_context["trigger_user_token"],
+            "trigger_user_display": notification_context["trigger_user_display"],
+            "trigger_user_email": notification_context["trigger_user_email"],
             "owner_user_token": notification_context["owner_user_token"],
             "started_at": _utc_now_iso(),
             "updated_at": _utc_now_iso(),

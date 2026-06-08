@@ -41,6 +41,7 @@ def isolated_server(tmp_path, monkeypatch):
     monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_COMMAND_TEMPLATE", "")
     monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_EXTRA_ARGS", "")
     monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_TIMEOUT_SECONDS", 30)
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_MODEL", "Claude Code default")
     monkeypatch.setattr(web_server, "AUTH_MODE", "none")
     monkeypatch.setattr(web_server, "AUTH_ENABLED", False)
     monkeypatch.setattr(web_server, "ADMIN_USERS", set())
@@ -61,7 +62,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.40",
+        "version": "0.2.41",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -270,6 +271,98 @@ def test_ai_analysis_runs_configured_command(client, isolated_server, tmp_path, 
     assert detail["ai_analysis"]["status"] == "done"
     assert detail["ai_analysis"]["report_exists"] is True
     assert detail["ai_analysis"]["duration_ms"] >= 0
+
+
+def test_ai_analysis_keeps_report_versions(client, isolated_server, tmp_path, monkeypatch):
+    trace_path = tmp_path / "trace.pt.trace.json.gz"
+    with gzip.open(trace_path, "wt", encoding="utf-8") as f:
+        f.write("{}")
+
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO jobs(id, user_token, label, mode, status, file_a_name, file_a_gzip_path)
+                VALUES(?,?,?,?,?,?,?)
+                """,
+                ("ai-version-job", "owner", "AI version job", "single", "done", trace_path.name, str(trace_path)),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+    Path(web_server.result_dir("ai-version-job")).mkdir(parents=True, exist_ok=True)
+    counter_path = tmp_path / "ai_counter.txt"
+
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_ENABLED", True)
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_MODEL", "claude-test-model")
+    monkeypatch.setattr(
+        web_server,
+        "CLAUDE_ANALYSIS_COMMAND_TEMPLATE",
+        _fake_claude_template(
+            tmp_path,
+            f"""
+            if '只回复一行 OK' in prompt:
+                print('OK')
+            else:
+                counter = pathlib.Path({str(counter_path)!r})
+                value = int(counter.read_text(encoding='utf-8')) + 1 if counter.exists() else 1
+                counter.write_text(str(value), encoding='utf-8')
+                report = f'# Report {{value}}\\n\\nGenerated version {{value}}\\n'
+                pathlib.Path(os.environ['TRACE_AI_REPORT_PATH']).write_text(report, encoding='utf-8')
+                print(report)
+            """,
+        ),
+    )
+
+    first = client.post(
+        "/api/jobs/ai-version-job/ai-analysis",
+        json={},
+        headers={"X-Remote-User": "runner"},
+    )
+    assert first.status_code == 202
+    first_payload = {}
+    for _ in range(80):
+        first_payload = client.get("/api/jobs/ai-version-job/ai-analysis").json()
+        if first_payload["status"] != "running":
+            break
+        time.sleep(0.05)
+    assert first_payload["status"] == "done"
+    assert "# Report 1" in first_payload["content"]
+
+    second = client.post(
+        "/api/jobs/ai-version-job/ai-analysis",
+        json={"force": True},
+        headers={"X-Remote-User": "runner"},
+    )
+    assert second.status_code == 202
+    latest = {}
+    for _ in range(80):
+        latest = client.get("/api/jobs/ai-version-job/ai-analysis").json()
+        if latest["status"] != "running":
+            break
+        time.sleep(0.05)
+
+    assert latest["status"] == "done"
+    assert "# Report 2" in latest["content"]
+    assert len(latest["versions"]) == 2
+    assert latest["selected_version_id"] == latest["versions"][0]["id"]
+    assert latest["versions"][0]["model"] == "claude-test-model"
+    assert latest["versions"][0]["generated_at"]
+    assert latest["versions"][0]["trigger_user_token"] == "runner"
+
+    old_version = latest["versions"][1]
+    old_response = client.get(f"/api/jobs/ai-version-job/ai-analysis?version_id={old_version['id']}")
+    assert old_response.status_code == 200
+    old_payload = old_response.json()
+    assert old_payload["selected_version_id"] == old_version["id"]
+    assert "# Report 1" in old_payload["content"]
+
+    download = client.get(f"/api/jobs/ai-version-job/ai-analysis/report.md?version_id={old_version['id']}")
+    assert download.status_code == 200
+    assert "# Report 1" in download.text
 
 
 def test_ai_analysis_completion_sends_email_with_result_link(client, isolated_server, tmp_path, monkeypatch):
@@ -487,7 +580,7 @@ def test_ai_analysis_report_markdown_download(client):
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/markdown")
-    assert "AI report-ai-analysis.md" in response.headers["content-disposition"]
+    assert "AI report-ai-analysis-" in response.headers["content-disposition"]
     assert "# AI 性能分析报告" in response.text
 
 

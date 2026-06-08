@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.40");
+const appVersion = ref("0.2.41");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -147,6 +147,8 @@ const aiAnalysisStarting = ref(false);
 const aiAnalysisError = ref("");
 const aiAnalysisContent = ref("");
 const aiAnalysisArtifacts = ref([]);
+const aiAnalysisVersions = ref([]);
+const aiAnalysisSelectedVersionId = ref("");
 const aiArtifactsExpanded = ref(false);
 const aiDiagnosticsLoading = ref(false);
 const aiDiagnosticsError = ref("");
@@ -803,6 +805,19 @@ const toggleColumnVisibility = field => {
 // ══════════════════════════════════════════════════════════════════════════════
 
 const fmtDate = iso => iso ? iso.replace("T", " ").slice(0, 16) : "";
+const fmtDateTime = iso => {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (!Number.isNaN(date.getTime())) {
+    const pad = value => String(value).padStart(2, "0");
+    return [
+      date.getFullYear(),
+      pad(date.getMonth() + 1),
+      pad(date.getDate()),
+    ].join("-") + ` ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  }
+  return iso.replace("T", " ").slice(0, 19);
+};
 
 const statusIcon = s => ({ pending: "⏳", running: "⟳", done: "✓", error: "✗" }[s] || s);
 
@@ -829,7 +844,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.40";
+  appVersion.value = cfg.version || "0.2.41";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -1717,6 +1732,8 @@ const loadJob = async id => {
   aiAnalysisError.value = "";
   aiAnalysisContent.value = "";
   aiAnalysisArtifacts.value = [];
+  aiAnalysisVersions.value = [];
+  aiAnalysisSelectedVersionId.value = "";
   aiArtifactsExpanded.value = false;
   aiDiagnosticsLoading.value = false;
   aiDiagnosticsError.value = "";
@@ -1735,6 +1752,25 @@ const aiAnalysisMeta = computed(() => selectedJob.value?.ai_analysis || {
   status: "not_started",
   report_exists: false,
 });
+const aiAnalysisSelectedVersion = computed(() => {
+  const versions = aiAnalysisVersions.value || [];
+  const selected = versions.find(item => item.id === aiAnalysisSelectedVersionId.value);
+  return selected || aiAnalysisMeta.value?.selected_version || null;
+});
+const aiAnalysisVersionTrigger = computed(() => {
+  const version = aiAnalysisSelectedVersion.value || {};
+  return version.trigger_user_display || version.trigger_user_token || "未知";
+});
+const aiAnalysisVersionModel = computed(() => {
+  const version = aiAnalysisSelectedVersion.value || {};
+  return version.model || aiAnalysisMeta.value?.model || "未知";
+});
+const aiAnalysisVersionLabel = version => {
+  const timeText = fmtDateTime(version.generated_at || version.finished_at) || "未知时间";
+  const statusText = aiAnalysisStatusText(version.status || "done");
+  const triggerText = version.trigger_user_display || version.trigger_user_token || "未知触发人";
+  return `${timeText} · ${statusText} · ${triggerText}`;
+};
 const aiAnalysisVisibleArtifacts = computed(() => {
   const artifacts = aiAnalysisArtifacts.value || [];
   if (!aiAnalysisContent.value) return artifacts;
@@ -1804,12 +1840,26 @@ const aiAnalysisElapsedText = computed(() => formatDurationMs(aiAnalysisElapsedM
 
 const updateAiAnalysisState = payload => {
   if (!payload || !selectedJob.value) return;
-  const { content, artifacts, diagnostics, ...meta } = payload;
+  const { content, artifacts, diagnostics, versions, selected_version, selected_version_id, ...meta } = payload;
+  const nextVersions = Array.isArray(versions) ? versions : [];
+  const nextSelectedId = selected_version_id
+    || selected_version?.id
+    || meta.latest_version_id
+    || nextVersions[0]?.id
+    || "";
+  const nextSelectedVersion = selected_version
+    || nextVersions.find(item => item.id === nextSelectedId)
+    || null;
+  aiAnalysisVersions.value = nextVersions;
+  aiAnalysisSelectedVersionId.value = nextSelectedId;
   selectedJob.value = {
     ...selectedJob.value,
     ai_analysis: {
       ...meta,
       diagnostics,
+      versions: nextVersions,
+      selected_version_id: nextSelectedId,
+      selected_version: nextSelectedVersion,
     },
   };
   aiAnalysisContent.value = content || "";
@@ -1891,15 +1941,21 @@ const notifyAiAnalysisCompleted = ({ jobId, label, status, error }) => {
   if (!notified) showToast(title, kind, 10000);
 };
 
-const refreshAiAnalysis = async ({ silent = false } = {}) => {
+const refreshAiAnalysis = async ({ silent = false, versionId } = {}) => {
   if (!selectedJobId.value) return;
   const jobId = selectedJobId.value;
   const previousStatus = selectedJob.value?.ai_analysis?.status || "not_started";
   const jobLabel = selectedJob.value?.label || selectedJob.value?.file_a_name || jobId;
+  const requestedVersionId = versionId !== undefined
+    ? versionId
+    : (previousStatus === "running" ? "" : aiAnalysisSelectedVersionId.value);
+  const params = new URLSearchParams();
+  if (requestedVersionId) params.set("version_id", requestedVersionId);
+  const url = `/api/jobs/${jobId}/ai-analysis${params.toString() ? `?${params}` : ""}`;
   if (!silent) aiAnalysisLoading.value = true;
   aiAnalysisError.value = "";
   try {
-    const r = await fetch(`/api/jobs/${jobId}/ai-analysis`, { credentials: "include" });
+    const r = await fetch(url, { credentials: "include" });
     const payload = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(payload.detail || "加载 AI 分析失败");
     updateAiAnalysisState(payload);
@@ -1918,6 +1974,10 @@ const refreshAiAnalysis = async ({ silent = false } = {}) => {
   } finally {
     aiAnalysisLoading.value = false;
   }
+};
+
+const changeAiAnalysisVersion = () => {
+  refreshAiAnalysis({ versionId: aiAnalysisSelectedVersionId.value });
 };
 
 const startAiAnalysisPolling = () => {
@@ -1940,6 +2000,7 @@ const startAiAnalysis = async (force = false) => {
   requestAiCompletionNotificationPermission();
   aiAnalysisStarting.value = true;
   aiAnalysisError.value = "";
+  aiAnalysisSelectedVersionId.value = "";
   aiArtifactsExpanded.value = false;
   aiDiagnosticsLoading.value = false;
   aiDiagnosticsError.value = "";
@@ -1975,7 +2036,9 @@ const copyAiAnalysisReport = async () => {
 const downloadAiAnalysisReport = () => {
   if (!selectedJobId.value || !aiAnalysisContent.value) return;
   const a = document.createElement("a");
-  a.href = `/api/jobs/${selectedJobId.value}/ai-analysis/report.md`;
+  const params = new URLSearchParams();
+  if (aiAnalysisSelectedVersionId.value) params.set("version_id", aiAnalysisSelectedVersionId.value);
+  a.href = `/api/jobs/${selectedJobId.value}/ai-analysis/report.md${params.toString() ? `?${params}` : ""}`;
   a.click();
 };
 
@@ -4724,6 +4787,26 @@ const JobDetail = {
             </div>
           </div>
 
+          <div v-if="aiAnalysisSelectedVersion" class="ai-version-panel">
+            <div class="ai-version-info">
+              <span>生成时间 <strong>{{ fmtDateTime(aiAnalysisSelectedVersion.generated_at || aiAnalysisSelectedVersion.finished_at) || '-' }}</strong></span>
+              <span>触发人 <strong>{{ aiAnalysisVersionTrigger }}</strong></span>
+              <span>模型 <strong>{{ aiAnalysisVersionModel }}</strong></span>
+            </div>
+            <label v-if="aiAnalysisVersions.length > 1" class="ai-version-picker">
+              <span>历史版本</span>
+              <select v-model="aiAnalysisSelectedVersionId"
+                      class="input input-sm ai-version-select"
+                      @change="changeAiAnalysisVersion">
+                <option v-for="version in aiAnalysisVersions"
+                        :key="version.id"
+                        :value="version.id">
+                  {{ aiAnalysisVersionLabel(version) }}
+                </option>
+              </select>
+            </label>
+          </div>
+
           <div v-if="aiAnalysisMeta.started_at || aiAnalysisMeta.status==='running'" class="ai-progress-panel">
             <div class="ai-progress-meta">
               <span>{{ aiAnalysisPhaseText }}</span>
@@ -5012,11 +5095,13 @@ const JobDetail = {
       isTritonStepTab, tritonStatus, allowFileDownload, allowCodeExecution,
       claudeAnalysisEnabled, aiAnalysisMeta, aiAnalysisLoading, aiAnalysisStarting,
       aiAnalysisError, aiAnalysisContent, aiAnalysisArtifacts, aiAnalysisVisibleArtifacts,
+      aiAnalysisVersions, aiAnalysisSelectedVersionId, aiAnalysisSelectedVersion,
+      aiAnalysisVersionTrigger, aiAnalysisVersionModel, aiAnalysisVersionLabel,
       aiArtifactsExpanded, aiArtifactSummary, aiAnalysisHtml, aiAnalysisStatusText,
       aiAnalysisProgress, aiAnalysisPhaseText, aiAnalysisElapsedText,
       aiDiagnosticsLoading, aiDiagnosticsError, aiDiagnosticsResult, aiDiagnosticStatusText,
       refreshAiAnalysis, startAiAnalysis, copyAiAnalysisReport,
-      downloadAiAnalysisReport, copyAiAnalysisArtifact,
+      downloadAiAnalysisReport, changeAiAnalysisVersion, copyAiAnalysisArtifact,
       runAiDiagnostics, copyAiDiagnostics,
       openActionMenu, toggleActionMenu, closeActionMenu,
       switchTab,
@@ -5026,7 +5111,7 @@ const JobDetail = {
       downloadTraceFile, downloadReport, openInPerfetto, perfettoOpening, perfettoButtonLabel,
       setSort, startResize, downloadCsv,
       viewTritonCode, runSingleTriton, clearInductorCache,
-      fmtDate, fmtSum, fmtBytes, deltaCellClass, clearColFilters,
+      fmtDate, fmtDateTime, fmtSum, fmtBytes, deltaCellClass, clearColFilters,
       isColumnVisible, resetVisibleColumns, applyCoreColumnPreset, toggleColumnVisibility,
       formatConsole,
     };
