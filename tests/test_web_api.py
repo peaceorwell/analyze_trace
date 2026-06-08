@@ -62,7 +62,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.41",
+        "version": "0.2.42",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -298,6 +298,7 @@ def test_ai_analysis_keeps_report_versions(client, isolated_server, tmp_path, mo
 
     monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_ENABLED", True)
     monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_MODEL", "claude-test-model")
+    user_prompt = "请重点关注 attention kernel"
     monkeypatch.setattr(
         web_server,
         "CLAUDE_ANALYSIS_COMMAND_TEMPLATE",
@@ -310,7 +311,8 @@ def test_ai_analysis_keeps_report_versions(client, isolated_server, tmp_path, mo
                 counter = pathlib.Path({str(counter_path)!r})
                 value = int(counter.read_text(encoding='utf-8')) + 1 if counter.exists() else 1
                 counter.write_text(str(value), encoding='utf-8')
-                report = f'# Report {{value}}\\n\\nGenerated version {{value}}\\n'
+                prompt_seen = {user_prompt!r} in prompt
+                report = f'# Report {{value}}\\n\\nGenerated version {{value}}\\n\\nprompt_seen={{prompt_seen}}\\n'
                 pathlib.Path(os.environ['TRACE_AI_REPORT_PATH']).write_text(report, encoding='utf-8')
                 print(report)
             """,
@@ -334,7 +336,7 @@ def test_ai_analysis_keeps_report_versions(client, isolated_server, tmp_path, mo
 
     second = client.post(
         "/api/jobs/ai-version-job/ai-analysis",
-        json={"force": True},
+        json={"force": True, "prompt": user_prompt},
         headers={"X-Remote-User": "runner"},
     )
     assert second.status_code == 202
@@ -347,9 +349,11 @@ def test_ai_analysis_keeps_report_versions(client, isolated_server, tmp_path, mo
 
     assert latest["status"] == "done"
     assert "# Report 2" in latest["content"]
+    assert "prompt_seen=True" in latest["content"]
     assert len(latest["versions"]) == 2
     assert latest["selected_version_id"] == latest["versions"][0]["id"]
     assert latest["versions"][0]["model"] == "claude-test-model"
+    assert latest["versions"][0]["user_prompt"] == user_prompt
     assert latest["versions"][0]["generated_at"]
     assert latest["versions"][0]["trigger_user_token"] == "runner"
 

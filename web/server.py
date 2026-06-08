@@ -48,7 +48,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.41"
+APP_VERSION = "0.2.42"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
 FEEDBACK_DIRNAME = "feedback"
@@ -62,6 +62,7 @@ AI_ANALYSIS_REPORT_FILE = "ai_analysis.md"
 AI_ANALYSIS_VERSIONS_DIR = "versions"
 AI_ANALYSIS_VERSION_META_FILE = "metadata.json"
 AI_ANALYSIS_VERSION_REPORT_FILE = "report.md"
+AI_ANALYSIS_USER_PROMPT_MAX_CHARS = 20000
 AI_ANALYSIS_ARTIFACT_MAX_BYTES = 256 * 1024
 AI_ANALYSIS_ARTIFACT_MAX_TOTAL_BYTES = 1024 * 1024
 AI_ANALYSIS_ARTIFACT_EXTENSIONS = {
@@ -1247,6 +1248,13 @@ def _write_ai_analysis_status(jid: str, status: dict):
     os.replace(tmp_path, path)
 
 
+def _normalize_ai_user_prompt(value) -> str:
+    text = str(value or "").strip()
+    if len(text) > AI_ANALYSIS_USER_PROMPT_MAX_CHARS:
+        text = text[:AI_ANALYSIS_USER_PROMPT_MAX_CHARS].rstrip()
+    return text
+
+
 def _ai_backend_model_name() -> str:
     return CLAUDE_ANALYSIS_MODEL or "Claude Code default"
 
@@ -1330,6 +1338,7 @@ def _save_ai_analysis_version(
         "mode": status.get("mode") or job.get("mode") or "",
         "skill": status.get("skill", ""),
         "model": status.get("model") or _ai_backend_model_name(),
+        "user_prompt": status.get("user_prompt") or context.get("user_prompt") or "",
         "generated_at": generated_at,
         "started_at": status.get("started_at", ""),
         "finished_at": status.get("finished_at", generated_at),
@@ -1379,6 +1388,7 @@ def _legacy_ai_analysis_version(jid: str, status: dict) -> dict:
         "mode": status.get("mode", ""),
         "skill": status.get("skill", ""),
         "model": status.get("model") or "未知",
+        "user_prompt": status.get("user_prompt", ""),
         "generated_at": generated_at,
         "started_at": status.get("started_at", ""),
         "finished_at": status.get("finished_at") or generated_at,
@@ -2287,7 +2297,14 @@ async def _resolve_ai_trace_inputs(job: dict) -> dict:
     }
 
 
-def _render_claude_prompt(job: dict, trace_inputs: dict, skill: str, report_path: str, skills_dir: str = "") -> str:
+def _render_claude_prompt(
+    job: dict,
+    trace_inputs: dict,
+    skill: str,
+    report_path: str,
+    skills_dir: str = "",
+    user_prompt: str = "",
+) -> str:
     rdir = result_dir(job["id"])
     mode_text = "双 trace 对比" if job.get("mode") == "compare" else "单 trace 分析"
     lines = [
@@ -2332,6 +2349,16 @@ def _render_claude_prompt(job: dict, trace_inputs: dict, skill: str, report_path
             f"自定义 skills 目录提示: {skills_dir}",
             f"当前工作目录已挂载 `.claude/skills`，其中应包含 `{skill}`。",
         ])
+    user_prompt = _normalize_ai_user_prompt(user_prompt)
+    if user_prompt:
+        lines.extend([
+            "",
+            "用户补充 Prompt:",
+            "```text",
+            user_prompt,
+            "```",
+            "请将用户补充 Prompt 纳入分析；如果它与上面的报告格式要求冲突，以上面的报告格式要求为准。",
+        ])
     return "\n".join(lines)
 
 
@@ -2365,6 +2392,9 @@ async def _run_ai_analysis_task(jid: str, notification_context: Optional[dict] =
     report_path = ai_analysis_report_path(jid)
     os.makedirs(analysis_dir, exist_ok=True)
     previous_status = _read_ai_analysis_status(jid)
+    user_prompt = _normalize_ai_user_prompt(
+        previous_status.get("user_prompt") or (notification_context or {}).get("user_prompt") or ""
+    )
     with contextlib.suppress(OSError):
         os.remove(report_path)
     stdout_text = ""
@@ -2395,6 +2425,7 @@ async def _run_ai_analysis_task(jid: str, notification_context: Optional[dict] =
             "mode": job.get("mode"),
             "skill": skill,
             "model": _ai_backend_model_name(),
+            "user_prompt": user_prompt,
             "skills_dir": skills_dir,
             "trigger_user_token": previous_status.get("trigger_user_token") or (notification_context or {}).get("trigger_user_token") or "",
             "trigger_user_display": previous_status.get("trigger_user_display") or (notification_context or {}).get("trigger_user_display") or "",
@@ -2443,7 +2474,7 @@ async def _run_ai_analysis_task(jid: str, notification_context: Optional[dict] =
         }
         _write_ai_analysis_status(jid, status)
 
-        prompt = _render_claude_prompt(job, trace_inputs, skill, report_path, skills_dir)
+        prompt = _render_claude_prompt(job, trace_inputs, skill, report_path, skills_dir, user_prompt)
         command = _build_claude_command(prompt, {
             "job_id": jid,
             "mode": job.get("mode") or "",
@@ -5874,7 +5905,9 @@ async def start_job_ai_analysis(request: Request, jid: str, body: Optional[dict]
     if not CLAUDE_ANALYSIS_ENABLED:
         raise HTTPException(403, "Claude analysis is disabled")
 
-    force = bool((body or {}).get("force"))
+    body = body or {}
+    force = bool(body.get("force"))
+    user_prompt = _normalize_ai_user_prompt(body.get("prompt") if "prompt" in body else body.get("promt"))
     notification_context = {}
     db = await get_db()
     try:
@@ -5887,7 +5920,7 @@ async def start_job_ai_analysis(request: Request, jid: str, body: Optional[dict]
         current = collect_ai_analysis(jid)
         if current.get("status") == "running":
             raise HTTPException(409, "AI analysis is already running")
-        if current.get("status") == "done" and not force:
+        if current.get("status") == "done" and not force and not user_prompt:
             current["content"] = _read_ai_analysis_report(jid)
             current["artifacts"] = _collect_ai_analysis_artifacts(jid)
             return current
@@ -5902,6 +5935,7 @@ async def start_job_ai_analysis(request: Request, jid: str, body: Optional[dict]
             "trigger_user_token": trigger_user_token,
             "trigger_user_display": user.get("display_name") or trigger_user_token or "local",
             "trigger_user_email": user.get("email") or "",
+            "user_prompt": user_prompt,
         }
         _write_ai_analysis_status(jid, {
             "status": "running",
@@ -5910,6 +5944,7 @@ async def start_job_ai_analysis(request: Request, jid: str, body: Optional[dict]
             "mode": row.get("mode"),
             "skill": CLAUDE_COMPARE_TRACE_SKILL if row.get("mode") == "compare" else CLAUDE_SINGLE_TRACE_SKILL,
             "model": _ai_backend_model_name(),
+            "user_prompt": user_prompt,
             "trigger_user_token": notification_context["trigger_user_token"],
             "trigger_user_display": notification_context["trigger_user_display"],
             "trigger_user_email": notification_context["trigger_user_email"],
@@ -5920,7 +5955,7 @@ async def start_job_ai_analysis(request: Request, jid: str, body: Optional[dict]
         await write_audit(
             db, request, "job.ai_analysis_start",
             resource_type="job", resource_id=jid,
-            details={"mode": row.get("mode"), "force": force},
+            details={"mode": row.get("mode"), "force": force, "has_user_prompt": bool(user_prompt)},
         )
         await db.commit()
     except HTTPException:

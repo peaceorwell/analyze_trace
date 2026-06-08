@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.41");
+const appVersion = ref("0.2.42");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -149,6 +149,7 @@ const aiAnalysisContent = ref("");
 const aiAnalysisArtifacts = ref([]);
 const aiAnalysisVersions = ref([]);
 const aiAnalysisSelectedVersionId = ref("");
+const aiAnalysisPrompt = ref("");
 const aiArtifactsExpanded = ref(false);
 const aiDiagnosticsLoading = ref(false);
 const aiDiagnosticsError = ref("");
@@ -844,7 +845,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.41";
+  appVersion.value = cfg.version || "0.2.42";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -1734,6 +1735,7 @@ const loadJob = async id => {
   aiAnalysisArtifacts.value = [];
   aiAnalysisVersions.value = [];
   aiAnalysisSelectedVersionId.value = "";
+  aiAnalysisPrompt.value = "";
   aiArtifactsExpanded.value = false;
   aiDiagnosticsLoading.value = false;
   aiDiagnosticsError.value = "";
@@ -2010,7 +2012,7 @@ const startAiAnalysis = async (force = false) => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
-      body: JSON.stringify({ force }),
+      body: JSON.stringify({ force, prompt: aiAnalysisPrompt.value.trim() }),
     });
     const payload = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(payload.detail || "提交 AI 分析失败");
@@ -4787,6 +4789,17 @@ const JobDetail = {
             </div>
           </div>
 
+          <div class="ai-prompt-panel">
+            <label class="ai-prompt-label" for="ai-analysis-prompt">补充 Prompt</label>
+            <textarea id="ai-analysis-prompt"
+                      v-model="aiAnalysisPrompt"
+                      class="ai-prompt-input"
+                      :disabled="aiAnalysisStarting || aiAnalysisMeta.status==='running'"
+                      rows="2"
+                      maxlength="20000"
+                      placeholder="可选：例如重点关注通信开销、某类 kernel、A/B 差异原因..."></textarea>
+          </div>
+
           <div v-if="aiAnalysisSelectedVersion" class="ai-version-panel">
             <div class="ai-version-info">
               <span>生成时间 <strong>{{ fmtDateTime(aiAnalysisSelectedVersion.generated_at || aiAnalysisSelectedVersion.finished_at) || '-' }}</strong></span>
@@ -4805,6 +4818,10 @@ const JobDetail = {
                 </option>
               </select>
             </label>
+          </div>
+          <div v-if="aiAnalysisSelectedVersion?.user_prompt" class="ai-version-prompt">
+            <strong>本版本补充 Prompt</strong>
+            <pre>{{ aiAnalysisSelectedVersion.user_prompt }}</pre>
           </div>
 
           <div v-if="aiAnalysisMeta.started_at || aiAnalysisMeta.status==='running'" class="ai-progress-panel">
@@ -5096,6 +5113,7 @@ const JobDetail = {
       claudeAnalysisEnabled, aiAnalysisMeta, aiAnalysisLoading, aiAnalysisStarting,
       aiAnalysisError, aiAnalysisContent, aiAnalysisArtifacts, aiAnalysisVisibleArtifacts,
       aiAnalysisVersions, aiAnalysisSelectedVersionId, aiAnalysisSelectedVersion,
+      aiAnalysisPrompt,
       aiAnalysisVersionTrigger, aiAnalysisVersionModel, aiAnalysisVersionLabel,
       aiArtifactsExpanded, aiArtifactSummary, aiAnalysisHtml, aiAnalysisStatusText,
       aiAnalysisProgress, aiAnalysisPhaseText, aiAnalysisElapsedText,

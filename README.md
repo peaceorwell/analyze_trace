@@ -2,7 +2,7 @@
 
 Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/内网性能分析工具。它可以解析 `.json`、`.json.gz`、`.gz`、`.json.zip`、`.zip`、`.tar.gz` 和 `.tgz` trace 文件，统计 GPU kernel、Triton kernel、ATen Ops、CNCL/NCCL 通信算子，并提供单 trace 分析、双 trace 对比、历史管理、AI 分析和 Web 可视化界面。
 
-当前版本：`0.2.41`
+当前版本：`0.2.42`
 
 ## 主要功能
 
@@ -13,7 +13,7 @@ Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/
 - 图表页支持数据源、指标、TopN 切换，摘要卡片、Delta 列表和 Kernel 类型行可点击下钻到相关表格。
 - 对比任务支持 Kernel/Triton/ATen/CNCL 维度的 delta 展示，并支持交换 A/B 重新对比。
 - Perfetto 集成支持从 Web 页面直接打开 trace。
-- Claude Code AI 分析支持单 trace 和对比 trace，生成 Markdown 报告并在页面渲染；多次触发会保留多个报告版本，可按生成时间/触发人/模型切换查看并下载 Markdown。
+- Claude Code AI 分析支持单 trace 和对比 trace，可在触发时填写补充 Prompt；系统会生成 Markdown 报告并在页面渲染，多次触发会保留多个报告版本，可按生成时间/触发人/模型切换查看并下载 Markdown。
 - AI 分析开始前会自动做环境诊断；如果诊断失败，会展示具体诊断明细。
 - AI 分析耗时较长时，浏览器后台或切到其他应用后，完成/失败会通过浏览器通知或页面标题提醒。
 - 改进留言板支持发帖、图片附件、帖子内回复、`@` 人员候选、列表排序和邮件通知；邮件可直达对应帖子/回复，管理员可删除帖子和回复并执行邮件诊断。
@@ -201,7 +201,7 @@ TRACE_CLAUDE_COMMAND_TEMPLATE='/usr/local/node20/bin/claude --dangerously-skip-p
 uv run --extra web python web/server.py
 ```
 
-AI 分析目录位于任务结果目录下的 `ai_analysis/`。其中 `ai_analysis.md` 是当前最新报告；每次分析结束都会在 `ai_analysis/versions/` 下保留一个历史版本，记录生成时间、触发人、后端模型名、skill、耗时和状态。页面默认展示最新版本，也可以切换旧版本并下载对应 Markdown；其他小文本产物会在页面末尾折叠展示。
+AI 分析目录位于任务结果目录下的 `ai_analysis/`。其中 `ai_analysis.md` 是当前最新报告；每次分析结束都会在 `ai_analysis/versions/` 下保留一个历史版本，记录生成时间、触发人、后端模型名、skill、补充 Prompt、耗时和状态。页面默认展示最新版本，也可以切换旧版本并下载对应 Markdown；其他小文本产物会在页面末尾折叠展示。
 
 ## 认证、用户隔离和管理员
 
