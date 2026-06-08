@@ -151,11 +151,16 @@ const aiArtifactsExpanded = ref(false);
 const aiDiagnosticsLoading = ref(false);
 const aiDiagnosticsError = ref("");
 const aiDiagnosticsResult = ref(null);
+const uiNow = ref(Date.now());
 let activeResultStateJobId = null;
 let aiAnalysisPollTimer = null;
 let aiCompletionTitleResetTimer = null;
 const defaultDocumentTitle = document.title || "torch profiler analyzer";
 const isAdmin = computed(() => currentUserIsAdmin.value);
+
+setInterval(() => {
+  uiNow.value = Date.now();
+}, 1000);
 
 const toggleActionMenu = key => {
   openActionMenu.value = openActionMenu.value === key ? "" : key;
@@ -385,6 +390,19 @@ const feedbackForm = ref({ body: "", files: [], previews: [] });
 const feedbackReplies = ref({});
 const selectedFeedbackPostId = ref("");
 const feedbackDetailLoading = ref(false);
+const feedbackMention = ref({
+  visible: false,
+  loading: false,
+  target: "",
+  query: "",
+  start: -1,
+  end: -1,
+  candidates: [],
+  activeIndex: 0,
+});
+let feedbackMentionTimer = null;
+let feedbackMentionSeq = 0;
+let feedbackMentionTextarea = null;
 
 const selectedFilterProject = computed(() =>
   projects.value.find(project => project.id === filterProject.value) || null
@@ -808,7 +826,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.31";
+  appVersion.value = cfg.version || "0.2.32";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -961,6 +979,145 @@ const feedbackPostExcerpt = item => {
 
 const feedbackPostReplyCount = item => Number(item?.reply_count ?? item?.replies?.length ?? 0);
 const feedbackPostActivity = item => item?.last_activity_at || item?.updated_at || item?.created_at || "";
+const feedbackMentionTargetKey = target => String(target || "post");
+
+const closeFeedbackMention = () => {
+  if (feedbackMentionTimer) {
+    clearTimeout(feedbackMentionTimer);
+    feedbackMentionTimer = null;
+  }
+  feedbackMention.value = {
+    ...feedbackMention.value,
+    visible: false,
+    loading: false,
+    candidates: [],
+    activeIndex: 0,
+  };
+};
+
+const detectFeedbackMention = (text, cursor) => {
+  const before = (text || "").slice(0, cursor);
+  const match = before.match(/(^|[\s([{"'，。！？；：、])@([A-Za-z0-9_.-]{0,40})$/);
+  if (!match) return null;
+  const query = match[2] || "";
+  if (!query || !/^[A-Za-z][A-Za-z0-9_.-]*$/.test(query)) return null;
+  const start = before.lastIndexOf("@");
+  return { query, start, end: cursor };
+};
+
+const fetchFeedbackMentionCandidates = async (query, target, seq) => {
+  const targetKey = feedbackMentionTargetKey(target);
+  try {
+    const params = new URLSearchParams({ q: query, limit: "8" });
+    const r = await fetch(`/api/mention-candidates?${params}`, { credentials: "include" });
+    const payload = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(payload.detail || "加载候选失败");
+    if (
+      seq !== feedbackMentionSeq ||
+      !feedbackMention.value.visible ||
+      feedbackMention.value.query !== query ||
+      feedbackMention.value.target !== targetKey
+    ) return;
+    feedbackMention.value = {
+      ...feedbackMention.value,
+      loading: false,
+      candidates: payload.data || [],
+      activeIndex: 0,
+    };
+  } catch (e) {
+    if (seq !== feedbackMentionSeq) return;
+    feedbackMention.value = {
+      ...feedbackMention.value,
+      loading: false,
+      candidates: [],
+      activeIndex: 0,
+    };
+  }
+};
+
+const scheduleFeedbackMentionFetch = (query, target) => {
+  if (feedbackMentionTimer) clearTimeout(feedbackMentionTimer);
+  const seq = ++feedbackMentionSeq;
+  feedbackMentionTimer = setTimeout(() => {
+    feedbackMentionTimer = null;
+    fetchFeedbackMentionCandidates(query, target, seq);
+  }, 140);
+};
+
+const handleFeedbackMentionInput = (event, target = "post") => {
+  const textarea = event?.target;
+  if (!textarea) return;
+  feedbackMentionTextarea = textarea;
+  const detected = detectFeedbackMention(textarea.value, textarea.selectionStart ?? textarea.value.length);
+  if (!detected) {
+    closeFeedbackMention();
+    return;
+  }
+  const targetKey = feedbackMentionTargetKey(target);
+  feedbackMention.value = {
+    visible: true,
+    loading: true,
+    target: targetKey,
+    query: detected.query,
+    start: detected.start,
+    end: detected.end,
+    candidates: [],
+    activeIndex: 0,
+  };
+  scheduleFeedbackMentionFetch(detected.query, targetKey);
+};
+
+const handleFeedbackMentionKeydown = (event, target = "post") => {
+  const state = feedbackMention.value;
+  if (!state.visible || state.target !== feedbackMentionTargetKey(target)) return;
+  const count = state.candidates.length;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeFeedbackMention();
+    return;
+  }
+  if (!count) return;
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    feedbackMention.value = { ...state, activeIndex: (state.activeIndex + 1) % count };
+  } else if (event.key === "ArrowUp") {
+    event.preventDefault();
+    feedbackMention.value = { ...state, activeIndex: (state.activeIndex - 1 + count) % count };
+  } else if (event.key === "Enter" || event.key === "Tab") {
+    event.preventDefault();
+    selectFeedbackMention(state.candidates[state.activeIndex], target);
+  }
+};
+
+const selectFeedbackMention = (candidate, target = "post") => {
+  if (!candidate?.username) return;
+  const state = feedbackMention.value;
+  const targetKey = feedbackMentionTargetKey(target || state.target);
+  if (state.target && state.target !== targetKey) return;
+  const mention = `@${candidate.username} `;
+  if (targetKey === "post") {
+    const text = feedbackForm.value.body || "";
+    const nextBody = `${text.slice(0, state.start)}${mention}${text.slice(state.end)}`;
+    feedbackForm.value = { ...feedbackForm.value, body: nextBody };
+  } else {
+    const form = ensureFeedbackReplyForm(targetKey);
+    const text = form.body || "";
+    const nextBody = `${text.slice(0, state.start)}${mention}${text.slice(state.end)}`;
+    feedbackReplies.value = {
+      ...feedbackReplies.value,
+      [targetKey]: { ...form, body: nextBody },
+    };
+  }
+  const cursor = state.start + mention.length;
+  const textarea = feedbackMentionTextarea;
+  closeFeedbackMention();
+  nextTick(() => {
+    if (textarea && document.contains(textarea)) {
+      textarea.focus();
+      textarea.setSelectionRange(cursor, cursor);
+    }
+  });
+};
 
 const mergeFeedbackPost = post => {
   if (!post?.id) return;
@@ -1010,6 +1167,7 @@ const setFeedbackFiles = (event, parentId = null) => {
 };
 
 const clearFeedbackForm = (parentId = null) => {
+  closeFeedbackMention();
   if (parentId) {
     const form = feedbackReplies.value[parentId];
     revokeFeedbackPreviews(form?.previews || []);
@@ -1069,13 +1227,33 @@ const openFeedbackComposer = () => {
 
 const closeFeedbackComposer = () => {
   clearFeedbackForm();
+  closeFeedbackMention();
   showFeedbackComposer.value = false;
 };
 
 const closeFeedbackBoard = () => {
   closeFeedbackComposer();
+  closeFeedbackMention();
   selectedFeedbackPostId.value = "";
   showFeedbackBoard.value = false;
+};
+
+const showFeedbackSubmitResult = (payload, fallbackMessage) => {
+  const notification = payload?.notification;
+  if (!notification) {
+    showToast(fallbackMessage, "success");
+    return;
+  }
+  if (notification.status === "queued") {
+    showToast(`${fallbackMessage}，邮件通知已提交`, "success", 4200);
+    return;
+  }
+  if (notification.status === "no_recipients" || notification.status === "disabled") {
+    showToast(fallbackMessage, "success");
+    return;
+  }
+  const detail = notification.detail || "邮件通知未发送";
+  showToast(`${fallbackMessage}，但${detail}`, "error", 8000);
 };
 
 const setFeedbackSort = async sortKey => {
@@ -1168,7 +1346,7 @@ const submitFeedback = async (parentId = null) => {
     if (!isReply) showFeedbackComposer.value = false;
     await loadFeedback({ reset: true, selectId: targetPostId });
     if (targetPostId) await selectFeedbackPost(targetPostId, { refresh: true });
-    showToast(isReply ? "回复已发布" : "帖子已发布", "success");
+    showFeedbackSubmitResult(payload, isReply ? "回复已发布" : "帖子已发布");
   } catch (e) {
     showToast(e.message || "提交留言失败", "error");
   } finally {
@@ -1504,6 +1682,54 @@ const aiAnalysisStatusText = status => ({
   done: "已完成",
   error: "失败",
 }[status || "not_started"] || status);
+
+const clampPercent = value => Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
+
+const formatDurationMs = ms => {
+  const value = Math.max(0, Math.round(Number(ms) || 0));
+  const totalSeconds = Math.floor(value / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours) return `${hours}时${String(minutes).padStart(2, "0")}分${String(seconds).padStart(2, "0")}秒`;
+  if (minutes) return `${minutes}分${String(seconds).padStart(2, "0")}秒`;
+  return `${seconds}秒`;
+};
+
+const aiAnalysisProgress = computed(() => {
+  const meta = aiAnalysisMeta.value || {};
+  if (meta.status === "done" || meta.status === "error") return 100;
+  if (meta.status === "running") {
+    if (meta.progress !== undefined) return clampPercent(meta.progress);
+    return ({ diagnosing: 20, analyzing: 55 }[meta.phase] || 35);
+  }
+  return clampPercent(meta.progress);
+});
+
+const aiAnalysisPhaseText = computed(() => {
+  const meta = aiAnalysisMeta.value || {};
+  if (meta.status === "done") return "分析完成";
+  if (meta.status === "error") return "分析失败";
+  if (meta.status !== "running") return "等待开始";
+  return {
+    diagnosing: "环境诊断中",
+    diagnostics_failed: "环境诊断未通过",
+    analyzing: "Claude Code 分析中",
+  }[meta.phase] || "准备分析";
+});
+
+const aiAnalysisElapsedMs = computed(() => {
+  const meta = aiAnalysisMeta.value || {};
+  if (Number.isFinite(Number(meta.duration_ms))) return Number(meta.duration_ms);
+  if (Number.isFinite(Number(meta.elapsed_ms))) return Number(meta.elapsed_ms);
+  const started = Date.parse(meta.started_at || "");
+  if (meta.status === "running" && Number.isFinite(started)) {
+    return Math.max(0, uiNow.value - started);
+  }
+  return 0;
+});
+
+const aiAnalysisElapsedText = computed(() => formatDurationMs(aiAnalysisElapsedMs.value));
 
 const updateAiAnalysisState = payload => {
   if (!payload || !selectedJob.value) return;
@@ -4409,6 +4635,17 @@ const JobDetail = {
             </div>
           </div>
 
+          <div v-if="aiAnalysisMeta.started_at || aiAnalysisMeta.status==='running'" class="ai-progress-panel">
+            <div class="ai-progress-meta">
+              <span>{{ aiAnalysisPhaseText }}</span>
+              <span>{{ aiAnalysisProgress }}%</span>
+              <span>{{ aiAnalysisMeta.status==='running' ? '已耗时' : '总耗时' }} {{ aiAnalysisElapsedText }}</span>
+            </div>
+            <div class="ai-progress-track">
+              <div class="ai-progress-fill" :style="{ width: aiAnalysisProgress + '%' }"></div>
+            </div>
+          </div>
+
           <div v-if="!claudeAnalysisEnabled && !aiAnalysisMeta.report_exists" class="info-box">
             AI 分析未启用。服务端设置 TRACE_ENABLE_CLAUDE_ANALYSIS=1 后可使用。
           </div>
@@ -4687,6 +4924,7 @@ const JobDetail = {
       claudeAnalysisEnabled, aiAnalysisMeta, aiAnalysisLoading, aiAnalysisStarting,
       aiAnalysisError, aiAnalysisContent, aiAnalysisArtifacts, aiAnalysisVisibleArtifacts,
       aiArtifactsExpanded, aiArtifactSummary, aiAnalysisHtml, aiAnalysisStatusText,
+      aiAnalysisProgress, aiAnalysisPhaseText, aiAnalysisElapsedText,
       aiDiagnosticsLoading, aiDiagnosticsError, aiDiagnosticsResult, aiDiagnosticStatusText,
       refreshAiAnalysis, startAiAnalysis, copyAiAnalysisReport,
       downloadAiAnalysisReport, copyAiAnalysisArtifact,
@@ -4997,6 +5235,7 @@ const App = {
       showFeedbackBoard, showFeedbackComposer, feedbackItems, feedbackTotal, feedbackLoading,
       feedbackSort, feedbackSortOptions,
       feedbackSubmitting, feedbackForm, feedbackReplies, feedbackHasMore,
+      feedbackMention, handleFeedbackMentionInput, handleFeedbackMentionKeydown, selectFeedbackMention,
       selectedFeedbackPostId, selectedFeedbackPost, feedbackDetailLoading,
       feedbackPostTitle, feedbackPostExcerpt, feedbackPostReplyCount, feedbackPostActivity,
       openFeedbackBoard, refreshFeedbackBoard, loadFeedback, setFeedbackSort, setFeedbackFiles, clearFeedbackForm,

@@ -37,6 +37,7 @@ def _attrs():
     attrs = {
         _env("LDAP_DISPLAY_NAME_ATTR", "displayName"),
         _env("LDAP_MAIL_ATTR", "mail"),
+        "cn",
         "memberOf",
         "sAMAccountName",
         "userPrincipalName",
@@ -69,6 +70,73 @@ def _require_group(entry):
     members = {str(value).lower() for value in _member_values(entry)}
     if required.lower() not in members:
         raise AuthError("User is not in the required LDAP group")
+
+
+def _entry_user(entry, fallback_username: str = "") -> dict:
+    display_attr = _env("LDAP_DISPLAY_NAME_ATTR", "displayName")
+    mail_attr = _env("LDAP_MAIL_ATTR", "mail")
+    username = (
+        _value(entry, "sAMAccountName")
+        or (_value(entry, "userPrincipalName").split("@", 1)[0] if _value(entry, "userPrincipalName") else "")
+        or fallback_username
+    )
+    display_name = _value(entry, display_attr) or _value(entry, "cn") or username
+    return {
+        "username": username,
+        "display_name": display_name,
+        "email": _value(entry, mail_attr),
+        "dn": getattr(entry, "entry_dn", ""),
+    }
+
+
+def search_users(query: str, limit: int = 8) -> list[dict]:
+    query = (query or "").strip()
+    if not query:
+        return []
+
+    _, Connection, _, _, escape_filter_chars, LDAPException = _ldap_imports()
+    base_dn = _env("LDAP_BASE_DN")
+    bind_dn = _env("LDAP_BIND_DN")
+    bind_password = _env("LDAP_BIND_PASSWORD")
+    if not base_dn or not bind_dn or not bind_password:
+        return []
+
+    limit = max(1, min(int(limit or 8), 20))
+    safe = escape_filter_chars(query)
+    contains = f"*{safe}*"
+    prefix = f"{safe}*"
+    search_filter = (
+        "(|"
+        f"(sAMAccountName={prefix})"
+        f"(userPrincipalName={prefix})"
+        f"(mail={prefix})"
+        f"(displayName={contains})"
+        f"(cn={contains})"
+        ")"
+    )
+
+    server = _ldap_server()
+    try:
+        service = Connection(server, user=bind_dn, password=bind_password, auto_bind=True)
+    except LDAPException as e:
+        raise AuthError("LDAP service bind failed") from e
+    try:
+        try:
+            service.search(base_dn, search_filter, attributes=_attrs(), size_limit=limit)
+        except LDAPException as e:
+            raise AuthError("LDAP user search failed") from e
+        users = []
+        for entry in list(service.entries)[:limit]:
+            try:
+                _require_group(entry)
+            except AuthError:
+                continue
+            user = _entry_user(entry)
+            if user.get("username"):
+                users.append(user)
+        return users
+    finally:
+        service.unbind()
 
 
 def authenticate(username: str, password: str) -> dict:
@@ -115,10 +183,9 @@ def authenticate(username: str, password: str) -> dict:
         entry = service.entries[0]
         user_dn = entry.entry_dn
         _require_group(entry)
-        display_attr = _env("LDAP_DISPLAY_NAME_ATTR", "displayName")
-        mail_attr = _env("LDAP_MAIL_ATTR", "mail")
-        display_name = _value(entry, display_attr) or username
-        email = _value(entry, mail_attr)
+        user = _entry_user(entry, username)
+        display_name = user["display_name"] or username
+        email = user["email"]
     finally:
         service.unbind()
 

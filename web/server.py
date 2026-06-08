@@ -15,6 +15,7 @@ import secrets
 import shlex
 import shutil
 import smtplib
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -44,13 +45,14 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.31"
+APP_VERSION = "0.2.32"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
 FEEDBACK_DIRNAME = "feedback"
 FEEDBACK_MAX_IMAGES = 4
 FEEDBACK_MAX_IMAGE_BYTES = 8 * 1024 * 1024
-FEEDBACK_MENTION_RE = re.compile(r"(?<![\w.%-])@([A-Za-z][A-Za-z0-9_-]{0,62})\b")
+FEEDBACK_MENTION_TOKEN_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,62}$")
+FEEDBACK_MENTION_RE = re.compile(r"(?<![A-Za-z0-9_.%-])@([A-Za-z][A-Za-z0-9_.-]{0,62})(?=$|[^A-Za-z0-9_.-])")
 AI_ANALYSIS_DIRNAME = "ai_analysis"
 AI_ANALYSIS_STATUS_FILE = "ai_analysis_status.json"
 AI_ANALYSIS_REPORT_FILE = "ai_analysis.md"
@@ -163,6 +165,12 @@ SMTP_FROM = _normalize_email(SMTP_FROM_RAW, FEEDBACK_MENTION_DOMAIN) or f"trace-
 SMTP_USE_SSL = _truthy_env(os.environ.get("TRACE_SMTP_SSL", os.environ.get("SMTP_SSL", "")), False)
 SMTP_USE_STARTTLS = _truthy_env(os.environ.get("TRACE_SMTP_STARTTLS", os.environ.get("SMTP_STARTTLS", "")), False)
 SMTP_TIMEOUT_SECONDS = max(1, _int_env("TRACE_SMTP_TIMEOUT_SECONDS", _int_env("SMTP_TIMEOUT_SECONDS", 10)))
+SENDMAIL_COMMAND = os.environ.get("TRACE_SENDMAIL_COMMAND", "").strip()
+if not SENDMAIL_COMMAND:
+    for _sendmail_candidate in ("/usr/sbin/sendmail", "/usr/lib/sendmail"):
+        if os.path.exists(_sendmail_candidate) and os.access(_sendmail_candidate, os.X_OK):
+            SENDMAIL_COMMAND = _sendmail_candidate
+            break
 analysis_queue: asyncio.Queue[str] = asyncio.Queue()
 analysis_workers: list[asyncio.Task] = []
 ai_analysis_tasks: dict[str, asyncio.Task] = {}
@@ -1278,6 +1286,50 @@ def _collect_ai_analysis_artifacts(jid: str) -> list[dict]:
     return artifacts
 
 
+def _parse_iso_datetime(value: str) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        normalized = str(value).replace("Z", "+00:00")
+        dt = datetime.fromisoformat(normalized)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
+def _ai_analysis_progress(status: dict) -> int:
+    explicit = status.get("progress")
+    try:
+        if explicit is not None:
+            return max(0, min(100, int(explicit)))
+    except (TypeError, ValueError):
+        pass
+    state = status.get("status")
+    phase = status.get("phase")
+    if state == "done":
+        return 100
+    if state == "error":
+        return 100
+    if state == "running":
+        return {"queued": 5, "diagnosing": 20, "analyzing": 55}.get(phase, 35)
+    return 0
+
+
+def _ai_analysis_timing(status: dict) -> dict:
+    started = _parse_iso_datetime(status.get("started_at") or "")
+    if not started:
+        return {"elapsed_ms": 0}
+    finished = _parse_iso_datetime(status.get("finished_at") or "")
+    end = finished or datetime.now(timezone.utc)
+    elapsed_ms = max(0, int((end - started).total_seconds() * 1000))
+    timing = {"elapsed_ms": elapsed_ms}
+    if finished:
+        timing["duration_ms"] = elapsed_ms
+    return timing
+
+
 def collect_ai_analysis(jid: str) -> dict:
     status = _read_ai_analysis_status(jid)
     report_path = ai_analysis_report_path(jid)
@@ -1292,6 +1344,7 @@ def collect_ai_analysis(jid: str) -> dict:
             "status": "error",
             "error": "Server restarted before this AI analysis completed",
         }
+    timing = _ai_analysis_timing(status)
     return {
         "enabled": CLAUDE_ANALYSIS_ENABLED,
         "status": status.get("status", "not_started"),
@@ -1299,10 +1352,12 @@ def collect_ai_analysis(jid: str) -> dict:
         "mode": status.get("mode", ""),
         "skill": status.get("skill", ""),
         "phase": status.get("phase", ""),
+        "progress": _ai_analysis_progress(status),
         "diagnostics": status.get("diagnostics"),
         "started_at": status.get("started_at", ""),
         "finished_at": status.get("finished_at", ""),
         "updated_at": status.get("updated_at", ""),
+        **timing,
         "report_exists": report_exists,
     }
 
@@ -1945,6 +2000,7 @@ async def _run_ai_analysis_task(jid: str):
         status = {
             "status": "running",
             "phase": "diagnosing",
+            "progress": 20,
             "mode": job.get("mode"),
             "skill": skill,
             "skills_dir": skills_dir,
@@ -1970,6 +2026,7 @@ async def _run_ai_analysis_task(jid: str):
                 **status,
                 "status": "error",
                 "phase": "diagnostics_failed",
+                "progress": 100,
                 "error": "AI environment diagnostics failed",
                 "diagnostics": diagnostics,
                 "finished_at": _utc_now_iso(),
@@ -1980,6 +2037,7 @@ async def _run_ai_analysis_task(jid: str):
         status = {
             **status,
             "phase": "analyzing",
+            "progress": 55,
             "diagnostics": diagnostics,
             "updated_at": _utc_now_iso(),
         }
@@ -2084,6 +2142,7 @@ async def _run_ai_analysis_task(jid: str):
         _write_ai_analysis_status(jid, {
             **status,
             "status": "done",
+            "progress": 100,
             "finished_at": _utc_now_iso(),
             "updated_at": _utc_now_iso(),
         })
@@ -2103,6 +2162,7 @@ async def _run_ai_analysis_task(jid: str):
         _write_ai_analysis_status(jid, {
             **status,
             "status": "error",
+            "progress": 100,
             "error": str(e),
             "finished_at": _utc_now_iso(),
             "updated_at": _utc_now_iso(),
@@ -3076,6 +3136,29 @@ def _feedback_notification_body(payload: dict) -> str:
     return "\n".join(lines)
 
 
+def _feedback_email_transport() -> str:
+    if SMTP_HOST:
+        return "smtp"
+    if SENDMAIL_COMMAND:
+        return "sendmail"
+    return ""
+
+
+def _feedback_notification_status(recipients: list[str]) -> dict:
+    if not FEEDBACK_EMAIL_NOTIFICATIONS_ENABLED:
+        return {"status": "disabled", "detail": "留言板邮件通知已关闭"}
+    if not recipients:
+        return {"status": "no_recipients", "detail": "没有可通知的收件人"}
+    transport = _feedback_email_transport()
+    if not transport:
+        return {
+            "status": "missing_transport",
+            "detail": "未配置 TRACE_SMTP_HOST，也没有可用 sendmail，邮件未发送",
+            "recipients": recipients,
+        }
+    return {"status": "queued", "detail": "邮件通知已提交", "transport": transport, "recipients": recipients}
+
+
 def _send_email_sync(to_addrs: list[str], subject: str, body: str):
     if not FEEDBACK_EMAIL_NOTIFICATIONS_ENABLED:
         logger.info("feedback_email_disabled", extra={"event": "feedback_email_disabled"})
@@ -3089,7 +3172,7 @@ def _send_email_sync(to_addrs: list[str], subject: str, body: str):
             recipients.append(email)
     if not recipients:
         return
-    if not SMTP_HOST:
+    if not SMTP_HOST and not SENDMAIL_COMMAND:
         logger.warning(
             "feedback_email_smtp_missing",
             extra={"event": "feedback_email_smtp_missing", "recipients": recipients},
@@ -3102,13 +3185,24 @@ def _send_email_sync(to_addrs: list[str], subject: str, body: str):
     message["Subject"] = subject
     message.set_content(body, charset="utf-8")
 
-    smtp_cls = smtplib.SMTP_SSL if SMTP_USE_SSL else smtplib.SMTP
-    with smtp_cls(SMTP_HOST, SMTP_PORT, timeout=SMTP_TIMEOUT_SECONDS) as smtp:
-        if SMTP_USE_STARTTLS and not SMTP_USE_SSL:
-            smtp.starttls()
-        if SMTP_USERNAME:
-            smtp.login(SMTP_USERNAME, SMTP_PASSWORD)
-        smtp.send_message(message)
+    if SMTP_HOST:
+        smtp_cls = smtplib.SMTP_SSL if SMTP_USE_SSL else smtplib.SMTP
+        with smtp_cls(SMTP_HOST, SMTP_PORT, timeout=SMTP_TIMEOUT_SECONDS) as smtp:
+            if SMTP_USE_STARTTLS and not SMTP_USE_SSL:
+                smtp.starttls()
+            if SMTP_USERNAME:
+                smtp.login(SMTP_USERNAME, SMTP_PASSWORD)
+            smtp.send_message(message)
+        return
+
+    subprocess.run(
+        [SENDMAIL_COMMAND, "-t", "-i"],
+        input=message.as_bytes(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=SMTP_TIMEOUT_SECONDS,
+        check=True,
+    )
 
 
 async def _send_feedback_email_notification(payload: dict):
@@ -3120,13 +3214,14 @@ async def _send_feedback_email_notification(payload: dict):
             _feedback_notification_subject(payload),
             _feedback_notification_body(payload),
         )
-        if SMTP_HOST and FEEDBACK_EMAIL_NOTIFICATIONS_ENABLED and recipients:
+        if _feedback_email_transport() and FEEDBACK_EMAIL_NOTIFICATIONS_ENABLED and recipients:
             logger.info(
                 "feedback_email_sent",
                 extra={
                     "event": "feedback_email_sent",
                     "message_id": payload.get("message_id"),
                     "recipients": recipients,
+                    "transport": _feedback_email_transport(),
                 },
             )
     except Exception as exc:
@@ -3141,20 +3236,20 @@ async def _send_feedback_email_notification(payload: dict):
         )
 
 
-def _schedule_feedback_email_notification(payload: dict):
+def _schedule_feedback_email_notification(payload: dict) -> dict:
     recipients = payload.get("recipients") or []
-    if not recipients or not FEEDBACK_EMAIL_NOTIFICATIONS_ENABLED:
-        return
-    if not SMTP_HOST:
+    status = _feedback_notification_status(recipients)
+    if status["status"] != "queued":
         logger.warning(
-            "feedback_email_smtp_missing",
-            extra={"event": "feedback_email_smtp_missing", "recipients": recipients},
+            "feedback_email_not_queued",
+            extra={"event": "feedback_email_not_queued", **status},
         )
-        return
+        return status
     try:
         asyncio.get_running_loop().create_task(_send_feedback_email_notification(payload))
     except RuntimeError:
         asyncio.run(_send_feedback_email_notification(payload))
+    return status
 
 
 async def _feedback_attachments_for(db, message_ids: list[str]) -> dict:
@@ -3177,6 +3272,170 @@ async def _feedback_attachments_for(db, message_ids: list[str]) -> dict:
         item = dict(row)
         result.setdefault(item["message_id"], []).append(_feedback_attachment_response(item))
     return result
+
+
+def _mention_username(value: str) -> str:
+    token = (value or "").strip().lstrip("@")
+    if "@" in token:
+        token = token.split("@", 1)[0]
+    return token if FEEDBACK_MENTION_TOKEN_RE.fullmatch(token or "") else ""
+
+
+def _mention_candidate(username: str, display_name: str = "", email: str = "", source: str = "local") -> Optional[dict]:
+    token = _mention_username(username) or _mention_username(email)
+    if not token:
+        return None
+    normalized_email = _normalize_email(email or token, FEEDBACK_MENTION_DOMAIN)
+    return {
+        "username": token,
+        "display_name": (display_name or token).strip(),
+        "email": normalized_email,
+        "source": source,
+    }
+
+
+def _mention_candidate_rank(candidate: dict, query: str) -> tuple:
+    q = (query or "").lower()
+    username = (candidate.get("username") or "").lower()
+    display = (candidate.get("display_name") or "").lower()
+    email = (candidate.get("email") or "").lower()
+    source_rank = 0 if candidate.get("source") == "ldap" else 1
+    if username == q:
+        rank = 0
+    elif username.startswith(q):
+        rank = 1
+    elif display.startswith(q):
+        rank = 2
+    elif email.startswith(q):
+        rank = 3
+    elif q in username:
+        rank = 4
+    elif q in display:
+        rank = 5
+    elif q in email:
+        rank = 6
+    else:
+        rank = 7
+    return (rank, source_rank, username)
+
+
+async def _local_mention_candidates(query: str, limit: int) -> list[dict]:
+    q = (query or "").strip().lower()
+    if not q:
+        return []
+    like = f"%{q}%"
+    rows: list[dict] = []
+    db = await get_db()
+    try:
+        feedback_rows = await (
+            await db.execute(
+                """
+                SELECT user_token, user_display, MAX(created_at) AS last_seen
+                FROM feedback_messages
+                WHERE user_token <> ''
+                  AND (lower(user_token) LIKE ? OR lower(user_display) LIKE ?)
+                GROUP BY user_token, user_display
+                ORDER BY last_seen DESC
+                LIMIT ?
+                """,
+                (like, like, max(limit * 3, 20)),
+            )
+        ).fetchall()
+        rows.extend(dict(row) for row in feedback_rows)
+        job_rows = await (
+            await db.execute(
+                """
+                SELECT user_token, user_token AS user_display, MAX(created_at) AS last_seen
+                FROM jobs
+                WHERE user_token <> '' AND lower(user_token) LIKE ?
+                GROUP BY user_token
+                ORDER BY last_seen DESC
+                LIMIT ?
+                """,
+                (like, max(limit * 2, 20)),
+            )
+        ).fetchall()
+        rows.extend(dict(row) for row in job_rows)
+        user_rows = await (
+            await db.execute(
+                """
+                SELECT user_token, user_token AS user_display, created_at AS last_seen
+                FROM users
+                WHERE user_token <> '' AND lower(user_token) LIKE ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (like, max(limit * 2, 20)),
+            )
+        ).fetchall()
+        rows.extend(dict(row) for row in user_rows)
+    finally:
+        await db.close()
+
+    candidates = []
+    for row in rows:
+        candidate = _mention_candidate(
+            row.get("user_token") or "",
+            row.get("user_display") or "",
+            source="local",
+        )
+        if candidate:
+            candidates.append(candidate)
+    return candidates
+
+
+def _merge_mention_candidates(candidates: list[dict], query: str, limit: int) -> list[dict]:
+    merged: dict[str, dict] = {}
+    for item in candidates:
+        candidate = _mention_candidate(
+            item.get("username") or "",
+            item.get("display_name") or "",
+            item.get("email") or "",
+            item.get("source") or "local",
+        )
+        if not candidate:
+            continue
+        key = (candidate["username"] or candidate["email"]).lower()
+        existing = merged.get(key)
+        if not existing or existing.get("source") != "ldap" and candidate.get("source") == "ldap":
+            merged[key] = candidate
+        elif existing and not existing.get("email") and candidate.get("email"):
+            existing["email"] = candidate["email"]
+    result = list(merged.values())
+    result.sort(key=lambda item: _mention_candidate_rank(item, query))
+    return result[:limit]
+
+
+@app.get("/api/mention-candidates")
+async def mention_candidates(request: Request, q: str = "", limit: int = 8):
+    if AUTH_ENABLED:
+        current_user_token(request)
+    query = (q or "").strip()
+    limit = max(1, min(limit, 20))
+    if not query:
+        return {"data": [], "query": query}
+
+    candidates: list[dict] = []
+    if AUTH_ENABLED:
+        try:
+            ldap_users = await asyncio.to_thread(ldap_auth.search_users, query, limit)
+            for user in ldap_users:
+                candidate = _mention_candidate(
+                    user.get("username") or "",
+                    user.get("display_name") or "",
+                    user.get("email") or "",
+                    "ldap",
+                )
+                if candidate:
+                    candidates.append(candidate)
+        except Exception as exc:
+            logger.info(
+                "mention_ldap_search_failed",
+                extra={"event": "mention_ldap_search_failed", "error": str(exc)},
+            )
+
+    candidates.extend(await _local_mention_candidates(query, limit))
+    return {"data": _merge_mention_candidates(candidates, query, limit), "query": query}
 
 
 @app.get("/api/feedback")
@@ -3356,6 +3615,7 @@ async def create_feedback(
     message_id = str(uuid.uuid4())
     saved_paths: list[str] = []
     notification_payload: Optional[dict] = None
+    notification_status: Optional[dict] = None
     try:
         root_parent_id = parent_id or None
         parent_post: Optional[dict] = None
@@ -3457,9 +3717,12 @@ async def create_feedback(
         await db.close()
 
     if notification_payload:
-        _schedule_feedback_email_notification(notification_payload)
+        notification_status = _schedule_feedback_email_notification(notification_payload)
 
-    return _feedback_message_response(message, attachments_by_message)
+    response = _feedback_message_response(message, attachments_by_message)
+    if notification_status:
+        response["notification"] = notification_status
+    return response
 
 
 @app.delete("/api/feedback/{message_id}")
@@ -4861,6 +5124,7 @@ async def start_job_ai_analysis(request: Request, jid: str, body: Optional[dict]
         _write_ai_analysis_status(jid, {
             "status": "running",
             "phase": "diagnosing",
+            "progress": 5,
             "mode": row.get("mode"),
             "skill": CLAUDE_COMPARE_TRACE_SKILL if row.get("mode") == "compare" else CLAUDE_SINGLE_TRACE_SKILL,
             "started_at": _utc_now_iso(),

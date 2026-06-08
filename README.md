@@ -2,7 +2,7 @@
 
 Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/内网性能分析工具。它可以解析 `.json`、`.json.gz`、`.json.zip`、`.tar.gz` 和 `.tgz` trace 文件，统计 GPU kernel、Triton kernel、ATen Ops、CNCL/NCCL 通信算子，并提供单 trace 分析、双 trace 对比、历史管理、AI 分析和 Web 可视化界面。
 
-当前版本：`0.2.31`
+当前版本：`0.2.32`
 
 ## 主要功能
 
@@ -13,10 +13,10 @@ Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/
 - 图表页支持数据源、指标、TopN 切换，摘要卡片、Delta 列表和 Kernel 类型行可点击下钻到相关表格。
 - 对比任务支持 Kernel/Triton/ATen/CNCL 维度的 delta 展示，并支持交换 A/B 重新对比。
 - Perfetto 集成支持从 Web 页面直接打开 trace。
-- Claude Code AI 分析支持单 trace 和对比 trace，生成 Markdown 报告并在页面渲染，也可下载报告。
+- Claude Code AI 分析支持单 trace 和对比 trace，生成 Markdown 报告并在页面渲染，也可下载报告、查看进度和总耗时。
 - AI 分析开始前会自动做环境诊断；如果诊断失败，会展示具体诊断明细。
 - AI 分析耗时较长时，浏览器后台或切到其他应用后，完成/失败会通过浏览器通知或页面标题提醒。
-- 改进留言板支持发帖、图片附件、帖子内回复、列表排序、邮件通知，管理员可删除帖子和回复。
+- 改进留言板支持发帖、图片附件、帖子内回复、`@` 人员候选、列表排序、邮件通知，管理员可删除帖子和回复。
 - 可选 LDAP 登录、用户隔离、共享项目和管理员权限。
 - 提供 JSON 日志、审计日志、备份脚本、健康检查和 Prometheus 指标。
 
@@ -125,7 +125,7 @@ Web 首页有两种上传模式：
 - 右上角 `全屏` 可让结果区域覆盖页面，适合看长表格、控制台和 AI 报告。
 - 每个任务会记住上次停留的页签，以及表格搜索、排序、列宽、列筛选和列显隐。
 - Perfetto 按钮可把 trace 打开到 Perfetto UI。
-- AI 分析产物默认折叠在报告末尾，不抢占报告阅读空间。
+- AI 分析展示阶段进度和耗时；分析产物默认折叠在报告末尾，不抢占报告阅读空间。
 
 ### 历史、项目和对比
 
@@ -146,7 +146,7 @@ Web 首页有两种上传模式：
 - 用户可以发布帖子，支持文字和最多 4 张图片。
 - 进入帖子后可在帖子内回复交流。
 - 帖子列表默认按最新更新时间排序，也可切换为发布时间或热度排序。
-- 新增帖子或回复会邮件通知管理员；正文里写 `@英文名` 时，会额外通知 `英文名@cambricon.com`。
+- 新增帖子或回复会邮件通知管理员；正文里输入 `@英文名` 时会弹出候选，选择后自动补全，并额外通知 `英文名@cambricon.com`。
 - 管理员可以删除帖子和回复。
 
 ## Claude Code AI 分析
@@ -157,7 +157,7 @@ AI 分析默认关闭。开启后，已完成任务会出现 `AI 分析` 页签�
 2. 诊断检查 Claude 命令、skills 目录、单 trace skill、对比 skill、skills 挂载、基础 Claude 调用和工具权限探针。
 3. 如果诊断失败，页面展示 Markdown 诊断报告和具体 stdout/stderr。
 4. 如果诊断通过，调用 Claude Code 和对应 skill 生成 Markdown 分析报告。
-5. 页面渲染 Markdown 报告，并支持复制和下载。
+5. 页面显示阶段进度、已耗时/总耗时，渲染 Markdown 报告，并支持复制和下载。
 6. 如果页面不在前台，分析完成或失败时会触发浏览器通知；如果通知权限不可用，会退回到页面 toast 和标题提示。
 
 仓库默认使用：
@@ -273,7 +273,7 @@ sudo chown -R cambricon:cambricon /data/analyze_trace
 | `TRACE_FEEDBACK_MENTION_DOMAIN` | `cambricon.com` | 留言中 `@英文名` 映射到邮箱时使用的域名 |
 | `TRACE_DISABLE_FEEDBACK_EMAIL` | off | 设置为 `1` 后关闭留言板邮件通知 |
 | `TRACE_PUBLIC_BASE_URL` | 空 | 邮件中展示的应用访问地址 |
-| `TRACE_SMTP_HOST` / `SMTP_HOST` | 空 | SMTP 服务器；为空时不发送邮件，只记录日志 |
+| `TRACE_SMTP_HOST` / `SMTP_HOST` | 空 | SMTP 服务器；为空且没有 sendmail 时不发送邮件，页面会提示缺少投递通道 |
 | `TRACE_SMTP_PORT` / `SMTP_PORT` | `25` | SMTP 端口 |
 | `TRACE_SMTP_USERNAME` / `SMTP_USERNAME` | 空 | SMTP 用户名 |
 | `TRACE_SMTP_PASSWORD` / `SMTP_PASSWORD` | 空 | SMTP 密码 |
@@ -281,6 +281,7 @@ sudo chown -R cambricon:cambricon /data/analyze_trace
 | `TRACE_SMTP_SSL` / `SMTP_SSL` | off | 使用 SMTP SSL |
 | `TRACE_SMTP_STARTTLS` / `SMTP_STARTTLS` | off | 使用 STARTTLS |
 | `TRACE_SMTP_TIMEOUT_SECONDS` | `10` | SMTP 连接超时 |
+| `TRACE_SENDMAIL_COMMAND` | 自动探测 | SMTP 为空时的 sendmail 命令路径，例如 `/usr/sbin/sendmail` |
 
 ### systemd 示例
 

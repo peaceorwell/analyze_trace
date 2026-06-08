@@ -59,7 +59,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.31",
+        "version": "0.2.32",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -205,6 +205,8 @@ def test_ai_analysis_runs_configured_command(client, isolated_server, tmp_path, 
         time.sleep(0.05)
 
     assert payload["status"] == "done"
+    assert payload["progress"] == 100
+    assert payload["duration_ms"] >= 0
     assert payload["diagnostics"]["ok"] is True
     assert payload["content"].strip() == "# Final Report"
     artifact_paths = {item["path"] for item in payload["artifacts"]}
@@ -222,6 +224,7 @@ def test_ai_analysis_runs_configured_command(client, isolated_server, tmp_path, 
     detail = client.get("/api/jobs/ai-job").json()
     assert detail["ai_analysis"]["status"] == "done"
     assert detail["ai_analysis"]["report_exists"] is True
+    assert detail["ai_analysis"]["duration_ms"] >= 0
 
 
 def test_ai_analysis_mounts_configured_claude_skills(client, tmp_path, monkeypatch):
@@ -599,13 +602,14 @@ def test_feedback_email_recipients_include_admin_and_mentions(isolated_server, m
     monkeypatch.setattr(isolated_server, "FEEDBACK_MENTION_DOMAIN", "cambricon.com")
 
     recipients = isolated_server._feedback_notification_recipients(
-        "请 @alice 和 @bob_1 看下，alice@example.com 不应被误识别，@alice 去重"
+        "请 @alice 和 @bob_1、@alice.z 看下，alice@example.com 不应被误识别，@alice 去重"
     )
 
     assert recipients == [
         "admin@cambricon.com",
         "alice@cambricon.com",
         "bob_1@cambricon.com",
+        "alice.z@cambricon.com",
     ]
 
 
@@ -629,6 +633,52 @@ def test_feedback_create_schedules_email_notification(client, isolated_server, m
     assert payload["parent_id"] is None
     assert payload["recipients"] == ["admin@cambricon.com", "alice@cambricon.com"]
     assert payload["mentioned_emails"] == ["alice@cambricon.com"]
+
+
+def test_feedback_create_reports_missing_email_transport(client, isolated_server, monkeypatch):
+    monkeypatch.setattr(isolated_server, "FEEDBACK_NOTIFICATION_ADMIN_EMAILS", ["admin@cambricon.com"])
+    monkeypatch.setattr(isolated_server, "SMTP_HOST", "")
+    monkeypatch.setattr(isolated_server, "SENDMAIL_COMMAND", "")
+
+    response = client.post(
+        "/api/feedback",
+        data={"body": "邮件状态需要可见"},
+        headers={"X-Remote-User": "bob"},
+    )
+
+    assert response.status_code == 201
+    notification = response.json()["notification"]
+    assert notification["status"] == "missing_transport"
+    assert notification["recipients"] == ["admin@cambricon.com"]
+
+
+def test_mention_candidates_use_local_feedback_authors(client):
+    async def insert_feedback_authors():
+        db = await web_db.get_db()
+        try:
+            await db.executemany(
+                """
+                INSERT INTO feedback_messages(id, parent_id, user_token, user_display, body)
+                VALUES(?,?,?,?,?)
+                """,
+                [
+                    ("mention-a", None, "alice", "Alice Zhou", "hello"),
+                    ("mention-b", None, "bob", "Bob", "hello"),
+                    ("mention-c", None, "alice.z", "Alice Z", "hello"),
+                ],
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_feedback_authors())
+
+    response = client.get("/api/mention-candidates?q=ali")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [item["username"] for item in payload["data"]][:2] == ["alice", "alice.z"]
+    assert payload["data"][0]["email"] == "alice@cambricon.com"
 
 
 def test_feedback_list_supports_sort_modes(client):

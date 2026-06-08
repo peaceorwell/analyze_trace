@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>torch profiler analyzer</title>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.2.31" />
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.2.32" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
   <script src="https://unpkg.com/vue-router@4/dist/vue-router.global.prod.js"></script>
@@ -114,7 +114,7 @@
     <!-- ── Header ── -->
     <header v-if="authChecked && (!authRequired || currentUser)" class="header">
       <div class="header-brand" @click="$router.push('/')" style="cursor:pointer" title="返回上传页面">
-        <img class="header-logo" src="/static/favicon.svg?v=0.2.31" alt="" />
+        <img class="header-logo" src="/static/favicon.svg?v=0.2.32" alt="" />
         <span class="header-title">Torch Profiler Analyzer</span>
         <span class="header-version">v{{ appVersion }}</span>
       </div>
@@ -559,7 +559,30 @@
           </div>
 
           <div v-if="feedbackReplies[selectedFeedbackPost.id]" class="feedback-reply-form feedback-thread-reply-form">
-          <textarea v-model="feedbackReplies[selectedFeedbackPost.id].body" class="feedback-textarea feedback-reply-textarea" placeholder="在这个帖子里交流，可 @英文名 通知对方..." maxlength="2000"></textarea>
+            <div class="feedback-mention-host">
+              <textarea
+                v-model="feedbackReplies[selectedFeedbackPost.id].body"
+                class="feedback-textarea feedback-reply-textarea"
+                placeholder="在这个帖子里交流，可 @英文名 通知对方..."
+                maxlength="2000"
+                @input="handleFeedbackMentionInput($event, selectedFeedbackPost.id)"
+                @keydown="handleFeedbackMentionKeydown($event, selectedFeedbackPost.id)"
+              ></textarea>
+              <div v-if="feedbackMention.visible && feedbackMention.target===selectedFeedbackPost.id" class="mention-candidate-box">
+                <div v-if="feedbackMention.loading" class="mention-candidate-empty">搜索中...</div>
+                <div v-else-if="!feedbackMention.candidates.length" class="mention-candidate-empty">无匹配人员</div>
+                <button
+                  v-for="(candidate, index) in feedbackMention.candidates"
+                  :key="candidate.username"
+                  type="button"
+                  :class="['mention-candidate-item', index===feedbackMention.activeIndex ? 'active' : '']"
+                  @mousedown.prevent="selectFeedbackMention(candidate, selectedFeedbackPost.id)"
+                >
+                  <span class="mention-candidate-main">{{ candidate.display_name || candidate.username }}</span>
+                  <span class="mention-candidate-meta">@{{ candidate.username }} · {{ candidate.email }}</span>
+                </button>
+              </div>
+            </div>
             <div v-if="feedbackReplies[selectedFeedbackPost.id].previews.length" class="feedback-preview-grid compact">
               <div v-for="img in feedbackReplies[selectedFeedbackPost.id].previews" :key="img.url" class="feedback-preview">
                 <img :src="img.url" :alt="img.name" />
@@ -592,7 +615,30 @@
           <button class="btn btn-xs btn-outline" @click="closeFeedbackComposer()">关闭</button>
         </div>
         <div class="feedback-composer feedback-composer-dialog">
-          <textarea v-model="feedbackForm.body" class="feedback-textarea" placeholder="描述问题、建议或使用体验，可 @英文名 通知对方..." maxlength="2000"></textarea>
+          <div class="feedback-mention-host">
+            <textarea
+              v-model="feedbackForm.body"
+              class="feedback-textarea"
+              placeholder="描述问题、建议或使用体验，可 @英文名 通知对方..."
+              maxlength="2000"
+              @input="handleFeedbackMentionInput($event, 'post')"
+              @keydown="handleFeedbackMentionKeydown($event, 'post')"
+            ></textarea>
+            <div v-if="feedbackMention.visible && feedbackMention.target==='post'" class="mention-candidate-box">
+              <div v-if="feedbackMention.loading" class="mention-candidate-empty">搜索中...</div>
+              <div v-else-if="!feedbackMention.candidates.length" class="mention-candidate-empty">无匹配人员</div>
+              <button
+                v-for="(candidate, index) in feedbackMention.candidates"
+                :key="candidate.username"
+                type="button"
+                :class="['mention-candidate-item', index===feedbackMention.activeIndex ? 'active' : '']"
+                @mousedown.prevent="selectFeedbackMention(candidate, 'post')"
+              >
+                <span class="mention-candidate-main">{{ candidate.display_name || candidate.username }}</span>
+                <span class="mention-candidate-meta">@{{ candidate.username }} · {{ candidate.email }}</span>
+              </button>
+            </div>
+          </div>
           <div v-if="feedbackForm.previews.length" class="feedback-preview-grid">
             <div v-for="img in feedbackForm.previews" :key="img.url" class="feedback-preview">
               <img :src="img.url" :alt="img.name" />
@@ -742,7 +788,7 @@
               <li><strong>CSV 表格</strong>：支持全局搜索、列筛选、排序、列宽拖拽、列显隐、分页大小调整和快捷显示全部</li>
               <li><strong>下载当前页 CSV</strong>：表格右上角可下载当前筛选和分页结果</li>
               <li><strong>全屏</strong>：结果区域右上角可进入全屏显示，适合查看控制台、表格、图表或 AI 报告</li>
-              <li><strong>AI 分析</strong>：服务端开启 Claude Code 后会出现该页签，可对单 trace 或对比 trace 生成分析报告</li>
+              <li><strong>AI 分析</strong>：服务端开启 Claude Code 后会出现该页签，可对单 trace 或对比 trace 生成分析报告，并展示进度和总耗时</li>
               <li>应用会按任务记住上次打开的结果页签，以及表格搜索、排序、列宽、列筛选和列显隐</li>
             </ul>
           </section>
@@ -812,7 +858,7 @@
             <ul>
               <li><strong>深色/浅色模式</strong>：右上角切换按钮，自动记忆偏好</li>
               <li><strong>存储管理</strong>：查看原始 trace / 结果文件占用，并集中清理原始文件</li>
-              <li><strong>改进留言板</strong>：可以发布文字和图片帖子，也可以进入帖子内交流；管理员可删除帖子和回复</li>
+              <li><strong>改进留言板</strong>：可以发布文字和图片帖子，也可以进入帖子内交流；输入 @英文名 时可选择候选人并邮件通知，管理员可删除帖子和回复</li>
               <li><strong>侧栏可拖拽调整宽度</strong>，可折叠以扩大主区域可视范围</li>
               <li>点击标题栏可返回上传页面</li>
             </ul>
@@ -831,6 +877,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=32"></script>
+  <script src="/static/app.js?v=33"></script>
 </body>
 </html>
