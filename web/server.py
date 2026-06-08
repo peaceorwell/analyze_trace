@@ -3,7 +3,7 @@ import asyncio
 import base64
 import contextlib
 import csv
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import gzip
 import html
 import io
@@ -27,6 +27,7 @@ import zlib
 from contextlib import asynccontextmanager
 from email.message import EmailMessage
 from typing import Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import aiofiles
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -45,7 +46,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.33"
+APP_VERSION = "0.2.34"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
 FEEDBACK_DIRNAME = "feedback"
@@ -171,6 +172,7 @@ if not SENDMAIL_COMMAND:
         if os.path.exists(_sendmail_candidate) and os.access(_sendmail_candidate, os.X_OK):
             SENDMAIL_COMMAND = _sendmail_candidate
             break
+LOG_TIMEZONE_NAME = os.environ.get("TRACE_LOG_TIMEZONE", os.environ.get("TZ", "Asia/Shanghai")).strip()
 analysis_queue: asyncio.Queue[str] = asyncio.Queue()
 analysis_workers: list[asyncio.Task] = []
 ai_analysis_tasks: dict[str, asyncio.Task] = {}
@@ -184,10 +186,35 @@ LOGIN_CAPTCHA_CHALLENGES: dict[str, dict[str, float | str]] = {}
 CAPTCHA_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
 
+def _resolve_log_timezone(name: str):
+    value = (name or "").strip()
+    if not value or value.lower() in {"local", "system"}:
+        return datetime.now().astimezone().tzinfo or timezone.utc
+    if value.upper() == "UTC":
+        return timezone.utc
+    try:
+        return ZoneInfo(value)
+    except ZoneInfoNotFoundError:
+        fallback = (
+            timezone(timedelta(hours=8), name="CST")
+            if value in {"Asia/Shanghai", "Asia/Chongqing", "PRC", "CST"}
+            else datetime.now().astimezone().tzinfo or timezone.utc
+        )
+        logging.getLogger("analyze_trace.web").warning(
+            "log_timezone_invalid",
+            extra={"event": "log_timezone_invalid", "timezone": value},
+        )
+        return fallback
+
+
 class JsonLogFormatter(logging.Formatter):
+    def __init__(self, tzinfo=None):
+        super().__init__()
+        self.tzinfo = tzinfo or timezone.utc
+
     def format(self, record):
         payload = {
-            "time": datetime.fromtimestamp(record.created, timezone.utc).isoformat(),
+            "time": datetime.fromtimestamp(record.created, self.tzinfo).isoformat(),
             "level": record.levelname.lower(),
             "message": record.getMessage(),
         }
@@ -214,7 +241,7 @@ def configure_logging():
     logger.handlers.clear()
     logger.propagate = False
 
-    formatter = JsonLogFormatter()
+    formatter = JsonLogFormatter(_resolve_log_timezone(LOG_TIMEZONE_NAME))
     stream_handler = logging.StreamHandler()
     stream_handler.setFormatter(formatter)
     logger.addHandler(stream_handler)
@@ -3083,6 +3110,11 @@ def _feedback_title(body: str, fallback: str = "无标题留言") -> str:
     return first_line[:60] + ("..." if len(first_line) > 60 else "")
 
 
+def _feedback_body_preview(body: str, max_len: int = 240) -> str:
+    text = " ".join((body or "").strip().split())
+    return text[:max_len] + ("..." if len(text) > max_len else "")
+
+
 def _feedback_mentioned_emails(body: str) -> list[str]:
     result: list[str] = []
     seen: set[str] = set()
@@ -3718,6 +3750,26 @@ async def create_feedback(
 
     if notification_payload:
         notification_status = _schedule_feedback_email_notification(notification_payload)
+        logger.info(
+            "feedback_created",
+            extra={
+                "event": "feedback_created",
+                "feedback_id": message_id,
+                "feedback_kind": "reply" if notification_payload.get("parent_id") else "post",
+                "post_id": notification_payload.get("post_id"),
+                "parent_id": notification_payload.get("parent_id"),
+                "user": notification_payload.get("user_token"),
+                "author": notification_payload.get("author"),
+                "ip": request_ip(request),
+                "image_count": notification_payload.get("image_count", 0),
+                "body_length": len(text),
+                "body_preview": _feedback_body_preview(text),
+                "mentioned_emails": notification_payload.get("mentioned_emails", []),
+                "recipients": notification_payload.get("recipients", []),
+                "notification_status": (notification_status or {}).get("status", ""),
+                "notification_transport": (notification_status or {}).get("transport", ""),
+            },
+        )
 
     response = _feedback_message_response(message, attachments_by_message)
     if notification_status:

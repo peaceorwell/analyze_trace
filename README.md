@@ -2,7 +2,7 @@
 
 Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/内网性能分析工具。它可以解析 `.json`、`.json.gz`、`.json.zip`、`.tar.gz` 和 `.tgz` trace 文件，统计 GPU kernel、Triton kernel、ATen Ops、CNCL/NCCL 通信算子，并提供单 trace 分析、双 trace 对比、历史管理、AI 分析和 Web 可视化界面。
 
-当前版本：`0.2.33`
+当前版本：`0.2.34`
 
 ## 主要功能
 
@@ -261,6 +261,7 @@ sudo chown -R cambricon:cambricon /data/analyze_trace
 | `TRACE_BACKUP_DIR` | `web/backups` | 备份目录 |
 | `TRACE_LOG_FILE` | 空 | JSONL 日志文件 |
 | `TRACE_LOG_LEVEL` | `INFO` | 日志级别 |
+| `TRACE_LOG_TIMEZONE` | `Asia/Shanghai` | JSON 日志时间戳时区；可设为 `UTC`、`local` 或 IANA 时区名 |
 | `TRACE_ANALYSIS_CONCURRENCY` | `1` | 并发分析任务数 |
 | `TRACE_NO_DOWNLOAD` | 空 | 设置后禁止下载原始 trace |
 | `TRACE_ENABLE_CODE_EXEC` | off | 设置为 `1` 后允许运行 Triton 代码和清除 cache |
@@ -330,8 +331,9 @@ sudo systemctl status analyze-trace --no-pager
 
 ### 日志和审计
 
-- 服务输出 JSON 请求日志，字段包含 `request_id`、用户、IP、方法、路径、状态码和耗时。
+- 服务输出 JSON 请求日志，字段包含 `request_id`、用户、IP、方法、路径、状态码和耗时；时间戳默认使用 `Asia/Shanghai`，可通过 `TRACE_LOG_TIMEZONE` 调整。
 - 设置 `TRACE_LOG_FILE` 后会同时写入 JSONL 文件。
+- 留言板发布帖子或回复会额外写入 `feedback_created` 业务日志，包含留言类型、作者、IP、图片数、@ 收件人和邮件通知状态。
 - 关键操作会写入 SQLite 的 `audit_logs` 表。
 - 可通过 `GET /api/audit-logs?limit=100` 查看审计记录。
 

@@ -1,6 +1,7 @@
 import asyncio
 import gzip
 import json
+import logging
 import os
 import shlex
 import sys
@@ -59,13 +60,32 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.33",
+        "version": "0.2.34",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
         "allow_code_execution": False,
         "claude_analysis_enabled": False,
     }
+
+
+def test_json_log_formatter_uses_configured_timezone():
+    formatter = web_server.JsonLogFormatter(web_server._resolve_log_timezone("Asia/Shanghai"))
+    record = logging.LogRecord(
+        name="test",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="hello",
+        args=(),
+        exc_info=None,
+    )
+    record.created = 0
+
+    payload = json.loads(formatter.format(record))
+
+    assert payload["time"].startswith("1970-01-01T08:00:00")
+    assert payload["time"].endswith("+08:00")
 
 
 def test_ai_analysis_is_disabled_by_default(client):
@@ -615,9 +635,15 @@ def test_feedback_email_recipients_include_admin_and_mentions(isolated_server, m
 
 def test_feedback_create_schedules_email_notification(client, isolated_server, monkeypatch):
     scheduled = []
+    logged = []
     monkeypatch.setattr(isolated_server, "FEEDBACK_NOTIFICATION_ADMIN_EMAILS", ["admin@cambricon.com"])
     monkeypatch.setattr(isolated_server, "FEEDBACK_MENTION_DOMAIN", "cambricon.com")
     monkeypatch.setattr(isolated_server, "_schedule_feedback_email_notification", scheduled.append)
+    monkeypatch.setattr(
+        isolated_server.logger,
+        "info",
+        lambda msg, *args, **kwargs: logged.append((msg, kwargs.get("extra") or {})),
+    )
 
     response = client.post(
         "/api/feedback",
@@ -633,6 +659,13 @@ def test_feedback_create_schedules_email_notification(client, isolated_server, m
     assert payload["parent_id"] is None
     assert payload["recipients"] == ["admin@cambricon.com", "alice@cambricon.com"]
     assert payload["mentioned_emails"] == ["alice@cambricon.com"]
+    feedback_logs = [extra for msg, extra in logged if msg == "feedback_created"]
+    assert feedback_logs
+    assert feedback_logs[0]["event"] == "feedback_created"
+    assert feedback_logs[0]["feedback_kind"] == "post"
+    assert feedback_logs[0]["user"] == "bob"
+    assert feedback_logs[0]["mentioned_emails"] == ["alice@cambricon.com"]
+    assert "这个功能很有用" in feedback_logs[0]["body_preview"]
 
 
 def test_feedback_create_reports_missing_email_transport(client, isolated_server, monkeypatch):
