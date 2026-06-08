@@ -121,6 +121,19 @@ async def init_db():
                 detail_json   TEXT DEFAULT '{}'
             );
 
+            CREATE TABLE IF NOT EXISTS usage_daily (
+                day           TEXT NOT NULL,
+                user_token    TEXT NOT NULL,
+                display_name  TEXT DEFAULT '',
+                request_count INTEGER DEFAULT 0,
+                last_path     TEXT DEFAULT '',
+                last_method   TEXT DEFAULT '',
+                last_status   INTEGER DEFAULT 0,
+                created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+                last_seen_at  TEXT DEFAULT '',
+                PRIMARY KEY(day, user_token)
+            );
+
             CREATE TABLE IF NOT EXISTS feedback_messages (
                 id           TEXT PRIMARY KEY,
                 parent_id    TEXT REFERENCES feedback_messages(id) ON DELETE CASCADE,
@@ -209,6 +222,8 @@ async def init_db():
             CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at);
             CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action);
             CREATE INDEX IF NOT EXISTS idx_audit_logs_resource ON audit_logs(resource_type, resource_id);
+            CREATE INDEX IF NOT EXISTS idx_usage_daily_day ON usage_daily(day);
+            CREATE INDEX IF NOT EXISTS idx_usage_daily_user ON usage_daily(user_token);
             CREATE INDEX IF NOT EXISTS idx_feedback_messages_parent_created ON feedback_messages(parent_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_feedback_attachments_message ON feedback_attachments(message_id);
         """)

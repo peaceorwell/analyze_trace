@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.49");
+const appVersion = ref("0.2.50");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -423,6 +423,18 @@ const projectOptionLabel = project =>
 const showStorageManager = ref(false);
 const storageSummary = ref({ totals: {}, projects: [], jobs: [] });
 const storageSelection = ref([]);
+const showAdminUsage = ref(false);
+const adminUsageLoading = ref(false);
+const adminUsageError = ref("");
+const adminUsageDays = ref(14);
+const adminUsage = ref({
+  timezone: "",
+  today: {},
+  seven_days: {},
+  all_time: {},
+  daily: [],
+  top_users_today: [],
+});
 
 const loadDeletedProjects = async () => {
   const r = await fetch("/api/deleted-projects", { credentials: "include" });
@@ -677,6 +689,21 @@ const storageJobsWithTrace = computed(() =>
   storageSummary.value.jobs.filter(job => job.has_original_trace)
 );
 
+const adminUsageCards = computed(() => {
+  const today = adminUsage.value.today || {};
+  const seven = adminUsage.value.seven_days || {};
+  return [
+    { label: "今日日活", value: today.dau || 0, hint: today.day || "今天" },
+    { label: "今日请求", value: today.requests || 0, hint: `时区 ${adminUsage.value.timezone || "-"}` },
+    { label: "近 7 日活跃", value: seven.active_users || 0, hint: `${fmtCount(seven.requests || 0)} 次请求` },
+    {
+      label: "近 7 日任务",
+      value: (seven.upload_jobs || 0) + (seven.compare_jobs || 0),
+      hint: `AI ${fmtCount(seven.ai_runs || 0)} · 留言 ${fmtCount(seven.feedback_messages || 0)}`,
+    },
+  ];
+});
+
 const hasColFilters = computed(() =>
   Object.values(colFilters.value).some(v => v)
 );
@@ -761,6 +788,8 @@ const fmtBytes = bytes => {
   }
   return `${value >= 10 ? value.toFixed(1) : value.toFixed(2)} ${unit}`;
 };
+
+const fmtCount = value => Number(value || 0).toLocaleString("zh-CN");
 
 const traceFormatLabel = filename => {
   const name = String(filename || "").toLowerCase();
@@ -849,7 +878,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.49";
+  appVersion.value = cfg.version || "0.2.50";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -978,6 +1007,31 @@ const loadStorageSummary = async () => {
 const openStorageManager = async () => {
   await loadStorageSummary();
   showStorageManager.value = true;
+};
+
+const loadAdminUsage = async () => {
+  adminUsageLoading.value = true;
+  adminUsageError.value = "";
+  try {
+    const days = Math.max(1, Math.min(Number(adminUsageDays.value) || 14, 90));
+    adminUsageDays.value = days;
+    const r = await fetch(`/api/admin/usage?days=${days}`, { credentials: "include" });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${r.status}`);
+    }
+    adminUsage.value = await r.json();
+  } catch (e) {
+    adminUsageError.value = e.message || "加载使用统计失败";
+    showToast(adminUsageError.value, "error");
+  } finally {
+    adminUsageLoading.value = false;
+  }
+};
+
+const openAdminUsage = async () => {
+  showAdminUsage.value = true;
+  await loadAdminUsage();
 };
 
 const feedbackHasMore = computed(() => feedbackItems.value.length < feedbackTotal.value);
@@ -5476,6 +5530,8 @@ const App = {
       showStorageManager, storageSummary, storageSelection, storageJobsWithTrace,
       openStorageManager, toggleStorageSelection, toggleAllStorageSelection,
       deleteSelectedStorageFiles, fmtBytes,
+      showAdminUsage, adminUsageLoading, adminUsageError, adminUsageDays,
+      adminUsage, adminUsageCards, openAdminUsage, loadAdminUsage,
       showTritonCode, tritonCodeContent, tritonCodeFilename,
       tritonCodeEditing, tritonCodeEditContent,
       runCustomTriton, editTritonCode, cancelEditTritonCode,
@@ -5488,7 +5544,7 @@ const App = {
       openActionMenu, toggleActionMenu, closeActionMenu,
 
       // Misc
-      fmtDate, statusIcon, toggleGroup, createProject,
+      fmtDate, fmtDateTime, fmtCount, statusIcon, toggleGroup, createProject,
     };
   },
 };

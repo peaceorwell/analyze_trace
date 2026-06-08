@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>torch profiler analyzer</title>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.2.49" />
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.2.50" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
   <script src="https://unpkg.com/vue-router@4/dist/vue-router.global.prod.js"></script>
@@ -114,7 +114,7 @@
     <!-- ── Header ── -->
     <header v-if="authChecked && (!authRequired || currentUser)" class="header">
       <div class="header-brand" @click="$router.push('/')" style="cursor:pointer" title="返回上传页面">
-        <img class="header-logo" src="/static/favicon.svg?v=0.2.49" alt="" />
+        <img class="header-logo" src="/static/favicon.svg?v=0.2.50" alt="" />
         <span class="header-title">Torch Profiler Analyzer</span>
         <span class="header-version">v{{ appVersion }}</span>
       </div>
@@ -127,6 +127,7 @@
                   aria-label="更多入口"
                   @click="toggleActionMenu('header')">...</button>
           <div v-if="openActionMenu==='header'" class="action-menu">
+            <button v-if="isAdmin || !authRequired" type="button" @click="openAdminUsage(); closeActionMenu()">使用统计</button>
             <button type="button" @click="openStorageManager(); closeActionMenu()">存储</button>
             <button type="button" @click="showGuide=true; closeActionMenu()">使用指南</button>
             <button type="button" @click="showDeletedProjects=true; loadDeletedProjects(); closeActionMenu()">找回项目</button>
@@ -722,6 +723,101 @@
               {{ feedbackSubmitting ? '发布中...' : '发布帖子' }}
             </button>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Admin usage modal ── -->
+    <div v-if="showAdminUsage" class="modal-mask" @click.self="showAdminUsage=false">
+      <div class="modal modal-wide admin-usage-modal">
+        <div class="modal-title admin-usage-title">
+          <span>使用统计</span>
+          <div class="admin-usage-actions">
+            <select v-model.number="adminUsageDays" class="input input-sm admin-usage-range" @change="loadAdminUsage()">
+              <option :value="7">近 7 天</option>
+              <option :value="14">近 14 天</option>
+              <option :value="30">近 30 天</option>
+              <option :value="90">近 90 天</option>
+            </select>
+            <button class="btn btn-xs btn-outline" :disabled="adminUsageLoading" @click="loadAdminUsage()">
+              {{ adminUsageLoading ? '刷新中...' : '刷新' }}
+            </button>
+          </div>
+        </div>
+
+        <div v-if="adminUsageError" class="error-box">{{ adminUsageError }}</div>
+        <div v-if="adminUsageLoading && !adminUsage.daily.length" class="empty-tip">加载使用统计中...</div>
+        <template v-else>
+          <div class="admin-usage-card-grid">
+            <div v-for="card in adminUsageCards" :key="card.label" class="admin-usage-card">
+              <span>{{ card.label }}</span>
+              <strong>{{ fmtCount(card.value) }}</strong>
+              <small>{{ card.hint }}</small>
+            </div>
+          </div>
+
+          <div class="admin-usage-columns">
+            <section class="admin-usage-panel admin-usage-daily-panel">
+              <div class="admin-usage-panel-head">
+                <strong>逐日趋势</strong>
+                <span>数据从启用统计后开始累计</span>
+              </div>
+              <div class="admin-usage-table-wrap">
+                <table class="admin-usage-table">
+                  <thead>
+                    <tr>
+                      <th>日期</th>
+                      <th>日活</th>
+                      <th>请求</th>
+                      <th>上传</th>
+                      <th>对比</th>
+                      <th>AI</th>
+                      <th>留言</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="row in adminUsage.daily" :key="row.day">
+                      <td>{{ row.day }}</td>
+                      <td>{{ fmtCount(row.dau) }}</td>
+                      <td>{{ fmtCount(row.requests) }}</td>
+                      <td>{{ fmtCount(row.upload_jobs) }}</td>
+                      <td>{{ fmtCount(row.compare_jobs) }}</td>
+                      <td>{{ fmtCount(row.ai_runs) }}</td>
+                      <td>{{ fmtCount(row.feedback_messages) }}</td>
+                    </tr>
+                    <tr v-if="!adminUsage.daily.length">
+                      <td colspan="7" class="empty-tip">暂无统计数据</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="admin-usage-panel admin-usage-user-panel">
+              <div class="admin-usage-panel-head">
+                <strong>今日活跃用户</strong>
+                <span>按请求量排序</span>
+              </div>
+              <div class="admin-usage-user-list">
+                <div v-if="!adminUsage.top_users_today.length" class="empty-tip">今天还没有访问记录</div>
+                <div v-for="user in adminUsage.top_users_today" :key="user.user_token" class="admin-usage-user">
+                  <div>
+                    <strong>{{ user.display_name || user.user_token }}</strong>
+                    <span>{{ user.user_token }}</span>
+                  </div>
+                  <div class="admin-usage-user-meta">
+                    <b>{{ fmtCount(user.request_count) }}</b>
+                    <small>{{ fmtDateTime(user.last_seen_at) || '-' }}</small>
+                  </div>
+                </div>
+              </div>
+            </section>
+          </div>
+        </template>
+
+        <div class="modal-actions">
+          <span class="admin-usage-footnote">近 7 日累计请求 {{ fmtCount(adminUsage.seven_days.requests) }} 次，总计活跃用户 {{ fmtCount(adminUsage.all_time.active_users) }} 人</span>
+          <button class="btn btn-outline" @click="showAdminUsage=false">关闭</button>
         </div>
       </div>
     </div>

@@ -2,7 +2,7 @@
 
 Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/内网性能分析工具。它可以解析 `.json`、`.json.gz`、`.gz`、`.json.zip`、`.zip`、`.tar.gz` 和 `.tgz` trace 文件，统计 GPU kernel、Triton kernel、ATen Ops、CNCL/NCCL 通信算子，并提供单 trace 分析、双 trace 对比、历史管理、AI 分析和 Web 可视化界面。
 
-当前版本：`0.2.49`
+当前版本：`0.2.50`
 
 ## 主要功能
 
@@ -17,7 +17,7 @@ Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/
 - AI 分析开始前会自动做环境诊断；如果诊断失败，会展示具体诊断明细。
 - AI 分析耗时较长时，浏览器后台或切到其他应用后，完成/失败会通过浏览器通知或页面标题提醒。
 - 改进留言板支持发帖、图片附件、帖子内回复、`@` 人员候选、列表排序和邮件通知；邮件可直达对应帖子/回复，管理员可删除帖子和回复并执行邮件诊断。
-- 可选 LDAP 登录、用户隔离、共享项目和管理员权限。
+- 可选 LDAP 登录、用户隔离、共享项目和管理员权限；管理员可查看日活、请求量、任务、AI 分析和留言等使用统计。
 - 提供 JSON 日志、审计日志、备份脚本、健康检查和 Prometheus 指标。
 
 ## 目录结构
@@ -245,7 +245,7 @@ LDAP_USER_DN_TEMPLATE="{username}@example.com"
 - 用户可以创建共享项目，或把自己的项目转为共享项目。
 - 共享项目对所有登录用户可读，可用于对比。
 - 任务重命名、移动、删除和文件删除仍限制为任务创建者。
-- 管理员可进行全局管理操作，例如删除留言板内容。
+- 管理员可进行全局管理操作，例如删除留言板内容，并在右上角 `...` 菜单打开 `使用统计` 查看今日日活、近 7 日活跃、逐日请求量、任务量、AI 分析次数和今日活跃用户。
 
 ## 运维
 
@@ -345,6 +345,7 @@ sudo systemctl status analyze-trace --no-pager
 - AI 分析结束后会写入 `ai_analysis_email_sent` / `ai_analysis_email_failed` / `ai_analysis_email_not_sent`，用于确认触发人和任务所属人的完成通知是否成功发送。
 - 关键操作会写入 SQLite 的 `audit_logs` 表。
 - 可通过 `GET /api/audit-logs?limit=100` 查看审计记录。
+- 访问使用量会按天聚合到 SQLite 的 `usage_daily` 表；管理员接口 `GET /api/admin/usage?days=14` 用于查看日活、请求量和业务动作趋势。该统计从启用本版本后开始准确累计，历史数据不会从旧请求日志自动补齐。
 
 ### 备份
 

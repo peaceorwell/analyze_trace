@@ -2245,6 +2245,94 @@ body.result-reading-active { overflow: hidden; }
   color: var(--yellow); font-size: 10px; white-space: nowrap;
 }
 
+.admin-usage-modal { max-width: min(1120px, calc(100vw - 36px)); }
+.admin-usage-title {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+}
+.admin-usage-actions {
+  display: flex; align-items: center; gap: 6px; margin-left: auto;
+}
+.admin-usage-range { width: 116px; }
+.admin-usage-card-grid {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px; margin-bottom: 12px;
+}
+.admin-usage-card {
+  min-width: 0; padding: 12px 13px; border-radius: 9px;
+  border: 1px solid var(--border); background: linear-gradient(180deg, var(--card2), var(--bg));
+  display: flex; flex-direction: column; gap: 5px;
+}
+.admin-usage-card span {
+  color: var(--text3); font-size: 11px; font-weight: 700;
+}
+.admin-usage-card strong {
+  color: var(--text); font-family: var(--mono); font-size: 24px; line-height: 1;
+}
+.admin-usage-card small {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--text3); font-size: 11px;
+}
+.admin-usage-columns {
+  display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(280px, .9fr);
+  gap: 10px;
+}
+.admin-usage-panel {
+  min-width: 0; border: 1px solid var(--border); border-radius: 9px;
+  background: var(--bg); overflow: hidden;
+}
+.admin-usage-panel-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 10px 12px; border-bottom: 1px solid var(--border);
+}
+.admin-usage-panel-head strong { color: var(--text); font-size: 13px; }
+.admin-usage-panel-head span { color: var(--text3); font-size: 11px; }
+.admin-usage-table-wrap { overflow: auto; max-height: 42vh; }
+.admin-usage-table {
+  width: 100%; border-collapse: collapse; color: var(--text2); font-size: 12px;
+}
+.admin-usage-table th,
+.admin-usage-table td {
+  padding: 8px 10px; border-bottom: 1px solid var(--border);
+  text-align: right; white-space: nowrap;
+}
+.admin-usage-table th {
+  color: var(--text3); background: var(--card2); font-weight: 800;
+}
+.admin-usage-table th:first-child,
+.admin-usage-table td:first-child {
+  text-align: left; color: var(--text); font-weight: 700;
+}
+.admin-usage-user-list {
+  display: flex; flex-direction: column; gap: 6px; padding: 9px;
+  max-height: 42vh; overflow: auto;
+}
+.admin-usage-user {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--card);
+}
+.admin-usage-user div:first-child {
+  min-width: 0; display: flex; flex-direction: column; gap: 2px;
+}
+.admin-usage-user strong {
+  color: var(--text); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.admin-usage-user span {
+  color: var(--text3); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.admin-usage-user-meta {
+  flex: 0 0 auto; display: flex; flex-direction: column; align-items: flex-end; gap: 2px;
+}
+.admin-usage-user-meta b { color: var(--purple-l); font-family: var(--mono); font-size: 14px; }
+.admin-usage-user-meta small { color: var(--text3); font-size: 10px; }
+.admin-usage-footnote {
+  margin-right: auto; color: var(--text3); font-size: 11px;
+}
+@media (max-width: 860px) {
+  .admin-usage-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .admin-usage-columns { grid-template-columns: 1fr; }
+}
+
 .toast-stack {
   position: fixed; top: 60px; right: 14px; z-index: 120;
   display: flex; flex-direction: column; gap: 8px;

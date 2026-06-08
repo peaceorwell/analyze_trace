@@ -48,7 +48,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.49"
+APP_VERSION = "0.2.50"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
 FEEDBACK_DIRNAME = "feedback"
@@ -187,6 +187,7 @@ if not SENDMAIL_COMMAND and SENDMAIL_AUTODETECT:
             SENDMAIL_COMMAND = _sendmail_candidate
             break
 LOG_TIMEZONE_NAME = os.environ.get("TRACE_LOG_TIMEZONE", os.environ.get("TZ", "Asia/Shanghai")).strip()
+USAGE_TIMEZONE_NAME = os.environ.get("TRACE_USAGE_TIMEZONE", LOG_TIMEZONE_NAME).strip()
 analysis_queue: asyncio.Queue[str] = asyncio.Queue()
 analysis_workers: list[asyncio.Task] = []
 ai_analysis_tasks: dict[str, asyncio.Task] = {}
@@ -219,6 +220,9 @@ def _resolve_log_timezone(name: str):
             extra={"event": "log_timezone_invalid", "timezone": value},
         )
         return fallback
+
+
+USAGE_TZINFO = _resolve_log_timezone(USAGE_TIMEZONE_NAME)
 
 
 class JsonLogFormatter(logging.Formatter):
@@ -630,6 +634,85 @@ def _record_http_metric(method: str, path: str, status: int, duration: float):
     item["sum"] += duration
 
 
+def _usage_day(dt: Optional[datetime] = None) -> str:
+    value = dt or datetime.now(USAGE_TZINFO)
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=USAGE_TZINFO)
+    return value.astimezone(USAGE_TZINFO).date().isoformat()
+
+
+def _usage_sqlite_day_expr(column: str) -> str:
+    # The deployment target uses Asia/Shanghai. Keep historical DB timestamps comparable
+    # to the daily usage buckets even when SQLite stores CURRENT_TIMESTAMP in UTC.
+    if USAGE_TIMEZONE_NAME in {"Asia/Shanghai", "Asia/Chongqing", "PRC", "CST"}:
+        return f"date({column}, '+8 hours')"
+    return f"date({column}, 'localtime')"
+
+
+def _usage_identity(request: Request) -> Optional[tuple[str, str]]:
+    user = current_user(request)
+    token = (user.get("username") or "").strip()
+    display = (user.get("display_name") or token).strip()
+    if not token:
+        token = (
+            request.headers.get("X-Remote-User")
+            or request.headers.get("X-Forwarded-User")
+            or request.headers.get("X-User")
+            or ""
+        ).strip()
+        display = token
+    if not token and not AUTH_ENABLED:
+        token = "local"
+        display = "local"
+    if not token:
+        return None
+    return token, display or token
+
+
+def _should_record_usage(request: Request) -> bool:
+    path = request.url.path
+    if path.startswith("/static/"):
+        return False
+    if path in {"/healthz", "/readyz", "/metrics"}:
+        return False
+    if path.startswith("/api/admin/usage"):
+        return False
+    return True
+
+
+async def record_usage_daily(request: Request, status_code: int):
+    if not _should_record_usage(request):
+        return
+    identity = _usage_identity(request)
+    if not identity:
+        return
+    token, display = identity
+    day = _usage_day()
+    now = datetime.now(timezone.utc).isoformat()
+    path = request.url.path[:240]
+    method = request.method[:16]
+    db = await get_db()
+    try:
+        await db.execute(
+            """
+            INSERT INTO usage_daily(day, user_token, display_name, request_count,
+                                    last_path, last_method, last_status, last_seen_at)
+            VALUES(?,?,?,?,?,?,?,?)
+            ON CONFLICT(day, user_token) DO UPDATE SET
+                display_name=excluded.display_name,
+                request_count=usage_daily.request_count + 1,
+                last_path=excluded.last_path,
+                last_method=excluded.last_method,
+                last_status=excluded.last_status,
+                last_seen_at=excluded.last_seen_at
+            """,
+            (day, token, display, 1, path, method, int(status_code or 0), now),
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+
 async def write_audit(
     db,
     request: Request,
@@ -730,6 +813,19 @@ async def request_logging_middleware(request: Request, call_next):
                 "duration_ms": round(duration_ms, 3),
             },
         )
+        try:
+            await record_usage_daily(request, status_code)
+        except Exception as e:
+            logger.warning(
+                "usage_record_failed",
+                extra={
+                    "event": "usage_record_failed",
+                    "request_id": request_id,
+                    "user": request_user(request),
+                    "path": request.url.path,
+                    "error": str(e),
+                },
+            )
 
 
 app.add_middleware(
@@ -3480,6 +3576,146 @@ async def list_audit_logs(
         "total": total_row["total"],
         "limit": limit,
         "offset": offset,
+    }
+
+
+@app.get("/api/admin/usage")
+async def admin_usage_stats(request: Request, days: int = 14):
+    if AUTH_ENABLED:
+        require_admin(request)
+    days = max(1, min(int(days or 14), 90))
+    today_date = datetime.now(USAGE_TZINFO).date()
+    start_date = today_date - timedelta(days=days - 1)
+    seven_start_date = today_date - timedelta(days=6)
+    today = today_date.isoformat()
+    start_day = start_date.isoformat()
+    seven_start_day = seven_start_date.isoformat()
+    audit_day_expr = _usage_sqlite_day_expr("created_at")
+    business_actions = (
+        "job.create",
+        "job.compare_create",
+        "job.batch_compare_create",
+        "job.ai_analysis_start",
+        "feedback.create",
+    )
+
+    db = await get_db()
+    try:
+        usage_rows = await (
+            await db.execute(
+                """
+                SELECT day,
+                       COUNT(*) AS dau,
+                       COALESCE(SUM(request_count), 0) AS requests,
+                       MAX(last_seen_at) AS last_seen_at
+                FROM usage_daily
+                WHERE day >= ?
+                GROUP BY day
+                """,
+                (start_day,),
+            )
+        ).fetchall()
+        audit_rows = await (
+            await db.execute(
+                f"""
+                SELECT {audit_day_expr} AS day,
+                       SUM(CASE WHEN action='job.create' THEN 1 ELSE 0 END) AS upload_jobs,
+                       SUM(CASE WHEN action IN ('job.compare_create','job.batch_compare_create') THEN 1 ELSE 0 END) AS compare_jobs,
+                       SUM(CASE WHEN action='job.ai_analysis_start' THEN 1 ELSE 0 END) AS ai_runs,
+                       SUM(CASE WHEN action='feedback.create' THEN 1 ELSE 0 END) AS feedback_messages
+                FROM audit_logs
+                WHERE {audit_day_expr} >= ?
+                  AND action IN ({','.join('?' for _ in business_actions)})
+                GROUP BY day
+                """,
+                (start_day, *business_actions),
+            )
+        ).fetchall()
+        top_users_today = await (
+            await db.execute(
+                """
+                SELECT user_token, display_name, request_count, last_seen_at, last_path
+                FROM usage_daily
+                WHERE day=?
+                ORDER BY request_count DESC, last_seen_at DESC
+                LIMIT 10
+                """,
+                (today,),
+            )
+        ).fetchall()
+        seven_usage = await (
+            await db.execute(
+                """
+                SELECT COUNT(DISTINCT user_token) AS active_users,
+                       COALESCE(SUM(request_count), 0) AS requests
+                FROM usage_daily
+                WHERE day >= ?
+                """,
+                (seven_start_day,),
+            )
+        ).fetchone()
+        total_usage = await (
+            await db.execute(
+                """
+                SELECT COUNT(DISTINCT user_token) AS users,
+                       COALESCE(SUM(request_count), 0) AS requests
+                FROM usage_daily
+                """
+            )
+        ).fetchone()
+    finally:
+        await db.close()
+
+    by_day = {}
+    for i in range(days):
+        day = (start_date + timedelta(days=i)).isoformat()
+        by_day[day] = {
+            "day": day,
+            "dau": 0,
+            "requests": 0,
+            "upload_jobs": 0,
+            "compare_jobs": 0,
+            "ai_runs": 0,
+            "feedback_messages": 0,
+            "last_seen_at": "",
+        }
+    for row in usage_rows:
+        day = row["day"]
+        if day in by_day:
+            by_day[day].update({
+                "dau": int(row["dau"] or 0),
+                "requests": int(row["requests"] or 0),
+                "last_seen_at": row["last_seen_at"] or "",
+            })
+    for row in audit_rows:
+        day = row["day"]
+        if day in by_day:
+            by_day[day].update({
+                "upload_jobs": int(row["upload_jobs"] or 0),
+                "compare_jobs": int(row["compare_jobs"] or 0),
+                "ai_runs": int(row["ai_runs"] or 0),
+                "feedback_messages": int(row["feedback_messages"] or 0),
+            })
+    seven_rows = [item for item in by_day.values() if item["day"] >= seven_start_day]
+    seven_summary = {
+        "active_users": int(seven_usage["active_users"] or 0) if seven_usage else 0,
+        "requests": int(seven_usage["requests"] or 0) if seven_usage else 0,
+        "upload_jobs": sum(item["upload_jobs"] for item in seven_rows),
+        "compare_jobs": sum(item["compare_jobs"] for item in seven_rows),
+        "ai_runs": sum(item["ai_runs"] for item in seven_rows),
+        "feedback_messages": sum(item["feedback_messages"] for item in seven_rows),
+    }
+    return {
+        "timezone": USAGE_TIMEZONE_NAME or "local",
+        "days": days,
+        "today": dict(by_day.get(today, {"day": today})),
+        "seven_days": seven_summary,
+        "all_time": {
+            "active_users": int(total_usage["users"] or 0) if total_usage else 0,
+            "requests": int(total_usage["requests"] or 0) if total_usage else 0,
+        },
+        "daily": list(reversed(list(by_day.values()))),
+        "top_users_today": [dict(row) for row in top_users_today],
     }
 
 

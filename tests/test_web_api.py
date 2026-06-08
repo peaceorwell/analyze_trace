@@ -62,7 +62,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.49",
+        "version": "0.2.50",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -1317,6 +1317,70 @@ def test_ops_endpoints_and_audit_logs(client):
     assert metrics.status_code == 200
     assert "analyze_trace_app_uptime_seconds" in metrics.text
     assert "analyze_trace_http_requests_total" in metrics.text
+
+
+def test_admin_usage_stats_tracks_daily_activity(client):
+    assert client.get("/api/config", headers={"X-Remote-User": "alice"}).status_code == 200
+    assert client.get("/api/projects", headers={"X-Remote-User": "alice"}).status_code == 200
+    assert client.get("/api/config", headers={"X-Remote-User": "bob"}).status_code == 200
+
+    async def insert_audit_rows():
+        db = await web_db.get_db()
+        try:
+            await db.executemany(
+                """
+                INSERT INTO audit_logs(id, user, action, resource_type, resource_id)
+                VALUES(?,?,?,?,?)
+                """,
+                [
+                    ("usage-audit-upload", "alice", "job.create", "job", "job-a"),
+                    ("usage-audit-compare", "alice", "job.compare_create", "job", "job-b"),
+                    ("usage-audit-batch", "alice", "job.batch_compare_create", "job", "job-c"),
+                    ("usage-audit-ai", "alice", "job.ai_analysis_start", "job", "job-a"),
+                    ("usage-audit-feedback", "bob", "feedback.create", "feedback", "feedback-a"),
+                ],
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_audit_rows())
+
+    response = client.get("/api/admin/usage?days=7")
+    assert response.status_code == 200
+    payload = response.json()
+    today = payload["today"]
+    assert today["dau"] == 2
+    assert today["requests"] == 3
+    assert today["upload_jobs"] == 1
+    assert today["compare_jobs"] == 2
+    assert today["ai_runs"] == 1
+    assert today["feedback_messages"] == 1
+    assert payload["seven_days"]["active_users"] == 2
+    assert [item["user_token"] for item in payload["top_users_today"]] == ["alice", "bob"]
+
+
+def test_admin_usage_requires_admin_when_ldap_enabled(isolated_server, monkeypatch):
+    def fake_authenticate(username, password):
+        return {
+            "username": username,
+            "display_name": username.title(),
+            "email": f"{username}@example.com",
+            "dn": f"CN={username},DC=example,DC=com",
+        }
+
+    monkeypatch.setattr(web_server, "AUTH_MODE", "ldap")
+    monkeypatch.setattr(web_server, "AUTH_ENABLED", True)
+    monkeypatch.setattr(web_server, "ADMIN_USERS", {"admin"})
+    monkeypatch.setattr(web_server.ldap_auth, "authenticate", fake_authenticate)
+
+    with TestClient(isolated_server.app) as test_client:
+        assert test_client.get("/api/admin/usage").status_code == 401
+        assert test_client.post("/api/login", json={"username": "bob", "password": "ok"}).status_code == 200
+        assert test_client.get("/api/admin/usage").status_code == 403
+        assert test_client.post("/api/logout").status_code == 200
+        assert test_client.post("/api/login", json={"username": "admin", "password": "ok"}).status_code == 200
+        assert test_client.get("/api/admin/usage").status_code == 200
 
 
 def test_readyz_reports_log_file_writeability(client, tmp_path, monkeypatch):
