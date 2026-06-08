@@ -2,7 +2,7 @@
 
 Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/内网性能分析工具。它可以解析 `.json`、`.json.gz`、`.gz`、`.json.zip`、`.zip`、`.tar.gz` 和 `.tgz` trace 文件，统计 GPU kernel、Triton kernel、ATen Ops、CNCL/NCCL 通信算子，并提供单 trace 分析、双 trace 对比、历史管理、AI 分析和 Web 可视化界面。
 
-当前版本：`0.2.47`
+当前版本：`0.2.48`
 
 ## 主要功能
 
@@ -301,7 +301,7 @@ TRACE_LOG_FILE=/data/analyze_trace/logs/app.jsonl
 TRACE_ENABLE_CLAUDE_ANALYSIS=1
 TRACE_CLAUDE_COMMAND=/usr/local/node20/bin/claude
 TRACE_CLAUDE_EXTRA_ARGS=--dangerously-skip-permissions
-TRACE_PUBLIC_BASE_URL=http://tpa.cambricon.com
+TRACE_PUBLIC_BASE_URL=http://tpa.cambricon.com:1818
 # 向 IT 确认真正可解析、可连通的 SMTP 主机；不要直接使用占位示例
 TRACE_SMTP_HOST=<it-provided-smtp-host>
 TRACE_SMTP_PORT=25
@@ -321,7 +321,7 @@ User=cambricon
 Group=cambricon
 WorkingDirectory=/opt/analyze_trace
 EnvironmentFile=/etc/analyze_trace.env
-ExecStart=/opt/analyze_trace/.venv/bin/python web/server.py --host 0.0.0.0 --port 8181
+ExecStart=/opt/analyze_trace/.venv/bin/python web/server.py --host 0.0.0.0 --port 1818
 Restart=always
 RestartSec=3
 
@@ -376,8 +376,8 @@ uv run python web/backup.py \
 ```bash
 sudo systemctl status analyze-trace --no-pager
 sudo journalctl -u analyze-trace -n 100 --no-pager
-curl -fsS http://127.0.0.1:8181/healthz
-curl -fsS http://127.0.0.1:8181/readyz
+curl -fsS http://127.0.0.1:1818/healthz
+curl -fsS http://127.0.0.1:1818/readyz
 ```
 
 如果服务反复重启，优先检查 `TRACE_STORAGE_DIR`、`TRACE_LOG_FILE`、`TRACE_BACKUP_DIR` 对服务运行用户是否可写。
@@ -413,32 +413,7 @@ docker build -t trace-analyzer .
 docker run -d -p 8181:8181 --name trace-analyzer -v trace_data:/app/storage trace-analyzer
 ```
 
-使用反向代理时，建议启用 HTTPS；如果启用 LDAP 登录，生产环境请设置 `SESSION_COOKIE_SECURE=1`。
-
-域名部署时建议应用只监听本机端口，由反向代理对外暴露 `80/443`，不要把应用端口直接开放给用户。例如：
-
-```nginx
-server {
-    listen 80;
-    server_name tpa.cambricon.com;
-
-    client_max_body_size 50g;
-
-    location / {
-        proxy_pass http://127.0.0.1:1818;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-Host $host;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_read_timeout 3600s;
-        proxy_send_timeout 3600s;
-    }
-}
-```
-
-对应 systemd 中建议使用 `--host 127.0.0.1 --port 1818`，并在防火墙或安全组里只开放 `80/443`。
+域名直连部署时，应用需要监听 `0.0.0.0:1818`，并让 IT 或安全组放通 `1818/tcp`。对外访问地址为 `http://tpa.cambricon.com:1818/`，因此 `TRACE_PUBLIC_BASE_URL` 也要包含 `:1818`，否则邮件和分享链接会生成不带端口的地址。
 
 ## CLI 使用
 

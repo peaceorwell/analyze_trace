@@ -62,7 +62,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.47",
+        "version": "0.2.48",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -1529,7 +1529,7 @@ def test_job_share_converts_private_project_and_allows_other_users(isolated_serv
     monkeypatch.setattr(web_server, "AUTH_MODE", "ldap")
     monkeypatch.setattr(web_server, "AUTH_ENABLED", True)
     monkeypatch.setattr(web_server.ldap_auth, "authenticate", fake_authenticate)
-    monkeypatch.setattr(isolated_server, "PUBLIC_BASE_URL", "http://tpa.cambricon.com")
+    monkeypatch.setattr(isolated_server, "PUBLIC_BASE_URL", "http://tpa.cambricon.com:1818")
 
     with TestClient(isolated_server.app) as test_client:
         assert test_client.post("/api/login", json={"username": "alice", "password": "ok"}).status_code == 200
@@ -1553,7 +1553,7 @@ def test_job_share_converts_private_project_and_allows_other_users(isolated_serv
         payload = share.json()
         assert payload["project_is_public"] is True
         assert payload["changed"] is True
-        assert payload["url"] == "http://tpa.cambricon.com/#/job/share-job"
+        assert payload["url"] == "http://tpa.cambricon.com:1818/#/job/share-job"
 
         assert test_client.post("/api/logout").status_code == 200
         assert test_client.post("/api/login", json={"username": "bob", "password": "ok"}).status_code == 200
