@@ -48,7 +48,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.38"
+APP_VERSION = "0.2.39"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
 FEEDBACK_DIRNAME = "feedback"
@@ -2003,12 +2003,13 @@ def _track_ai_analysis_task(jid: str, task: asyncio.Task):
     task.add_done_callback(_done)
 
 
-async def _run_ai_analysis_task(jid: str):
+async def _run_ai_analysis_task(jid: str, notification_context: Optional[dict] = None):
     analysis_dir = ai_analysis_dir(jid)
     report_path = ai_analysis_report_path(jid)
     os.makedirs(analysis_dir, exist_ok=True)
     stdout_text = ""
     stderr_text = ""
+    job = None
 
     try:
         db = await get_db()
@@ -2201,6 +2202,26 @@ async def _run_ai_analysis_task(jid: str):
             "ai_analysis_failed",
             extra={"event": "ai_analysis_failed", "job_id": jid, "error": str(e)},
         )
+    finally:
+        try:
+            final_status = _read_ai_analysis_status(jid)
+            if final_status.get("status") in {"done", "error"}:
+                await _send_ai_analysis_completion_notification(
+                    jid,
+                    job or {},
+                    final_status,
+                    notification_context or {},
+                )
+        except Exception as notify_exc:
+            logger.warning(
+                "ai_analysis_email_notify_failed",
+                extra={
+                    "event": "ai_analysis_email_notify_failed",
+                    "job_id": jid,
+                    "error": str(notify_exc),
+                },
+                exc_info=True,
+            )
 
 
 def _csv_filter_match(row: dict, q: Optional[str], filters: dict, filter_ops: dict) -> bool:
@@ -3199,9 +3220,9 @@ def _feedback_email_transport() -> str:
     return ""
 
 
-def _feedback_notification_status(recipients: list[str]) -> dict:
+def _email_notification_status(recipients: list[str], disabled_detail: str) -> dict:
     if not FEEDBACK_EMAIL_NOTIFICATIONS_ENABLED:
-        return {"status": "disabled", "detail": "留言板邮件通知已关闭"}
+        return {"status": "disabled", "detail": disabled_detail}
     if not recipients:
         return {"status": "no_recipients", "detail": "没有可通知的收件人"}
     transport = _feedback_email_transport()
@@ -3212,6 +3233,10 @@ def _feedback_notification_status(recipients: list[str]) -> dict:
             "recipients": recipients,
         }
     return {"status": "ready", "detail": "邮件通知可发送", "transport": transport, "recipients": recipients}
+
+
+def _feedback_notification_status(recipients: list[str]) -> dict:
+    return _email_notification_status(recipients, "留言板邮件通知已关闭")
 
 
 def _email_error_message(exc: Exception) -> str:
@@ -3407,6 +3432,178 @@ async def _send_feedback_email_notification(payload: dict):
             "detail": f"邮件通知发送失败: {error}",
             "error": error,
         }
+
+
+def _dedupe_emails(values: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        email = _normalize_email(value, FEEDBACK_MENTION_DOMAIN)
+        if email and email not in seen:
+            seen.add(email)
+            result.append(email)
+    return result
+
+
+def _job_ai_analysis_url(jid: str) -> str:
+    if not PUBLIC_BASE_URL:
+        return ""
+    return f"{PUBLIC_BASE_URL}/#/job/{quote(jid, safe='')}/ai"
+
+
+def _job_ai_report_url(jid: str) -> str:
+    if not PUBLIC_BASE_URL:
+        return ""
+    return f"{PUBLIC_BASE_URL}/api/jobs/{quote(jid, safe='')}/ai-analysis/report.md"
+
+
+def _format_duration_ms_brief(value) -> str:
+    try:
+        ms = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    if ms < 1000:
+        return f"{int(ms)} ms"
+    seconds = int(round(ms / 1000))
+    hours, rem = divmod(seconds, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}小时{minutes}分{secs}秒"
+    if minutes:
+        return f"{minutes}分{secs}秒"
+    return f"{secs}秒"
+
+
+def _ai_analysis_notification_recipients(payload: dict) -> list[str]:
+    values = [payload.get("trigger_user_email", ""), payload.get("owner_user_email", "")]
+    for key in ("trigger_user_token", "owner_user_token"):
+        token = str(payload.get(key) or "").strip()
+        if token and token.lower() not in {"local", "anonymous"}:
+            values.append(token)
+    return _dedupe_emails(values)
+
+
+def _ai_analysis_notification_subject(payload: dict) -> str:
+    status_text = "完成" if payload.get("status") == "done" else "失败"
+    label = payload.get("job_label") or payload.get("job_id") or "AI 分析"
+    return f"[Torch Profiler Analyzer] AI分析{status_text}: {label}"
+
+
+def _ai_analysis_notification_body(payload: dict) -> str:
+    status_text = "完成" if payload.get("status") == "done" else "失败"
+    mode_text = "对比" if payload.get("job_mode") == "compare" else "单 trace"
+    ai_url = payload.get("ai_url") or ""
+    report_url = payload.get("report_url") or ""
+    lines = [
+        f"AI 分析{status_text}",
+        "",
+        f"任务: {payload.get('job_label') or payload.get('job_id') or ''}",
+        f"任务 ID: {payload.get('job_id') or ''}",
+        f"类型: {mode_text}",
+        f"Skill: {payload.get('skill') or ''}",
+        f"触发人: {payload.get('trigger_user_display') or payload.get('trigger_user_token') or 'local'}",
+        f"任务所属人: {payload.get('owner_user_token') or 'local'}",
+        f"状态: {payload.get('status') or ''}",
+        f"开始时间: {payload.get('started_at') or ''}",
+        f"结束时间: {payload.get('finished_at') or ''}",
+        f"总耗时: {_format_duration_ms_brief(payload.get('duration_ms'))}",
+    ]
+    if payload.get("error"):
+        lines.extend(["", "错误:", str(payload.get("error"))])
+    if ai_url:
+        lines.extend(["", f"打开 AI 分析结果: {ai_url}"])
+    else:
+        lines.extend(["", "打开应用的对应任务 AI 分析页查看结果；建议配置 TRACE_PUBLIC_BASE_URL 后生成邮件直达链接。"])
+    if report_url and payload.get("report_exists"):
+        lines.append(f"下载 Markdown 报告: {report_url}")
+    if PUBLIC_BASE_URL:
+        lines.append(f"打开应用: {PUBLIC_BASE_URL}")
+    return "\n".join(lines)
+
+
+async def _send_ai_analysis_email_notification(payload: dict) -> dict:
+    recipients = _ai_analysis_notification_recipients(payload)
+    status = _email_notification_status(recipients, "AI 分析邮件通知已关闭")
+    if status["status"] != "ready":
+        logger.warning(
+            "ai_analysis_email_not_sent",
+            extra={
+                "event": "ai_analysis_email_not_sent",
+                "job_id": payload.get("job_id"),
+                **status,
+            },
+        )
+        return status
+    try:
+        await asyncio.to_thread(
+            _send_email_sync,
+            recipients,
+            _ai_analysis_notification_subject(payload),
+            _ai_analysis_notification_body(payload),
+        )
+        sent_status = {**status, "status": "sent", "detail": "AI 分析邮件通知已发送"}
+        logger.info(
+            "ai_analysis_email_sent",
+            extra={
+                "event": "ai_analysis_email_sent",
+                "job_id": payload.get("job_id"),
+                "analysis_status": payload.get("status"),
+                "recipients": recipients,
+                "transport": status.get("transport", ""),
+            },
+        )
+        return sent_status
+    except Exception as exc:
+        error = _email_error_message(exc)
+        logger.warning(
+            "ai_analysis_email_failed",
+            extra={
+                "event": "ai_analysis_email_failed",
+                "job_id": payload.get("job_id"),
+                "analysis_status": payload.get("status"),
+                "error": error,
+                "recipients": recipients,
+                "transport": status.get("transport", ""),
+            },
+            exc_info=True,
+        )
+        return {
+            **status,
+            "status": "failed",
+            "detail": f"AI 分析邮件通知发送失败: {error}",
+            "error": error,
+        }
+
+
+async def _send_ai_analysis_completion_notification(
+    jid: str,
+    job: dict,
+    status: dict,
+    notification_context: dict,
+) -> dict:
+    if status.get("status") not in {"done", "error"}:
+        return {"status": "skipped", "detail": "AI 分析尚未结束"}
+    timing = _ai_analysis_timing(status)
+    payload = {
+        "job_id": jid,
+        "job_label": notification_context.get("job_label") or job.get("label") or jid,
+        "job_mode": notification_context.get("job_mode") or job.get("mode") or status.get("mode") or "",
+        "owner_user_token": notification_context.get("owner_user_token") or job.get("user_token") or "",
+        "owner_user_email": notification_context.get("owner_user_email") or "",
+        "trigger_user_token": notification_context.get("trigger_user_token") or "",
+        "trigger_user_display": notification_context.get("trigger_user_display") or "",
+        "trigger_user_email": notification_context.get("trigger_user_email") or "",
+        "status": status.get("status") or "",
+        "error": status.get("error") or "",
+        "skill": status.get("skill") or "",
+        "started_at": status.get("started_at") or "",
+        "finished_at": status.get("finished_at") or _utc_now_iso(),
+        "duration_ms": timing.get("duration_ms") or timing.get("elapsed_ms"),
+        "report_exists": os.path.exists(ai_analysis_report_path(jid)),
+        "ai_url": _job_ai_analysis_url(jid),
+        "report_url": _job_ai_report_url(jid),
+    }
+    return await _send_ai_analysis_email_notification(payload)
 
 
 async def _feedback_attachments_for(db, message_ids: list[str]) -> dict:
@@ -5282,6 +5479,7 @@ async def start_job_ai_analysis(request: Request, jid: str, body: Optional[dict]
         raise HTTPException(403, "Claude analysis is disabled")
 
     force = bool((body or {}).get("force"))
+    notification_context = {}
     db = await get_db()
     try:
         row = await load_accessible_job(db, request, jid)
@@ -5298,12 +5496,24 @@ async def start_job_ai_analysis(request: Request, jid: str, body: Optional[dict]
             current["artifacts"] = _collect_ai_analysis_artifacts(jid)
             return current
 
+        user = current_user(request)
+        trigger_user_token = user.get("username") or request_user(request)
+        notification_context = {
+            "job_label": row.get("label") or row.get("file_a_name") or jid,
+            "job_mode": row.get("mode") or "",
+            "owner_user_token": row.get("user_token") or "",
+            "trigger_user_token": trigger_user_token,
+            "trigger_user_display": user.get("display_name") or trigger_user_token or "local",
+            "trigger_user_email": user.get("email") or "",
+        }
         _write_ai_analysis_status(jid, {
             "status": "running",
             "phase": "diagnosing",
             "progress": 5,
             "mode": row.get("mode"),
             "skill": CLAUDE_COMPARE_TRACE_SKILL if row.get("mode") == "compare" else CLAUDE_SINGLE_TRACE_SKILL,
+            "trigger_user_token": notification_context["trigger_user_token"],
+            "owner_user_token": notification_context["owner_user_token"],
             "started_at": _utc_now_iso(),
             "updated_at": _utc_now_iso(),
         })
@@ -5319,7 +5529,7 @@ async def start_job_ai_analysis(request: Request, jid: str, body: Optional[dict]
     finally:
         await db.close()
 
-    task = asyncio.create_task(_run_ai_analysis_task(jid))
+    task = asyncio.create_task(_run_ai_analysis_task(jid, notification_context))
     _track_ai_analysis_task(jid, task)
     payload = collect_ai_analysis(jid)
     payload["content"] = _read_ai_analysis_report(jid) if payload["report_exists"] else ""

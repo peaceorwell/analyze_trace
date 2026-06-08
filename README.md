@@ -2,7 +2,7 @@
 
 Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/内网性能分析工具。它可以解析 `.json`、`.json.gz`、`.gz`、`.json.zip`、`.zip`、`.tar.gz` 和 `.tgz` trace 文件，统计 GPU kernel、Triton kernel、ATen Ops、CNCL/NCCL 通信算子，并提供单 trace 分析、双 trace 对比、历史管理、AI 分析和 Web 可视化界面。
 
-当前版本：`0.2.38`
+当前版本：`0.2.39`
 
 ## 主要功能
 
@@ -162,6 +162,7 @@ AI 分析默认关闭。开启后，已完成任务会出现 `AI 分析` 页签�
 4. 如果诊断通过，调用 Claude Code 和对应 skill 生成 Markdown 分析报告。
 5. 页面显示阶段进度、已耗时/总耗时，渲染 Markdown 报告，并支持复制和下载。
 6. 如果页面不在前台，分析完成或失败时会触发浏览器通知；如果通知权限不可用，会退回到页面 toast 和标题提示。
+7. 如果配置了邮件通道，分析完成或失败后会邮件通知触发人和任务所属人，邮件中包含 `AI 分析` 页直达链接和 Markdown 报告下载链接。
 
 仓库默认使用：
 
@@ -269,14 +270,14 @@ sudo chown -R cambricon:cambricon /data/analyze_trace
 | `TRACE_NO_DOWNLOAD` | 空 | 设置后禁止下载原始 trace |
 | `TRACE_ENABLE_CODE_EXEC` | off | 设置为 `1` 后允许运行 Triton 代码和清除 cache |
 
-留言板邮件通知：
+邮件通知（留言板和 AI 分析）：
 
 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `TRACE_FEEDBACK_ADMIN_EMAILS` | `zhouyusong@cambricon.com` | 新增帖子或回复时默认通知的管理员邮箱，多个用逗号分隔 |
-| `TRACE_FEEDBACK_MENTION_DOMAIN` | `cambricon.com` | 留言中 `@英文名` 映射到邮箱时使用的域名 |
-| `TRACE_DISABLE_FEEDBACK_EMAIL` | off | 设置为 `1` 后关闭留言板邮件通知 |
-| `TRACE_PUBLIC_BASE_URL` | 空 | 对外访问地址；用于邮件里的应用链接和留言深链 |
+| `TRACE_FEEDBACK_MENTION_DOMAIN` | `cambricon.com` | 留言中 `@英文名`、任务 owner 用户名映射到邮箱时使用的域名 |
+| `TRACE_DISABLE_FEEDBACK_EMAIL` | off | 设置为 `1` 后关闭留言板和 AI 分析邮件通知 |
+| `TRACE_PUBLIC_BASE_URL` | 空 | 对外访问地址；用于邮件里的应用链接、留言深链、AI 分析结果链接 |
 | `TRACE_SMTP_HOST` / `SMTP_HOST` | 空 | SMTP 服务器；为空且未显式配置 sendmail 时不发送邮件，页面会提示缺少投递通道 |
 | `TRACE_SMTP_PORT` / `SMTP_PORT` | `25` | SMTP 端口 |
 | `TRACE_SMTP_USERNAME` / `SMTP_USERNAME` | 空 | SMTP 用户名 |
@@ -340,6 +341,7 @@ sudo systemctl status analyze-trace --no-pager
 - 服务输出 JSON 请求日志，字段包含 `request_id`、用户、IP、方法、路径、状态码和耗时；时间戳默认使用 `Asia/Shanghai`，可通过 `TRACE_LOG_TIMEZONE` 调整。
 - 设置 `TRACE_LOG_FILE` 后会同时写入 JSONL 文件。
 - 留言板发布帖子或回复会额外写入 `feedback_created` 业务日志，包含留言类型、作者、IP、图片数、@ 收件人和邮件通知状态；邮件发送成功/失败会写入 `feedback_email_sent` / `feedback_email_failed`。
+- AI 分析结束后会写入 `ai_analysis_email_sent` / `ai_analysis_email_failed` / `ai_analysis_email_not_sent`，用于确认触发人和任务所属人的完成通知是否成功发送。
 - 关键操作会写入 SQLite 的 `audit_logs` 表。
 - 可通过 `GET /api/audit-logs?limit=100` 查看审计记录。
 
@@ -388,7 +390,7 @@ nc -vz <smtp-host> <smtp-port>
 
 - `SMTP 主机无法解析`：`TRACE_SMTP_HOST` 不是可解析的真实 SMTP 地址，或服务器 DNS 不通。
 - `SMTP 拒收发件人`：`TRACE_SMTP_FROM` 没有被 SMTP 中继允许；建议申请 `trace-analyzer@cambricon.com` 公共邮箱或让 IT 将该发件人加入白名单。
-- 发布成功但收不到邮件：在留言板点击管理员可见的 `邮件诊断`，并检查日志中的 `feedback_email_sent` / `feedback_email_failed`。
+- 发布成功或 AI 分析完成后收不到邮件：在留言板点击管理员可见的 `邮件诊断`，并检查日志中的 `feedback_email_sent` / `feedback_email_failed`、`ai_analysis_email_sent` / `ai_analysis_email_failed`。
 
 AI 分析排障：
 

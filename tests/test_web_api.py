@@ -61,7 +61,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.38",
+        "version": "0.2.39",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -246,6 +246,85 @@ def test_ai_analysis_runs_configured_command(client, isolated_server, tmp_path, 
     assert detail["ai_analysis"]["status"] == "done"
     assert detail["ai_analysis"]["report_exists"] is True
     assert detail["ai_analysis"]["duration_ms"] >= 0
+
+
+def test_ai_analysis_completion_sends_email_with_result_link(client, isolated_server, tmp_path, monkeypatch):
+    trace_path = tmp_path / "trace.pt.trace.json.gz"
+    with gzip.open(trace_path, "wt", encoding="utf-8") as f:
+        f.write("{}")
+
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO jobs(id, user_token, label, mode, status, file_a_name, file_a_gzip_path)
+                VALUES(?,?,?,?,?,?,?)
+                """,
+                (
+                    "ai-mail-job",
+                    "owner",
+                    "AI mail job",
+                    "single",
+                    "done",
+                    "trace.pt.trace.json.gz",
+                    str(trace_path),
+                ),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+    Path(web_server.result_dir("ai-mail-job")).mkdir(parents=True, exist_ok=True)
+
+    sent = []
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_ENABLED", True)
+    monkeypatch.setattr(web_server, "PUBLIC_BASE_URL", "http://trace.example")
+    monkeypatch.setattr(web_server, "SMTP_HOST", "smtp.test")
+    monkeypatch.setattr(web_server, "SENDMAIL_COMMAND", "")
+    monkeypatch.setattr(
+        web_server,
+        "_send_email_sync",
+        lambda recipients, subject, body: sent.append({
+            "recipients": recipients,
+            "subject": subject,
+            "body": body,
+        }),
+    )
+    monkeypatch.setattr(
+        web_server,
+        "CLAUDE_ANALYSIS_COMMAND_TEMPLATE",
+        _fake_claude_template(
+            tmp_path,
+            """
+            pathlib.Path(os.environ['TRACE_AI_REPORT_PATH']).write_text('# Final Report\\n', encoding='utf-8')
+            print('# AI OK')
+            """,
+        ),
+    )
+
+    started = client.post(
+        "/api/jobs/ai-mail-job/ai-analysis",
+        json={},
+        headers={"X-Remote-User": "runner"},
+    )
+
+    assert started.status_code == 202
+
+    payload = {}
+    for _ in range(100):
+        payload = client.get("/api/jobs/ai-mail-job/ai-analysis").json()
+        if payload["status"] != "running" and sent:
+            break
+        time.sleep(0.05)
+
+    assert payload["status"] == "done"
+    assert len(sent) == 1
+    assert sent[0]["recipients"] == ["runner@cambricon.com", "owner@cambricon.com"]
+    assert "AI分析完成" in sent[0]["subject"]
+    assert "打开 AI 分析结果: http://trace.example/#/job/ai-mail-job/ai" in sent[0]["body"]
+    assert "下载 Markdown 报告: http://trace.example/api/jobs/ai-mail-job/ai-analysis/report.md" in sent[0]["body"]
 
 
 def test_ai_analysis_mounts_configured_claude_skills(client, tmp_path, monkeypatch):
