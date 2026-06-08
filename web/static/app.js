@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.37");
+const appVersion = ref("0.2.38");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -829,7 +829,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.37";
+  appVersion.value = cfg.version || "0.2.38";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -4419,7 +4419,7 @@ const Home = {
         </button>
       </div>
       <div class="empty-main-tips">
-        <div class="empty-tip-item">支持 .json.gz、.json.zip、.json、.tar.gz、.tgz，默认下载保留压缩格式</div>
+        <div class="empty-tip-item">支持 .json.gz、.gz、.json.zip、.zip、.json、.tar.gz、.tgz，默认下载为 .json.gz</div>
         <div class="empty-tip-item">建议 trace 中开启 triton code 保存功能，后续可直接查看和运行 Triton kernel</div>
       </div>
     </div>

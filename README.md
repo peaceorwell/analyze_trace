@@ -1,8 +1,8 @@
 # Torch Profiler Analyzer
 
-Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/内网性能分析工具。它可以解析 `.json`、`.json.gz`、`.json.zip`、`.tar.gz` 和 `.tgz` trace 文件，统计 GPU kernel、Triton kernel、ATen Ops、CNCL/NCCL 通信算子，并提供单 trace 分析、双 trace 对比、历史管理、AI 分析和 Web 可视化界面。
+Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/内网性能分析工具。它可以解析 `.json`、`.json.gz`、`.gz`、`.json.zip`、`.zip`、`.tar.gz` 和 `.tgz` trace 文件，统计 GPU kernel、Triton kernel、ATen Ops、CNCL/NCCL 通信算子，并提供单 trace 分析、双 trace 对比、历史管理、AI 分析和 Web 可视化界面。
 
-当前版本：`0.2.37`
+当前版本：`0.2.38`
 
 ## 主要功能
 
@@ -16,7 +16,7 @@ Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/
 - Claude Code AI 分析支持单 trace 和对比 trace，生成 Markdown 报告并在页面渲染，也可下载报告、查看进度和总耗时。
 - AI 分析开始前会自动做环境诊断；如果诊断失败，会展示具体诊断明细。
 - AI 分析耗时较长时，浏览器后台或切到其他应用后，完成/失败会通过浏览器通知或页面标题提醒。
-- 改进留言板支持发帖、图片附件、帖子内回复、`@` 人员候选、列表排序、邮件通知，管理员可删除帖子和回复。
+- 改进留言板支持发帖、图片附件、帖子内回复、`@` 人员候选、列表排序和邮件通知；邮件可直达对应帖子/回复，管理员可删除帖子和回复并执行邮件诊断。
 - 可选 LDAP 登录、用户隔离、共享项目和管理员权限。
 - 提供 JSON 日志、审计日志、备份脚本、健康检查和 Prometheus 指标。
 
@@ -95,11 +95,13 @@ Web 首页有两种上传模式：
 
 - `.json`
 - `.json.gz`
+- `.gz`
 - `.json.zip`
+- `.zip`
 - `.tar.gz`
 - `.tgz`
 
-上传时可以选择项目和填写别名。服务端内部会保留压缩格式；下载原始 trace 时默认提供 `.json.gz`，便于保存大文件并保持工具兼容性。
+上传时可以选择项目和填写别名。压缩包中会自动提取可用 JSON trace；服务端内部会统一保留压缩副本。下载原始 trace 时默认提供 `.json.gz`，便于保存大文件并保持工具兼容性。
 
 ### 结果页
 
@@ -147,7 +149,8 @@ Web 首页有两种上传模式：
 - 进入帖子后可在帖子内回复交流。
 - 帖子列表默认按最新更新时间排序，也可切换为发布时间或热度排序。
 - 新增帖子或回复会邮件通知管理员；正文里输入 `@英文名` 时会弹出候选，选择后自动补全，并额外通知 `英文名@cambricon.com`。
-- 管理员可以删除帖子和回复。
+- 邮件正文包含 `打开留言` 链接，可直达对应帖子或回复；这需要配置 `TRACE_PUBLIC_BASE_URL`。
+- 管理员可以删除帖子和回复，也可以在留言板中点击 `邮件诊断` 检查 SMTP/sendmail、DNS、端口连通性和收件人配置。
 
 ## Claude Code AI 分析
 
@@ -273,12 +276,12 @@ sudo chown -R cambricon:cambricon /data/analyze_trace
 | `TRACE_FEEDBACK_ADMIN_EMAILS` | `zhouyusong@cambricon.com` | 新增帖子或回复时默认通知的管理员邮箱，多个用逗号分隔 |
 | `TRACE_FEEDBACK_MENTION_DOMAIN` | `cambricon.com` | 留言中 `@英文名` 映射到邮箱时使用的域名 |
 | `TRACE_DISABLE_FEEDBACK_EMAIL` | off | 设置为 `1` 后关闭留言板邮件通知 |
-| `TRACE_PUBLIC_BASE_URL` | 空 | 邮件中展示的应用访问地址 |
+| `TRACE_PUBLIC_BASE_URL` | 空 | 对外访问地址；用于邮件里的应用链接和留言深链 |
 | `TRACE_SMTP_HOST` / `SMTP_HOST` | 空 | SMTP 服务器；为空且未显式配置 sendmail 时不发送邮件，页面会提示缺少投递通道 |
 | `TRACE_SMTP_PORT` / `SMTP_PORT` | `25` | SMTP 端口 |
 | `TRACE_SMTP_USERNAME` / `SMTP_USERNAME` | 空 | SMTP 用户名 |
 | `TRACE_SMTP_PASSWORD` / `SMTP_PASSWORD` | 空 | SMTP 密码 |
-| `TRACE_SMTP_FROM` | `trace-analyzer@cambricon.com` | 发件人地址 |
+| `TRACE_SMTP_FROM` | `trace-analyzer@cambricon.com` | 发件人地址；建议申请同名公共邮箱或由 SMTP 中继允许该地址发信 |
 | `TRACE_SMTP_SSL` / `SMTP_SSL` | off | 使用 SMTP SSL |
 | `TRACE_SMTP_STARTTLS` / `SMTP_STARTTLS` | off | 使用 STARTTLS |
 | `TRACE_SMTP_TIMEOUT_SECONDS` | `10` | SMTP 连接超时 |
@@ -300,6 +303,7 @@ TRACE_PUBLIC_BASE_URL=http://172.16.130.149:1818
 # 向 IT 确认真正可解析、可连通的 SMTP 主机；不要直接使用占位示例
 TRACE_SMTP_HOST=<it-provided-smtp-host>
 TRACE_SMTP_PORT=25
+TRACE_SMTP_FROM=trace-analyzer@cambricon.com
 TRACE_FEEDBACK_ADMIN_EMAILS=zhouyusong@cambricon.com
 ```
 
@@ -335,7 +339,7 @@ sudo systemctl status analyze-trace --no-pager
 
 - 服务输出 JSON 请求日志，字段包含 `request_id`、用户、IP、方法、路径、状态码和耗时；时间戳默认使用 `Asia/Shanghai`，可通过 `TRACE_LOG_TIMEZONE` 调整。
 - 设置 `TRACE_LOG_FILE` 后会同时写入 JSONL 文件。
-- 留言板发布帖子或回复会额外写入 `feedback_created` 业务日志，包含留言类型、作者、IP、图片数、@ 收件人和邮件通知状态。
+- 留言板发布帖子或回复会额外写入 `feedback_created` 业务日志，包含留言类型、作者、IP、图片数、@ 收件人和邮件通知状态；邮件发送成功/失败会写入 `feedback_email_sent` / `feedback_email_failed`。
 - 关键操作会写入 SQLite 的 `audit_logs` 表。
 - 可通过 `GET /api/audit-logs?limit=100` 查看审计记录。
 
@@ -361,6 +365,36 @@ uv run python web/backup.py \
 | `/metrics` | Prometheus 文本指标 |
 
 `/metrics` 包含请求量、请求耗时、任务状态数量、分析队列长度、磁盘容量和最近一次备份信息。
+
+### 常见排障
+
+服务状态和日志：
+
+```bash
+sudo systemctl status analyze-trace --no-pager
+sudo journalctl -u analyze-trace -n 100 --no-pager
+curl -fsS http://127.0.0.1:8181/healthz
+curl -fsS http://127.0.0.1:8181/readyz
+```
+
+如果服务反复重启，优先检查 `TRACE_STORAGE_DIR`、`TRACE_LOG_FILE`、`TRACE_BACKUP_DIR` 对服务运行用户是否可写。
+
+邮件通知排障：
+
+```bash
+getent hosts <smtp-host>
+nc -vz <smtp-host> <smtp-port>
+```
+
+- `SMTP 主机无法解析`：`TRACE_SMTP_HOST` 不是可解析的真实 SMTP 地址，或服务器 DNS 不通。
+- `SMTP 拒收发件人`：`TRACE_SMTP_FROM` 没有被 SMTP 中继允许；建议申请 `trace-analyzer@cambricon.com` 公共邮箱或让 IT 将该发件人加入白名单。
+- 发布成功但收不到邮件：在留言板点击管理员可见的 `邮件诊断`，并检查日志中的 `feedback_email_sent` / `feedback_email_failed`。
+
+AI 分析排障：
+
+- 在服务运行用户下执行 `command -v claude && claude --version`，确认 `TRACE_CLAUDE_COMMAND` 指向正确。
+- AI 页签中的 `环境诊断` 会检查 Claude 命令、skills 目录、基础调用和工具权限；未通过时先按页面诊断明细修复。
+- 如果通过终端能调用 Claude，但服务中失败，重点检查 systemd 的 `EnvironmentFile`、服务用户的 `HOME`、`.claude` 登录状态和目录写权限。
 
 ## Docker
 
