@@ -69,7 +69,9 @@ The final `report.md` should use this exact high-level structure:
 
 1. `# AI 性能分析报告`
 2. `## 结论概览`
-   - 3-6 bullets. Start each bullet with `结论`, `证据`, and `建议` fragments when possible.
+   - 3-6 prioritized findings.
+   - Use one subsection per finding: `### 发现 N：short title`, followed by separate paragraphs `**结论：** ...`, `**证据：** ...`, and `**建议：** ...`.
+   - Do not output sibling bullets like `- 结论` / `- 证据` / `- 建议`; that renders as a flat wall in the Web UI.
 3. `## 关键指标`
    - Compact Markdown table with metric, value, source file/log, and interpretation.
 4. `## 主要发现`

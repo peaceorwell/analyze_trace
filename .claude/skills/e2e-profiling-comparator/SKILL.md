@@ -33,7 +33,9 @@ The final `report.md` should use this exact high-level structure:
 
 1. `# AI 对比分析报告`
 2. `## 结论概览`
-   - 3-6 bullets focused on regressions first, then meaningful improvements.
+   - 3-6 prioritized findings focused on regressions first, then meaningful improvements.
+   - Use one subsection per finding: `### 发现 N：short title`, followed by separate paragraphs `**结论：** ...`, `**证据：** ...`, and `**建议：** ...`.
+   - Do not output sibling bullets like `- 结论` / `- 证据` / `- 建议`; that renders as a flat wall in the Web UI.
 3. `## 对比口径`
    - Baseline/current files, selected windows, devices, and `Delta = B - A`.
 4. `## 关键 Delta`

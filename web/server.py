@@ -48,7 +48,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.39"
+APP_VERSION = "0.2.40"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
 FEEDBACK_DIRNAME = "feedback"
@@ -1392,8 +1392,108 @@ def collect_ai_analysis(jid: str) -> dict:
     }
 
 
+_AI_FINDING_BULLET_RE = re.compile(
+    r"^\s{0,3}[-*+]\s+(?:\*\*)?(结论|证据|建议)(?:\*\*)?\s*[:：]\s*(.*?)\s*$"
+)
+
+
+def _format_ai_finding_blocks(items: list[tuple[str, str]]) -> Optional[list[str]]:
+    if len(items) < 3:
+        return None
+    entries: list[dict[str, list[str]]] = []
+    current: dict[str, list[str]] = {}
+    for label, text in items:
+        if label == "结论" and current:
+            entries.append(current)
+            current = {}
+        current.setdefault(label, []).append(text)
+    if current:
+        entries.append(current)
+
+    meaningful = [
+        entry for entry in entries
+        if entry.get("结论") and (entry.get("证据") or entry.get("建议"))
+    ]
+    if not meaningful:
+        return None
+
+    lines: list[str] = []
+    for idx, entry in enumerate(entries, 1):
+        conclusion = (entry.get("结论") or ["关键问题"])[0].strip()
+        title = re.sub(r"[。；;，,.\s]+$", "", conclusion)
+        if len(title) > 52:
+            title = title[:52].rstrip() + "..."
+        lines.extend([f"### 发现 {idx}：{title or '关键问题'}", ""])
+        for label in ("结论", "证据", "建议"):
+            values = [value.strip() for value in entry.get(label, []) if value.strip()]
+            if not values:
+                continue
+            if len(values) == 1:
+                lines.append(f"**{label}：** {values[0]}")
+            else:
+                lines.append(f"**{label}：**")
+                lines.extend(f"- {value}" for value in values)
+            lines.append("")
+    while lines and not lines[-1]:
+        lines.pop()
+    return lines
+
+
+def _normalize_ai_report_markdown(content: str) -> str:
+    if not content:
+        return ""
+    source = str(content).replace("\r\n", "\n").replace("\r", "\n")
+    lines = source.split("\n")
+    output: list[str] = []
+    in_fence = False
+    i = 0
+    while i < len(lines):
+        stripped = lines[i].strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            output.append(lines[i])
+            i += 1
+            continue
+        if in_fence:
+            output.append(lines[i])
+            i += 1
+            continue
+
+        match = _AI_FINDING_BULLET_RE.match(lines[i])
+        if not match:
+            output.append(lines[i])
+            i += 1
+            continue
+
+        start = i
+        items: list[tuple[str, str]] = []
+        while i < len(lines):
+            bullet = _AI_FINDING_BULLET_RE.match(lines[i])
+            if bullet:
+                items.append((bullet.group(1), bullet.group(2).strip()))
+                i += 1
+                continue
+            if not lines[i].strip() and i + 1 < len(lines) and _AI_FINDING_BULLET_RE.match(lines[i + 1]):
+                i += 1
+                continue
+            break
+
+        formatted = _format_ai_finding_blocks(items)
+        if not formatted:
+            output.extend(lines[start:i])
+            continue
+        if output and output[-1].strip():
+            output.append("")
+        output.extend(formatted)
+        if i < len(lines) and lines[i].strip():
+            output.append("")
+
+    normalized = "\n".join(output).rstrip()
+    return normalized + ("\n" if source.endswith("\n") else "")
+
+
 def _read_ai_analysis_report(jid: str) -> str:
-    return _read_text_file(ai_analysis_report_path(jid))
+    return _normalize_ai_report_markdown(_read_text_file(ai_analysis_report_path(jid)))
 
 
 class _SafeFormatDict(dict):
@@ -1964,7 +2064,9 @@ def _render_claude_prompt(job: dict, trace_inputs: dict, skill: str, report_path
     lines.extend([
         "",
         "报告要求:",
-        "- 先给出 3-6 条关键结论，说明主要性能热点、回退或改善点。",
+        "- 先给出 3-6 个关键发现，说明主要性能热点、回退或改善点。",
+        "- `## 结论概览` 不要输出平铺的 `- 结论` / `- 证据` / `- 建议` 同级列表。",
+        "- 每个关键发现请使用 `### 发现 N：一句话标题`，下面分别写 `**结论：** ...`、`**证据：** ...`、`**建议：** ...`。",
         "- 尽量引用现有 CSV / console 摘要 / trace 中的可验证数字。",
         "- 对不确定结论明确写出依据和不确定性。",
         "- 最后给出可执行优化建议，按收益和排查成本排序。",
@@ -2169,7 +2271,7 @@ async def _run_ai_analysis_task(jid: str, notification_context: Optional[dict] =
             )
         if not content:
             content = "Claude command completed, but no report content was produced."
-        _write_ai_report(report_path, content)
+        _write_ai_report(report_path, _normalize_ai_report_markdown(content))
         _write_ai_analysis_status(jid, {
             **status,
             "status": "done",

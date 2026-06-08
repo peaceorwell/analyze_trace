@@ -61,7 +61,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.39",
+        "version": "0.2.40",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -106,6 +106,30 @@ def test_ai_analysis_is_disabled_by_default(client):
     r = client.post("/api/jobs/ai-disabled-job/ai-analysis", json={})
 
     assert r.status_code == 403
+
+
+def test_ai_report_normalizes_flat_conclusion_evidence_advice_list(isolated_server):
+    raw = """
+# AI 性能分析报告
+
+## 结论概览
+
+- 结论：设备利用率低，compute gap 是主要瓶颈。
+- 证据：gap_summary.py 显示 gap 占比 38%。
+- 建议：优先用 MLU Graph 捕获稳定序列。
+- 结论：小 kernel 启动开销偏高。
+- 证据：867 个 kernel 平均 0.016 ms。
+- 建议：合并 LayerNorm 与激活相关小 kernel。
+""".lstrip()
+
+    normalized = isolated_server._normalize_ai_report_markdown(raw)
+
+    assert "### 发现 1：设备利用率低，compute gap 是主要瓶颈" in normalized
+    assert "**结论：** 设备利用率低，compute gap 是主要瓶颈。" in normalized
+    assert "**证据：** gap_summary.py 显示 gap 占比 38%。" in normalized
+    assert "**建议：** 优先用 MLU Graph 捕获稳定序列。" in normalized
+    assert "### 发现 2：小 kernel 启动开销偏高" in normalized
+    assert "- 证据：" not in normalized
 
 
 def test_claude_command_normalizes_legacy_permission_args(isolated_server, monkeypatch):
