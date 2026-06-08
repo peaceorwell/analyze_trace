@@ -15,6 +15,7 @@ import secrets
 import shlex
 import shutil
 import smtplib
+import socket
 import subprocess
 import sys
 import tarfile
@@ -46,7 +47,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.35"
+APP_VERSION = "0.2.36"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
 FEEDBACK_DIRNAME = "feedback"
@@ -2884,6 +2885,13 @@ async def get_config():
     }
 
 
+@app.get("/api/email/diagnostics")
+async def email_diagnostics(request: Request):
+    if AUTH_ENABLED:
+        require_admin(request)
+    return await asyncio.to_thread(_run_email_diagnostics_payload)
+
+
 @app.get("/api/me")
 async def get_me(request: Request):
     user = current_user(request)
@@ -3193,12 +3201,100 @@ def _feedback_notification_status(recipients: list[str]) -> dict:
 
 
 def _email_error_message(exc: Exception) -> str:
+    if isinstance(exc, socket.gaierror):
+        host = SMTP_HOST or "未配置"
+        return f"SMTP 主机无法解析: {host}。请确认 TRACE_SMTP_HOST 是 IT 提供的真实 SMTP 地址，并检查服务器 DNS。原始错误: {exc}"
+    if isinstance(exc, (socket.timeout, TimeoutError)):
+        return f"连接邮件服务器超时: {SMTP_HOST}:{SMTP_PORT}。请确认服务器网络和 SMTP 端口可达。"
+    if isinstance(exc, ConnectionRefusedError):
+        return f"邮件服务器拒绝连接: {SMTP_HOST}:{SMTP_PORT}。请确认 SMTP 端口、SSL/STARTTLS 配置是否正确。"
+    if isinstance(exc, smtplib.SMTPAuthenticationError):
+        return "SMTP 认证失败。请确认 TRACE_SMTP_USERNAME / TRACE_SMTP_PASSWORD 是否正确。"
+    if isinstance(exc, smtplib.SMTPRecipientsRefused):
+        return "SMTP 拒收所有收件人。请确认收件人邮箱或 SMTP 中继策略。"
+    if isinstance(exc, smtplib.SMTPSenderRefused):
+        return "SMTP 拒收发件人。请确认 TRACE_SMTP_FROM 是否被允许发信。"
+    if isinstance(exc, smtplib.SMTPException):
+        return f"SMTP 发送失败: {exc}"
     if isinstance(exc, subprocess.CalledProcessError):
         stderr = (exc.stderr or b"").decode("utf-8", errors="replace").strip()
         stdout = (exc.stdout or b"").decode("utf-8", errors="replace").strip()
         detail = stderr or stdout or str(exc)
         return detail[:500]
     return str(exc)[:500]
+
+
+def _email_diag_check(status: str, label: str, detail: str = "", **extra) -> dict:
+    return {"status": status, "label": label, "detail": detail, **extra}
+
+
+def _run_email_diagnostics_payload() -> dict:
+    checks: list[dict] = []
+    transport = _feedback_email_transport()
+    checks.append(_email_diag_check(
+        "ok" if FEEDBACK_EMAIL_NOTIFICATIONS_ENABLED else "fail",
+        "邮件通知开关",
+        "已启用" if FEEDBACK_EMAIL_NOTIFICATIONS_ENABLED else "已通过 TRACE_DISABLE_FEEDBACK_EMAIL 关闭",
+    ))
+    checks.append(_email_diag_check(
+        "ok" if FEEDBACK_NOTIFICATION_ADMIN_EMAILS else "warn",
+        "默认管理员收件人",
+        ", ".join(FEEDBACK_NOTIFICATION_ADMIN_EMAILS) if FEEDBACK_NOTIFICATION_ADMIN_EMAILS else "未配置 TRACE_FEEDBACK_ADMIN_EMAILS",
+    ))
+
+    if SMTP_HOST:
+        checks.append(_email_diag_check("ok", "邮件通道", f"SMTP {SMTP_HOST}:{SMTP_PORT}"))
+        try:
+            addr_infos = socket.getaddrinfo(SMTP_HOST, SMTP_PORT, type=socket.SOCK_STREAM)
+            addresses = sorted({info[4][0] for info in addr_infos})
+            checks.append(_email_diag_check("ok", "SMTP DNS 解析", ", ".join(addresses[:6]) or "解析成功"))
+        except Exception as exc:
+            checks.append(_email_diag_check("fail", "SMTP DNS 解析", _email_error_message(exc)))
+            return {
+                "ok": False,
+                "transport": "smtp",
+                "smtp_host": SMTP_HOST,
+                "smtp_port": SMTP_PORT,
+                "checks": checks,
+            }
+
+        try:
+            with socket.create_connection((SMTP_HOST, SMTP_PORT), timeout=min(SMTP_TIMEOUT_SECONDS, 8)):
+                pass
+            checks.append(_email_diag_check("ok", "SMTP TCP 连通性", f"{SMTP_HOST}:{SMTP_PORT} 可连接"))
+        except Exception as exc:
+            checks.append(_email_diag_check("fail", "SMTP TCP 连通性", _email_error_message(exc)))
+    elif SENDMAIL_COMMAND:
+        exists = os.path.exists(SENDMAIL_COMMAND)
+        executable = os.access(SENDMAIL_COMMAND, os.X_OK)
+        checks.append(_email_diag_check(
+            "ok" if exists and executable else "fail",
+            "sendmail 命令",
+            SENDMAIL_COMMAND if exists and executable else f"{SENDMAIL_COMMAND} 不存在或不可执行",
+        ))
+        checks.append(_email_diag_check(
+            "warn",
+            "sendmail 投递能力",
+            "只能确认命令存在，仍需在服务器上确认该 sendmail 能外发到公司邮箱。",
+        ))
+    else:
+        checks.append(_email_diag_check(
+            "fail",
+            "邮件通道",
+            "未配置 TRACE_SMTP_HOST 或 TRACE_SENDMAIL_COMMAND",
+        ))
+
+    return {
+        "ok": all(item["status"] != "fail" for item in checks),
+        "transport": transport,
+        "smtp_host": SMTP_HOST,
+        "smtp_port": SMTP_PORT,
+        "smtp_ssl": SMTP_USE_SSL,
+        "smtp_starttls": SMTP_USE_STARTTLS,
+        "smtp_from": SMTP_FROM,
+        "sendmail_command": SENDMAIL_COMMAND,
+        "checks": checks,
+    }
 
 
 def _send_email_sync(to_addrs: list[str], subject: str, body: str):

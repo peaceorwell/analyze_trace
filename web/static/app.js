@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.31");
+const appVersion = ref("0.2.36");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -390,6 +390,8 @@ const feedbackForm = ref({ body: "", files: [], previews: [] });
 const feedbackReplies = ref({});
 const selectedFeedbackPostId = ref("");
 const feedbackDetailLoading = ref(false);
+const feedbackEmailDiagLoading = ref(false);
+const feedbackEmailDiagResult = ref(null);
 const feedbackMention = ref({
   visible: false,
   loading: false,
@@ -826,7 +828,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.35";
+  appVersion.value = cfg.version || "0.2.36";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -1258,6 +1260,25 @@ const showFeedbackSubmitResult = (payload, fallbackMessage) => {
   }
   const detail = notification.detail || "邮件通知未发送";
   showToast(`${fallbackMessage}，但${detail}`, "error", 8000);
+};
+
+const runFeedbackEmailDiagnostics = async () => {
+  feedbackEmailDiagLoading.value = true;
+  try {
+    const r = await fetch("/api/email/diagnostics", { credentials: "include" });
+    const payload = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(payload.detail || `HTTP ${r.status}`);
+    feedbackEmailDiagResult.value = payload;
+    showToast(payload.ok ? "邮件环境诊断通过" : "邮件环境诊断未通过", payload.ok ? "success" : "error", 5000);
+  } catch (e) {
+    feedbackEmailDiagResult.value = {
+      ok: false,
+      checks: [{ status: "fail", label: "诊断请求", detail: e.message || "邮件诊断失败" }],
+    };
+    showToast(e.message || "邮件诊断失败", "error", 7000);
+  } finally {
+    feedbackEmailDiagLoading.value = false;
+  }
 };
 
 const setFeedbackSort = async sortKey => {
@@ -5257,6 +5278,7 @@ const App = {
       showFeedbackBoard, showFeedbackComposer, feedbackItems, feedbackTotal, feedbackLoading,
       feedbackSort, feedbackSortOptions,
       feedbackSubmitting, feedbackForm, feedbackReplies, feedbackHasMore,
+      feedbackEmailDiagLoading, feedbackEmailDiagResult, runFeedbackEmailDiagnostics,
       feedbackMention, handleFeedbackMentionInput, handleFeedbackMentionKeydown, selectFeedbackMention,
       selectedFeedbackPostId, selectedFeedbackPost, feedbackDetailLoading,
       feedbackPostTitle, feedbackPostExcerpt, feedbackPostReplyCount, feedbackPostActivity,

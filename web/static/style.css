@@ -1479,6 +1479,72 @@ body.result-reading-active { overflow: hidden; }
   gap: 6px;
   flex-wrap: wrap;
 }
+.feedback-email-diag {
+  margin: 0 0 10px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+.feedback-email-diag.ok {
+  border-color: rgba(34,197,94,.30);
+  background: rgba(34,197,94,.07);
+}
+.feedback-email-diag.fail {
+  border-color: rgba(239,68,68,.30);
+  background: rgba(239,68,68,.07);
+}
+.feedback-email-diag-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  color: var(--text1);
+  font-size: 12px;
+}
+.feedback-email-diag-head span {
+  color: var(--text2);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.feedback-email-diag-checks {
+  display: grid;
+  gap: 5px;
+  margin-top: 7px;
+}
+.feedback-email-diag-check {
+  display: grid;
+  grid-template-columns: 48px 120px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  color: var(--text2);
+  font-size: 12px;
+}
+.feedback-email-diag-check strong {
+  color: var(--text1);
+}
+.feedback-email-diag-check .diag-status {
+  width: 42px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  text-align: center;
+  font-size: 10px;
+  font-weight: 800;
+  color: var(--text2);
+  background: var(--card);
+}
+.feedback-email-diag-check.ok .diag-status {
+  color: #16a34a;
+  background: rgba(34,197,94,.14);
+}
+.feedback-email-diag-check.warn .diag-status {
+  color: #b45309;
+  background: rgba(245,158,11,.16);
+}
+.feedback-email-diag-check.fail .diag-status {
+  color: #dc2626;
+  background: rgba(239,68,68,.15);
+}
 .feedback-board-shell {
   display: flex;
   min-height: 0;

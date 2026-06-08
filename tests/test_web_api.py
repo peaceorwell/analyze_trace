@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import shlex
+import socket
 import sys
 import tarfile
 import textwrap
@@ -60,7 +61,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.35",
+        "version": "0.2.36",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -703,6 +704,15 @@ def test_feedback_create_reports_email_send_failure(client, isolated_server, mon
     assert "smtp rejected" in notification["detail"]
 
 
+def test_feedback_email_error_explains_dns_failure(isolated_server, monkeypatch):
+    monkeypatch.setattr(isolated_server, "SMTP_HOST", "smtp.invalid.local")
+
+    message = isolated_server._email_error_message(socket.gaierror(-2, "Name or service not known"))
+
+    assert "SMTP 主机无法解析" in message
+    assert "smtp.invalid.local" in message
+
+
 def test_feedback_create_reports_missing_email_transport(client, isolated_server, monkeypatch):
     monkeypatch.setattr(isolated_server, "FEEDBACK_NOTIFICATION_ADMIN_EMAILS", ["admin@cambricon.com"])
     monkeypatch.setattr(isolated_server, "SMTP_HOST", "")
@@ -718,6 +728,28 @@ def test_feedback_create_reports_missing_email_transport(client, isolated_server
     notification = response.json()["notification"]
     assert notification["status"] == "missing_transport"
     assert notification["recipients"] == ["admin@cambricon.com"]
+
+
+def test_email_diagnostics_reports_smtp_dns_failure(client, isolated_server, monkeypatch):
+    monkeypatch.setattr(isolated_server, "SMTP_HOST", "smtp.invalid.local")
+    monkeypatch.setattr(isolated_server, "SMTP_PORT", 25)
+    monkeypatch.setattr(isolated_server, "SENDMAIL_COMMAND", "")
+
+    def fail_getaddrinfo(*args, **kwargs):
+        raise socket.gaierror(-2, "Name or service not known")
+
+    monkeypatch.setattr(isolated_server.socket, "getaddrinfo", fail_getaddrinfo)
+
+    response = client.get("/api/email/diagnostics")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["transport"] == "smtp"
+    dns_checks = [item for item in payload["checks"] if item["label"] == "SMTP DNS 解析"]
+    assert dns_checks
+    assert dns_checks[0]["status"] == "fail"
+    assert "SMTP 主机无法解析" in dns_checks[0]["detail"]
 
 
 def test_mention_candidates_use_local_feedback_authors(client):
