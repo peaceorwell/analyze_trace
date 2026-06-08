@@ -2,7 +2,7 @@
 
 Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/内网性能分析工具。它可以解析 `.json`、`.json.gz`、`.gz`、`.json.zip`、`.zip`、`.tar.gz` 和 `.tgz` trace 文件，统计 GPU kernel、Triton kernel、ATen Ops、CNCL/NCCL 通信算子，并提供单 trace 分析、双 trace 对比、历史管理、AI 分析和 Web 可视化界面。
 
-当前版本：`0.2.48`
+当前版本：`0.2.49`
 
 ## 主要功能
 
@@ -148,7 +148,7 @@ Web 首页有两种上传模式：
 - 用户可以发布帖子，支持文字和最多 4 张图片。
 - 进入帖子后可在帖子内回复交流。
 - 帖子列表默认按最新更新时间排序，也可切换为发布时间或热度排序。
-- 新增帖子或回复会邮件通知管理员；正文里输入 `@英文名` 时会弹出候选，选择后自动补全，并额外通知 `英文名@cambricon.com`。
+- 新增帖子或回复会邮件通知管理员；正文支持 Emoji 和常用表情快捷插入，输入 `@英文名` 时会弹出候选，选择后自动补全，并额外通知 `英文名@cambricon.com`。
 - 邮件正文包含 `打开留言` 链接，可直达对应帖子或回复；这需要配置 `TRACE_PUBLIC_BASE_URL`。
 - 管理员可以删除帖子和回复，也可以在留言板中点击 `邮件诊断` 检查 SMTP/sendmail、DNS、端口连通性和收件人配置。
 

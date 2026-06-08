@@ -62,7 +62,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.48",
+        "version": "0.2.49",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -1092,7 +1092,10 @@ def test_feedback_notification_body_includes_deep_link(isolated_server, monkeypa
 
     assert "打开留言: http://trace.example/#/feedback/post-1" in post_body
     assert "打开留言: http://trace.example/#/feedback/post-1?message=reply-2" in reply_body
-    assert "打开应用: http://trace.example" in reply_body
+    assert "打开应用:" not in reply_body
+    assert "帖子 ID:" not in reply_body
+    assert "消息 ID:" not in reply_body
+    assert "图片:" not in reply_body
 
 
 def test_feedback_create_reports_email_send_failure(client, isolated_server, monkeypatch):

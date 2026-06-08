@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.48");
+const appVersion = ref("0.2.49");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -398,6 +398,8 @@ const selectedFeedbackMessageId = ref("");
 const feedbackDetailLoading = ref(false);
 const feedbackEmailDiagLoading = ref(false);
 const feedbackEmailDiagResult = ref(null);
+const feedbackEmojiOptions = Object.freeze(["👍", "🙏", "✅", "💡", "🚀", "🔥", "👀", "❓", "🎉", "❤️"]);
+const feedbackTextTarget = ref({ target: "post", textarea: null });
 const feedbackMention = ref({
   visible: false,
   loading: false,
@@ -847,7 +849,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.48";
+  appVersion.value = cfg.version || "0.2.49";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -1004,6 +1006,44 @@ const feedbackPostExcerpt = item => {
 const feedbackPostReplyCount = item => Number(item?.reply_count ?? item?.replies?.length ?? 0);
 const feedbackPostActivity = item => item?.last_activity_at || item?.updated_at || item?.created_at || "";
 const feedbackMentionTargetKey = target => String(target || "post");
+const feedbackUserInitial = value => {
+  const text = String(value || "用户").trim();
+  return Array.from(text)[0] || "用";
+};
+
+const setFeedbackTextTarget = (event, target = "post") => {
+  feedbackTextTarget.value = {
+    target: feedbackMentionTargetKey(target),
+    textarea: event?.target || null,
+  };
+};
+
+const insertFeedbackEmoji = (emoji, target = "post") => {
+  const targetKey = feedbackMentionTargetKey(target);
+  const form = targetKey === "post" ? feedbackForm.value : ensureFeedbackReplyForm(targetKey);
+  const text = form.body || "";
+  const textarea = feedbackTextTarget.value.target === targetKey ? feedbackTextTarget.value.textarea : null;
+  const hasTextarea = textarea && document.contains(textarea);
+  const start = hasTextarea ? textarea.selectionStart ?? text.length : text.length;
+  const end = hasTextarea ? textarea.selectionEnd ?? start : start;
+  const nextBody = `${text.slice(0, start)}${emoji}${text.slice(end)}`;
+  if (targetKey === "post") {
+    feedbackForm.value = { ...feedbackForm.value, body: nextBody };
+  } else {
+    feedbackReplies.value = {
+      ...feedbackReplies.value,
+      [targetKey]: { ...form, body: nextBody },
+    };
+  }
+  const cursor = start + emoji.length;
+  closeFeedbackMention();
+  nextTick(() => {
+    if (hasTextarea) {
+      textarea.focus();
+      textarea.setSelectionRange(cursor, cursor);
+    }
+  });
+};
 
 const closeFeedbackMention = () => {
   if (feedbackMentionTimer) {
@@ -1071,6 +1111,7 @@ const scheduleFeedbackMentionFetch = (query, target) => {
 const handleFeedbackMentionInput = (event, target = "post") => {
   const textarea = event?.target;
   if (!textarea) return;
+  setFeedbackTextTarget(event, target);
   feedbackMentionTextarea = textarea;
   const detected = detectFeedbackMention(textarea.value, textarea.selectionStart ?? textarea.value.length);
   if (!detected) {
@@ -5424,6 +5465,7 @@ const App = {
       feedbackSort, feedbackSortOptions,
       feedbackSubmitting, feedbackForm, feedbackReplies, feedbackHasMore,
       feedbackEmailDiagLoading, feedbackEmailDiagResult, runFeedbackEmailDiagnostics,
+      feedbackEmojiOptions, feedbackUserInitial, setFeedbackTextTarget, insertFeedbackEmoji,
       feedbackMention, handleFeedbackMentionInput, handleFeedbackMentionKeydown, selectFeedbackMention,
       selectedFeedbackPostId, selectedFeedbackMessageId, selectedFeedbackPost, feedbackDetailLoading,
       feedbackPostTitle, feedbackPostExcerpt, feedbackPostReplyCount, feedbackPostActivity,

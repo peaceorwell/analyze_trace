@@ -48,7 +48,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.48"
+APP_VERSION = "0.2.49"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
 FEEDBACK_DIRNAME = "feedback"
@@ -3607,9 +3607,6 @@ def _feedback_notification_body(payload: dict) -> str:
         f"作者: {payload.get('author') or 'local'}",
         f"时间: {payload.get('created_at') or _utc_now_iso()}",
         f"帖子: {payload.get('post_title') or _feedback_title(payload.get('body', ''))}",
-        f"帖子 ID: {payload.get('post_id') or ''}",
-        f"消息 ID: {payload.get('message_id') or ''}",
-        f"图片: {payload.get('image_count', 0)} 张",
         "",
         "内容:",
         payload.get("body") or "(仅图片)",
@@ -3618,7 +3615,7 @@ def _feedback_notification_body(payload: dict) -> str:
     if mentions:
         lines.extend(["", "提及:", ", ".join(mentions)])
     if PUBLIC_BASE_URL:
-        lines.extend(["", f"打开留言: {_feedback_message_url(payload)}", f"打开应用: {PUBLIC_BASE_URL}"])
+        lines.extend(["", f"打开留言: {_feedback_message_url(payload)}"])
     else:
         lines.extend(["", "请打开 Torch Profiler Analyzer 右上角的“改进留言板”查看详情。"])
     return "\n".join(lines)
