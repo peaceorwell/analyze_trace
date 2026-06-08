@@ -826,7 +826,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.32";
+  appVersion.value = cfg.version || "0.2.33";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -3394,7 +3394,7 @@ const renderInlineMarkdown = text => {
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/__([^_]+)__/g, "<strong>$1</strong>")
     .replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>")
-    .replace(/(^|[^_])_([^_]+)_/g, "$1<em>$2</em>");
+    .replace(/(^|[\s([{])_([^_\n]+?)_(?=$|[\s)\]},.!?:;])/g, "$1<em>$2</em>");
   tokens.forEach((html, index) => {
     value = value.replaceAll(`\u0000MD${index}\u0000`, html);
   });
@@ -3417,15 +3417,21 @@ function renderMarkdown(markdown) {
   const lines = String(markdown || "").replace(/\r\n/g, "\n").split("\n");
   const html = [];
   let i = 0;
-  const nextIsBlock = line =>
-    !line.trim()
-    || /^```/.test(line.trim())
-    || /^#{1,6}\s+/.test(line)
-    || /^>\s?/.test(line)
-    || /^[-*_]\s*[-*_]\s*[-*_][\s\-*_]*$/.test(line.trim())
-    || /^\s*[-*+]\s+/.test(line)
-    || /^\s*\d+\.\s+/.test(line)
-    || (i + 1 < lines.length && isMarkdownTableSep(lines[i + 1]));
+  const isTableStartAt = index => index + 1 < lines.length && isMarkdownTableSep(lines[index + 1]);
+  const isHorizontalRule = line => /^[-*_]\s*[-*_]\s*[-*_][\s\-*_]*$/.test(line.trim());
+  const isListStart = line => /^\s*[-*+]\s+/.test(line) || /^\s*\d+\.\s+/.test(line);
+  const isBlockStartAt = index => {
+    const line = lines[index] || "";
+    return !line.trim()
+      || /^```/.test(line.trim())
+      || /^#{1,6}\s+/.test(line)
+      || /^>\s?/.test(line)
+      || isHorizontalRule(line)
+      || isListStart(line)
+      || isTableStartAt(index);
+  };
+  const renderListItem = parts =>
+    parts.map(part => renderInlineMarkdown(part.trim())).join("<br>");
 
   while (i < lines.length) {
     const line = lines[i];
@@ -3457,7 +3463,7 @@ function renderMarkdown(markdown) {
       continue;
     }
 
-    if (/^[-*_]\s*[-*_]\s*[-*_][\s\-*_]*$/.test(trimmed)) {
+    if (isHorizontalRule(line)) {
       html.push("<hr>");
       i += 1;
       continue;
@@ -3481,20 +3487,32 @@ function renderMarkdown(markdown) {
     if (/^\s*[-*+]\s+/.test(line)) {
       const items = [];
       while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) {
-        items.push(lines[i].replace(/^\s*[-*+]\s+/, ""));
+        const parts = [lines[i].replace(/^\s*[-*+]\s+/, "")];
         i += 1;
+        while (i < lines.length && !isBlockStartAt(i)) {
+          parts.push(lines[i]);
+          i += 1;
+        }
+        items.push(parts);
+        while (i < lines.length && !lines[i].trim()) i += 1;
       }
-      html.push(`<ul>${items.map(item => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</ul>`);
+      html.push(`<ul>${items.map(item => `<li>${renderListItem(item)}</li>`).join("")}</ul>`);
       continue;
     }
 
     if (/^\s*\d+\.\s+/.test(line)) {
       const items = [];
       while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
-        items.push(lines[i].replace(/^\s*\d+\.\s+/, ""));
+        const parts = [lines[i].replace(/^\s*\d+\.\s+/, "")];
         i += 1;
+        while (i < lines.length && !isBlockStartAt(i)) {
+          parts.push(lines[i]);
+          i += 1;
+        }
+        items.push(parts);
+        while (i < lines.length && !lines[i].trim()) i += 1;
       }
-      html.push(`<ol>${items.map(item => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</ol>`);
+      html.push(`<ol>${items.map(item => `<li>${renderListItem(item)}</li>`).join("")}</ol>`);
       continue;
     }
 
@@ -3510,7 +3528,7 @@ function renderMarkdown(markdown) {
 
     const para = [line];
     i += 1;
-    while (i < lines.length && !nextIsBlock(lines[i])) {
+    while (i < lines.length && !isBlockStartAt(i)) {
       para.push(lines[i]);
       i += 1;
     }

@@ -1014,11 +1014,15 @@ body.result-reading-active { overflow: hidden; }
 }
 .markdown-body ul,
 .markdown-body ol {
-  margin: 8px 0 10px 20px;
-  padding: 0;
+  margin: 8px 0 12px;
+  padding-left: 24px;
   color: var(--text2);
 }
-.markdown-body li { margin: 4px 0; }
+.markdown-body li {
+  margin: 6px 0;
+  padding-left: 2px;
+}
+.markdown-body li + li { margin-top: 9px; }
 .markdown-body strong { color: var(--text1); font-weight: 800; }
 .markdown-body em { color: var(--text2); }
 .markdown-body a {
