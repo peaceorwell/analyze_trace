@@ -62,7 +62,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.44",
+        "version": "0.2.45",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -446,6 +446,198 @@ def test_ai_analysis_completion_sends_email_with_result_link(client, isolated_se
     assert "AI分析完成" in sent[0]["subject"]
     assert "打开 AI 分析结果: http://trace.example/#/job/ai-mail-job/ai" in sent[0]["body"]
     assert "下载 Markdown 报告: http://trace.example/api/jobs/ai-mail-job/ai-analysis/report.md" in sent[0]["body"]
+
+
+def test_compare_ai_analysis_completion_sends_email_with_result_link(client, isolated_server, tmp_path, monkeypatch):
+    trace_a = tmp_path / "trace-a.pt.trace.json.gz"
+    trace_b = tmp_path / "trace-b.pt.trace.json.gz"
+    with gzip.open(trace_a, "wt", encoding="utf-8") as f:
+        f.write("{}")
+    with gzip.open(trace_b, "wt", encoding="utf-8") as f:
+        f.write("{}")
+
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO jobs(
+                    id, user_token, label, mode, status,
+                    file_a_name, file_a_gzip_path,
+                    file_b_name, file_b_gzip_path
+                )
+                VALUES(?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    "ai-compare-mail-job",
+                    "compare-owner",
+                    "AI compare mail job",
+                    "compare",
+                    "done",
+                    "trace-a.pt.trace.json.gz",
+                    str(trace_a),
+                    "trace-b.pt.trace.json.gz",
+                    str(trace_b),
+                ),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+    Path(web_server.result_dir("ai-compare-mail-job")).mkdir(parents=True, exist_ok=True)
+
+    sent = []
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_ENABLED", True)
+    monkeypatch.setattr(web_server, "PUBLIC_BASE_URL", "http://trace.example")
+    monkeypatch.setattr(web_server, "SMTP_HOST", "smtp.test")
+    monkeypatch.setattr(web_server, "SENDMAIL_COMMAND", "")
+    monkeypatch.setattr(
+        web_server,
+        "_send_email_sync",
+        lambda recipients, subject, body: sent.append({
+            "recipients": recipients,
+            "subject": subject,
+            "body": body,
+        }),
+    )
+    monkeypatch.setattr(
+        web_server,
+        "CLAUDE_ANALYSIS_COMMAND_TEMPLATE",
+        _fake_claude_template(
+            tmp_path,
+            """
+            assert os.environ['TRACE_AI_MODE'] == 'compare'
+            pathlib.Path(os.environ['TRACE_AI_REPORT_PATH']).write_text('# Compare Final Report\\n', encoding='utf-8')
+            print('# Compare AI OK')
+            """,
+        ),
+    )
+
+    started = client.post(
+        "/api/jobs/ai-compare-mail-job/ai-analysis",
+        json={},
+        headers={"X-Remote-User": "runner"},
+    )
+
+    assert started.status_code == 202
+
+    payload = {}
+    for _ in range(100):
+        payload = client.get("/api/jobs/ai-compare-mail-job/ai-analysis").json()
+        if payload["status"] != "running" and sent:
+            break
+        time.sleep(0.05)
+
+    assert payload["status"] == "done"
+    assert len(sent) == 1
+    assert sent[0]["recipients"] == ["runner@cambricon.com", "compare-owner@cambricon.com"]
+    assert "AI分析完成" in sent[0]["subject"]
+    assert "类型: 对比" in sent[0]["body"]
+    assert "打开 AI 分析结果: http://trace.example/#/job/ai-compare-mail-job/ai" in sent[0]["body"]
+    assert "下载 Markdown 报告: http://trace.example/api/jobs/ai-compare-mail-job/ai-analysis/report.md" in sent[0]["body"]
+
+
+def test_source_compare_ai_analysis_emails_trigger_compare_owner_and_source_owners(client, isolated_server, tmp_path, monkeypatch):
+    trace_a = tmp_path / "source-a.pt.trace.json.gz"
+    trace_b = tmp_path / "source-b.pt.trace.json.gz"
+    with gzip.open(trace_a, "wt", encoding="utf-8") as f:
+        f.write("{}")
+    with gzip.open(trace_b, "wt", encoding="utf-8") as f:
+        f.write("{}")
+
+    async def insert_jobs():
+        db = await web_db.get_db()
+        try:
+            await db.executemany(
+                """
+                INSERT INTO jobs(id, user_token, label, mode, status, file_a_name, file_a_gzip_path)
+                VALUES(?,?,?,?,?,?,?)
+                """,
+                [
+                    ("source-a", "owner-a", "Source A", "single", "done", "source-a.pt.trace.json.gz", str(trace_a)),
+                    ("source-b", "owner-b", "Source B", "single", "done", "source-b.pt.trace.json.gz", str(trace_b)),
+                ],
+            )
+            await db.execute(
+                """
+                INSERT INTO jobs(
+                    id, user_token, label, mode, status,
+                    file_a_name, file_b_name,
+                    source_job_a, source_job_b
+                )
+                VALUES(?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    "ai-source-compare-mail-job",
+                    "compare-owner",
+                    "Source A vs Source B",
+                    "compare",
+                    "done",
+                    "source-a.pt.trace.json.gz",
+                    "source-b.pt.trace.json.gz",
+                    "source-a",
+                    "source-b",
+                ),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_jobs())
+    Path(web_server.result_dir("ai-source-compare-mail-job")).mkdir(parents=True, exist_ok=True)
+
+    sent = []
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_ENABLED", True)
+    monkeypatch.setattr(web_server, "PUBLIC_BASE_URL", "http://trace.example")
+    monkeypatch.setattr(web_server, "SMTP_HOST", "smtp.test")
+    monkeypatch.setattr(web_server, "SENDMAIL_COMMAND", "")
+    monkeypatch.setattr(
+        web_server,
+        "_send_email_sync",
+        lambda recipients, subject, body: sent.append({
+            "recipients": recipients,
+            "subject": subject,
+            "body": body,
+        }),
+    )
+    monkeypatch.setattr(
+        web_server,
+        "CLAUDE_ANALYSIS_COMMAND_TEMPLATE",
+        _fake_claude_template(
+            tmp_path,
+            """
+            assert os.environ['TRACE_AI_MODE'] == 'compare'
+            pathlib.Path(os.environ['TRACE_AI_REPORT_PATH']).write_text('# Source Compare Final Report\\n', encoding='utf-8')
+            print('# Source Compare AI OK')
+            """,
+        ),
+    )
+
+    started = client.post(
+        "/api/jobs/ai-source-compare-mail-job/ai-analysis",
+        json={},
+        headers={"X-Remote-User": "runner"},
+    )
+
+    assert started.status_code == 202
+
+    payload = {}
+    for _ in range(100):
+        payload = client.get("/api/jobs/ai-source-compare-mail-job/ai-analysis").json()
+        if payload["status"] != "running" and sent:
+            break
+        time.sleep(0.05)
+
+    assert payload["status"] == "done"
+    assert len(sent) == 1
+    assert sent[0]["recipients"] == [
+        "runner@cambricon.com",
+        "compare-owner@cambricon.com",
+        "owner-a@cambricon.com",
+        "owner-b@cambricon.com",
+    ]
+    assert "类型: 对比" in sent[0]["body"]
 
 
 def test_ai_analysis_mounts_configured_claude_skills(client, tmp_path, monkeypatch):

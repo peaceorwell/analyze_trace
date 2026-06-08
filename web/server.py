@@ -48,7 +48,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.44"
+APP_VERSION = "0.2.45"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
 FEEDBACK_DIRNAME = "feedback"
@@ -3855,6 +3855,39 @@ def _dedupe_emails(values: list[str]) -> list[str]:
     return result
 
 
+def _dedupe_identity_values(values) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        token = str(value or "").strip()
+        key = token.lower()
+        if token and key not in seen:
+            seen.add(key)
+            result.append(token)
+    return result
+
+
+async def _compare_source_owner_tokens(job: dict) -> list[str]:
+    if (job or {}).get("mode") != "compare":
+        return []
+    source_ids = _dedupe_identity_values([job.get("source_job_a"), job.get("source_job_b")])
+    if not source_ids:
+        return []
+
+    placeholders = ",".join("?" * len(source_ids))
+    db = await get_db()
+    try:
+        rows = await (
+            await db.execute(
+                f"SELECT user_token FROM jobs WHERE id IN ({placeholders})",
+                source_ids,
+            )
+        ).fetchall()
+    finally:
+        await db.close()
+    return _dedupe_identity_values([row["user_token"] for row in rows if row["user_token"]])
+
+
 def _job_ai_analysis_url(jid: str) -> str:
     if not PUBLIC_BASE_URL:
         return ""
@@ -3886,8 +3919,13 @@ def _format_duration_ms_brief(value) -> str:
 
 def _ai_analysis_notification_recipients(payload: dict) -> list[str]:
     values = [payload.get("trigger_user_email", ""), payload.get("owner_user_email", "")]
+    values.extend(payload.get("owner_user_emails") or [])
     for key in ("trigger_user_token", "owner_user_token"):
         token = str(payload.get(key) or "").strip()
+        if token and token.lower() not in {"local", "anonymous"}:
+            values.append(token)
+    for token in payload.get("owner_user_tokens") or []:
+        token = str(token or "").strip()
         if token and token.lower() not in {"local", "anonymous"}:
             values.append(token)
     return _dedupe_emails(values)
@@ -3904,6 +3942,8 @@ def _ai_analysis_notification_body(payload: dict) -> str:
     mode_text = "对比" if payload.get("job_mode") == "compare" else "单 trace"
     ai_url = payload.get("ai_url") or ""
     report_url = payload.get("report_url") or ""
+    owner_tokens = _dedupe_identity_values(payload.get("owner_user_tokens") or [payload.get("owner_user_token")])
+    owner_text = ", ".join(owner_tokens) if owner_tokens else "local"
     lines = [
         f"AI 分析{status_text}",
         "",
@@ -3912,7 +3952,7 @@ def _ai_analysis_notification_body(payload: dict) -> str:
         f"类型: {mode_text}",
         f"Skill: {payload.get('skill') or ''}",
         f"触发人: {payload.get('trigger_user_display') or payload.get('trigger_user_token') or 'local'}",
-        f"任务所属人: {payload.get('owner_user_token') or 'local'}",
+        f"任务所属人: {owner_text}",
         f"状态: {payload.get('status') or ''}",
         f"开始时间: {payload.get('started_at') or ''}",
         f"结束时间: {payload.get('finished_at') or ''}",
@@ -3994,11 +4034,18 @@ async def _send_ai_analysis_completion_notification(
     if status.get("status") not in {"done", "error"}:
         return {"status": "skipped", "detail": "AI 分析尚未结束"}
     timing = _ai_analysis_timing(status)
+    owner_tokens = _dedupe_identity_values([
+        notification_context.get("owner_user_token"),
+        job.get("user_token"),
+        status.get("owner_user_token"),
+    ])
+    owner_tokens = _dedupe_identity_values([*owner_tokens, *await _compare_source_owner_tokens(job)])
     payload = {
         "job_id": jid,
         "job_label": notification_context.get("job_label") or job.get("label") or jid,
         "job_mode": notification_context.get("job_mode") or job.get("mode") or status.get("mode") or "",
-        "owner_user_token": notification_context.get("owner_user_token") or job.get("user_token") or "",
+        "owner_user_token": owner_tokens[0] if owner_tokens else "",
+        "owner_user_tokens": owner_tokens,
         "owner_user_email": notification_context.get("owner_user_email") or "",
         "trigger_user_token": notification_context.get("trigger_user_token") or "",
         "trigger_user_display": notification_context.get("trigger_user_display") or "",
