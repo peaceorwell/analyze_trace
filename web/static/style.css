@@ -882,42 +882,6 @@ body.result-reading-active { overflow: hidden; }
 .ai-status-badge.status-running { background: rgba(99,102,241,.14); color: var(--purple-l); }
 .ai-status-badge.status-done { background: rgba(34,197,94,.14); color: var(--green); }
 .ai-status-badge.status-error { background: rgba(239,68,68,.14); color: var(--red); }
-.ai-prompt-panel {
-  display: grid;
-  grid-template-columns: 88px minmax(0, 1fr);
-  align-items: start;
-  gap: 8px;
-  padding: 9px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--card);
-}
-.ai-prompt-label {
-  padding-top: 8px;
-  color: var(--text2);
-  font-size: 12px;
-  font-weight: 900;
-}
-.ai-prompt-input {
-  width: 100%;
-  min-height: 46px;
-  resize: vertical;
-  border: 1px solid var(--border2);
-  border-radius: 7px;
-  background: var(--bg);
-  color: var(--text1);
-  font: 12px/1.55 var(--mono);
-  padding: 7px 9px;
-}
-.ai-prompt-input:focus {
-  outline: none;
-  border-color: var(--purple-l);
-  box-shadow: 0 0 0 3px rgba(99,102,241,.12);
-}
-.ai-prompt-input:disabled {
-  opacity: .7;
-  cursor: not-allowed;
-}
 .ai-version-panel {
   display: flex;
   align-items: center;
@@ -1539,6 +1503,47 @@ body.result-reading-active { overflow: hidden; }
 .modal-title { font-size: 14px; font-weight: 600; margin-bottom: 14px; color: var(--text); display: flex; align-items: center; gap: 8px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 .confirm-message { color: var(--text2); line-height: 1.6; }
+
+.ai-prompt-modal {
+  width: min(680px, calc(100vw - 32px));
+}
+.ai-prompt-modal-desc {
+  margin: -6px 0 14px;
+  color: var(--text2);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.ai-prompt-modal-label {
+  display: block;
+  margin-bottom: 7px;
+  color: var(--text1);
+  font-size: 12px;
+  font-weight: 800;
+}
+.ai-prompt-modal-input {
+  width: 100%;
+  min-height: 150px;
+  resize: vertical;
+  border: 1px solid var(--border2);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text1);
+  font: 12px/1.6 var(--mono);
+  padding: 10px 12px;
+}
+.ai-prompt-modal-input:focus {
+  outline: none;
+  border-color: var(--purple-l);
+  box-shadow: 0 0 0 3px rgba(99,102,241,.12);
+}
+.ai-prompt-modal-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 7px;
+  color: var(--text3);
+  font-size: 11px;
+}
 
 .error-modal-content {
   background: var(--bg); border: 1px solid var(--border);

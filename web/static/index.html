@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>torch profiler analyzer</title>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.2.42" />
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.2.43" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
   <script src="https://unpkg.com/vue-router@4/dist/vue-router.global.prod.js"></script>
@@ -114,7 +114,7 @@
     <!-- ── Header ── -->
     <header v-if="authChecked && (!authRequired || currentUser)" class="header">
       <div class="header-brand" @click="$router.push('/')" style="cursor:pointer" title="返回上传页面">
-        <img class="header-logo" src="/static/favicon.svg?v=0.2.42" alt="" />
+        <img class="header-logo" src="/static/favicon.svg?v=0.2.43" alt="" />
         <span class="header-title">Torch Profiler Analyzer</span>
         <span class="header-version">v{{ appVersion }}</span>
       </div>
@@ -781,6 +781,36 @@
         <div class="error-modal-content">{{ errorModalMsg }}</div>
         <div class="modal-actions">
           <button class="btn btn-outline" @click="showErrorModal=false">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── AI prompt modal ── -->
+    <div v-if="showAiPromptModal" class="modal-mask" @click.self="closeAiPromptModal">
+      <div class="modal ai-prompt-modal">
+        <div class="modal-title">{{ aiPromptForce ? '重新 AI 分析' : '开始 AI 分析' }}</div>
+        <div class="ai-prompt-modal-desc">
+          可补充希望 Claude Code 重点关注的方向，也可以留空直接开始。
+        </div>
+        <label class="ai-prompt-modal-label" for="ai-analysis-prompt-modal">补充 Prompt（可选）</label>
+        <textarea id="ai-analysis-prompt-modal"
+                  v-model="aiAnalysisPrompt"
+                  class="ai-prompt-modal-input"
+                  rows="6"
+                  maxlength="20000"
+                  placeholder="例如：重点关注通信开销、某类 kernel、A/B 差异原因..."
+                  @keydown.ctrl.enter.prevent="confirmAiPromptModal"
+                  @keydown.meta.enter.prevent="confirmAiPromptModal"
+                  @keydown.esc.prevent="closeAiPromptModal"></textarea>
+        <div class="ai-prompt-modal-meta">
+          <span>Ctrl/⌘ + Enter 开始分析</span>
+          <span>{{ aiAnalysisPrompt.length }}/20000</span>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-outline" @click="closeAiPromptModal" :disabled="aiAnalysisStarting">取消</button>
+          <button class="btn btn-primary" @click="confirmAiPromptModal" :disabled="aiAnalysisStarting">
+            {{ aiAnalysisStarting ? '提交中...' : '开始分析' }}
+          </button>
         </div>
       </div>
     </div>

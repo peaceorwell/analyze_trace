@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.42");
+const appVersion = ref("0.2.43");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -149,6 +149,8 @@ const aiAnalysisContent = ref("");
 const aiAnalysisArtifacts = ref([]);
 const aiAnalysisVersions = ref([]);
 const aiAnalysisSelectedVersionId = ref("");
+const showAiPromptModal = ref(false);
+const aiPromptForce = ref(false);
 const aiAnalysisPrompt = ref("");
 const aiArtifactsExpanded = ref(false);
 const aiDiagnosticsLoading = ref(false);
@@ -845,7 +847,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.42";
+  appVersion.value = cfg.version || "0.2.43";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -1993,7 +1995,31 @@ const startAiAnalysisPolling = () => {
   }, 2500);
 };
 
-const startAiAnalysis = async (force = false) => {
+const openAiPromptModal = (force = false) => {
+  if (!selectedJobId.value || aiAnalysisStarting.value || aiAnalysisMeta.value.status === "running") return;
+  if (!claudeAnalysisEnabled.value) {
+    showToast("AI 分析未启用，请在服务端设置 TRACE_ENABLE_CLAUDE_ANALYSIS=1", "error");
+    return;
+  }
+  aiPromptForce.value = Boolean(force);
+  aiAnalysisPrompt.value = "";
+  showAiPromptModal.value = true;
+  nextTick(() => document.getElementById("ai-analysis-prompt-modal")?.focus());
+};
+
+const closeAiPromptModal = () => {
+  if (aiAnalysisStarting.value) return;
+  showAiPromptModal.value = false;
+};
+
+const confirmAiPromptModal = () => {
+  const force = aiPromptForce.value;
+  const prompt = aiAnalysisPrompt.value;
+  showAiPromptModal.value = false;
+  startAiAnalysis(force, prompt);
+};
+
+const startAiAnalysis = async (force = false, prompt = "") => {
   if (!selectedJobId.value || aiAnalysisStarting.value) return;
   if (!claudeAnalysisEnabled.value) {
     showToast("AI 分析未启用，请在服务端设置 TRACE_ENABLE_CLAUDE_ANALYSIS=1", "error");
@@ -2012,7 +2038,7 @@ const startAiAnalysis = async (force = false) => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
-      body: JSON.stringify({ force, prompt: aiAnalysisPrompt.value.trim() }),
+      body: JSON.stringify({ force, prompt: String(prompt || "").trim() }),
     });
     const payload = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(payload.detail || "提交 AI 分析失败");
@@ -4783,21 +4809,10 @@ const JobDetail = {
               </button>
               <button class="btn btn-sm btn-primary"
                       :disabled="!claudeAnalysisEnabled || aiAnalysisStarting || aiAnalysisMeta.status==='running'"
-                      @click="startAiAnalysis(aiAnalysisMeta.report_exists || aiAnalysisMeta.status==='done')">
+                      @click="openAiPromptModal(aiAnalysisMeta.report_exists || aiAnalysisMeta.status==='done')">
                 {{ aiAnalysisStarting ? '提交中...' : (aiAnalysisMeta.report_exists ? '重新分析' : '开始分析') }}
               </button>
             </div>
-          </div>
-
-          <div class="ai-prompt-panel">
-            <label class="ai-prompt-label" for="ai-analysis-prompt">补充 Prompt</label>
-            <textarea id="ai-analysis-prompt"
-                      v-model="aiAnalysisPrompt"
-                      class="ai-prompt-input"
-                      :disabled="aiAnalysisStarting || aiAnalysisMeta.status==='running'"
-                      rows="2"
-                      maxlength="20000"
-                      placeholder="可选：例如重点关注通信开销、某类 kernel、A/B 差异原因..."></textarea>
           </div>
 
           <div v-if="aiAnalysisSelectedVersion" class="ai-version-panel">
@@ -5113,12 +5128,13 @@ const JobDetail = {
       claudeAnalysisEnabled, aiAnalysisMeta, aiAnalysisLoading, aiAnalysisStarting,
       aiAnalysisError, aiAnalysisContent, aiAnalysisArtifacts, aiAnalysisVisibleArtifacts,
       aiAnalysisVersions, aiAnalysisSelectedVersionId, aiAnalysisSelectedVersion,
-      aiAnalysisPrompt,
+      showAiPromptModal, aiAnalysisPrompt, aiPromptForce,
       aiAnalysisVersionTrigger, aiAnalysisVersionModel, aiAnalysisVersionLabel,
       aiArtifactsExpanded, aiArtifactSummary, aiAnalysisHtml, aiAnalysisStatusText,
       aiAnalysisProgress, aiAnalysisPhaseText, aiAnalysisElapsedText,
       aiDiagnosticsLoading, aiDiagnosticsError, aiDiagnosticsResult, aiDiagnosticStatusText,
-      refreshAiAnalysis, startAiAnalysis, copyAiAnalysisReport,
+      refreshAiAnalysis, startAiAnalysis, openAiPromptModal, closeAiPromptModal, confirmAiPromptModal,
+      copyAiAnalysisReport,
       downloadAiAnalysisReport, changeAiAnalysisVersion, copyAiAnalysisArtifact,
       runAiDiagnostics, copyAiDiagnostics,
       openActionMenu, toggleActionMenu, closeActionMenu,
@@ -5450,6 +5466,8 @@ const App = {
       customRunStatus, allowCodeExecution,
       showGuide, showErrorModal, errorModalMsg, errorModalTitle,
       copyTritonCode, copyErrorModal,
+      showAiPromptModal, aiAnalysisPrompt, aiPromptForce,
+      openAiPromptModal, closeAiPromptModal, confirmAiPromptModal,
       toasts, showConfirmModal, confirmModal, resolveConfirm,
       openActionMenu, toggleActionMenu, closeActionMenu,
 
