@@ -61,7 +61,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.36",
+        "version": "0.2.37",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -679,6 +679,28 @@ def test_feedback_create_sends_email_notification(client, isolated_server, monke
     assert feedback_logs[0]["mentioned_emails"] == ["alice@cambricon.com"]
     assert feedback_logs[0]["notification_status"] == "sent"
     assert "这个功能很有用" in feedback_logs[0]["body_preview"]
+
+
+def test_feedback_notification_body_includes_deep_link(isolated_server, monkeypatch):
+    monkeypatch.setattr(isolated_server, "PUBLIC_BASE_URL", "http://trace.example")
+
+    post_body = isolated_server._feedback_notification_body({
+        "post_id": "post-1",
+        "message_id": "post-1",
+        "author": "Alice",
+        "body": "new post",
+    })
+    reply_body = isolated_server._feedback_notification_body({
+        "post_id": "post-1",
+        "message_id": "reply-2",
+        "parent_id": "post-1",
+        "author": "Bob",
+        "body": "reply",
+    })
+
+    assert "打开留言: http://trace.example/#/feedback/post-1" in post_body
+    assert "打开留言: http://trace.example/#/feedback/post-1?message=reply-2" in reply_body
+    assert "打开应用: http://trace.example" in reply_body
 
 
 def test_feedback_create_reports_email_send_failure(client, isolated_server, monkeypatch):

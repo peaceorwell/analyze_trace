@@ -28,6 +28,7 @@ import zlib
 from contextlib import asynccontextmanager
 from email.message import EmailMessage
 from typing import Optional
+from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import aiofiles
@@ -47,7 +48,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.36"
+APP_VERSION = "0.2.37"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
 FEEDBACK_DIRNAME = "feedback"
@@ -3152,6 +3153,19 @@ def _feedback_notification_subject(payload: dict) -> str:
     return f"[Torch Profiler Analyzer] 留言板{kind}: {title}"
 
 
+def _feedback_message_url(payload: dict) -> str:
+    if not PUBLIC_BASE_URL:
+        return ""
+    post_id = str(payload.get("post_id") or payload.get("message_id") or "").strip()
+    message_id = str(payload.get("message_id") or "").strip()
+    if not post_id:
+        return PUBLIC_BASE_URL
+    url = f"{PUBLIC_BASE_URL}/#/feedback/{quote(post_id, safe='')}"
+    if message_id and message_id != post_id:
+        url += f"?message={quote(message_id, safe='')}"
+    return url
+
+
 def _feedback_notification_body(payload: dict) -> str:
     kind = "回复" if payload.get("parent_id") else "新帖子"
     lines = [
@@ -3171,7 +3185,7 @@ def _feedback_notification_body(payload: dict) -> str:
     if mentions:
         lines.extend(["", "提及:", ", ".join(mentions)])
     if PUBLIC_BASE_URL:
-        lines.extend(["", f"打开应用: {PUBLIC_BASE_URL}"])
+        lines.extend(["", f"打开留言: {_feedback_message_url(payload)}", f"打开应用: {PUBLIC_BASE_URL}"])
     else:
         lines.extend(["", "请打开 Torch Profiler Analyzer 右上角的“改进留言板”查看详情。"])
     return "\n".join(lines)

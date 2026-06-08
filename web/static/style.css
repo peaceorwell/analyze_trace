@@ -1944,6 +1944,11 @@ body.result-reading-active { overflow: hidden; }
   padding: 10px;
   margin-bottom: 7px;
 }
+.feedback-message-target {
+  border-color: var(--primary) !important;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.14);
+  background: color-mix(in srgb, var(--primary) 7%, var(--card));
+}
 .feedback-reply-form {
   margin-top: 10px;
   padding: 10px;

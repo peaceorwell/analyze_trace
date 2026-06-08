@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.36");
+const appVersion = ref("0.2.37");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -389,6 +389,7 @@ const feedbackSubmitting = ref(false);
 const feedbackForm = ref({ body: "", files: [], previews: [] });
 const feedbackReplies = ref({});
 const selectedFeedbackPostId = ref("");
+const selectedFeedbackMessageId = ref("");
 const feedbackDetailLoading = ref(false);
 const feedbackEmailDiagLoading = ref(false);
 const feedbackEmailDiagResult = ref(null);
@@ -828,7 +829,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.36";
+  appVersion.value = cfg.version || "0.2.37";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -902,6 +903,9 @@ const submitLogin = async () => {
     appInitialized = true;
     await loadProjects();
     await refreshSidebarData();
+    if (router.currentRoute.value.name === "feedback") {
+      await openFeedbackRoute(router.currentRoute.value);
+    }
   } catch (e) {
     loginError.value = e.message || "登录失败";
   } finally {
@@ -1190,6 +1194,19 @@ const ensureFeedbackReplyForm = id => {
   return form;
 };
 
+const focusFeedbackMessage = id => {
+  selectedFeedbackMessageId.value = id || "";
+  if (!id) return;
+  nextTick(() => {
+    const el = document.getElementById(`feedback-message-${id}`);
+    if (!el) return;
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    window.setTimeout(() => {
+      if (selectedFeedbackMessageId.value === id) selectedFeedbackMessageId.value = "";
+    }, 6000);
+  });
+};
+
 const toggleFeedbackReply = id => {
   const form = ensureFeedbackReplyForm(id);
   feedbackReplies.value = {
@@ -1198,9 +1215,10 @@ const toggleFeedbackReply = id => {
   };
 };
 
-const selectFeedbackPost = async (id, { refresh = true } = {}) => {
+const selectFeedbackPost = async (id, { refresh = true, focusMessageId = "" } = {}) => {
   if (!id) return;
   selectedFeedbackPostId.value = id;
+  if (focusMessageId) selectedFeedbackMessageId.value = focusMessageId;
   ensureFeedbackReplyForm(id);
   if (!refresh) return;
   feedbackDetailLoading.value = true;
@@ -1211,6 +1229,7 @@ const selectFeedbackPost = async (id, { refresh = true } = {}) => {
     mergeFeedbackPost(payload);
     selectedFeedbackPostId.value = payload.id || id;
     ensureFeedbackReplyForm(selectedFeedbackPostId.value);
+    focusFeedbackMessage(focusMessageId || selectedFeedbackMessageId.value);
   } catch (e) {
     showToast(e.message || "加载帖子失败", "error");
   } finally {
@@ -1220,6 +1239,7 @@ const selectFeedbackPost = async (id, { refresh = true } = {}) => {
 
 const closeFeedbackPost = () => {
   selectedFeedbackPostId.value = "";
+  selectedFeedbackMessageId.value = "";
 };
 
 const openFeedbackComposer = () => {
@@ -1237,7 +1257,9 @@ const closeFeedbackBoard = () => {
   closeFeedbackComposer();
   closeFeedbackMention();
   selectedFeedbackPostId.value = "";
+  selectedFeedbackMessageId.value = "";
   showFeedbackBoard.value = false;
+  if (router.currentRoute.value.name === "feedback") router.push("/").catch(() => {});
 };
 
 const showFeedbackSubmitResult = (payload, fallbackMessage) => {
@@ -1326,8 +1348,32 @@ const openFeedbackBoard = async () => {
   await loadMe().catch(() => {});
   showFeedbackBoard.value = true;
   selectedFeedbackPostId.value = "";
+  selectedFeedbackMessageId.value = "";
   await loadFeedback({ reset: true });
 };
+
+const openFeedbackDeepLink = async ({ postId = "", messageId = "" } = {}) => {
+  const targetPostId = postId || messageId;
+  await loadMe().catch(() => {});
+  showFeedbackBoard.value = true;
+  showFeedbackComposer.value = false;
+  closeFeedbackMention();
+  if (!targetPostId) {
+    selectedFeedbackPostId.value = "";
+    selectedFeedbackMessageId.value = "";
+    await loadFeedback({ reset: true });
+    return;
+  }
+  selectedFeedbackMessageId.value = messageId || targetPostId;
+  await loadFeedback({ reset: true, selectId: targetPostId });
+  await selectFeedbackPost(targetPostId, { refresh: true, focusMessageId: selectedFeedbackMessageId.value });
+};
+
+const routeString = value => Array.isArray(value) ? (value[0] || "") : (value || "");
+const openFeedbackRoute = route => openFeedbackDeepLink({
+  postId: routeString(route.params?.postId),
+  messageId: routeString(route.query?.message),
+});
 
 const refreshFeedbackBoard = async () => {
   await loadMe().catch(() => {});
@@ -4995,6 +5041,7 @@ const router = createRouter({
   history: createWebHashHistory(),
   routes: [
     { path: "/", component: Home },
+    { path: "/feedback/:postId?", name: "feedback", component: Home },
     { path: "/job/:id", component: JobDetail },
     { path: "/job/:id/:tab", component: JobDetail },
   ],
@@ -5019,6 +5066,11 @@ router.beforeEach(async (to, from) => {
   }
 
   if (authRequired.value && !currentUser.value) return;
+
+  if (to.name === "feedback") {
+    await openFeedbackRoute(to);
+    return;
+  }
 
   const newJobId = to.params?.id || null;
 
@@ -5280,7 +5332,7 @@ const App = {
       feedbackSubmitting, feedbackForm, feedbackReplies, feedbackHasMore,
       feedbackEmailDiagLoading, feedbackEmailDiagResult, runFeedbackEmailDiagnostics,
       feedbackMention, handleFeedbackMentionInput, handleFeedbackMentionKeydown, selectFeedbackMention,
-      selectedFeedbackPostId, selectedFeedbackPost, feedbackDetailLoading,
+      selectedFeedbackPostId, selectedFeedbackMessageId, selectedFeedbackPost, feedbackDetailLoading,
       feedbackPostTitle, feedbackPostExcerpt, feedbackPostReplyCount, feedbackPostActivity,
       openFeedbackBoard, refreshFeedbackBoard, loadFeedback, setFeedbackSort, setFeedbackFiles, clearFeedbackForm,
       toggleFeedbackReply, selectFeedbackPost, closeFeedbackPost,

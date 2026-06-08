@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>torch profiler analyzer</title>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.2.36" />
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.2.37" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
   <script src="https://unpkg.com/vue-router@4/dist/vue-router.global.prod.js"></script>
@@ -114,7 +114,7 @@
     <!-- ── Header ── -->
     <header v-if="authChecked && (!authRequired || currentUser)" class="header">
       <div class="header-brand" @click="$router.push('/')" style="cursor:pointer" title="返回上传页面">
-        <img class="header-logo" src="/static/favicon.svg?v=0.2.36" alt="" />
+        <img class="header-logo" src="/static/favicon.svg?v=0.2.37" alt="" />
         <span class="header-title">Torch Profiler Analyzer</span>
         <span class="header-version">v{{ appVersion }}</span>
       </div>
@@ -550,7 +550,10 @@
           </div>
 
           <div class="feedback-detail-scroll">
-            <article class="feedback-card feedback-original-post">
+            <article
+              :id="'feedback-message-' + selectedFeedbackPost.id"
+              :class="['feedback-card feedback-original-post', selectedFeedbackMessageId===selectedFeedbackPost.id ? 'feedback-message-target' : '']"
+            >
               <div v-if="selectedFeedbackPost.body" class="feedback-body">{{ selectedFeedbackPost.body }}</div>
               <div v-if="selectedFeedbackPost.attachments.length" class="feedback-image-grid">
                 <a v-for="img in selectedFeedbackPost.attachments" :key="img.id" :href="img.url" target="_blank" rel="noopener" class="feedback-image">
@@ -567,7 +570,12 @@
             <div v-if="feedbackDetailLoading" class="empty-tip">刷新帖子中...</div>
             <div v-else-if="!selectedFeedbackPost.replies.length" class="empty-tip">还没有交流，来补充第一条</div>
             <div v-else class="feedback-replies feedback-thread-replies">
-              <div v-for="reply in selectedFeedbackPost.replies" :key="reply.id" class="feedback-reply">
+              <div
+                v-for="reply in selectedFeedbackPost.replies"
+                :key="reply.id"
+                :id="'feedback-message-' + reply.id"
+                :class="['feedback-reply', selectedFeedbackMessageId===reply.id ? 'feedback-message-target' : '']"
+              >
                 <div class="feedback-card-head">
                   <strong>{{ reply.user_display }}</strong>
                   <div class="feedback-card-meta">
@@ -904,6 +912,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=37"></script>
+  <script src="/static/app.js?v=38"></script>
 </body>
 </html>
