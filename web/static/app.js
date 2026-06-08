@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.43");
+const appVersion = ref("0.2.44");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -847,7 +847,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.43";
+  appVersion.value = cfg.version || "0.2.44";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -1794,8 +1794,6 @@ const aiAnalysisStatusText = status => ({
   error: "失败",
 }[status || "not_started"] || status);
 
-const clampPercent = value => Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
-
 const formatDurationMs = ms => {
   const value = Math.max(0, Math.round(Number(ms) || 0));
   const totalSeconds = Math.floor(value / 1000);
@@ -1806,28 +1804,6 @@ const formatDurationMs = ms => {
   if (minutes) return `${minutes}分${String(seconds).padStart(2, "0")}秒`;
   return `${seconds}秒`;
 };
-
-const aiAnalysisProgress = computed(() => {
-  const meta = aiAnalysisMeta.value || {};
-  if (meta.status === "done" || meta.status === "error") return 100;
-  if (meta.status === "running") {
-    if (meta.progress !== undefined) return clampPercent(meta.progress);
-    return ({ diagnosing: 20, analyzing: 55 }[meta.phase] || 35);
-  }
-  return clampPercent(meta.progress);
-});
-
-const aiAnalysisPhaseText = computed(() => {
-  const meta = aiAnalysisMeta.value || {};
-  if (meta.status === "done") return "分析完成";
-  if (meta.status === "error") return "分析失败";
-  if (meta.status !== "running") return "等待开始";
-  return {
-    diagnosing: "环境诊断中",
-    diagnostics_failed: "环境诊断未通过",
-    analyzing: "Claude Code 分析中",
-  }[meta.phase] || "准备分析";
-});
 
 const aiAnalysisElapsedMs = computed(() => {
   const meta = aiAnalysisMeta.value || {};
@@ -4815,12 +4791,7 @@ const JobDetail = {
             </div>
           </div>
 
-          <div v-if="aiAnalysisSelectedVersion" class="ai-version-panel">
-            <div class="ai-version-info">
-              <span>生成时间 <strong>{{ fmtDateTime(aiAnalysisSelectedVersion.generated_at || aiAnalysisSelectedVersion.finished_at) || '-' }}</strong></span>
-              <span>触发人 <strong>{{ aiAnalysisVersionTrigger }}</strong></span>
-              <span>模型 <strong>{{ aiAnalysisVersionModel }}</strong></span>
-            </div>
+          <div v-if="aiAnalysisSelectedVersion || aiAnalysisMeta.started_at || aiAnalysisMeta.status==='running'" class="ai-meta-row">
             <label v-if="aiAnalysisVersions.length > 1" class="ai-version-picker">
               <span>历史版本</span>
               <select v-model="aiAnalysisSelectedVersionId"
@@ -4833,21 +4804,24 @@ const JobDetail = {
                 </option>
               </select>
             </label>
+            <div v-else-if="aiAnalysisSelectedVersion" class="ai-version-static">
+              <span>历史版本</span>
+              <strong>最新版本</strong>
+            </div>
+            <div v-if="aiAnalysisSelectedVersion" class="ai-version-info">
+              <span>生成时间 <strong>{{ fmtDateTime(aiAnalysisSelectedVersion.generated_at || aiAnalysisSelectedVersion.finished_at) || '-' }}</strong></span>
+              <span>触发人 <strong>{{ aiAnalysisVersionTrigger }}</strong></span>
+              <span>模型 <strong>{{ aiAnalysisVersionModel }}</strong></span>
+            </div>
+            <div v-else class="ai-version-info ai-version-info-muted">报告生成后会显示版本信息</div>
+            <div v-if="aiAnalysisMeta.started_at || aiAnalysisMeta.status==='running'" class="ai-duration-meta">
+              <span>{{ aiAnalysisMeta.status==='running' ? '已耗时' : '总耗时' }}</span>
+              <strong>{{ aiAnalysisElapsedText }}</strong>
+            </div>
           </div>
           <div v-if="aiAnalysisSelectedVersion?.user_prompt" class="ai-version-prompt">
             <strong>本版本补充 Prompt</strong>
             <pre>{{ aiAnalysisSelectedVersion.user_prompt }}</pre>
-          </div>
-
-          <div v-if="aiAnalysisMeta.started_at || aiAnalysisMeta.status==='running'" class="ai-progress-panel">
-            <div class="ai-progress-meta">
-              <span>{{ aiAnalysisPhaseText }}</span>
-              <span>{{ aiAnalysisProgress }}%</span>
-              <span>{{ aiAnalysisMeta.status==='running' ? '已耗时' : '总耗时' }} {{ aiAnalysisElapsedText }}</span>
-            </div>
-            <div class="ai-progress-track">
-              <div class="ai-progress-fill" :style="{ width: aiAnalysisProgress + '%' }"></div>
-            </div>
           </div>
 
           <div v-if="!claudeAnalysisEnabled && !aiAnalysisMeta.report_exists" class="info-box">
@@ -5131,7 +5105,7 @@ const JobDetail = {
       showAiPromptModal, aiAnalysisPrompt, aiPromptForce,
       aiAnalysisVersionTrigger, aiAnalysisVersionModel, aiAnalysisVersionLabel,
       aiArtifactsExpanded, aiArtifactSummary, aiAnalysisHtml, aiAnalysisStatusText,
-      aiAnalysisProgress, aiAnalysisPhaseText, aiAnalysisElapsedText,
+      aiAnalysisElapsedText,
       aiDiagnosticsLoading, aiDiagnosticsError, aiDiagnosticsResult, aiDiagnosticStatusText,
       refreshAiAnalysis, startAiAnalysis, openAiPromptModal, closeAiPromptModal, confirmAiPromptModal,
       copyAiAnalysisReport,
