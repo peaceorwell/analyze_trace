@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.45");
+const appVersion = ref("0.2.46");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -847,7 +847,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.45";
+  appVersion.value = cfg.version || "0.2.46";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -4821,7 +4821,7 @@ const JobDetail = {
           </div>
           <div v-if="aiAnalysisSelectedVersion?.user_prompt" class="ai-version-prompt">
             <strong>本版本补充 Prompt</strong>
-            <pre>{{ aiAnalysisSelectedVersion.user_prompt }}</pre>
+            <pre :title="aiAnalysisSelectedVersion.user_prompt">{{ aiAnalysisSelectedVersion.user_prompt }}</pre>
           </div>
 
           <div v-if="!claudeAnalysisEnabled && !aiAnalysisMeta.report_exists" class="info-box">
