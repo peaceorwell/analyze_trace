@@ -48,7 +48,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.50"
+APP_VERSION = "0.2.51"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
 FEEDBACK_DIRNAME = "feedback"
@@ -56,6 +56,10 @@ FEEDBACK_MAX_IMAGES = 4
 FEEDBACK_MAX_IMAGE_BYTES = 8 * 1024 * 1024
 FEEDBACK_MENTION_TOKEN_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,62}$")
 FEEDBACK_MENTION_RE = re.compile(r"(?<![A-Za-z0-9_.%-])@([A-Za-z][A-Za-z0-9_.-]{0,62})(?=$|[^A-Za-z0-9_.-])")
+FEEDBACK_REACTION_EMOJIS = {
+    "👍", "👎", "😄", "🎉", "🚀", "❤️", "👀", "💡", "✅", "🙏",
+    "🔥", "🤔", "😕", "👏", "🙌", "💯", "🧠", "🛠️", "📌", "❓",
+}
 AI_ANALYSIS_DIRNAME = "ai_analysis"
 AI_ANALYSIS_STATUS_FILE = "ai_analysis_status.json"
 AI_ANALYSIS_REPORT_FILE = "ai_analysis.md"
@@ -3763,19 +3767,25 @@ def _feedback_attachment_response(row: dict) -> dict:
 def _feedback_message_response(
     row: dict,
     attachments_by_message: dict,
+    reactions_by_message: Optional[dict] = None,
     replies: Optional[list] = None,
     reply_count: Optional[int] = None,
     last_activity_at: Optional[str] = None,
 ) -> dict:
     normalized_replies = replies or []
+    reactions_by_message = reactions_by_message or {}
     return {
         "id": row["id"],
         "parent_id": row.get("parent_id"),
+        "user_token": row.get("user_token") or "",
         "user_display": row.get("user_display") or row.get("user_token") or "local",
         "body": row.get("body") or "",
         "created_at": row.get("created_at") or "",
         "updated_at": row.get("updated_at") or "",
+        "edited_at": row.get("edited_at") or "",
+        "edit_count": int(row.get("edit_count") or 0),
         "attachments": attachments_by_message.get(row["id"], []),
+        "reactions": reactions_by_message.get(row["id"], []),
         "replies": normalized_replies,
         "reply_count": reply_count if reply_count is not None else len(normalized_replies),
         "last_activity_at": last_activity_at or row.get("last_activity_at") or row.get("updated_at") or row.get("created_at") or "",
@@ -4320,6 +4330,37 @@ async def _feedback_attachments_for(db, message_ids: list[str]) -> dict:
     return result
 
 
+async def _feedback_reactions_for(db, message_ids: list[str], viewer_token: str = "") -> dict:
+    if not message_ids:
+        return {}
+    placeholders = ",".join("?" * len(message_ids))
+    rows = await (
+        await db.execute(
+            f"""
+            SELECT message_id,
+                   emoji,
+                   COUNT(*) AS count,
+                   SUM(CASE WHEN user_token=? THEN 1 ELSE 0 END) AS reacted,
+                   MIN(created_at) AS first_reacted_at
+            FROM feedback_reactions
+            WHERE message_id IN ({placeholders})
+            GROUP BY message_id, emoji
+            ORDER BY count DESC, first_reacted_at ASC
+            """,
+            (viewer_token or "", *message_ids),
+        )
+    ).fetchall()
+    result: dict[str, list[dict]] = {}
+    for row in rows:
+        item = dict(row)
+        result.setdefault(item["message_id"], []).append({
+            "emoji": item.get("emoji") or "",
+            "count": int(item.get("count") or 0),
+            "reacted": bool(item.get("reacted")),
+        })
+    return result
+
+
 def _mention_username(value: str) -> str:
     token = (value or "").strip().lstrip("@")
     if "@" in token:
@@ -4488,6 +4529,7 @@ async def mention_candidates(request: Request, q: str = "", limit: int = 8):
 async def list_feedback(request: Request, limit: int = 30, offset: int = 0, sort: str = "updated"):
     if AUTH_ENABLED:
         current_user_token(request)
+    viewer_token, _ = _feedback_author(request)
     limit = max(1, min(limit, 100))
     offset = max(0, offset)
     sort_key = (sort or "updated").strip().lower()
@@ -4514,7 +4556,7 @@ async def list_feedback(request: Request, limit: int = 30, offset: int = 0, sort
                        ) AS reply_count,
                        COALESCE(
                            (
-                               SELECT MAX(r.created_at)
+                               SELECT MAX(COALESCE(r.updated_at, r.created_at))
                                FROM feedback_messages r
                                WHERE r.parent_id = p.id
                            ),
@@ -4551,9 +4593,10 @@ async def list_feedback(request: Request, limit: int = 30, offset: int = 0, sort
         replies = [dict(row) for row in reply_rows]
         message_ids = parent_ids + [row["id"] for row in replies]
         attachments_by_message = await _feedback_attachments_for(db, message_ids)
+        reactions_by_message = await _feedback_reactions_for(db, message_ids, viewer_token)
         for reply in replies:
             replies_by_parent.setdefault(reply["parent_id"], []).append(
-                _feedback_message_response(reply, attachments_by_message)
+                _feedback_message_response(reply, attachments_by_message, reactions_by_message)
             )
     finally:
         await db.close()
@@ -4563,7 +4606,8 @@ async def list_feedback(request: Request, limit: int = 30, offset: int = 0, sort
             _feedback_message_response(
                 parent,
                 attachments_by_message,
-                replies_by_parent.get(parent["id"], []),
+                reactions_by_message,
+                replies=replies_by_parent.get(parent["id"], []),
                 reply_count=parent.get("reply_count"),
                 last_activity_at=parent.get("last_activity_at"),
             )
@@ -4580,6 +4624,7 @@ async def list_feedback(request: Request, limit: int = 30, offset: int = 0, sort
 async def get_feedback_post(request: Request, post_id: str):
     if AUTH_ENABLED:
         current_user_token(request)
+    viewer_token, _ = _feedback_author(request)
     db = await get_db()
     try:
         found = await row_to_dict(
@@ -4602,7 +4647,7 @@ async def get_feedback_post(request: Request, post_id: str):
                        ) AS reply_count,
                        COALESCE(
                            (
-                               SELECT MAX(r.created_at)
+                               SELECT MAX(COALESCE(r.updated_at, r.created_at))
                                FROM feedback_messages r
                                WHERE r.parent_id = p.id
                            ),
@@ -4629,13 +4674,15 @@ async def get_feedback_post(request: Request, post_id: str):
         replies = [dict(row) for row in reply_rows]
         message_ids = [root_id] + [row["id"] for row in replies]
         attachments_by_message = await _feedback_attachments_for(db, message_ids)
+        reactions_by_message = await _feedback_reactions_for(db, message_ids, viewer_token)
     finally:
         await db.close()
 
     return _feedback_message_response(
         parent,
         attachments_by_message,
-        [_feedback_message_response(reply, attachments_by_message) for reply in replies],
+        reactions_by_message,
+        replies=[_feedback_message_response(reply, attachments_by_message, reactions_by_message) for reply in replies],
         reply_count=parent.get("reply_count"),
         last_activity_at=parent.get("last_activity_at"),
     )
@@ -4785,10 +4832,148 @@ async def create_feedback(
             },
         )
 
-    response = _feedback_message_response(message, attachments_by_message)
+    response = _feedback_message_response(message, attachments_by_message, {})
     if notification_status:
         response["notification"] = notification_status
     return response
+
+
+@app.patch("/api/feedback/{message_id}")
+async def update_feedback_message(request: Request, message_id: str, payload: Optional[dict] = None):
+    if AUTH_ENABLED:
+        current_user_token(request)
+    user_token, _ = _feedback_author(request)
+    text = str((payload or {}).get("body") or "").strip()
+    if len(text) > 2000:
+        raise HTTPException(400, "留言内容不能超过 2000 字")
+
+    db = await get_db()
+    try:
+        target = await row_to_dict(
+            await (await db.execute(
+                "SELECT * FROM feedback_messages WHERE id=?",
+                (message_id,),
+            )).fetchone()
+        )
+        if not target:
+            raise HTTPException(404, "留言不存在")
+        if (target.get("user_token") or "") != user_token and not request_is_admin(request):
+            raise HTTPException(403, "只能编辑自己发布的内容")
+
+        attachment_count_row = await (
+            await db.execute(
+                "SELECT COUNT(*) AS count FROM feedback_attachments WHERE message_id=?",
+                (message_id,),
+            )
+        ).fetchone()
+        if not text and int(attachment_count_row["count"] or 0) == 0:
+            raise HTTPException(400, "留言内容不能为空")
+
+        await db.execute(
+            """
+            UPDATE feedback_messages
+            SET body=?,
+                updated_at=CURRENT_TIMESTAMP,
+                edited_at=CURRENT_TIMESTAMP,
+                edit_count=COALESCE(edit_count, 0) + 1
+            WHERE id=?
+            """,
+            (text, message_id),
+        )
+        root_parent_id = target.get("parent_id")
+        if root_parent_id:
+            await db.execute(
+                "UPDATE feedback_messages SET updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (root_parent_id,),
+            )
+        await write_audit(
+            db, request, "feedback.edit",
+            resource_type="feedback", resource_id=message_id,
+            details={"parent_id": root_parent_id, "body_length": len(text)},
+        )
+        await db.commit()
+
+        updated = await row_to_dict(
+            await (await db.execute("SELECT * FROM feedback_messages WHERE id=?", (message_id,))).fetchone()
+        )
+        root_id = root_parent_id or message_id
+        message_ids = [message_id]
+        attachments_by_message = await _feedback_attachments_for(db, message_ids)
+        reactions_by_message = await _feedback_reactions_for(db, message_ids, user_token)
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception:
+        await db.rollback()
+        raise
+    finally:
+        await db.close()
+
+    response = _feedback_message_response(updated, attachments_by_message, reactions_by_message)
+    response["post_id"] = root_id
+    return response
+
+
+@app.post("/api/feedback/{message_id}/reactions")
+async def toggle_feedback_reaction(request: Request, message_id: str, payload: Optional[dict] = None):
+    if AUTH_ENABLED:
+        current_user_token(request)
+    user_token, _ = _feedback_author(request)
+    emoji = str((payload or {}).get("emoji") or "").strip()
+    if emoji not in FEEDBACK_REACTION_EMOJIS:
+        raise HTTPException(400, "不支持该表情")
+
+    db = await get_db()
+    active = False
+    try:
+        target = await row_to_dict(
+            await (await db.execute(
+                "SELECT id FROM feedback_messages WHERE id=?",
+                (message_id,),
+            )).fetchone()
+        )
+        if not target:
+            raise HTTPException(404, "留言不存在")
+        existing = await row_to_dict(
+            await (await db.execute(
+                "SELECT 1 FROM feedback_reactions WHERE message_id=? AND user_token=? AND emoji=?",
+                (message_id, user_token, emoji),
+            )).fetchone()
+        )
+        if existing:
+            await db.execute(
+                "DELETE FROM feedback_reactions WHERE message_id=? AND user_token=? AND emoji=?",
+                (message_id, user_token, emoji),
+            )
+        else:
+            active = True
+            await db.execute(
+                "INSERT INTO feedback_reactions(message_id, user_token, emoji) VALUES(?,?,?)",
+                (message_id, user_token, emoji),
+            )
+        await write_audit(
+            db, request, "feedback.reaction",
+            resource_type="feedback", resource_id=message_id,
+            details={"emoji": emoji, "active": active},
+        )
+        await db.commit()
+        reactions_by_message = await _feedback_reactions_for(db, [message_id], user_token)
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception:
+        await db.rollback()
+        raise
+    finally:
+        await db.close()
+
+    return {
+        "ok": True,
+        "message_id": message_id,
+        "emoji": emoji,
+        "active": active,
+        "reactions": reactions_by_message.get(message_id, []),
+    }
 
 
 @app.delete("/api/feedback/{message_id}")
@@ -4833,6 +5018,10 @@ async def delete_feedback_message(request: Request, message_id: str):
 
         await db.execute(
             f"DELETE FROM feedback_attachments WHERE message_id IN ({placeholders})",
+            tuple(deleted_ids),
+        )
+        await db.execute(
+            f"DELETE FROM feedback_reactions WHERE message_id IN ({placeholders})",
             tuple(deleted_ids),
         )
         await db.execute(

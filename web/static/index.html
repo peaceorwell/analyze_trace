@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>torch profiler analyzer</title>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.2.50" />
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.2.51" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
   <script src="https://unpkg.com/vue-router@4/dist/vue-router.global.prod.js"></script>
@@ -114,14 +114,14 @@
     <!-- ── Header ── -->
     <header v-if="authChecked && (!authRequired || currentUser)" class="header">
       <div class="header-brand" @click="$router.push('/')" style="cursor:pointer" title="返回上传页面">
-        <img class="header-logo" src="/static/favicon.svg?v=0.2.50" alt="" />
+        <img class="header-logo" src="/static/favicon.svg?v=0.2.51" alt="" />
         <span class="header-title">Torch Profiler Analyzer</span>
         <span class="header-version">v{{ appVersion }}</span>
       </div>
       <div class="header-actions">
         <span v-if="authRequired && currentUser" class="header-user">{{ currentUser.display_name || currentUser.username }}</span>
         <button class="btn btn-sm btn-primary" @click="showNewProject=true">+ 新建项目</button>
-        <button class="btn btn-sm btn-outline" @click="openFeedbackBoard()">改进留言板</button>
+        <button class="btn btn-sm btn-outline" @click="$router.push('/feedback')">改进留言板</button>
         <div class="action-menu-wrap header-more-menu" @click.stop>
           <button class="action-icon-btn" type="button" title="更多入口"
                   aria-label="更多入口"
@@ -141,7 +141,7 @@
       </div>
     </header>
 
-    <div v-if="authChecked && (!authRequired || currentUser)" class="layout">
+    <div v-if="authChecked && (!authRequired || currentUser) && !isFeedbackRoute" class="layout">
       <!-- ── Sidebar ── -->
       <aside class="sidebar"
              :class="{ 'sidebar-collapsed': sidebarCollapsed }"
@@ -440,9 +440,10 @@
       </div>
     </div>
 
-    <!-- ── Feedback board modal ── -->
-    <div v-if="showFeedbackBoard" class="modal-mask" @click.self="closeFeedbackBoard()">
-      <div class="modal modal-wide feedback-modal">
+    <!-- ── Feedback board page ── -->
+    <div v-if="authChecked && (!authRequired || currentUser) && isFeedbackRoute" class="layout feedback-page-layout">
+      <main class="main feedback-page-main">
+      <section v-if="showFeedbackBoard" class="feedback-page-card">
         <div class="modal-title feedback-title">
           <span>{{ selectedFeedbackPost ? '帖子详情' : '改进意见帖子' }}</span>
           <div class="feedback-title-actions">
@@ -511,24 +512,32 @@
                 class="feedback-post-card"
                 role="button"
                 tabindex="0"
-                @click="selectFeedbackPost(item.id)"
-                @keyup.enter="selectFeedbackPost(item.id)"
+                @click="$router.push({ name: 'feedback', params: { postId: item.id } })"
+                @keyup.enter="$router.push({ name: 'feedback', params: { postId: item.id } })"
               >
-                <div class="feedback-post-card-head">
-                  <div class="feedback-post-mainline">
+                <div class="feedback-issue-icon">●</div>
+                <div class="feedback-issue-main">
+                  <div class="feedback-post-card-head">
+                    <div class="feedback-post-mainline">
+                      <strong>{{ feedbackPostTitle(item) }}</strong>
+                      <span v-if="item.attachments.length" class="feedback-issue-label">有图片</span>
+                      <span v-if="item.edited_at" class="feedback-issue-label subtle">已编辑</span>
+                    </div>
+                    <div class="feedback-post-card-stats">
+                      <span class="feedback-reply-pill">{{ feedbackPostReplyCount(item) }} 条交流</span>
+                      <button v-if="isAdmin" type="button" class="btn btn-xs btn-danger feedback-admin-delete" @click.stop="deleteFeedbackPost(item)">删除</button>
+                    </div>
+                  </div>
+                  <div class="feedback-post-excerpt">{{ feedbackPostExcerpt(item) }}</div>
+                  <div class="feedback-post-meta">
                     <span class="feedback-avatar feedback-avatar-sm">{{ feedbackUserInitial(item.user_display) }}</span>
-                    <strong>{{ feedbackPostTitle(item) }}</strong>
+                    <span>{{ item.user_display }}</span>
+                    <span>发布于 {{ fmtDate(item.created_at) }}</span>
+                    <span>最近更新 {{ fmtDate(feedbackPostActivity(item)) }}</span>
+                    <span v-if="feedbackReactionSummary(item).length" class="feedback-reaction-mini">
+                      <span v-for="reaction in feedbackReactionSummary(item).slice(0, 3)" :key="reaction.emoji">{{ reaction.emoji }} {{ reaction.count }}</span>
+                    </span>
                   </div>
-                  <div class="feedback-post-card-stats">
-                    <span>{{ feedbackPostReplyCount(item) }} 条交流</span>
-                    <button v-if="isAdmin" type="button" class="btn btn-xs btn-danger feedback-admin-delete" @click.stop="deleteFeedbackPost(item)">删除</button>
-                  </div>
-                </div>
-                <div class="feedback-post-excerpt">{{ feedbackPostExcerpt(item) }}</div>
-                <div class="feedback-post-meta">
-                  <span>{{ item.user_display }}</span>
-                  <span>{{ fmtDate(feedbackPostActivity(item)) }}</span>
-                  <span v-if="item.attachments.length">{{ item.attachments.length }} 图</span>
                 </div>
               </div>
               <button v-if="feedbackHasMore" class="btn btn-sm btn-outline w-full" :disabled="feedbackLoading" @click="loadFeedback()">
@@ -551,8 +560,9 @@
                 </div>
               </div>
             </div>
-            <div v-if="isAdmin" class="feedback-detail-actions">
-              <button type="button" class="btn btn-xs btn-danger" @click="deleteFeedbackPost(selectedFeedbackPost)">删除帖子</button>
+            <div v-if="canEditFeedbackMessage(selectedFeedbackPost) || isAdmin" class="feedback-detail-actions">
+              <button v-if="canEditFeedbackMessage(selectedFeedbackPost)" type="button" class="btn btn-xs btn-outline" @click="startFeedbackEdit(selectedFeedbackPost)">编辑</button>
+              <button v-if="isAdmin" type="button" class="btn btn-xs btn-danger" @click="deleteFeedbackPost(selectedFeedbackPost)">删除帖子</button>
             </div>
           </div>
 
@@ -561,11 +571,42 @@
               :id="'feedback-message-' + selectedFeedbackPost.id"
               :class="['feedback-card feedback-original-post', selectedFeedbackMessageId===selectedFeedbackPost.id ? 'feedback-message-target' : '']"
             >
-              <div v-if="selectedFeedbackPost.body" class="feedback-body">{{ selectedFeedbackPost.body }}</div>
+              <div v-if="feedbackEditing.id===selectedFeedbackPost.id" class="feedback-edit-box">
+                <textarea
+                  :id="'feedback-edit-' + selectedFeedbackPost.id"
+                  v-model="feedbackEditing.body"
+                  class="feedback-textarea feedback-edit-textarea"
+                  maxlength="2000"
+                ></textarea>
+                <div class="feedback-edit-actions">
+                  <button class="btn btn-xs btn-outline" :disabled="feedbackEditing.saving" @click="cancelFeedbackEdit()">取消</button>
+                  <button class="btn btn-xs btn-primary" :disabled="feedbackEditing.saving" @click="saveFeedbackEdit(selectedFeedbackPost)">
+                    {{ feedbackEditing.saving ? '保存中...' : '保存编辑' }}
+                  </button>
+                </div>
+              </div>
+              <template v-else>
+                <div v-if="selectedFeedbackPost.body" class="feedback-body">{{ selectedFeedbackPost.body }}</div>
+                <div class="feedback-card-foot">
+                  <span v-if="feedbackEditedText(selectedFeedbackPost)" class="feedback-edited">{{ feedbackEditedText(selectedFeedbackPost) }} · {{ fmtDate(selectedFeedbackPost.edited_at) }}</span>
+                </div>
+              </template>
               <div v-if="selectedFeedbackPost.attachments.length" class="feedback-image-grid">
                 <a v-for="img in selectedFeedbackPost.attachments" :key="img.id" :href="img.url" target="_blank" rel="noopener" class="feedback-image">
                   <img :src="img.url" :alt="img.filename || 'feedback image'" />
                 </a>
+              </div>
+              <div class="feedback-reaction-bar">
+                <button
+                  v-for="reaction in feedbackReactionOptions"
+                  :key="reaction"
+                  type="button"
+                  :class="['feedback-reaction-btn', (selectedFeedbackPost.reactions || []).some(item => item.emoji===reaction && item.reacted) ? 'active' : '']"
+                  @click="toggleFeedbackReaction(selectedFeedbackPost, reaction)"
+                >
+                  <span>{{ reaction }}</span>
+                  <b>{{ ((selectedFeedbackPost.reactions || []).find(item => item.emoji===reaction) || {}).count || 0 }}</b>
+                </button>
               </div>
             </article>
 
@@ -590,14 +631,44 @@
                   </div>
                   <div class="feedback-card-meta">
                     <span>{{ fmtDate(reply.created_at) }}</span>
+                    <span v-if="feedbackEditedText(reply)" class="feedback-edited">{{ feedbackEditedText(reply) }}</span>
+                    <button v-if="canEditFeedbackMessage(reply)" type="button" class="btn btn-xs btn-outline" @click="startFeedbackEdit(reply)">编辑</button>
                     <button v-if="isAdmin" type="button" class="btn btn-xs btn-danger" @click="deleteFeedbackReply(reply)">删除</button>
                   </div>
                 </div>
-                <div v-if="reply.body" class="feedback-body">{{ reply.body }}</div>
+                <div v-if="feedbackEditing.id===reply.id" class="feedback-edit-box">
+                  <textarea
+                    :id="'feedback-edit-' + reply.id"
+                    v-model="feedbackEditing.body"
+                    class="feedback-textarea feedback-edit-textarea"
+                    maxlength="2000"
+                  ></textarea>
+                  <div class="feedback-edit-actions">
+                    <button class="btn btn-xs btn-outline" :disabled="feedbackEditing.saving" @click="cancelFeedbackEdit()">取消</button>
+                    <button class="btn btn-xs btn-primary" :disabled="feedbackEditing.saving" @click="saveFeedbackEdit(reply)">
+                      {{ feedbackEditing.saving ? '保存中...' : '保存编辑' }}
+                    </button>
+                  </div>
+                </div>
+                <template v-else>
+                  <div v-if="reply.body" class="feedback-body">{{ reply.body }}</div>
+                </template>
                 <div v-if="reply.attachments.length" class="feedback-image-grid compact">
                   <a v-for="img in reply.attachments" :key="img.id" :href="img.url" target="_blank" rel="noopener" class="feedback-image">
                     <img :src="img.url" :alt="img.filename || 'feedback image'" />
                   </a>
+                </div>
+                <div class="feedback-reaction-bar">
+                  <button
+                    v-for="reaction in feedbackReactionOptions"
+                    :key="reaction"
+                    type="button"
+                    :class="['feedback-reaction-btn', (reply.reactions || []).some(item => item.emoji===reaction && item.reacted) ? 'active' : '']"
+                    @click="toggleFeedbackReaction(reply, reaction)"
+                  >
+                    <span>{{ reaction }}</span>
+                    <b>{{ ((reply.reactions || []).find(item => item.emoji===reaction) || {}).count || 0 }}</b>
+                  </button>
                 </div>
               </div>
             </div>
@@ -658,10 +729,14 @@
           </div>
         </section>
 
-        <div class="modal-actions">
-          <button class="btn btn-outline" @click="closeFeedbackBoard()">关闭</button>
+        <div class="modal-actions feedback-page-actions">
+          <button class="btn btn-outline" @click="closeFeedbackBoard()">返回首页</button>
         </div>
-      </div>
+      </section>
+      <section v-else class="feedback-page-card">
+        <div class="empty-tip">加载留言板...</div>
+      </section>
+      </main>
     </div>
 
     <div v-if="showFeedbackComposer" class="modal-mask modal-mask-front" @click.self="closeFeedbackComposer()">
@@ -1051,8 +1126,9 @@
             <ul>
               <li><strong>深色/浅色模式</strong>：右上角切换按钮，自动记忆偏好</li>
               <li><strong>存储管理</strong>：查看原始 trace / 结果文件占用，并集中清理原始文件</li>
-              <li><strong>改进留言板</strong>：可以发布文字和图片帖子，也可以进入帖子内交流；输入 @英文名 时可选择候选人并邮件通知，管理员可删除帖子和回复</li>
-              <li>留言板默认按最新更新时间排序，也可按发布时间或热度排序；邮件通知中的“打开留言”链接会直达对应帖子或回复</li>
+              <li><strong>改进留言板</strong>：右上角进入独立社区页，帖子列表采用 Issue 风格；可发布文字和图片帖子，也可以进入帖子内交流</li>
+              <li>帖子和回复支持作者编辑、常用表情、回复表情反应；输入 @英文名 时可选择候选人并邮件通知</li>
+              <li>留言板默认按最新更新时间排序，也可按发布时间或热度排序；邮件通知中的“打开留言”链接会直达对应帖子或回复，管理员可删除帖子和回复</li>
               <li>管理员可在留言板中点击 <strong>邮件诊断</strong>，检查 SMTP/sendmail、DNS、端口连通性和收件人配置</li>
               <li><strong>侧栏可拖拽调整宽度</strong>，可折叠以扩大主区域可视范围</li>
               <li>点击标题栏可返回上传页面</li>

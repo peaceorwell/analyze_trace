@@ -62,7 +62,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.50",
+        "version": "0.2.51",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -1287,6 +1287,114 @@ def test_feedback_board_rejects_non_images(client):
     )
 
     assert response.status_code == 400
+
+
+def test_feedback_author_can_edit_posts_and_replies(client):
+    created = client.post(
+        "/api/feedback",
+        data={"body": "原始帖子"},
+        headers={"X-Remote-User": "alice"},
+    )
+    assert created.status_code == 201
+    post = created.json()
+
+    denied = client.patch(
+        f"/api/feedback/{post['id']}",
+        json={"body": "别人编辑"},
+        headers={"X-Remote-User": "bob"},
+    )
+    assert denied.status_code == 403
+
+    edited = client.patch(
+        f"/api/feedback/{post['id']}",
+        json={"body": "编辑后的帖子"},
+        headers={"X-Remote-User": "alice"},
+    )
+    assert edited.status_code == 200
+    edited_payload = edited.json()
+    assert edited_payload["body"] == "编辑后的帖子"
+    assert edited_payload["edited_at"]
+    assert edited_payload["edit_count"] == 1
+    assert edited_payload["user_token"] == "alice"
+
+    reply = client.post(
+        "/api/feedback",
+        data={"body": "原始回复", "parent_id": post["id"]},
+        headers={"X-Remote-User": "bob"},
+    )
+    assert reply.status_code == 201
+
+    edited_reply = client.patch(
+        f"/api/feedback/{reply.json()['id']}",
+        json={"body": "编辑后的回复"},
+        headers={"X-Remote-User": "bob"},
+    )
+    assert edited_reply.status_code == 200
+    assert edited_reply.json()["body"] == "编辑后的回复"
+
+    detail = client.get(f"/api/feedback/{post['id']}", headers={"X-Remote-User": "bob"})
+    assert detail.status_code == 200
+    detail_payload = detail.json()
+    assert detail_payload["body"] == "编辑后的帖子"
+    assert detail_payload["edit_count"] == 1
+    assert detail_payload["replies"][0]["body"] == "编辑后的回复"
+    assert detail_payload["replies"][0]["edit_count"] == 1
+
+
+def test_feedback_reactions_toggle_per_user(client):
+    created = client.post(
+        "/api/feedback",
+        data={"body": "表情测试"},
+        headers={"X-Remote-User": "alice"},
+    )
+    assert created.status_code == 201
+    post_id = created.json()["id"]
+    reply = client.post(
+        "/api/feedback",
+        data={"body": "可以点赞", "parent_id": post_id},
+        headers={"X-Remote-User": "bob"},
+    )
+    assert reply.status_code == 201
+    reply_id = reply.json()["id"]
+
+    first = client.post(
+        f"/api/feedback/{reply_id}/reactions",
+        json={"emoji": "👍"},
+        headers={"X-Remote-User": "alice"},
+    )
+    assert first.status_code == 200
+    assert first.json()["active"] is True
+    assert first.json()["reactions"] == [{"emoji": "👍", "count": 1, "reacted": True}]
+
+    second_user = client.post(
+        f"/api/feedback/{reply_id}/reactions",
+        json={"emoji": "👍"},
+        headers={"X-Remote-User": "carol"},
+    )
+    assert second_user.status_code == 200
+    assert second_user.json()["reactions"][0]["count"] == 2
+
+    detail_for_alice = client.get(f"/api/feedback/{post_id}", headers={"X-Remote-User": "alice"}).json()
+    reaction = detail_for_alice["replies"][0]["reactions"][0]
+    assert reaction["emoji"] == "👍"
+    assert reaction["count"] == 2
+    assert reaction["reacted"] is True
+
+    toggled_off = client.post(
+        f"/api/feedback/{reply_id}/reactions",
+        json={"emoji": "👍"},
+        headers={"X-Remote-User": "alice"},
+    )
+    assert toggled_off.status_code == 200
+    assert toggled_off.json()["active"] is False
+    assert toggled_off.json()["reactions"][0]["count"] == 1
+
+    unsupported = client.post(
+        f"/api/feedback/{reply_id}/reactions",
+        json={"emoji": "🧪"},
+        headers={"X-Remote-User": "alice"},
+    )
+    assert unsupported.status_code == 400
 
 
 def test_ops_endpoints_and_audit_logs(client):

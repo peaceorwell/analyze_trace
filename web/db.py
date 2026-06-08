@@ -141,7 +141,9 @@ async def init_db():
                 user_display TEXT DEFAULT '',
                 body         TEXT DEFAULT '',
                 created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+                updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+                edited_at    DATETIME DEFAULT NULL,
+                edit_count   INTEGER DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS feedback_attachments (
@@ -152,6 +154,14 @@ async def init_db():
                 content_type TEXT DEFAULT '',
                 size_bytes   INTEGER DEFAULT 0,
                 created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS feedback_reactions (
+                message_id   TEXT REFERENCES feedback_messages(id) ON DELETE CASCADE,
+                user_token   TEXT DEFAULT '',
+                emoji        TEXT NOT NULL,
+                created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(message_id, user_token, emoji)
             );
 
             CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -173,6 +183,8 @@ async def init_db():
         await add_column_if_missing(db, "jobs", "original_trace_bytes", "INTEGER")
         await add_column_if_missing(db, "jobs", "is_pinned", "INTEGER DEFAULT 0")
         await add_column_if_missing(db, "folders", "password_hash", "TEXT DEFAULT NULL")
+        await add_column_if_missing(db, "feedback_messages", "edited_at", "DATETIME DEFAULT NULL")
+        await add_column_if_missing(db, "feedback_messages", "edit_count", "INTEGER DEFAULT 0")
 
         await db.executescript("""
             CREATE TABLE IF NOT EXISTS deleted_jobs (
@@ -226,6 +238,7 @@ async def init_db():
             CREATE INDEX IF NOT EXISTS idx_usage_daily_user ON usage_daily(user_token);
             CREATE INDEX IF NOT EXISTS idx_feedback_messages_parent_created ON feedback_messages(parent_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_feedback_attachments_message ON feedback_attachments(message_id);
+            CREATE INDEX IF NOT EXISTS idx_feedback_reactions_message ON feedback_reactions(message_id);
         """)
         await add_column_if_missing(db, "deleted_jobs", "is_pinned", "INTEGER DEFAULT 0")
         await db.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(1)")

@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.50");
+const appVersion = ref("0.2.51");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -393,12 +393,18 @@ const feedbackLoading = ref(false);
 const feedbackSubmitting = ref(false);
 const feedbackForm = ref({ body: "", files: [], previews: [] });
 const feedbackReplies = ref({});
+const feedbackEditing = ref({ id: "", body: "", saving: false });
 const selectedFeedbackPostId = ref("");
 const selectedFeedbackMessageId = ref("");
 const feedbackDetailLoading = ref(false);
 const feedbackEmailDiagLoading = ref(false);
 const feedbackEmailDiagResult = ref(null);
-const feedbackEmojiOptions = Object.freeze(["👍", "🙏", "✅", "💡", "🚀", "🔥", "👀", "❓", "🎉", "❤️"]);
+const feedbackEmojiOptions = Object.freeze([
+  "👍", "👎", "😄", "🎉", "🚀", "❤️", "👀", "💡", "✅", "🙏",
+  "🔥", "🤔", "😕", "👏", "🙌", "💯", "🧠", "🛠️", "📌", "❓",
+  "🙂", "😅", "😭", "✨", "💪", "📝", "🔍", "⚠️", "💬", "🙇",
+]);
+const feedbackReactionOptions = Object.freeze(["👍", "👎", "😄", "🎉", "🚀", "❤️", "👀", "💡"]);
 const feedbackTextTarget = ref({ target: "post", textarea: null });
 const feedbackMention = ref({
   visible: false,
@@ -878,7 +884,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.50";
+  appVersion.value = cfg.version || "0.2.51";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -1062,7 +1068,58 @@ const feedbackPostActivity = item => item?.last_activity_at || item?.updated_at 
 const feedbackMentionTargetKey = target => String(target || "post");
 const feedbackUserInitial = value => {
   const text = String(value || "用户").trim();
-  return Array.from(text)[0] || "用";
+  const chars = Array.from(text);
+  const chineseChars = chars.filter(ch => /[\u4e00-\u9fff]/.test(ch));
+  if (chineseChars.length >= 2) return chineseChars.slice(-2).join("");
+  if (chineseChars.length === 1) return chineseChars[0];
+  const compact = chars.filter(ch => !/\s/.test(ch));
+  return compact.slice(-2).join("") || "用户";
+};
+
+const currentFeedbackUserToken = computed(() =>
+  currentUser.value?.username || (!authRequired.value ? "local" : "")
+);
+
+const canEditFeedbackMessage = message => {
+  if (!message?.id) return false;
+  if (isAdmin.value) return true;
+  return Boolean(message.user_token && message.user_token === currentFeedbackUserToken.value);
+};
+
+const feedbackEditedText = message => {
+  if (!message?.edited_at) return "";
+  const count = Number(message.edit_count || 0);
+  return count > 1 ? `已编辑 ${count} 次` : "已编辑";
+};
+
+const feedbackReactionSummary = message => (message?.reactions || []).filter(item => Number(item.count || 0) > 0);
+
+const updateFeedbackMessageInState = updated => {
+  if (!updated?.id) return;
+  feedbackItems.value = feedbackItems.value.map(post => {
+    if (post.id === updated.id) {
+      return {
+        ...post,
+        ...updated,
+        replies: post.replies || updated.replies || [],
+        reply_count: post.reply_count ?? updated.reply_count ?? 0,
+      };
+    }
+    const replies = (post.replies || []).map(reply => (
+      reply.id === updated.id ? { ...reply, ...updated } : reply
+    ));
+    const changed = replies.some((reply, index) => reply !== (post.replies || [])[index]);
+    if (!changed) return post;
+    return {
+      ...post,
+      replies,
+      last_activity_at: updated.updated_at || post.last_activity_at,
+    };
+  });
+};
+
+const setFeedbackMessageReactions = (messageId, reactions) => {
+  updateFeedbackMessageInState({ id: messageId, reactions: reactions || [] });
 };
 
 const setFeedbackTextTarget = (event, target = "post") => {
@@ -1353,6 +1410,10 @@ const selectFeedbackPost = async (id, { refresh = true, focusMessageId = "" } = 
 const closeFeedbackPost = () => {
   selectedFeedbackPostId.value = "";
   selectedFeedbackMessageId.value = "";
+  cancelFeedbackEdit();
+  if (router.currentRoute.value.name === "feedback" && router.currentRoute.value.params?.postId) {
+    router.push({ name: "feedback" }).catch(() => {});
+  }
 };
 
 const openFeedbackComposer = () => {
@@ -1368,6 +1429,7 @@ const closeFeedbackComposer = () => {
 
 const closeFeedbackBoard = () => {
   closeFeedbackComposer();
+  cancelFeedbackEdit();
   closeFeedbackMention();
   selectedFeedbackPostId.value = "";
   selectedFeedbackMessageId.value = "";
@@ -1458,6 +1520,10 @@ const loadFeedback = async ({ reset = false, selectId = "" } = {}) => {
 };
 
 const openFeedbackBoard = async () => {
+  if (router.currentRoute.value.name !== "feedback") {
+    await router.push({ name: "feedback" }).catch(() => {});
+    return;
+  }
   await loadMe().catch(() => {});
   showFeedbackBoard.value = true;
   selectedFeedbackPostId.value = "";
@@ -1470,6 +1536,7 @@ const openFeedbackDeepLink = async ({ postId = "", messageId = "" } = {}) => {
   await loadMe().catch(() => {});
   showFeedbackBoard.value = true;
   showFeedbackComposer.value = false;
+  cancelFeedbackEdit();
   closeFeedbackMention();
   if (!targetPostId) {
     selectedFeedbackPostId.value = "";
@@ -1543,6 +1610,66 @@ const submitFeedback = async (parentId = null) => {
     } else {
       feedbackSubmitting.value = false;
     }
+  }
+};
+
+const startFeedbackEdit = message => {
+  if (!canEditFeedbackMessage(message)) return;
+  feedbackEditing.value = {
+    id: message.id,
+    body: message.body || "",
+    saving: false,
+  };
+  nextTick(() => {
+    const el = document.getElementById(`feedback-edit-${message.id}`);
+    el?.focus();
+  });
+};
+
+const cancelFeedbackEdit = () => {
+  feedbackEditing.value = { id: "", body: "", saving: false };
+};
+
+const saveFeedbackEdit = async message => {
+  if (!message?.id || feedbackEditing.value.id !== message.id) return;
+  const body = (feedbackEditing.value.body || "").trim();
+  if (!body && !(message.attachments || []).length) {
+    showToast("留言内容不能为空", "error");
+    return;
+  }
+  feedbackEditing.value = { ...feedbackEditing.value, saving: true };
+  try {
+    const r = await fetch(`/api/feedback/${encodeURIComponent(message.id)}`, {
+      method: "PATCH",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ body }),
+    });
+    const payload = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(payload.detail || "编辑失败");
+    updateFeedbackMessageInState(payload);
+    cancelFeedbackEdit();
+    showToast("已保存编辑", "success");
+  } catch (e) {
+    showToast(e.message || "编辑失败", "error");
+    feedbackEditing.value = { ...feedbackEditing.value, saving: false };
+  }
+};
+
+const toggleFeedbackReaction = async (message, emoji) => {
+  if (!message?.id || !emoji) return;
+  try {
+    const r = await fetch(`/api/feedback/${encodeURIComponent(message.id)}/reactions`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ emoji }),
+    });
+    const payload = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(payload.detail || "表情操作失败");
+    setFeedbackMessageReactions(message.id, payload.reactions || []);
+  } catch (e) {
+    showToast(e.message || "表情操作失败", "error");
   }
 };
 
@@ -5259,6 +5386,13 @@ router.beforeEach(async (to, from) => {
     await openFeedbackRoute(to);
     return;
   }
+  if (showFeedbackBoard.value) {
+    showFeedbackBoard.value = false;
+    selectedFeedbackPostId.value = "";
+    selectedFeedbackMessageId.value = "";
+    cancelFeedbackEdit();
+    closeFeedbackMention();
+  }
 
   const newJobId = to.params?.id || null;
 
@@ -5357,6 +5491,7 @@ const App = {
     let historySearchTimer = null;
     let compareSearchTimer = null;
     let resultTableTimer = null;
+    const isFeedbackRoute = computed(() => router.currentRoute.value.name === "feedback");
 
     // Watchers that need to live at the root level
     watch(resultTab, (v, previousTab) => {
@@ -5479,7 +5614,7 @@ const App = {
     // Return everything the root template (index.html) needs
     return {
       // Layout/theme
-      isDark, toggleTheme, sidebarWidth, sidebarCollapsed, appVersion,
+      isDark, toggleTheme, sidebarWidth, sidebarCollapsed, appVersion, isFeedbackRoute,
       toggleSidebar, startSidebarResize,
       authRequired, authChecked, currentUser, isAdmin, loginForm, loginRememberUsername, loginLoading, loginError,
       loginCaptchaRequired, loginCaptchaImage,
@@ -5517,15 +5652,17 @@ const App = {
       isDeletedOver10Days, restoreProject, permanentlyDeleteProject,
       showFeedbackBoard, showFeedbackComposer, feedbackItems, feedbackTotal, feedbackLoading,
       feedbackSort, feedbackSortOptions,
-      feedbackSubmitting, feedbackForm, feedbackReplies, feedbackHasMore,
+      feedbackSubmitting, feedbackForm, feedbackReplies, feedbackEditing, feedbackHasMore,
       feedbackEmailDiagLoading, feedbackEmailDiagResult, runFeedbackEmailDiagnostics,
-      feedbackEmojiOptions, feedbackUserInitial, setFeedbackTextTarget, insertFeedbackEmoji,
+      feedbackEmojiOptions, feedbackReactionOptions, feedbackUserInitial, setFeedbackTextTarget, insertFeedbackEmoji,
       feedbackMention, handleFeedbackMentionInput, handleFeedbackMentionKeydown, selectFeedbackMention,
       selectedFeedbackPostId, selectedFeedbackMessageId, selectedFeedbackPost, feedbackDetailLoading,
       feedbackPostTitle, feedbackPostExcerpt, feedbackPostReplyCount, feedbackPostActivity,
+      feedbackEditedText, feedbackReactionSummary, canEditFeedbackMessage,
       openFeedbackBoard, refreshFeedbackBoard, loadFeedback, setFeedbackSort, setFeedbackFiles, clearFeedbackForm,
       toggleFeedbackReply, selectFeedbackPost, closeFeedbackPost,
       openFeedbackComposer, closeFeedbackComposer, closeFeedbackBoard, submitFeedback,
+      startFeedbackEdit, cancelFeedbackEdit, saveFeedbackEdit, toggleFeedbackReaction,
       deleteFeedbackPost, deleteFeedbackReply,
       showStorageManager, storageSummary, storageSelection, storageJobsWithTrace,
       openStorageManager, toggleStorageSelection, toggleAllStorageSelection,
