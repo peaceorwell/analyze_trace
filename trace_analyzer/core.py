@@ -218,6 +218,47 @@ def write_triton_code_file(code_dir, idx, kernel):
     return code_filename
 
 
+_TRITON_NUMERIC_SUFFIX_RE = re.compile(r"(_\d+)+$")
+
+
+def _normalize_triton_kernel_name(name):
+    text = str(name or "").strip()
+    return _TRITON_NUMERIC_SUFFIX_RE.sub("", text)
+
+
+def _stable_text_hash(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    normalized = re.sub(r"\s+", "", text)
+    return hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:16]
+
+
+def _triton_match_candidates(name, stats):
+    normalized_name = stats.get("triton_normalized_name") or _normalize_triton_kernel_name(name)
+    normalized_key = normalized_name.lower()
+    candidates = [("exact_name", f"exact:{name}")]
+    code_hash = stats.get("triton_code_hash") or ""
+    if code_hash:
+        candidates.append(("code_hash", f"code:{code_hash}"))
+    tiling_hash = stats.get("triton_tiling_hash") or ""
+    if normalized_key and tiling_hash:
+        candidates.append(("normalized_name_tiling", f"name_tiling:{normalized_key}:{tiling_hash}"))
+    if normalized_key:
+        candidates.append(("normalized_name", f"name:{normalized_key}"))
+    return candidates
+
+
+def _triton_display_name(name_a, name_b, stats_a, stats_b):
+    if name_a and name_a == name_b:
+        return name_a
+    norm_a = stats_a.get("triton_normalized_name") or _normalize_triton_kernel_name(name_a)
+    norm_b = stats_b.get("triton_normalized_name") or _normalize_triton_kernel_name(name_b)
+    if norm_a and norm_b and norm_a.lower() == norm_b.lower():
+        return norm_a
+    return name_b or name_a
+
+
 def run_triton_code_and_get_efficiency(code_path):
     """Execute a triton .py file and return its efficiency output (GB/s).
 
@@ -702,6 +743,8 @@ def compute_avgs(parsed):
         "io_gb": 0.0,
         "io_eff_sum": 0.0,
         "io_eff_count": 0,
+        "code_hashes": set(),
+        "tiling_hashes": set(),
     }))
     for step, kernels in step_to_triton.items():
         for k in kernels:
@@ -713,6 +756,12 @@ def compute_avgs(parsed):
             if k["IO efficiency(GB/s)"] is not None:
                 a["io_eff_sum"] += k["IO efficiency(GB/s)"]
                 a["io_eff_count"] += 1
+            code_hash = _stable_text_hash(k.get("triton_output_code"))
+            if code_hash:
+                a["code_hashes"].add(code_hash)
+            tiling_hash = _stable_text_hash(k.get("tiling config"))
+            if tiling_hash:
+                a["tiling_hashes"].add(tiling_hash)
 
     all_triton_names = set()
     for s in all_steps:
@@ -720,6 +769,14 @@ def compute_avgs(parsed):
 
     avg_triton = {}
     for name in all_triton_names:
+        code_hashes = set()
+        tiling_hashes = set()
+        for step in all_steps:
+            stats = step_triton_agg[step].get(name)
+            if not stats:
+                continue
+            code_hashes.update(stats.get("code_hashes", set()))
+            tiling_hashes.update(stats.get("tiling_hashes", set()))
         io_eff_sum = sum(step_triton_agg[s].get(name, {"io_eff_sum": 0.0})["io_eff_sum"] for s in all_steps)
         io_eff_count = sum(step_triton_agg[s].get(name, {"io_eff_count": 0})["io_eff_count"] for s in all_steps)
         avg_triton[name] = {
@@ -727,6 +784,9 @@ def compute_avgs(parsed):
             "avg_dur_ms": mean([step_triton_agg[s].get(name, {"dur_ms": 0.0})["dur_ms"] for s in all_steps]),
             "avg_io_gb":  mean([step_triton_agg[s].get(name, {"io_gb": 0.0})["io_gb"] for s in all_steps]),
             "avg_io_eff": (io_eff_sum / io_eff_count) if io_eff_count else None,
+            "triton_normalized_name": _normalize_triton_kernel_name(name),
+            "triton_code_hash": next(iter(code_hashes)) if len(code_hashes) == 1 else "",
+            "triton_tiling_hash": next(iter(tiling_hashes)) if len(tiling_hashes) == 1 else "",
         }
     avg_triton = dict(sorted(avg_triton.items(), key=lambda x: -x[1]["avg_dur_ms"]))
 
@@ -974,12 +1034,41 @@ def _write_kernels_cmp_csv(path, data_a, data_b):
 
 def _write_triton_cmp_csv(path, avg_triton_a, avg_triton_b):
     zero = {"avg_count": 0.0, "avg_dur_ms": 0.0, "avg_io_gb": 0.0, "avg_io_eff": 0.0}
+    remaining_a = set(avg_triton_a)
+    remaining_b = set(avg_triton_b)
+    matched = []
+    for method in ("exact_name", "code_hash", "normalized_name_tiling", "normalized_name"):
+        by_key_a = defaultdict(list)
+        by_key_b = defaultdict(list)
+        for name in remaining_a:
+            for candidate_method, key in _triton_match_candidates(name, avg_triton_a[name]):
+                if candidate_method == method:
+                    by_key_a[key].append(name)
+        for name in remaining_b:
+            for candidate_method, key in _triton_match_candidates(name, avg_triton_b[name]):
+                if candidate_method == method:
+                    by_key_b[key].append(name)
+        for key in sorted(set(by_key_a) & set(by_key_b)):
+            names_a = sorted(by_key_a[key])
+            names_b = sorted(by_key_b[key])
+            if len(names_a) != 1 or len(names_b) != 1:
+                continue
+            name_a = names_a[0]
+            name_b = names_b[0]
+            matched.append((name_a, name_b, method))
+            remaining_a.remove(name_a)
+            remaining_b.remove(name_b)
+
     rows = []
-    for name in set(avg_triton_a) | set(avg_triton_b):
-        a, b  = avg_triton_a.get(name, zero), avg_triton_b.get(name, zero)
+    for name_a, name_b, method in matched:
+        a = avg_triton_a.get(name_a, zero)
+        b = avg_triton_b.get(name_b, zero)
         delta = b["avg_dur_ms"] - a["avg_dur_ms"]
         rows.append({
-            "kernel_name":  name,
+            "kernel_name":  _triton_display_name(name_a, name_b, a, b),
+            "match_method": method,
+            "kernel_name_A": name_a,
+            "kernel_name_B": name_b,
             "avg_dur_ms_A": fmt3(a["avg_dur_ms"]),
             "avg_dur_ms_B": fmt3(b["avg_dur_ms"]),
             "delta_dur_ms": fmt3(delta),
@@ -989,8 +1078,46 @@ def _write_triton_cmp_csv(path, avg_triton_a, avg_triton_b):
             "avg_io_gb_B":  fmt3(b["avg_io_gb"]),
             "_sort":        abs(delta),
         })
-    rows.sort(key=lambda r: -r["_sort"])
-    fields = ["kernel_name", "avg_dur_ms_A", "avg_dur_ms_B", "delta_dur_ms",
+
+    for name in sorted(remaining_a):
+        a = avg_triton_a.get(name, zero)
+        delta = -a["avg_dur_ms"]
+        rows.append({
+            "kernel_name":  _triton_display_name(name, "", a, zero),
+            "match_method": "unmatched",
+            "kernel_name_A": name,
+            "kernel_name_B": "",
+            "avg_dur_ms_A": fmt3(a["avg_dur_ms"]),
+            "avg_dur_ms_B": fmt3(0),
+            "delta_dur_ms": fmt3(delta),
+            "avg_count_A":  fmt3(a["avg_count"]),
+            "avg_count_B":  fmt3(0),
+            "avg_io_gb_A":  fmt3(a["avg_io_gb"]),
+            "avg_io_gb_B":  fmt3(0),
+            "_sort":        abs(delta),
+        })
+
+    for name in sorted(remaining_b):
+        b = avg_triton_b.get(name, zero)
+        delta = b["avg_dur_ms"]
+        rows.append({
+            "kernel_name":  _triton_display_name("", name, zero, b),
+            "match_method": "unmatched",
+            "kernel_name_A": "",
+            "kernel_name_B": name,
+            "avg_dur_ms_A": fmt3(0),
+            "avg_dur_ms_B": fmt3(b["avg_dur_ms"]),
+            "delta_dur_ms": fmt3(delta),
+            "avg_count_A":  fmt3(0),
+            "avg_count_B":  fmt3(b["avg_count"]),
+            "avg_io_gb_A":  fmt3(0),
+            "avg_io_gb_B":  fmt3(b["avg_io_gb"]),
+            "_sort":        abs(delta),
+        })
+
+    rows.sort(key=lambda r: (-r["_sort"], r["kernel_name"]))
+    fields = ["kernel_name", "match_method", "kernel_name_A", "kernel_name_B",
+              "avg_dur_ms_A", "avg_dur_ms_B", "delta_dur_ms",
               "avg_count_A", "avg_count_B", "avg_io_gb_A", "avg_io_gb_B"]
     with open(path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")

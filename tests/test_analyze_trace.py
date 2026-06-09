@@ -272,6 +272,31 @@ class TestComputeAvgs:
 
         assert avgs["avg_triton"]["triton_poi_fused_add"]["avg_io_eff"] is None
 
+    def test_triton_metadata_keeps_stable_match_fingerprints(self, tmp_path):
+        trace_path = tmp_path / "trace.json"
+        trace_path.write_text(json.dumps({
+            "traceEvents": [
+                {"name": "ProfilerStep#0", "cat": "user_annotation", "ts": 1000, "dur": 1000},
+                {
+                    "name": "triton_poi_fused_add_46",
+                    "cat": "kernel",
+                    "ts": 1100,
+                    "dur": 100,
+                    "args": {
+                        "kernel kwargs": "M=128, N=256",
+                        "triton output code": "def kernel():\n    return 1\n",
+                    },
+                },
+            ],
+        }))
+
+        avgs = compute_avgs(parse_trace(str(trace_path)))
+        triton = avgs["avg_triton"]["triton_poi_fused_add_46"]
+
+        assert triton["triton_normalized_name"] == "triton_poi_fused_add"
+        assert triton["triton_code_hash"]
+        assert triton["triton_tiling_hash"]
+
     def test_collective_kernel_is_excluded_from_compute_duration(self, tmp_path):
         trace_path = tmp_path / "trace.json"
         trace_path.write_text(json.dumps({
@@ -402,6 +427,57 @@ class TestEndToEnd:
 
         assert rows[0]["kernel_name"] == "gemm_kernel_a"
         assert rows[0]["family"] == "gemm"
+        assert rows[0]["delta_dur_ms"] == "3"
+
+    def test_triton_compare_matches_different_suffixes_by_code_hash(self, temp_output_dir):
+        data_a = {
+            "KERNEL_TYPES": [],
+            "kt_avgs": {"other": (0, 0), "collective": (0, 0)},
+            "avg_kernels": {},
+            "kernel_families": {},
+            "avg_triton": {
+                "triton_poi_fused_add_46": {
+                    "avg_count": 1,
+                    "avg_dur_ms": 10,
+                    "avg_io_gb": 1,
+                    "avg_io_eff": 100,
+                    "triton_code_hash": "abc123",
+                    "triton_normalized_name": "triton_poi_fused_add",
+                },
+            },
+            "avg_aten": {},
+            "avg_cncl": {},
+        }
+        data_b = {
+            "KERNEL_TYPES": [],
+            "kt_avgs": {"other": (0, 0), "collective": (0, 0)},
+            "avg_kernels": {},
+            "kernel_families": {},
+            "avg_triton": {
+                "triton_poi_fused_add_55": {
+                    "avg_count": 1,
+                    "avg_dur_ms": 13,
+                    "avg_io_gb": 1,
+                    "avg_io_eff": 100,
+                    "triton_code_hash": "abc123",
+                    "triton_normalized_name": "triton_poi_fused_add",
+                },
+            },
+            "avg_aten": {},
+            "avg_cncl": {},
+        }
+        args = type("Args", (), {"output_dir": temp_output_dir})
+
+        write_comparison(data_a, data_b, args)
+
+        with open(os.path.join(temp_output_dir, "triton_kernels_cmp.csv")) as f:
+            rows = list(csv.DictReader(f))
+
+        assert len(rows) == 1
+        assert rows[0]["kernel_name"] == "triton_poi_fused_add"
+        assert rows[0]["kernel_name_A"] == "triton_poi_fused_add_46"
+        assert rows[0]["kernel_name_B"] == "triton_poi_fused_add_55"
+        assert rows[0]["match_method"] == "code_hash"
         assert rows[0]["delta_dur_ms"] == "3"
 
     def test_single_csv_outputs_do_not_include_percentage_columns(self, temp_output_dir):
