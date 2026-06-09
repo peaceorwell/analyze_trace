@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.57");
+const appVersion = ref("0.2.58");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -896,7 +896,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.57";
+  appVersion.value = cfg.version || "0.2.58";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -1277,6 +1277,8 @@ const initFeedbackMarkdownEditor = target => {
   const MarkdownEditor = detectFeedbackMarkdownEditor();
   if (!MarkdownEditor) return;
   const targetKey = feedbackMentionTargetKey(target);
+  const isEditTarget = targetKey.startsWith("edit:");
+  const isReplyTarget = targetKey !== "post" && !isEditTarget;
   const editorId = feedbackMarkdownEditorElementId(targetKey);
   const existing = feedbackMarkdownEditors.get(targetKey);
   const existingWrapper = existing?.instance?.codemirror?.getWrapperElement?.();
@@ -1295,8 +1297,8 @@ const initFeedbackMarkdownEditor = target => {
     forceSync: true,
     spellChecker: false,
     status: false,
-    minHeight: targetKey.startsWith("edit:") ? "130px" : "210px",
-    maxHeight: "52vh",
+    minHeight: isReplyTarget ? "150px" : isEditTarget ? "130px" : "210px",
+    maxHeight: isReplyTarget ? "240px" : "52vh",
     previewRender: value => renderMarkdown(value || ""),
     placeholder: textarea.getAttribute("placeholder") || "Use Markdown to format your comment.",
     toolbar: [

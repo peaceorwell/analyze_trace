@@ -2755,6 +2755,11 @@ body.result-reading-active { overflow: hidden; }
   z-index: 81;
   border-color: var(--border);
 }
+.feedback-reply-editor-host .CodeMirror {
+  min-height: 150px !important;
+  height: 150px !important;
+  max-height: 240px !important;
+}
 .feedback-edit-editor-host .CodeMirror {
   min-height: 130px;
 }
