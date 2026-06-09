@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.59");
+const appVersion = ref("0.2.60");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -142,6 +142,11 @@ const loginCaptchaRequired = ref(false);
 const loginCaptchaImage = ref("");
 const perfettoOpening = ref({});
 const compareRerunLoading = ref(false);
+const showStepReanalysisModal = ref(false);
+const stepReanalysisLoading = ref(false);
+const stepReanalysisLabel = ref("");
+const stepReanalysisFilterA = ref("");
+const stepReanalysisFilterB = ref("");
 const aiAnalysisLoading = ref(false);
 const aiAnalysisStarting = ref(false);
 const aiAnalysisError = ref("");
@@ -604,6 +609,16 @@ const availableTabs = computed(() => {
   return tabs;
 });
 
+const jobStepFilterLabel = computed(() => {
+  const job = selectedJob.value;
+  if (!job) return "";
+  const a = (job.step_filter_a || "").trim();
+  const b = (job.step_filter_b || "").trim();
+  if (!a && !b) return "";
+  if (job.mode === "compare") return `Step A: ${a || "全部"} / B: ${b || "全部"}`;
+  return `Step: ${a}`;
+});
+
 const CHART_SOURCE_CONFIGS = [
   { file: "kernel_types_cmp.csv", label: "类型对比", mode: "compare", nameField: "type", defaultMetric: "delta_dur_ms" },
   { file: "all_kernels_cmp.csv", label: "Kernel Delta", mode: "compare", nameField: "kernel_name", defaultMetric: "delta_dur_ms" },
@@ -896,7 +911,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.59";
+  appVersion.value = cfg.version || "0.2.60";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -4897,6 +4912,67 @@ const rerunCompareSwapped = async () => {
   }
 };
 
+const openStepReanalysisModal = () => {
+  if (!selectedJobId.value || !selectedJob.value) {
+    showToast("未选中任务", "error");
+    return;
+  }
+  if (["pending", "running"].includes(selectedJob.value.status)) {
+    showToast("任务仍在分析中，完成后再指定 Step 重分析", "error");
+    return;
+  }
+  stepReanalysisLabel.value = "";
+  stepReanalysisFilterA.value = selectedJob.value.step_filter_a || "";
+  stepReanalysisFilterB.value = selectedJob.value.mode === "compare" ? (selectedJob.value.step_filter_b || "") : "";
+  showStepReanalysisModal.value = true;
+};
+
+const closeStepReanalysisModal = () => {
+  if (stepReanalysisLoading.value) return;
+  showStepReanalysisModal.value = false;
+};
+
+const confirmStepReanalysis = async () => {
+  if (!selectedJobId.value || !selectedJob.value || stepReanalysisLoading.value) return;
+  const filterA = stepReanalysisFilterA.value.trim();
+  const filterB = selectedJob.value.mode === "compare" ? stepReanalysisFilterB.value.trim() : "";
+  if (selectedJob.value.mode === "single" && !filterA) {
+    showToast("请指定要分析的 step", "error");
+    return;
+  }
+  if (selectedJob.value.mode === "compare" && !filterA && !filterB) {
+    showToast("请至少指定 A 或 B 的 step；留空的一侧会使用全部 step", "error");
+    return;
+  }
+
+  stepReanalysisLoading.value = true;
+  try {
+    const r = await fetch(`/api/jobs/${selectedJobId.value}/reanalyze-steps`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({
+        label: stepReanalysisLabel.value.trim(),
+        step_filter_a: filterA,
+        step_filter_b: filterB,
+      }),
+    });
+    const payload = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      showToast("指定 Step 重分析失败: " + (payload.detail || "服务器错误"), "error");
+      return;
+    }
+    showStepReanalysisModal.value = false;
+    showToast("已创建指定 Step 重分析任务", "success");
+    await refreshSidebarData();
+    router.push({ path: `/job/${payload.id}` });
+  } catch (e) {
+    showToast("指定 Step 重分析失败: 网络错误", "error");
+  } finally {
+    stepReanalysisLoading.value = false;
+  }
+};
+
 // ══════════════════════════════════════════════════════════════════════════════
 // Projects
 // ══════════════════════════════════════════════════════════════════════════════
@@ -5256,6 +5332,7 @@ const JobDetail = {
           <span class="job-mode-badge" :class="'mode-'+selectedJob.mode">
             {{ selectedJob.mode==='compare'?'对比':'单文件' }}
           </span>
+          <span v-if="jobStepFilterLabel" class="job-step-badge">{{ jobStepFilterLabel }}</span>
         </div>
         <div class="result-actions action-menu-wrap" @click.stop>
           <button class="action-icon-btn" type="button" title="更多任务操作"
@@ -5269,6 +5346,7 @@ const JobDetail = {
             </button>
             <button v-if="selectedJob.is_owner !== false" type="button" @click="editLabel(); closeActionMenu()">重命名</button>
             <button v-if="selectedJob.is_owner !== false" type="button" @click="moveProject(); closeActionMenu()">移动项目</button>
+            <button type="button" @click="openStepReanalysisModal(); closeActionMenu()">指定 Step 重分析</button>
             <button v-if="selectedJob.is_owner !== false" type="button" class="danger" @click="deleteJob(); closeActionMenu()">删除任务</button>
           </div>
         </div>
@@ -5805,8 +5883,9 @@ const JobDetail = {
     return {
       ktChart: ktChartRef, ktPieChart: ktPieChartRef, ktPieChartB: ktPieChartBRef,
       selectedJob, selectedJobId, jobLoading, resultTab, availableTabs, currentTable,
+      jobStepFilterLabel,
       isReadingMode, toggleReadingMode,
-      compareRerunLoading,
+      compareRerunLoading, openStepReanalysisModal,
       consoleSearch, consoleHideWrote, consoleSections, consoleWroteCount,
       consoleSearchMatchCount, scrollConsoleSection,
       chartSource, chartMetric, chartTopN, chartTopNOptions, chartSourceOptions,
@@ -6193,6 +6272,9 @@ const App = {
       copyTritonCode, copyErrorModal,
       showAiPromptModal, aiAnalysisPrompt, aiPromptForce,
       openAiPromptModal, closeAiPromptModal, confirmAiPromptModal,
+      showStepReanalysisModal, stepReanalysisLoading, stepReanalysisLabel,
+      stepReanalysisFilterA, stepReanalysisFilterB,
+      openStepReanalysisModal, closeStepReanalysisModal, confirmStepReanalysis,
       toasts, showConfirmModal, confirmModal, resolveConfirm,
       openActionMenu, toggleActionMenu, closeActionMenu,
 

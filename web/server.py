@@ -38,7 +38,14 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from trace_analyzer import compute_avgs, extract_kernel_family, parse_trace, run_triton_code_and_get_efficiency  # noqa: E402
+from trace_analyzer import (  # noqa: E402
+    compute_avgs,
+    extract_kernel_family,
+    filter_parsed_steps,
+    parse_step_filter,
+    parse_trace,
+    run_triton_code_and_get_efficiency,
+)
 
 from db import get_db, init_db, row_to_dict  # noqa: E402
 import auth as ldap_auth  # noqa: E402
@@ -48,7 +55,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.59"
+APP_VERSION = "0.2.60"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
 FEEDBACK_DIRNAME = "feedback"
@@ -3282,15 +3289,24 @@ def _iter_gzip_encoded(chunks):
 
 def _run_sync_analysis(job, rdir, path_a, path_b, name_a, name_b):
     """All blocking I/O lives here so the event loop stays free."""
-    from trace_analyzer import (compute_avgs, parse_trace,
-                                print_step_summary, print_kernel_type_breakdown, print_top_kernels,
+    from trace_analyzer import (print_step_summary, print_kernel_type_breakdown, print_top_kernels,
                                 write_single, print_comparison, write_comparison)
+
+    def compute_trace(path, step_filter):
+        parsed = parse_trace(path)
+        steps = parse_step_filter(step_filter)
+        if steps:
+            parsed = filter_parsed_steps(parsed, steps)
+        return compute_avgs(parsed)
 
     buf = io.StringIO()
     perfetto_context = {}
     with contextlib.redirect_stdout(buf):
         if job["mode"] == "single":
-            data = compute_avgs(parse_trace(path_a))
+            step_filter_a = (job.get("step_filter_a") or "").strip()
+            if step_filter_a:
+                print(f"Step filter A: {step_filter_a}")
+            data = compute_trace(path_a, step_filter_a)
             fake_args = types.SimpleNamespace(
                 output_dir=rdir,
                 save_triton_csv=bool(job["save_triton_csv"]),
@@ -3302,8 +3318,14 @@ def _run_sync_analysis(job, rdir, path_a, path_b, name_a, name_b):
             write_single(data, fake_args)
             perfetto_context["a"] = _perfetto_context(data)
         else:
-            data_a = compute_avgs(parse_trace(path_a))
-            data_b = compute_avgs(parse_trace(path_b))
+            step_filter_a = (job.get("step_filter_a") or "").strip()
+            step_filter_b = (job.get("step_filter_b") or "").strip()
+            if step_filter_a:
+                print(f"Step filter A: {step_filter_a}")
+            if step_filter_b:
+                print(f"Step filter B: {step_filter_b}")
+            data_a = compute_trace(path_a, step_filter_a)
+            data_b = compute_trace(path_b, step_filter_b)
             fake_args = types.SimpleNamespace(output_dir=rdir)
             label_a = name_a or os.path.basename(path_a)
             label_b = name_b or os.path.basename(path_b)
@@ -3346,18 +3368,28 @@ async def run_analysis(job_id: str):
         os.makedirs(rdir, exist_ok=True)
 
         # Resolve source paths for compare-from-history (needs DB, must happen before thread)
-        if job["mode"] == "compare" and not job["file_a_path"]:
+        if job["mode"] == "compare" and not _primary_trace_path(job, "a"):
             cursor_a = await db.execute("SELECT * FROM jobs WHERE id=?", (job["source_job_a"],))
             src_a = await row_to_dict(await cursor_a.fetchone())
             cursor_b = await db.execute("SELECT * FROM jobs WHERE id=?", (job["source_job_b"],))
             src_b = await row_to_dict(await cursor_b.fetchone())
-            path_a = src_a.get("file_a_gzip_path") or src_a["file_a_path"]
-            path_b = src_b.get("file_a_gzip_path") or src_b["file_a_path"]
+            if not src_a or not src_b:
+                raise FileNotFoundError("Source job not found")
+            path_a = _primary_trace_path(src_a)
+            path_b = _primary_trace_path(src_b)
+            if not path_a or not os.path.exists(path_a):
+                raise FileNotFoundError("Trace file A not found")
+            if not path_b or not os.path.exists(path_b):
+                raise FileNotFoundError("Trace file B not found")
             name_a = src_a.get("file_a_name") or os.path.basename(path_a)
             name_b = src_b.get("file_a_name") or os.path.basename(path_b)
         else:
-            path_a = job["file_a_path"]
-            path_b = job["file_b_path"]
+            path_a = _primary_trace_path(job, "a")
+            path_b = _primary_trace_path(job, "b") if job["mode"] == "compare" else None
+            if not path_a or not os.path.exists(path_a):
+                raise FileNotFoundError("Trace file A not found")
+            if job["mode"] == "compare" and (not path_b or not os.path.exists(path_b)):
+                raise FileNotFoundError("Trace file B not found")
             name_a = job["file_a_name"]
             name_b = job["file_b_name"]
 
@@ -5351,15 +5383,17 @@ async def delete_project(request: Request, pid: str):
                 is_pinned,
                 file_a_name, file_a_path, file_a_gzip_path, file_a_exists,
                 file_b_name, file_b_path, file_b_gzip_path, file_b_exists,
-                source_job_a, source_job_b, save_triton_csv, save_triton_code,
+                source_job_a, source_job_b, step_filter_a, step_filter_b,
+                save_triton_csv, save_triton_code,
                 status, console_out, error_msg, result_dir, deleted_at)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         """, (job_dict["id"], job_dict.get("project_id"), job_dict.get("user_token"),
               job_dict.get("created_at"), job_dict.get("label", ""), job_dict.get("mode"),
               job_dict.get("is_pinned", 0),
               job_dict.get("file_a_name"), job_dict.get("file_a_path"), job_dict.get("file_a_gzip_path"), job_dict.get("file_a_exists", 1),
               job_dict.get("file_b_name"), job_dict.get("file_b_path"), job_dict.get("file_b_gzip_path"), job_dict.get("file_b_exists", 1),
               job_dict.get("source_job_a"), job_dict.get("source_job_b"),
+              job_dict.get("step_filter_a", ""), job_dict.get("step_filter_b", ""),
               job_dict.get("save_triton_csv", 0), job_dict.get("save_triton_code", 0),
               job_dict.get("status", "pending"), job_dict.get("console_out", ""), job_dict.get("error_msg", ""), job_dict.get("result_dir", "")))
 
@@ -5449,15 +5483,17 @@ async def restore_project(request: Request, pid: str):
                 is_pinned,
                 file_a_name, file_a_path, file_a_gzip_path, file_a_exists,
                 file_b_name, file_b_path, file_b_gzip_path, file_b_exists,
-                source_job_a, source_job_b, save_triton_csv, save_triton_code,
+                source_job_a, source_job_b, step_filter_a, step_filter_b,
+                save_triton_csv, save_triton_code,
                 status, console_out, error_msg, result_dir)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (job_dict["id"], pid, job_dict.get("user_token"),
               job_dict.get("created_at"), job_dict.get("label", ""), job_dict.get("mode"),
               job_dict.get("is_pinned", 0),
               job_dict.get("file_a_name"), job_dict.get("file_a_path"), job_dict.get("file_a_gzip_path"), job_dict.get("file_a_exists", 1),
               job_dict.get("file_b_name"), job_dict.get("file_b_path"), job_dict.get("file_b_gzip_path"), job_dict.get("file_b_exists", 1),
               job_dict.get("source_job_a"), job_dict.get("source_job_b"),
+              job_dict.get("step_filter_a", ""), job_dict.get("step_filter_b", ""),
               job_dict.get("save_triton_csv", 0), job_dict.get("save_triton_code", 0),
               job_dict.get("status", "pending"), job_dict.get("console_out", ""), job_dict.get("error_msg", ""), job_dict.get("result_dir", "")))
 
@@ -6312,6 +6348,136 @@ def _copy_trace_reference(src_path: str, dest_json: str) -> tuple[Optional[str],
     return dest_json, None
 
 
+def _normalize_step_filter(value, label: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        parse_step_filter(text)
+    except ValueError as e:
+        raise HTTPException(400, f"{label} step 选择格式错误: {e}") from e
+    return text
+
+
+def _step_reanalysis_suffix(mode: str, step_filter_a: str, step_filter_b: str = "") -> str:
+    if mode == "single":
+        return f"step {step_filter_a}"
+    return f"A step {step_filter_a or '全部'} / B step {step_filter_b or '全部'}"
+
+
+async def _resolve_reanalysis_trace(db, request: Request, job: dict, slot: str) -> tuple[str, str, Optional[str]]:
+    path = _primary_trace_path(job, slot)
+    name = job.get(f"file_{slot}_name") or ""
+    source_id = None
+    source_job_id = job.get(f"source_job_{slot}")
+    if not path and source_job_id:
+        source = await load_accessible_job(db, request, source_job_id)
+        if not source:
+            raise HTTPException(404, f"Source job {slot.upper()} not found")
+        source_id = source["id"]
+        path = _primary_trace_path(source, "a")
+        name = source.get("file_a_name") or source.get("label") or ""
+
+    if not path or not os.path.exists(path):
+        raise HTTPException(409, f"Trace file {slot.upper()} has been deleted")
+    return path, name or os.path.basename(path), source_id
+
+
+@app.post("/api/jobs/{jid}/reanalyze-steps", status_code=201)
+async def reanalyze_job_steps(request: Request, jid: str, body: dict):
+    db = await get_db()
+    new_jid = str(uuid.uuid4())
+    new_dir = job_dir(new_jid)
+    row = None
+    try:
+        user_token = await ensure_user_row(db, request)
+        job = await load_accessible_job(db, request, jid)
+        if not job:
+            raise HTTPException(404, "Job not found")
+        if job.get("status") in {"pending", "running"}:
+            raise HTTPException(409, "任务仍在分析中，暂不能指定 step 重分析")
+
+        mode = job.get("mode")
+        step_filter_a = _normalize_step_filter(body.get("step_filter_a"), "A")
+        step_filter_b = _normalize_step_filter(body.get("step_filter_b"), "B") if mode == "compare" else ""
+        if mode == "single" and not step_filter_a:
+            raise HTTPException(400, "单 trace 重分析需要指定 A step")
+        if mode == "compare" and not (step_filter_a or step_filter_b):
+            raise HTTPException(400, "对比重分析需要至少指定 A 或 B 的 step")
+
+        project_id = body.get("project_id") if "project_id" in body else job.get("project_id")
+        await validate_project_access(db, request, project_id or None)
+
+        path_a, name_a, source_a = await _resolve_reanalysis_trace(db, request, job, "a")
+        try:
+            new_a_path, new_a_gzip_path = _copy_trace_reference(path_a, os.path.join(new_dir, "trace_a.json"))
+            if mode == "compare":
+                path_b, name_b, source_b = await _resolve_reanalysis_trace(db, request, job, "b")
+                new_b_path, new_b_gzip_path = _copy_trace_reference(path_b, os.path.join(new_dir, "trace_b.json"))
+            else:
+                name_b = None
+                source_b = None
+                new_b_path = None
+                new_b_gzip_path = None
+        except OSError as e:
+            with contextlib.suppress(FileNotFoundError):
+                shutil.rmtree(new_dir)
+            raise HTTPException(500, f"Failed to copy trace files: {e}") from e
+
+        suffix = _step_reanalysis_suffix(mode, step_filter_a, step_filter_b)
+        label = str(body.get("label") or "").strip() or f"{job.get('label') or jid[:8]} · {suffix}"
+        await db.execute(
+            """INSERT INTO jobs(id, project_id, user_token, label, mode,
+                   file_a_name, file_a_path, file_a_gzip_path,
+                   file_b_name, file_b_path, file_b_gzip_path,
+                   source_job_a, source_job_b,
+                   step_filter_a, step_filter_b,
+                   save_triton_csv, save_triton_code)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                new_jid, project_id or None, user_token, label, mode,
+                name_a, new_a_path, new_a_gzip_path,
+                name_b, new_b_path, new_b_gzip_path,
+                source_a, source_b,
+                step_filter_a, step_filter_b,
+                int(job.get("save_triton_csv", 0) or 0),
+                int(job.get("save_triton_code", 0) or 0),
+            ),
+        )
+        await _refresh_job_storage_cache(db, new_jid)
+        await write_audit(
+            db, request, "job.step_reanalysis_create",
+            resource_type="job", resource_id=new_jid,
+            details={
+                "source_job": jid,
+                "mode": mode,
+                "project_id": project_id,
+                "step_filter_a": step_filter_a,
+                "step_filter_b": step_filter_b,
+                "label": label,
+            },
+        )
+        await db.commit()
+        row = await row_to_dict(await (await db.execute("SELECT * FROM jobs WHERE id=?", (new_jid,))).fetchone())
+    except HTTPException:
+        await db.rollback()
+        if row is None:
+            with contextlib.suppress(FileNotFoundError):
+                shutil.rmtree(new_dir)
+        raise
+    except Exception:
+        await db.rollback()
+        if row is None:
+            with contextlib.suppress(FileNotFoundError):
+                shutil.rmtree(new_dir)
+        raise
+    finally:
+        await db.close()
+
+    await enqueue_analysis_job(new_jid)
+    return row
+
+
 @app.post("/api/jobs/{jid}/rerun-swapped", status_code=201)
 async def rerun_compare_swapped(request: Request, jid: str):
     db = await get_db()
@@ -6682,11 +6848,17 @@ async def download_job_report(request: Request, jid: str):
         f"- 项目: {project_name or '未分组'}",
         f"- 创建时间: {job.get('created_at') or ''}",
         f"- 导出版本: {APP_VERSION}",
+    ]
+    if job.get("step_filter_a") or job.get("step_filter_b"):
+        lines.append(f"- Step 过滤 A: `{job.get('step_filter_a') or '全部'}`")
+        if job.get("mode") == "compare":
+            lines.append(f"- Step 过滤 B: `{job.get('step_filter_b') or '全部'}`")
+    lines.extend([
         "",
         "## Trace 文件",
         "",
         f"- A: {job.get('file_a_name') or '无'}",
-    ]
+    ])
     if job.get("file_b_name"):
         lines.append(f"- B: {job.get('file_b_name')}")
     if compare_sources:

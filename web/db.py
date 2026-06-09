@@ -94,6 +94,9 @@ async def init_db():
                 source_job_a     TEXT REFERENCES jobs(id) ON DELETE SET NULL,
                 source_job_b     TEXT REFERENCES jobs(id) ON DELETE SET NULL,
 
+                step_filter_a    TEXT DEFAULT '',
+                step_filter_b    TEXT DEFAULT '',
+
                 save_triton_csv  INTEGER DEFAULT 0,
                 save_triton_code INTEGER DEFAULT 0,
 
@@ -192,6 +195,8 @@ async def init_db():
         await add_column_if_missing(db, "jobs", "result_bytes", "INTEGER")
         await add_column_if_missing(db, "jobs", "original_trace_bytes", "INTEGER")
         await add_column_if_missing(db, "jobs", "is_pinned", "INTEGER DEFAULT 0")
+        await add_column_if_missing(db, "jobs", "step_filter_a", "TEXT DEFAULT ''")
+        await add_column_if_missing(db, "jobs", "step_filter_b", "TEXT DEFAULT ''")
         await add_column_if_missing(db, "folders", "password_hash", "TEXT DEFAULT NULL")
         await add_column_if_missing(db, "feedback_messages", "edited_at", "DATETIME DEFAULT NULL")
         await add_column_if_missing(db, "feedback_messages", "edit_count", "INTEGER DEFAULT 0")
@@ -217,6 +222,9 @@ async def init_db():
 
                 source_job_a     TEXT,
                 source_job_b     TEXT,
+
+                step_filter_a    TEXT DEFAULT '',
+                step_filter_b    TEXT DEFAULT '',
 
                 save_triton_csv  INTEGER DEFAULT 0,
                 save_triton_code INTEGER DEFAULT 0,
@@ -251,6 +259,8 @@ async def init_db():
             CREATE INDEX IF NOT EXISTS idx_feedback_reactions_message ON feedback_reactions(message_id);
         """)
         await add_column_if_missing(db, "deleted_jobs", "is_pinned", "INTEGER DEFAULT 0")
+        await add_column_if_missing(db, "deleted_jobs", "step_filter_a", "TEXT DEFAULT ''")
+        await add_column_if_missing(db, "deleted_jobs", "step_filter_b", "TEXT DEFAULT ''")
         await db.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(1)")
 
         await db.commit()

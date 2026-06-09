@@ -4,6 +4,8 @@ import os
 import shutil
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from trace_analyzer import (
@@ -12,6 +14,8 @@ from trace_analyzer import (
     classify_kernel,
     safe_float,
     parse_trace,
+    parse_step_filter,
+    filter_parsed_steps,
     compute_avgs,
     write_avg_csv,
     write_single,
@@ -185,6 +189,24 @@ class TestParseTrace:
 
 
 class TestComputeAvgs:
+    def test_parse_step_filter(self):
+        assert parse_step_filter("0, 2-4，ProfilerStep#6;step_8") == (0, 2, 3, 4, 6, 8)
+
+    def test_filter_parsed_steps_limits_averages(self, sample_trace_file):
+        parsed = parse_trace(sample_trace_file)
+        filtered = filter_parsed_steps(parsed, "2")
+        avgs = compute_avgs(filtered)
+
+        assert avgs["all_steps"] == [2]
+        assert "triton_elemwise_kernel" in avgs["avg_kernels"]
+        assert "triton_matmul_kernel" not in avgs["avg_kernels"]
+
+    def test_filter_parsed_steps_reports_missing_steps(self, sample_trace_file):
+        parsed = parse_trace(sample_trace_file)
+
+        with pytest.raises(ValueError, match="Selected step"):
+            filter_parsed_steps(parsed, "99")
+
     def test_compute_avgs(self, sample_trace_file):
         result = parse_trace(sample_trace_file)
         avgs = compute_avgs(result)

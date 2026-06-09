@@ -265,6 +265,15 @@ body {
 .job-mode-badge { font-size: 9px; padding: 1px 5px; border-radius: 10px; font-weight: 600; flex-shrink: 0; }
 .mode-single  { background: var(--purple-bg); color: var(--purple-l); }
 .mode-compare { background: rgba(234,179,8,.12); color: var(--yellow); }
+.job-step-badge {
+  flex-shrink: 0;
+  font-size: 9px;
+  font-weight: 700;
+  border-radius: 10px;
+  padding: 1px 6px;
+  background: rgba(99,102,241,.10);
+  color: var(--purple-l);
+}
 .job-pin-badge {
   flex-shrink: 0; font-size: 9px; font-weight: 700;
   border-radius: 10px; padding: 1px 5px;
@@ -1602,6 +1611,43 @@ body.result-reading-active { overflow: hidden; }
   margin-top: 7px;
   color: var(--text3);
   font-size: 11px;
+}
+
+.step-reanalysis-modal {
+  width: min(620px, calc(100vw - 32px));
+}
+.step-reanalysis-desc,
+.step-reanalysis-note {
+  color: var(--text2);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.step-reanalysis-desc {
+  margin: -6px 0 14px;
+}
+.step-reanalysis-note {
+  margin-top: 10px;
+  color: var(--text3);
+}
+.step-reanalysis-label,
+.step-reanalysis-field span {
+  display: block;
+  margin-bottom: 7px;
+  color: var(--text1);
+  font-size: 12px;
+  font-weight: 800;
+}
+.step-reanalysis-input {
+  width: 100%;
+}
+.step-reanalysis-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+@media (max-width: 720px) {
+  .step-reanalysis-grid { grid-template-columns: 1fr; }
 }
 
 .error-modal-content {

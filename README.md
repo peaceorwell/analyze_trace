@@ -2,7 +2,7 @@
 
 Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/内网性能分析工具。它可以解析 `.json`、`.json.gz`、`.gz`、`.json.zip`、`.zip`、`.tar.gz` 和 `.tgz` trace 文件，统计 GPU kernel、Triton kernel、ATen Ops、CNCL/NCCL 通信算子，并提供单 trace 分析、双 trace 对比、历史管理、AI 分析和 Web 可视化界面。
 
-当前版本：`0.2.59`
+当前版本：`0.2.60`
 
 ## 主要功能
 
@@ -12,6 +12,7 @@ Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/
 - 表格支持搜索、列筛选、排序、列宽拖拽、列显隐、每页数量调整和快捷显示全部。
 - 图表页支持数据源、指标、TopN 切换，摘要卡片、Delta 列表和 Kernel 类型行可点击下钻到相关表格。
 - 对比任务支持 Kernel/Triton/ATen/CNCL 维度的 delta 展示，并支持交换 A/B 重新对比。
+- 已完成任务支持指定 step 派生重分析；单 trace 可指定 A step，对比任务可分别指定 A/B step，两个 step 不必相同，重分析会生成新的历史条目。
 - Perfetto 集成支持从 Web 页面直接打开 trace。
 - Claude Code AI 分析支持单 trace 和对比 trace，可在触发时填写补充 Prompt；系统会生成 Markdown 报告并在页面渲染，多次触发会保留多个报告版本，可按生成时间/触发人/模型切换查看并下载 Markdown。
 - AI 分析开始前会自动做环境诊断；如果诊断失败，会展示具体诊断明细。
@@ -101,7 +102,7 @@ Web 首页有两种上传模式：
 - `.tar.gz`
 - `.tgz`
 
-上传时可以选择项目和填写别名。压缩包中会自动提取可用 JSON trace；服务端内部会统一保留压缩副本。下载原始 trace 时默认提供 `.json.gz`，便于保存大文件并保持工具兼容性。
+上传时可以选择项目和填写别名。压缩包中会自动提取可用 JSON trace；服务端内部会统一保留压缩副本。下载原始 trace 时默认提供 `.json.gz`，便于保存大文件并保持工具兼容性。上传阶段不会裁剪 trace；如果只想分析某些 step，可以在任务完成后通过 `指定 Step 重分析` 创建新的派生任务。
 
 ### 结果页
 
@@ -140,6 +141,7 @@ Web 首页有两种上传模式：
 - 项目删除后进入回收站，可在保留期内恢复；也支持永久删除。
 - `对比` 页签可选择两个已完成单文件任务创建对比，也可使用 `批量基线` 一次创建多个对比任务。
 - 对比结果可交换 A/B 重新对比。
+- 任务详情右上角 `...` 菜单支持 `指定 Step 重分析`。单 trace 填写 A step；对比任务可分别填写 A/B step，例如 A 选择 `0`、B 选择 `2-3`。留空的一侧表示使用全部 step，提交后会生成一个新任务。
 
 ### 改进留言板
 
@@ -451,6 +453,9 @@ analyze-trace baseline.json.gz optimized.json.gz -o ./output
 | `-o, --output-dir` | `.` | 输出目录 |
 | `-s, --save-triton-csv` | off | 输出逐 step 的 Triton kernel 详情 CSV |
 | `-c, --save-triton-code` | off | 保存每个 Triton kernel 的生成源码 |
+| `--steps` | 空 | 只分析指定 step，例如 `0`、`0,2,5`、`1-4`；双文件时作为 A/B 默认值 |
+| `--steps-a` | 空 | 双文件对比时 A trace 的 step 选择 |
+| `--steps-b` | 空 | 双文件对比时 B trace 的 step 选择 |
 
 ## 输出文件
 

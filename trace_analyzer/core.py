@@ -500,6 +500,130 @@ def parse_trace(trace_file):
     }
 
 
+def parse_step_filter(value):
+    """Parse a user-facing step selector.
+
+    Supported forms:
+      - "3"
+      - "0,2,5"
+      - "1-4"
+      - "0, 2-4, 8"
+    """
+    if value is None:
+        return tuple()
+
+    if isinstance(value, (list, tuple, set)):
+        steps = []
+        for item in value:
+            try:
+                step = int(item)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"Invalid step value: {item!r}") from exc
+            if step < 0:
+                raise ValueError(f"Step must be non-negative: {step}")
+            if step not in steps:
+                steps.append(step)
+        return tuple(steps)
+
+    text = str(value).strip()
+    if not text:
+        return tuple()
+
+    normalized = text.translate(str.maketrans({
+        "，": ",",
+        "；": ",",
+        ";": ",",
+        "、": ",",
+    }))
+    steps = []
+    for token in normalized.split(","):
+        token = token.strip()
+        if not token:
+            continue
+
+        range_match = re.fullmatch(r"(\d+)\s*-\s*(\d+)", token)
+        if range_match:
+            start, end = map(int, range_match.groups())
+            if end < start:
+                raise ValueError(f"Invalid step range: {token}")
+            for step in range(start, end + 1):
+                if step not in steps:
+                    steps.append(step)
+            continue
+
+        single_match = re.fullmatch(r"(?:ProfilerStep#?|step_?)?(\d+)", token, re.IGNORECASE)
+        if single_match:
+            step = int(single_match.group(1))
+            if step not in steps:
+                steps.append(step)
+            continue
+
+        raise ValueError(f"Invalid step selector: {token}")
+
+    return tuple(steps)
+
+
+def _same_step_mapping(mapping):
+    if isinstance(mapping, defaultdict):
+        return defaultdict(mapping.default_factory)
+    return {}
+
+
+def filter_parsed_steps(parsed, steps, *, require_match=True):
+    """Return a parsed trace limited to the selected step numbers."""
+    selected_steps = parse_step_filter(steps)
+    if not selected_steps:
+        return parsed
+    if not isinstance(parsed, dict):
+        raise TypeError("filter_parsed_steps expects the dict returned by parse_trace")
+
+    available_steps = set(parsed.get("step_durations", {}))
+    for key in ("step_to_triton", "step_to_kernels", "step_to_aten", "step_to_cncl"):
+        available_steps.update(parsed.get(key, {}))
+
+    missing = [step for step in selected_steps if step not in available_steps]
+    if require_match and missing:
+        available = ", ".join(str(step) for step in sorted(available_steps)) or "none"
+        missing_text = ", ".join(str(step) for step in missing)
+        raise ValueError(f"Selected step(s) not found: {missing_text}. Available steps: {available}")
+
+    selected_set = set(selected_steps)
+
+    def filter_mapping(key):
+        src = parsed.get(key, {})
+        dst = _same_step_mapping(src)
+        for step in selected_steps:
+            if step in src:
+                dst[step] = src[step]
+        return dst
+
+    filtered = dict(parsed)
+    filtered["step_durations"] = {
+        step: parsed.get("step_durations", {})[step]
+        for step in selected_steps
+        if step in parsed.get("step_durations", {})
+    }
+    filtered["step_ranges"] = {
+        step: parsed.get("step_ranges", {})[step]
+        for step in selected_steps
+        if step in parsed.get("step_ranges", {})
+    }
+    filtered["step_to_triton"] = filter_mapping("step_to_triton")
+    filtered["step_to_kernels"] = filter_mapping("step_to_kernels")
+    filtered["step_to_aten"] = filter_mapping("step_to_aten")
+    filtered["step_to_cncl"] = filter_mapping("step_to_cncl")
+
+    kernel_names = set()
+    for step in selected_set:
+        kernel_names.update(filtered["step_to_kernels"][step])
+    filtered["kernel_families"] = {
+        name: family
+        for name, family in parsed.get("kernel_families", {}).items()
+        if name in kernel_names
+    }
+    return filtered
+
+
 def avg_stats(step_to_dict, steps):
     """Average {name -> {count, dur_ms}} across steps.
 
@@ -1010,12 +1134,24 @@ def main(argv=None):
         action="store_true",
         help="Save per-step triton kernel CSV files (default: off)",
     )
+    parser.add_argument(
+        "--steps",
+        default="",
+        help="Analyze only selected steps, e.g. '0', '0,2,5', or '1-4'. For compare, applies to both traces unless --steps-a/--steps-b are set.",
+    )
+    parser.add_argument("--steps-a", default="", help="Step selector for the first trace in compare mode.")
+    parser.add_argument("--steps-b", default="", help="Step selector for the second trace in compare mode.")
     args = parser.parse_args(argv)
     if len(args.trace_files) > 2:
         parser.error("At most two trace files can be provided.")
 
     if len(args.trace_files) == 1:
-        data = compute_avgs(parse_trace(args.trace_files[0]))
+        parsed = parse_trace(args.trace_files[0])
+        step_filter = args.steps_a or args.steps
+        if step_filter:
+            parsed = filter_parsed_steps(parsed, step_filter)
+            print(f"Step filter A: {step_filter}")
+        data = compute_avgs(parsed)
         print_step_summary(data)
         print_kernel_type_breakdown(data)
         print_top_kernels(data)
@@ -1023,8 +1159,18 @@ def main(argv=None):
     else:
         label_a = os.path.basename(args.trace_files[0])
         label_b = os.path.basename(args.trace_files[1])
-        data_a = compute_avgs(parse_trace(args.trace_files[0]))
-        data_b = compute_avgs(parse_trace(args.trace_files[1]))
+        step_filter_a = args.steps_a or args.steps
+        step_filter_b = args.steps_b or args.steps
+        parsed_a = parse_trace(args.trace_files[0])
+        parsed_b = parse_trace(args.trace_files[1])
+        if step_filter_a:
+            parsed_a = filter_parsed_steps(parsed_a, step_filter_a)
+            print(f"Step filter A: {step_filter_a}")
+        if step_filter_b:
+            parsed_b = filter_parsed_steps(parsed_b, step_filter_b)
+            print(f"Step filter B: {step_filter_b}")
+        data_a = compute_avgs(parsed_a)
+        data_b = compute_avgs(parsed_b)
         print_comparison(data_a, data_b, label_a, label_b)
         print_top_kernels(data_a, label=label_a)
         print_top_kernels(data_b, label=label_b)
