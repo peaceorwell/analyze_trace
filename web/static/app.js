@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.53");
+const appVersion = ref("0.2.54");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -886,7 +886,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.53";
+  appVersion.value = cfg.version || "0.2.54";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -1146,6 +1146,44 @@ const setFeedbackTextTarget = (event, target = "post") => {
   };
 };
 
+const feedbackDraftForTarget = target => {
+  const targetKey = feedbackMentionTargetKey(target);
+  const form = targetKey === "post" ? feedbackForm.value : ensureFeedbackReplyForm(targetKey);
+  const text = form.body || "";
+  const textarea = feedbackTextTarget.value.target === targetKey ? feedbackTextTarget.value.textarea : null;
+  const hasTextarea = textarea && document.contains(textarea);
+  const start = hasTextarea ? textarea.selectionStart ?? text.length : text.length;
+  const end = hasTextarea ? textarea.selectionEnd ?? start : start;
+  return { targetKey, form, text, textarea, hasTextarea, start, end };
+};
+
+const updateFeedbackDraftBody = (targetKey, form, body) => {
+  if (targetKey === "post") {
+    feedbackForm.value = { ...feedbackForm.value, body };
+    return;
+  }
+  feedbackReplies.value = {
+    ...feedbackReplies.value,
+    [targetKey]: { ...form, body },
+  };
+};
+
+const replaceFeedbackSelection = (target, insertText, options = {}) => {
+  const { targetKey, form, text, textarea, hasTextarea, start, end } = feedbackDraftForTarget(target);
+  const nextBody = `${text.slice(0, start)}${insertText}${text.slice(end)}`;
+  updateFeedbackDraftBody(targetKey, form, nextBody);
+  closeFeedbackMention();
+  feedbackEmojiPickerTarget.value = "";
+  const cursorStart = start + (options.selectStartOffset ?? insertText.length);
+  const cursorEnd = start + (options.selectEndOffset ?? options.selectStartOffset ?? insertText.length);
+  nextTick(() => {
+    if (hasTextarea) {
+      textarea.focus();
+      textarea.setSelectionRange(cursorStart, cursorEnd);
+    }
+  });
+};
+
 const insertFeedbackEmoji = (emoji, target = "post") => {
   const targetKey = feedbackMentionTargetKey(target);
   const form = targetKey === "post" ? feedbackForm.value : ensureFeedbackReplyForm(targetKey);
@@ -1175,38 +1213,45 @@ const insertFeedbackEmoji = (emoji, target = "post") => {
 };
 
 const insertFeedbackSnippet = (prefix, suffix = "", placeholder = "", target = "post") => {
-  const targetKey = feedbackMentionTargetKey(target);
-  const form = targetKey === "post" ? feedbackForm.value : ensureFeedbackReplyForm(targetKey);
-  const text = form.body || "";
-  const textarea = feedbackTextTarget.value.target === targetKey ? feedbackTextTarget.value.textarea : null;
-  const hasTextarea = textarea && document.contains(textarea);
-  const start = hasTextarea ? textarea.selectionStart ?? text.length : text.length;
-  const end = hasTextarea ? textarea.selectionEnd ?? start : start;
+  const { text, start, end } = feedbackDraftForTarget(target);
   const selected = text.slice(start, end);
-  const insertText = `${prefix}${selected || placeholder}${suffix}`;
-  const nextBody = `${text.slice(0, start)}${insertText}${text.slice(end)}`;
-  if (targetKey === "post") {
-    feedbackForm.value = { ...feedbackForm.value, body: nextBody };
-  } else {
-    feedbackReplies.value = {
-      ...feedbackReplies.value,
-      [targetKey]: { ...form, body: nextBody },
-    };
-  }
-  closeFeedbackMention();
-  feedbackEmojiPickerTarget.value = "";
-  const selectStart = start + prefix.length;
-  const selectEnd = selectStart + (selected || placeholder).length;
-  nextTick(() => {
-    if (hasTextarea) {
-      textarea.focus();
-      if (!selected && placeholder) {
-        textarea.setSelectionRange(selectStart, selectEnd);
-      } else {
-        const cursor = start + insertText.length;
-        textarea.setSelectionRange(cursor, cursor);
-      }
-    }
+  const innerText = selected || placeholder;
+  const insertText = `${prefix}${innerText}${suffix}`;
+  replaceFeedbackSelection(target, insertText, {
+    selectStartOffset: !selected && placeholder ? prefix.length : insertText.length,
+    selectEndOffset: !selected && placeholder ? prefix.length + innerText.length : insertText.length,
+  });
+};
+
+const insertFeedbackList = (ordered = false, target = "post") => {
+  const { text, start, end } = feedbackDraftForTarget(target);
+  const selected = text.slice(start, end);
+  const rawLines = (selected || "列表项").split("\n");
+  const lines = rawLines.map((line, index) => {
+    const cleaned = line.replace(/^\s*(?:[-*+]\s+|\d+\.\s+)/, "");
+    return `${ordered ? `${index + 1}. ` : "- "}${cleaned || (selected ? "" : "列表项")}`;
+  });
+  const insertText = lines.join("\n");
+  const markerLength = ordered ? 3 : 2;
+  replaceFeedbackSelection(target, insertText, {
+    selectStartOffset: selected ? insertText.length : markerLength,
+    selectEndOffset: selected ? insertText.length : insertText.length,
+  });
+};
+
+const insertFeedbackCodeBlock = (target = "post") => {
+  const { text, start, end } = feedbackDraftForTarget(target);
+  const selected = text.slice(start, end);
+  const before = text.slice(0, start);
+  const after = text.slice(end);
+  const leadingNewline = before && !before.endsWith("\n") ? "\n" : "";
+  const trailingNewline = after && !after.startsWith("\n") ? "\n" : "";
+  const code = selected || "code";
+  const insertText = `${leadingNewline}\`\`\`\n${code}\n\`\`\`${trailingNewline}`;
+  const codeStart = leadingNewline.length + 4;
+  replaceFeedbackSelection(target, insertText, {
+    selectStartOffset: selected ? insertText.length : codeStart,
+    selectEndOffset: selected ? insertText.length : codeStart + code.length,
   });
 };
 
@@ -5727,6 +5772,7 @@ const App = {
       feedbackEmailDiagLoading, feedbackEmailDiagResult, runFeedbackEmailDiagnostics,
       feedbackEmojiOptions, feedbackReactionOptions, feedbackReactionPickerId, feedbackEmojiPickerTarget,
       feedbackUserInitial, setFeedbackTextTarget, insertFeedbackEmoji, insertFeedbackSnippet,
+      insertFeedbackList, insertFeedbackCodeBlock,
       feedbackMention, handleFeedbackMentionInput, handleFeedbackMentionKeydown, selectFeedbackMention,
       selectedFeedbackPostId, selectedFeedbackMessageId, selectedFeedbackPost, feedbackDetailLoading,
       feedbackPostTitle, feedbackPostExcerpt, feedbackPostReplyCount, feedbackPostActivity,

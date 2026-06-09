@@ -1828,6 +1828,15 @@ body.result-reading-active { overflow: hidden; }
 .feedback-composer-dialog {
   background: var(--card2);
 }
+.feedback-compose-toolbar {
+  justify-content: flex-start;
+  gap: 3px;
+  margin-bottom: 10px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--card);
+}
 .feedback-textarea {
   width: 100%;
   min-height: 110px;
@@ -2610,6 +2619,12 @@ body.result-reading-active { overflow: hidden; }
   cursor: pointer;
   font-size: 15px;
   font-weight: 800;
+}
+.feedback-editor-toolbar .feedback-editor-codeblock-btn {
+  width: 40px;
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0;
 }
 .feedback-editor-toolbar button:hover,
 .feedback-editor-toolbar button.active,
