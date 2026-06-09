@@ -6,11 +6,18 @@ DB_PATH = os.environ.get(
     "TRACE_DB_PATH",
     os.path.join(os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR), "jobs.db"),
 )
+DB_TIMEOUT_SECONDS = float(os.environ.get("TRACE_DB_TIMEOUT_SECONDS", "30"))
+DB_BUSY_TIMEOUT_MS = max(1000, int(DB_TIMEOUT_SECONDS * 1000))
+
+
+async def configure_connection(db):
+    await db.execute(f"PRAGMA busy_timeout={DB_BUSY_TIMEOUT_MS}")
 
 
 async def get_db():
-    db = await aiosqlite.connect(DB_PATH)
+    db = await aiosqlite.connect(DB_PATH, timeout=DB_TIMEOUT_SECONDS)
     db.row_factory = aiosqlite.Row
+    await configure_connection(db)
     return db
 
 
@@ -37,7 +44,10 @@ async def add_column_if_missing(db, table_name, column_name, column_def):
 
 async def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(DB_PATH, timeout=DB_TIMEOUT_SECONDS) as db:
+        await configure_connection(db)
+        await db.execute("PRAGMA journal_mode=WAL")
+        await db.execute("PRAGMA synchronous=NORMAL")
         await db.executescript("""
             CREATE TABLE IF NOT EXISTS users (
                 user_token  TEXT PRIMARY KEY,

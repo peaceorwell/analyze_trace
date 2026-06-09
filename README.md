@@ -2,7 +2,7 @@
 
 Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/内网性能分析工具。它可以解析 `.json`、`.json.gz`、`.gz`、`.json.zip`、`.zip`、`.tar.gz` 和 `.tgz` trace 文件，统计 GPU kernel、Triton kernel、ATen Ops、CNCL/NCCL 通信算子，并提供单 trace 分析、双 trace 对比、历史管理、AI 分析和 Web 可视化界面。
 
-当前版本：`0.2.55`
+当前版本：`0.2.56`
 
 ## 主要功能
 
@@ -175,6 +175,7 @@ AI 分析默认关闭。开启后，已完成任务会出现 `AI 分析` 页签�
 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `TRACE_ENABLE_CLAUDE_ANALYSIS` | off | 设置为 `1` 后开启 AI 分析 |
+| `TRACE_AI_ANALYSIS_CONCURRENCY` | `1` | 并发 Claude Code AI 分析任务数，建议从 1 开始按机器资源调大 |
 | `TRACE_CLAUDE_COMMAND` | `claude` | Claude Code 命令 |
 | `TRACE_CLAUDE_EXTRA_ARGS` | `--dangerously-skip-permissions` | 追加给 Claude Code 的参数 |
 | `TRACE_CLAUDE_COMMAND_TEMPLATE` | 空 | 完整命令模板，可使用 `{prompt}`、`{trace_a}`、`{trace_b}`、`{skill}`、`{skills_dir}`、`{results_dir}`、`{analysis_dir}`、`{report_path}` |
@@ -268,7 +269,12 @@ sudo chown -R cambricon:cambricon /data/analyze_trace
 | `TRACE_LOG_FILE` | 空 | JSONL 日志文件 |
 | `TRACE_LOG_LEVEL` | `INFO` | 日志级别 |
 | `TRACE_LOG_TIMEZONE` | `Asia/Shanghai` | JSON 日志时间戳时区；可设为 `UTC`、`local` 或 IANA 时区名 |
+| `TRACE_DB_TIMEOUT_SECONDS` | `30` | SQLite 写锁等待超时；服务会启用 WAL 与 busy timeout 以降低并发写入冲突 |
+| `TRACE_UPLOAD_CONCURRENCY` | `3` | 同时处理上传/解压的请求数 |
+| `TRACE_MAX_UPLOAD_BYTES` | `0` | 单个上传文件大小限制；`0` 表示不限制 |
+| `TRACE_MIN_STORAGE_FREE_BYTES` | `0` | 上传前要求保留的磁盘可用空间；`0` 表示不检查 |
 | `TRACE_ANALYSIS_CONCURRENCY` | `1` | 并发分析任务数 |
+| `TRACE_AI_ANALYSIS_CONCURRENCY` | `1` | 并发 Claude Code AI 分析任务数 |
 | `TRACE_NO_DOWNLOAD` | 空 | 设置后禁止下载原始 trace |
 | `TRACE_ENABLE_CODE_EXEC` | off | 设置为 `1` 后允许运行 Triton 代码和清除 cache |
 

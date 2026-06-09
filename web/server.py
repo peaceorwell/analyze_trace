@@ -48,7 +48,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.55"
+APP_VERSION = "0.2.56"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
 FEEDBACK_DIRNAME = "feedback"
@@ -98,7 +98,11 @@ SESSION_COOKIE_SECURE = os.environ.get("SESSION_COOKIE_SECURE", "0") == "1"
 ALLOW_FILE_DOWNLOAD = os.environ.get("TRACE_NO_DOWNLOAD", "") == ""
 ALLOW_CODE_EXECUTION = os.environ.get("TRACE_ENABLE_CODE_EXEC", "") == "1"
 ANALYSIS_CONCURRENCY = max(1, int(os.environ.get("TRACE_ANALYSIS_CONCURRENCY", "1")))
+UPLOAD_CONCURRENCY = max(1, int(os.environ.get("TRACE_UPLOAD_CONCURRENCY", "3")))
+MAX_UPLOAD_BYTES = max(0, int(os.environ.get("TRACE_MAX_UPLOAD_BYTES", "0")))
+MIN_STORAGE_FREE_BYTES = max(0, int(os.environ.get("TRACE_MIN_STORAGE_FREE_BYTES", "0")))
 CLAUDE_ANALYSIS_ENABLED = os.environ.get("TRACE_ENABLE_CLAUDE_ANALYSIS", "") == "1"
+AI_ANALYSIS_CONCURRENCY = max(1, int(os.environ.get("TRACE_AI_ANALYSIS_CONCURRENCY", "1")))
 CLAUDE_ANALYSIS_COMMAND = os.environ.get("TRACE_CLAUDE_COMMAND", "claude")
 CLAUDE_ANALYSIS_COMMAND_TEMPLATE = os.environ.get("TRACE_CLAUDE_COMMAND_TEMPLATE", "")
 DEFAULT_CLAUDE_ANALYSIS_EXTRA_ARGS = "--dangerously-skip-permissions"
@@ -193,8 +197,16 @@ if not SENDMAIL_COMMAND and SENDMAIL_AUTODETECT:
 LOG_TIMEZONE_NAME = os.environ.get("TRACE_LOG_TIMEZONE", os.environ.get("TZ", "Asia/Shanghai")).strip()
 USAGE_TIMEZONE_NAME = os.environ.get("TRACE_USAGE_TIMEZONE", LOG_TIMEZONE_NAME).strip()
 analysis_queue: asyncio.Queue[str] = asyncio.Queue()
+analysis_queue_loop: Optional[asyncio.AbstractEventLoop] = None
 analysis_workers: list[asyncio.Task] = []
+upload_semaphore = asyncio.Semaphore(UPLOAD_CONCURRENCY)
+ai_analysis_queue: asyncio.Queue[tuple[str, dict]] = asyncio.Queue()
+ai_analysis_queue_loop: Optional[asyncio.AbstractEventLoop] = None
+ai_analysis_workers: list[asyncio.Task] = []
 ai_analysis_tasks: dict[str, asyncio.Task] = {}
+ai_analysis_queued_jobs: set[str] = set()
+ai_analysis_locks: dict[str, asyncio.Lock] = {}
+ai_analysis_start_lock = asyncio.Lock()
 APP_STARTED_AT = time.time()
 HTTP_METRICS: dict[tuple[str, str, int], dict[str, float]] = {}
 LOGIN_CAPTCHA_THRESHOLD = max(1, int(os.environ.get("LOGIN_CAPTCHA_THRESHOLD", "5")))
@@ -748,12 +760,15 @@ async def write_audit(
 async def lifespan(app: FastAPI):
     await init_db()
     await mark_interrupted_jobs()
+    mark_interrupted_ai_analysis()
     await refresh_storage_cache_for_all_jobs()
     await enqueue_pending_jobs()
     start_analysis_workers()
+    start_ai_analysis_workers()
     try:
         yield
     finally:
+        await stop_ai_analysis_workers()
         await stop_analysis_workers()
 
 app = FastAPI(lifespan=lifespan)
@@ -855,11 +870,56 @@ async def mark_interrupted_jobs():
         await db.close()
 
 
+def mark_interrupted_ai_analysis():
+    """Fail AI analysis status files left in queued/running after a restart."""
+    if not os.path.isdir(STORAGE_DIR):
+        return
+    for jid in os.listdir(STORAGE_DIR):
+        status_path = ai_analysis_status_path(jid)
+        if not os.path.exists(status_path):
+            continue
+        status = _read_ai_analysis_status(jid)
+        if status.get("status") not in {"queued", "running"}:
+            continue
+        _write_ai_analysis_status(jid, {
+            **status,
+            "status": "error",
+            "progress": 100,
+            "error": "Server restarted before this AI analysis completed",
+            "finished_at": _utc_now_iso(),
+            "updated_at": _utc_now_iso(),
+        })
+
+
+def _get_analysis_queue() -> asyncio.Queue[str]:
+    global analysis_queue, analysis_queue_loop
+    loop = asyncio.get_running_loop()
+    if analysis_queue_loop is not loop:
+        analysis_queue = asyncio.Queue()
+        analysis_queue_loop = loop
+        analysis_workers.clear()
+    return analysis_queue
+
+
+def _get_ai_analysis_queue() -> asyncio.Queue[tuple[str, dict]]:
+    global ai_analysis_queue, ai_analysis_queue_loop
+    loop = asyncio.get_running_loop()
+    if ai_analysis_queue_loop is not loop:
+        ai_analysis_queue = asyncio.Queue()
+        ai_analysis_queue_loop = loop
+        ai_analysis_workers.clear()
+        ai_analysis_tasks.clear()
+        ai_analysis_queued_jobs.clear()
+        ai_analysis_locks.clear()
+    return ai_analysis_queue
+
+
 async def enqueue_pending_jobs():
-    while not analysis_queue.empty():
+    queue = _get_analysis_queue()
+    while not queue.empty():
         try:
-            analysis_queue.get_nowait()
-            analysis_queue.task_done()
+            queue.get_nowait()
+            queue.task_done()
         except asyncio.QueueEmpty:
             break
     db = await get_db()
@@ -870,33 +930,100 @@ async def enqueue_pending_jobs():
     finally:
         await db.close()
     for row in rows:
-        await analysis_queue.put(row["id"])
+        await queue.put(row["id"])
 
 
 def start_analysis_workers():
+    queue = _get_analysis_queue()
     for index in range(ANALYSIS_CONCURRENCY):
-        analysis_workers.append(asyncio.create_task(_analysis_worker(index)))
+        analysis_workers.append(asyncio.create_task(_analysis_worker(index, queue)))
+
+
+def start_ai_analysis_workers():
+    if not CLAUDE_ANALYSIS_ENABLED:
+        return
+    queue = _get_ai_analysis_queue()
+    ai_analysis_workers[:] = [task for task in ai_analysis_workers if not task.done()]
+    for index in range(len(ai_analysis_workers), AI_ANALYSIS_CONCURRENCY):
+        ai_analysis_workers.append(asyncio.create_task(_ai_analysis_worker(index, queue)))
 
 
 async def stop_analysis_workers():
+    global analysis_queue_loop
     for task in analysis_workers:
         task.cancel()
     if analysis_workers:
         await asyncio.gather(*analysis_workers, return_exceptions=True)
     analysis_workers.clear()
+    analysis_queue_loop = None
+
+
+async def stop_ai_analysis_workers():
+    global ai_analysis_queue_loop
+    for task in ai_analysis_workers:
+        task.cancel()
+    if ai_analysis_workers:
+        await asyncio.gather(*ai_analysis_workers, return_exceptions=True)
+    ai_analysis_workers.clear()
+    ai_analysis_tasks.clear()
+    ai_analysis_queued_jobs.clear()
+    while not ai_analysis_queue.empty():
+        try:
+            ai_analysis_queue.get_nowait()
+            ai_analysis_queue.task_done()
+        except asyncio.QueueEmpty:
+            break
+    ai_analysis_queue_loop = None
 
 
 async def enqueue_analysis_job(job_id: str):
-    await analysis_queue.put(job_id)
+    await _get_analysis_queue().put(job_id)
 
 
-async def _analysis_worker(index: int):
+async def enqueue_ai_analysis_job(job_id: str, context: Optional[dict] = None):
+    queue = _get_ai_analysis_queue()
+    ai_analysis_queued_jobs.add(job_id)
+    await queue.put((job_id, dict(context or {})))
+
+
+async def _analysis_worker(index: int, queue: asyncio.Queue[str]):
     while True:
-        job_id = await analysis_queue.get()
+        job_id = await queue.get()
         try:
             await run_analysis(job_id)
         finally:
-            analysis_queue.task_done()
+            queue.task_done()
+
+
+async def _ai_analysis_worker(index: int, queue: asyncio.Queue[tuple[str, dict]]):
+    while True:
+        job_id, context = await queue.get()
+        ai_analysis_queued_jobs.discard(job_id)
+        task = asyncio.current_task()
+        lock = ai_analysis_locks.setdefault(job_id, asyncio.Lock())
+        try:
+            async with lock:
+                if task is not None:
+                    ai_analysis_tasks[job_id] = task
+                try:
+                    await _run_ai_analysis_task(job_id, context)
+                finally:
+                    if task is not None and ai_analysis_tasks.get(job_id) is task:
+                        ai_analysis_tasks.pop(job_id, None)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.exception(
+                "ai_analysis_worker_failed",
+                extra={
+                    "event": "ai_analysis_worker_failed",
+                    "job_id": job_id,
+                    "worker": index,
+                    "error": str(e),
+                },
+            )
+        finally:
+            queue.task_done()
 
 
 def job_dir(job_id: str) -> str:
@@ -1023,9 +1150,31 @@ def _format_triton_execution_error(
 
 async def save_upload(upload: UploadFile, dest: str):
     os.makedirs(os.path.dirname(dest), exist_ok=True)
+    written = 0
     async with aiofiles.open(dest, "wb") as f:
         while chunk := await upload.read(1 << 20):  # 1 MB chunks
+            written += len(chunk)
+            if MAX_UPLOAD_BYTES and written > MAX_UPLOAD_BYTES:
+                raise HTTPException(413, f"上传文件超过限制: {MAX_UPLOAD_BYTES} bytes")
             await f.write(chunk)
+
+
+def _storage_disk_path() -> str:
+    if os.path.exists(STORAGE_DIR):
+        return STORAGE_DIR
+    parent = os.path.dirname(STORAGE_DIR) or "."
+    return parent if os.path.exists(parent) else "."
+
+
+def _ensure_storage_capacity():
+    if not MIN_STORAGE_FREE_BYTES:
+        return
+    disk = shutil.disk_usage(_storage_disk_path())
+    if disk.free < MIN_STORAGE_FREE_BYTES:
+        raise HTTPException(
+            507,
+            f"存储空间不足，当前可用 {disk.free} bytes，低于保留阈值 {MIN_STORAGE_FREE_BYTES} bytes",
+        )
 
 
 def _extract_gz_to_json(gz_path: str, dest_path: str):
@@ -1694,6 +1843,8 @@ def _ai_analysis_progress(status: dict) -> int:
         return 100
     if state == "error":
         return 100
+    if state == "queued":
+        return 5
     if state == "running":
         return {"queued": 5, "diagnosing": 20, "analyzing": 55}.get(phase, 35)
     return 0
@@ -3176,14 +3327,20 @@ def _run_sync_analysis(job, rdir, path_a, path_b, name_a, name_b):
 async def run_analysis(job_id: str):
     db = await get_db()
     try:
+        claim = await db.execute(
+            "UPDATE jobs SET status='running', error_msg='' WHERE id=? AND status='pending'",
+            (job_id,),
+        )
+        await db.commit()
+        if claim.rowcount != 1:
+            return
+
         cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (job_id,))
         job = await row_to_dict(await cursor.fetchone())
-        if not job or job["status"] != "pending":
+        if not job:
             return
 
         logger.info("analysis_started", extra={"event": "analysis_started", "job_id": job_id, "mode": job["mode"]})
-        await db.execute("UPDATE jobs SET status='running', error_msg='' WHERE id=?", (job_id,))
-        await db.commit()
 
         rdir = result_dir(job_id)
         os.makedirs(rdir, exist_ok=True)
@@ -3386,6 +3543,12 @@ async def metrics():
         "# HELP analyze_trace_analysis_queue_size Pending analysis queue size in memory.",
         "# TYPE analyze_trace_analysis_queue_size gauge",
         f"analyze_trace_analysis_queue_size {analysis_queue.qsize()}",
+        "# HELP analyze_trace_ai_analysis_queue_size Pending Claude AI analysis queue size in memory.",
+        "# TYPE analyze_trace_ai_analysis_queue_size gauge",
+        f"analyze_trace_ai_analysis_queue_size {ai_analysis_queue.qsize()}",
+        "# HELP analyze_trace_ai_analysis_active Active Claude AI analysis tasks in memory.",
+        "# TYPE analyze_trace_ai_analysis_active gauge",
+        f"analyze_trace_ai_analysis_active {len(ai_analysis_tasks)}",
         "# HELP analyze_trace_storage_free_bytes Free bytes on the storage filesystem.",
         "# TYPE analyze_trace_storage_free_bytes gauge",
         f"analyze_trace_storage_free_bytes {disk.free}",
@@ -5500,6 +5663,20 @@ def _remove_job_dir(jid: str):
         shutil.rmtree(jdir)
 
 
+def _ai_analysis_is_active(jid: str) -> bool:
+    if jid in ai_analysis_tasks or jid in ai_analysis_queued_jobs:
+        return True
+    return _read_ai_analysis_status(jid).get("status") in {"queued", "running"}
+
+
+def _job_delete_locked(row: dict) -> bool:
+    return row.get("status") == "running" or _ai_analysis_is_active(row["id"])
+
+
+def _job_files_locked(row: dict) -> bool:
+    return row.get("status") in {"pending", "running"} or _ai_analysis_is_active(row["id"])
+
+
 async def _delete_trace_files(db, row: dict, slots=("a", "b")) -> int:
     removed = 0
     for slot in slots:
@@ -5600,7 +5777,10 @@ async def bulk_delete_jobs(request: Request, body: dict):
     job_ids = _unique_job_ids(body)
     db = await get_db()
     try:
-        await _load_jobs_by_ids(db, job_ids, request)
+        jobs = await _load_jobs_by_ids(db, job_ids, request)
+        busy = [job["id"] for job in jobs if _job_delete_locked(job)]
+        if busy:
+            raise HTTPException(409, f"任务仍在分析中，暂不能删除: {', '.join(busy[:5])}")
         for job_id in job_ids:
             _remove_job_dir(job_id)
         placeholders = ",".join("?" * len(job_ids))
@@ -5622,6 +5802,9 @@ async def bulk_delete_job_files(request: Request, body: dict):
     db = await get_db()
     try:
         jobs = await _load_jobs_by_ids(db, job_ids, request)
+        busy = [job["id"] for job in jobs if _job_files_locked(job)]
+        if busy:
+            raise HTTPException(409, f"任务仍在分析中，暂不能删除文件: {', '.join(busy[:5])}")
         files_deleted = 0
         for job in jobs:
             files_deleted += await _delete_trace_files(db, job)
@@ -5889,59 +6072,84 @@ async def create_job(
 ):
     jid = str(uuid.uuid4())
     jdir = job_dir(jid)
+    row = None
+    db_row_committed = False
 
-    db = await get_db()
     try:
-        user_token = await ensure_user_row(db, request)
-        await validate_project_access(db, request, project_id or None)
-        await db.commit()
-    finally:
-        await db.close()
+        async with upload_semaphore:
+            _ensure_storage_capacity()
 
-    path_a = os.path.join(jdir, "trace_a.json")
-    gzip_path_a = [None]
-    await save_and_extract(file_a, path_a, gzip_path_a)
+            db = await get_db()
+            try:
+                user_token = await ensure_user_row(db, request)
+                await validate_project_access(db, request, project_id or None)
+                await db.commit()
+            finally:
+                await db.close()
 
-    path_b = None
-    name_b = None
-    gzip_path_b = [None]
-    mode = "single"
-    if file_b and file_b.filename:
-        path_b = os.path.join(jdir, "trace_b.json")
-        await save_and_extract(file_b, path_b, gzip_path_b)
-        name_b = file_b.filename
-        mode = "compare"
+            path_a = os.path.join(jdir, "trace_a.json")
+            gzip_path_a = [None]
+            await save_and_extract(file_a, path_a, gzip_path_a)
 
-    eff_label = label or (
-        f"{file_a.filename} vs {name_b}" if mode == "compare" and name_b else file_a.filename
-    ) or jid
+            path_b = None
+            name_b = None
+            gzip_path_b = [None]
+            mode = "single"
+            if file_b and file_b.filename:
+                path_b = os.path.join(jdir, "trace_b.json")
+                await save_and_extract(file_b, path_b, gzip_path_b)
+                name_b = file_b.filename
+                mode = "compare"
 
-    db = await get_db()
-    await db.execute(
-        """INSERT INTO jobs(id, project_id, user_token, label, mode,
-               file_a_name, file_a_path, file_a_gzip_path, file_b_name, file_b_path, file_b_gzip_path,
-               save_triton_csv, save_triton_code)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (jid, project_id or None, user_token, eff_label, mode,
-         file_a.filename, path_a, gzip_path_a[0], name_b, path_b, gzip_path_b[0],
-         int(save_triton_csv), int(save_triton_code)),
-    )
-    await _refresh_job_storage_cache(db, jid)
-    await write_audit(
-        db, request, "job.create",
-        resource_type="job", resource_id=jid,
-        details={
-            "mode": mode,
-            "project_id": project_id,
-            "label": eff_label,
-            "file_a_name": file_a.filename,
-            "file_b_name": name_b,
-        },
-    )
-    await db.commit()
-    cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
-    row = await cursor.fetchone()
-    await db.close()
+            eff_label = label or (
+                f"{file_a.filename} vs {name_b}" if mode == "compare" and name_b else file_a.filename
+            ) or jid
+
+            db = await get_db()
+            try:
+                await db.execute(
+                    """INSERT INTO jobs(id, project_id, user_token, label, mode,
+                           file_a_name, file_a_path, file_a_gzip_path, file_b_name, file_b_path, file_b_gzip_path,
+                           save_triton_csv, save_triton_code)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (jid, project_id or None, user_token, eff_label, mode,
+                     file_a.filename, path_a, gzip_path_a[0], name_b, path_b, gzip_path_b[0],
+                     int(save_triton_csv), int(save_triton_code)),
+                )
+                await _refresh_job_storage_cache(db, jid)
+                await write_audit(
+                    db, request, "job.create",
+                    resource_type="job", resource_id=jid,
+                    details={
+                        "mode": mode,
+                        "project_id": project_id,
+                        "label": eff_label,
+                        "file_a_name": file_a.filename,
+                        "file_b_name": name_b,
+                    },
+                )
+                await db.commit()
+                db_row_committed = True
+                cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
+                row = await cursor.fetchone()
+            except Exception:
+                await db.rollback()
+                raise
+            finally:
+                await db.close()
+    except Exception:
+        if row is None:
+            if db_row_committed:
+                with contextlib.suppress(Exception):
+                    cleanup_db = await get_db()
+                    try:
+                        await cleanup_db.execute("DELETE FROM jobs WHERE id=?", (jid,))
+                        await cleanup_db.commit()
+                    finally:
+                        await cleanup_db.close()
+            with contextlib.suppress(Exception):
+                _remove_job_dir(jid)
+        raise
 
     await enqueue_analysis_job(jid)
     return dict(row)
@@ -6375,68 +6583,71 @@ async def run_ai_diagnostics(request: Request):
 async def start_job_ai_analysis(request: Request, jid: str, body: Optional[dict] = None):
     if not CLAUDE_ANALYSIS_ENABLED:
         raise HTTPException(403, "Claude analysis is disabled")
+    start_ai_analysis_workers()
 
     body = body or {}
     force = bool(body.get("force"))
     user_prompt = _normalize_ai_user_prompt(body.get("prompt") if "prompt" in body else body.get("promt"))
     notification_context = {}
-    db = await get_db()
-    try:
-        row = await load_accessible_job(db, request, jid)
-        if not row:
-            raise HTTPException(404)
-        if row.get("status") != "done":
-            raise HTTPException(409, "Job is not completed")
+    async with ai_analysis_start_lock:
+        db = await get_db()
+        try:
+            row = await load_accessible_job(db, request, jid)
+            if not row:
+                raise HTTPException(404)
+            if row.get("status") != "done":
+                raise HTTPException(409, "Job is not completed")
 
-        current = collect_ai_analysis(jid)
-        if current.get("status") == "running":
-            raise HTTPException(409, "AI analysis is already running")
-        if current.get("status") == "done" and not force and not user_prompt:
-            current["content"] = _read_ai_analysis_report(jid)
-            current["artifacts"] = _collect_ai_analysis_artifacts(jid)
-            return current
-        _ensure_current_ai_report_versioned(jid, _read_ai_analysis_status(jid))
+            current = collect_ai_analysis(jid)
+            if current.get("status") in {"queued", "running"}:
+                raise HTTPException(409, "AI analysis is already queued or running")
+            if current.get("status") == "done" and not force and not user_prompt:
+                current["content"] = _read_ai_analysis_report(jid)
+                current["artifacts"] = _collect_ai_analysis_artifacts(jid)
+                return current
+            _ensure_current_ai_report_versioned(jid, _read_ai_analysis_status(jid))
 
-        user = current_user(request)
-        trigger_user_token = user.get("username") or request_user(request)
-        notification_context = {
-            "job_label": row.get("label") or row.get("file_a_name") or jid,
-            "job_mode": row.get("mode") or "",
-            "owner_user_token": row.get("user_token") or "",
-            "trigger_user_token": trigger_user_token,
-            "trigger_user_display": user.get("display_name") or trigger_user_token or "local",
-            "trigger_user_email": user.get("email") or "",
-            "user_prompt": user_prompt,
-        }
-        _write_ai_analysis_status(jid, {
-            "status": "running",
-            "phase": "diagnosing",
-            "progress": 5,
-            "mode": row.get("mode"),
-            "skill": CLAUDE_COMPARE_TRACE_SKILL if row.get("mode") == "compare" else CLAUDE_SINGLE_TRACE_SKILL,
-            "model": _ai_backend_model_name(),
-            "user_prompt": user_prompt,
-            "trigger_user_token": notification_context["trigger_user_token"],
-            "trigger_user_display": notification_context["trigger_user_display"],
-            "trigger_user_email": notification_context["trigger_user_email"],
-            "owner_user_token": notification_context["owner_user_token"],
-            "started_at": _utc_now_iso(),
-            "updated_at": _utc_now_iso(),
-        })
-        await write_audit(
-            db, request, "job.ai_analysis_start",
-            resource_type="job", resource_id=jid,
-            details={"mode": row.get("mode"), "force": force, "has_user_prompt": bool(user_prompt)},
-        )
-        await db.commit()
-    except HTTPException:
-        await db.rollback()
-        raise
-    finally:
-        await db.close()
+            user = current_user(request)
+            trigger_user_token = user.get("username") or request_user(request)
+            notification_context = {
+                "job_label": row.get("label") or row.get("file_a_name") or jid,
+                "job_mode": row.get("mode") or "",
+                "owner_user_token": row.get("user_token") or "",
+                "trigger_user_token": trigger_user_token,
+                "trigger_user_display": user.get("display_name") or trigger_user_token or "local",
+                "trigger_user_email": user.get("email") or "",
+                "user_prompt": user_prompt,
+            }
+            queued_at = _utc_now_iso()
+            _write_ai_analysis_status(jid, {
+                "status": "queued",
+                "phase": "queued",
+                "progress": 5,
+                "mode": row.get("mode"),
+                "skill": CLAUDE_COMPARE_TRACE_SKILL if row.get("mode") == "compare" else CLAUDE_SINGLE_TRACE_SKILL,
+                "model": _ai_backend_model_name(),
+                "user_prompt": user_prompt,
+                "trigger_user_token": notification_context["trigger_user_token"],
+                "trigger_user_display": notification_context["trigger_user_display"],
+                "trigger_user_email": notification_context["trigger_user_email"],
+                "owner_user_token": notification_context["owner_user_token"],
+                "queued_at": queued_at,
+                "started_at": queued_at,
+                "updated_at": queued_at,
+            })
+            await write_audit(
+                db, request, "job.ai_analysis_start",
+                resource_type="job", resource_id=jid,
+                details={"mode": row.get("mode"), "force": force, "has_user_prompt": bool(user_prompt)},
+            )
+            await db.commit()
+        except HTTPException:
+            await db.rollback()
+            raise
+        finally:
+            await db.close()
 
-    task = asyncio.create_task(_run_ai_analysis_task(jid, notification_context))
-    _track_ai_analysis_task(jid, task)
+        await enqueue_ai_analysis_job(jid, notification_context)
     payload = collect_ai_analysis(jid)
     payload["content"] = _read_ai_analysis_report(jid) if payload["report_exists"] else ""
     payload["artifacts"] = _collect_ai_analysis_artifacts(jid)
@@ -6603,6 +6814,9 @@ async def delete_job(request: Request, jid: str):
         await db.close()
         raise HTTPException(404)
 
+    if _job_delete_locked(row):
+        await db.close()
+        raise HTTPException(409, "任务仍在分析中，暂不能删除")
 
     _remove_job_dir(jid)
 
@@ -7057,6 +7271,9 @@ async def delete_job_file(request: Request, jid: str, slot: str):
     if slot not in ("a", "b"):
         await db.close()
         raise HTTPException(400, "slot must be 'a' or 'b'")
+    if _job_files_locked(row):
+        await db.close()
+        raise HTTPException(409, "任务仍在分析中，暂不能删除文件")
 
     await _delete_trace_files(db, row, slots=(slot,))
     await _refresh_job_storage_cache(db, jid)

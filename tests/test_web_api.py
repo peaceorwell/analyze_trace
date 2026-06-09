@@ -37,6 +37,8 @@ def isolated_server(tmp_path, monkeypatch):
     monkeypatch.setattr(web_server, "BACKUP_DIR", str(storage_dir / "backups"))
     monkeypatch.setattr(web_server, "ALLOW_FILE_DOWNLOAD", True)
     monkeypatch.setattr(web_server, "ALLOW_CODE_EXECUTION", False)
+    monkeypatch.setattr(web_server, "MAX_UPLOAD_BYTES", 0)
+    monkeypatch.setattr(web_server, "MIN_STORAGE_FREE_BYTES", 0)
     monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_ENABLED", False)
     monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_COMMAND_TEMPLATE", "")
     monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_EXTRA_ARGS", "")
@@ -47,7 +49,13 @@ def isolated_server(tmp_path, monkeypatch):
     monkeypatch.setattr(web_server, "ADMIN_USERS", set())
     web_server.LOGIN_FAILURES.clear()
     web_server.LOGIN_CAPTCHA_CHALLENGES.clear()
+    web_server.ai_analysis_workers.clear()
     web_server.ai_analysis_tasks.clear()
+    web_server.ai_analysis_queued_jobs.clear()
+    web_server.ai_analysis_locks.clear()
+    while not web_server.ai_analysis_queue.empty():
+        web_server.ai_analysis_queue.get_nowait()
+        web_server.ai_analysis_queue.task_done()
     return web_server
 
 
@@ -62,7 +70,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.55",
+        "version": "0.2.56",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -107,6 +115,79 @@ def test_ai_analysis_is_disabled_by_default(client):
     r = client.post("/api/jobs/ai-disabled-job/ai-analysis", json={})
 
     assert r.status_code == 403
+
+
+def test_upload_limit_cleans_partial_job_directory(client, sample_trace_file, monkeypatch):
+    monkeypatch.setattr(web_server, "MAX_UPLOAD_BYTES", 1)
+
+    with open(sample_trace_file, "rb") as trace:
+        response = client.post(
+            "/api/jobs",
+            files={"file_a": ("trace.json", trace, "application/json")},
+        )
+
+    assert response.status_code == 413
+    storage_dir = Path(web_server.STORAGE_DIR)
+    assert not list(storage_dir.glob("*/trace_a.json"))
+
+
+def test_ai_analysis_rejects_duplicate_and_delete_while_active(
+    client,
+    tmp_path,
+    monkeypatch,
+):
+    trace_path = tmp_path / "trace.pt.trace.json.gz"
+    with gzip.open(trace_path, "wt", encoding="utf-8") as f:
+        f.write("{}")
+
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO jobs(id, label, mode, status, file_a_name, file_a_gzip_path)
+                VALUES(?,?,?,?,?,?)
+                """,
+                ("ai-active-job", "AI active", "single", "done", trace_path.name, str(trace_path)),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+    Path(web_server.result_dir("ai-active-job")).mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_ENABLED", True)
+    monkeypatch.setattr(
+        web_server,
+        "CLAUDE_ANALYSIS_COMMAND_TEMPLATE",
+        _fake_claude_template(
+            tmp_path,
+            """
+            import time
+            time.sleep(0.5)
+            pathlib.Path(os.environ['TRACE_AI_REPORT_PATH']).write_text('# Slow Report\\n', encoding='utf-8')
+            print('# AI OK')
+            """,
+        ),
+    )
+
+    first = client.post("/api/jobs/ai-active-job/ai-analysis", json={})
+    second = client.post("/api/jobs/ai-active-job/ai-analysis", json={"force": True})
+    delete_response = client.delete("/api/jobs/ai-active-job")
+
+    assert first.status_code == 202
+    assert second.status_code == 409
+    assert delete_response.status_code == 409
+
+    payload = {}
+    for _ in range(100):
+        payload = client.get("/api/jobs/ai-active-job/ai-analysis").json()
+        if payload["status"] not in {"queued", "running"}:
+            break
+        time.sleep(0.05)
+
+    assert payload["status"] == "done"
 
 
 def test_ai_report_normalizes_flat_conclusion_evidence_advice_list(isolated_server):
@@ -246,7 +327,7 @@ def test_ai_analysis_runs_configured_command(client, isolated_server, tmp_path, 
     payload = {}
     for _ in range(80):
         payload = client.get("/api/jobs/ai-job/ai-analysis").json()
-        if payload["status"] != "running":
+        if payload["status"] not in {"queued", "running"}:
             break
         time.sleep(0.05)
 
@@ -328,7 +409,7 @@ def test_ai_analysis_keeps_report_versions(client, isolated_server, tmp_path, mo
     first_payload = {}
     for _ in range(80):
         first_payload = client.get("/api/jobs/ai-version-job/ai-analysis").json()
-        if first_payload["status"] != "running":
+        if first_payload["status"] not in {"queued", "running"}:
             break
         time.sleep(0.05)
     assert first_payload["status"] == "done"
@@ -343,7 +424,7 @@ def test_ai_analysis_keeps_report_versions(client, isolated_server, tmp_path, mo
     latest = {}
     for _ in range(80):
         latest = client.get("/api/jobs/ai-version-job/ai-analysis").json()
-        if latest["status"] != "running":
+        if latest["status"] not in {"queued", "running"}:
             break
         time.sleep(0.05)
 
@@ -436,7 +517,7 @@ def test_ai_analysis_completion_sends_email_with_result_link(client, isolated_se
     payload = {}
     for _ in range(100):
         payload = client.get("/api/jobs/ai-mail-job/ai-analysis").json()
-        if payload["status"] != "running" and sent:
+        if payload["status"] not in {"queued", "running"} and sent:
             break
         time.sleep(0.05)
 
@@ -525,7 +606,7 @@ def test_compare_ai_analysis_completion_sends_email_with_result_link(client, iso
     payload = {}
     for _ in range(100):
         payload = client.get("/api/jobs/ai-compare-mail-job/ai-analysis").json()
-        if payload["status"] != "running" and sent:
+        if payload["status"] not in {"queued", "running"} and sent:
             break
         time.sleep(0.05)
 
@@ -625,7 +706,7 @@ def test_source_compare_ai_analysis_emails_trigger_compare_owner_and_source_owne
     payload = {}
     for _ in range(100):
         payload = client.get("/api/jobs/ai-source-compare-mail-job/ai-analysis").json()
-        if payload["status"] != "running" and sent:
+        if payload["status"] not in {"queued", "running"} and sent:
             break
         time.sleep(0.05)
 
@@ -690,7 +771,7 @@ def test_ai_analysis_mounts_configured_claude_skills(client, tmp_path, monkeypat
     payload = {}
     for _ in range(80):
         payload = client.get("/api/jobs/ai-skills-job/ai-analysis").json()
-        if payload["status"] != "running":
+        if payload["status"] not in {"queued", "running"}:
             break
         time.sleep(0.05)
 
@@ -740,7 +821,7 @@ def test_ai_analysis_marks_permission_failure_output_as_error(client, isolated_s
     payload = {}
     for _ in range(80):
         payload = client.get("/api/jobs/ai-permission-job/ai-analysis").json()
-        if payload["status"] != "running":
+        if payload["status"] not in {"queued", "running"}:
             break
         time.sleep(0.05)
 
@@ -813,7 +894,7 @@ def test_ai_analysis_reports_missing_claude_command(client, tmp_path, monkeypatc
     payload = {}
     for _ in range(80):
         payload = client.get("/api/jobs/ai-missing-command/ai-analysis").json()
-        if payload["status"] != "running":
+        if payload["status"] not in {"queued", "running"}:
             break
         time.sleep(0.05)
 
@@ -946,7 +1027,7 @@ def test_ai_analysis_supports_compare_jobs(client, tmp_path, monkeypatch):
     payload = {}
     for _ in range(80):
         payload = client.get("/api/jobs/ai-compare-job/ai-analysis").json()
-        if payload["status"] != "running":
+        if payload["status"] not in {"queued", "running"}:
             break
         time.sleep(0.05)
 
@@ -2577,8 +2658,26 @@ def test_direct_two_file_upload_creates_compare_job(client, sample_trace_file, s
     assert job["label"] == "base.json vs target.json.gz"
     assert job["file_a_name"] == "base.json"
     assert job["file_b_name"] == "target.json.gz"
-    assert Path(web_server.job_dir(job["id"]), "trace_a.json").exists()
-    assert Path(web_server.job_dir(job["id"]), "trace_b.json").exists()
+    detail = job
+    for _ in range(100):
+        detail = client.get(f"/api/jobs/{job['id']}").json()
+        if detail["status"] == "done":
+            break
+        time.sleep(0.05)
+
+    assert detail["status"] == "done"
+    jdir = Path(web_server.job_dir(job["id"]))
+    assert not (jdir / "trace_a.json").exists()
+    assert not (jdir / "trace_b.json").exists()
+    assert (jdir / "trace_a.json.gz").exists()
+    assert (jdir / "trace_b.json.gz").exists()
+
+    download_a = client.get(f"/api/jobs/{job['id']}/files/a")
+    download_b = client.get(f"/api/jobs/{job['id']}/files/b")
+    assert download_a.status_code == 200
+    assert download_b.status_code == 200
+    assert json.loads(gzip.decompress(download_a.content))["traceEvents"]
+    assert json.loads(gzip.decompress(download_b.content))["traceEvents"]
 
 
 def test_done_job_exposes_perfetto_context(client, sample_trace_file):
