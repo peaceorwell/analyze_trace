@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.61");
+const appVersion = ref("0.2.62");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -633,6 +633,20 @@ const CHART_SOURCE_CONFIGS = [
   { file: "cncl_ops_avg.csv", label: "CNCL Ops", mode: "single", nameField: "op_name", defaultMetric: "avg_dur_ms" },
 ];
 
+const CHART_COMMUNICATION_SOURCE_FILES = new Set([
+  "cncl_ops_avg.csv",
+  "cncl_ops_cmp.csv",
+]);
+const CHART_COMMUNICATION_FAMILIES = new Set([
+  "collective",
+  "communication",
+  "comm",
+  "cncl",
+  "nccl",
+]);
+const CHART_COMMUNICATION_NAME_RE =
+  /(^|[_:\s./\\-])(tcdp|cncl|nccl|tccl|hccl|mpi)(?=$|[_:\s./\\-])|all[_-]?reduce|all[_-]?gather|all[_-]?to[_-]?all|allconnected|reduce[_-]?scatter|reducescatter|sendrecv|(^|[_:\s./\\-])i?(send|recv)(?=$|[_:\s./\\-])/i;
+
 const CHART_METRIC_DEFS = [
   { key: "delta_dur_ms", label: "耗时 Delta (B-A)", unit: "ms", signed: true },
   { key: "delta_count", label: "调用数 Delta", unit: "", signed: true },
@@ -653,7 +667,11 @@ const CHART_METRIC_DEFS = [
 const chartSourceOptions = computed(() => {
   const res = selectedJob.value?.result_files || {};
   const mode = selectedJob.value?.mode === "compare" ? "compare" : "single";
-  return CHART_SOURCE_CONFIGS.filter(item => item.mode === mode && res[item.file]);
+  return CHART_SOURCE_CONFIGS.filter(item =>
+    item.mode === mode
+      && res[item.file]
+      && !CHART_COMMUNICATION_SOURCE_FILES.has(item.file)
+  );
 });
 
 const chartMetricOptions = computed(() => {
@@ -912,7 +930,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.61";
+  appVersion.value = cfg.version || "0.2.62";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -3173,6 +3191,20 @@ const normalizeChartRows = (rows, fields, sourceConfig, metricDef) => {
     .filter(row => row.label);
 };
 
+const isCommunicationChartRow = (row, sourceConfig) => {
+  if (!row) return false;
+  if (CHART_COMMUNICATION_SOURCE_FILES.has(sourceConfig?.file)) return true;
+  const raw = row.raw || row;
+  const family = String(raw.family ?? raw.type ?? "").trim().toLowerCase();
+  if (CHART_COMMUNICATION_FAMILIES.has(family)) return true;
+  const nameField = row.nameField || sourceConfig?.nameField;
+  const label = String(row.label ?? raw[nameField] ?? raw.kernel_name ?? raw.op_name ?? raw.type ?? "").trim();
+  return CHART_COMMUNICATION_NAME_RE.test(label);
+};
+
+const filterChartCommunicationRows = (rows, sourceConfig) =>
+  (rows || []).filter(row => !isCommunicationChartRow(row, sourceConfig));
+
 const sortChartRows = (rows, metricDef) => {
   const metricValue = row => metricDef.signed ? Math.abs(row.value) : row.value;
   return [...rows]
@@ -3380,7 +3412,10 @@ const buildChart = async () => {
   }
   const table = chartTables.value[sourceConfig.file];
   const fields = table?.fields || selectedJob.value.result_files[sourceConfig.file]?.fields || [];
-  const rows = normalizeChartRows(table?.rows || [], fields, sourceConfig, metricDef);
+  const rows = filterChartCommunicationRows(
+    normalizeChartRows(table?.rows || [], fields, sourceConfig, metricDef),
+    sourceConfig
+  );
   destroyChartInstances();
 
   chartSummaryCards.value = buildChartSummary(rows, table, sourceConfig);
