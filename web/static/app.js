@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.52");
+const appVersion = ref("0.2.53");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -886,7 +886,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.52";
+  appVersion.value = cfg.version || "0.2.53";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -1383,7 +1383,7 @@ const setFeedbackFiles = (event, parentId = null) => {
   const files = selected.slice(0, 4);
   if (selected.length > 4) showToast("最多选择 4 张图片", "error");
   if (parentId) {
-    const form = feedbackReplies.value[parentId] || { open: true, body: "", files: [], previews: [], submitting: false };
+    const form = feedbackReplies.value[parentId] || { open: true, body: "", files: [], previews: [], submitting: false, mode: "write" };
     revokeFeedbackPreviews(form.previews);
     feedbackReplies.value = {
       ...feedbackReplies.value,
@@ -1403,7 +1403,7 @@ const clearFeedbackForm = (parentId = null) => {
     revokeFeedbackPreviews(form?.previews || []);
     feedbackReplies.value = {
       ...feedbackReplies.value,
-      [parentId]: { open: false, body: "", files: [], previews: [], submitting: false },
+      [parentId]: { open: false, body: "", files: [], previews: [], submitting: false, mode: "write" },
     };
     return;
   }
@@ -1413,10 +1413,26 @@ const clearFeedbackForm = (parentId = null) => {
 
 const ensureFeedbackReplyForm = id => {
   if (feedbackReplies.value[id]) return feedbackReplies.value[id];
-  const form = { open: false, body: "", files: [], previews: [], submitting: false };
+  const form = { open: false, body: "", files: [], previews: [], submitting: false, mode: "write" };
   feedbackReplies.value = { ...feedbackReplies.value, [id]: form };
   return form;
 };
+
+const feedbackReplyEditorMode = id => feedbackReplies.value[id]?.mode || "write";
+
+const setFeedbackReplyEditorMode = (id, mode = "write") => {
+  const form = ensureFeedbackReplyForm(id);
+  feedbackReplies.value = {
+    ...feedbackReplies.value,
+    [id]: { ...form, mode: mode === "preview" ? "preview" : "write" },
+  };
+  closeFeedbackMention();
+  feedbackEmojiPickerTarget.value = "";
+};
+
+const feedbackReplyPreviewHtml = id => renderMarkdown(feedbackReplies.value[id]?.body || "");
+
+const feedbackMessageHtml = message => renderMarkdown(message?.body || "");
 
 const focusFeedbackMessage = id => {
   selectedFeedbackMessageId.value = id || "";
@@ -5715,8 +5731,10 @@ const App = {
       selectedFeedbackPostId, selectedFeedbackMessageId, selectedFeedbackPost, feedbackDetailLoading,
       feedbackPostTitle, feedbackPostExcerpt, feedbackPostReplyCount, feedbackPostActivity,
       feedbackEditedText, feedbackReactionSummary, feedbackReactionItem, canEditFeedbackMessage,
+      feedbackMessageHtml,
       openFeedbackBoard, refreshFeedbackBoard, loadFeedback, setFeedbackSort, setFeedbackFiles, clearFeedbackForm,
-      toggleFeedbackReply, selectFeedbackPost, closeFeedbackPost,
+      toggleFeedbackReply, feedbackReplyEditorMode, setFeedbackReplyEditorMode, feedbackReplyPreviewHtml,
+      selectFeedbackPost, closeFeedbackPost,
       openFeedbackComposer, closeFeedbackComposer, closeFeedbackBoard, submitFeedback,
       startFeedbackEdit, cancelFeedbackEdit, saveFeedbackEdit, toggleFeedbackReaction, toggleFeedbackReactionPicker,
       toggleFeedbackEmojiPicker,

@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>torch profiler analyzer</title>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.2.52" />
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.2.53" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
   <script src="https://unpkg.com/vue-router@4/dist/vue-router.global.prod.js"></script>
@@ -114,7 +114,7 @@
     <!-- ── Header ── -->
     <header v-if="authChecked && (!authRequired || currentUser)" class="header">
       <div class="header-brand" @click="$router.push('/')" style="cursor:pointer" title="返回上传页面">
-        <img class="header-logo" src="/static/favicon.svg?v=0.2.52" alt="" />
+        <img class="header-logo" src="/static/favicon.svg?v=0.2.53" alt="" />
         <span class="header-title">Torch Profiler Analyzer</span>
         <span class="header-version">v{{ appVersion }}</span>
       </div>
@@ -586,7 +586,7 @@
                 </div>
               </div>
               <template v-else>
-                <div v-if="selectedFeedbackPost.body" class="feedback-body">{{ selectedFeedbackPost.body }}</div>
+                <div v-if="selectedFeedbackPost.body" class="feedback-body feedback-message-markdown markdown-body" v-html="feedbackMessageHtml(selectedFeedbackPost)"></div>
                 <div class="feedback-card-foot">
                   <span v-if="feedbackEditedText(selectedFeedbackPost)" class="feedback-edited">{{ feedbackEditedText(selectedFeedbackPost) }} · {{ fmtDate(selectedFeedbackPost.edited_at) }}</span>
                 </div>
@@ -643,75 +643,80 @@
                 v-for="reply in selectedFeedbackPost.replies"
                 :key="reply.id"
                 :id="'feedback-message-' + reply.id"
-                :class="['feedback-reply', selectedFeedbackMessageId===reply.id ? 'feedback-message-target' : '']"
+                :class="['feedback-reply feedback-github-message', selectedFeedbackMessageId===reply.id ? 'feedback-message-target' : '']"
               >
-                <div class="feedback-card-head">
-                  <div class="feedback-card-author">
-                    <span class="feedback-avatar feedback-avatar-xs">{{ feedbackUserInitial(reply.user_display) }}</span>
-                    <strong>{{ reply.user_display }}</strong>
-                  </div>
-                  <div class="feedback-card-meta">
-                    <span>{{ fmtDate(reply.created_at) }}</span>
-                    <span v-if="feedbackEditedText(reply)" class="feedback-edited">{{ feedbackEditedText(reply) }}</span>
-                    <button v-if="canEditFeedbackMessage(reply)" type="button" class="btn btn-xs btn-outline" @click="startFeedbackEdit(reply)">编辑</button>
-                    <button v-if="isAdmin" type="button" class="btn btn-xs btn-danger" @click="deleteFeedbackReply(reply)">删除</button>
-                  </div>
-                </div>
-                <div v-if="feedbackEditing.id===reply.id" class="feedback-edit-box">
-                  <textarea
-                    :id="'feedback-edit-' + reply.id"
-                    v-model="feedbackEditing.body"
-                    class="feedback-textarea feedback-edit-textarea"
-                    maxlength="2000"
-                  ></textarea>
-                  <div class="feedback-edit-actions">
-                    <button class="btn btn-xs btn-outline" :disabled="feedbackEditing.saving" @click="cancelFeedbackEdit()">取消</button>
-                    <button class="btn btn-xs btn-primary" :disabled="feedbackEditing.saving" @click="saveFeedbackEdit(reply)">
-                      {{ feedbackEditing.saving ? '保存中...' : '保存编辑' }}
-                    </button>
-                  </div>
-                </div>
-                <template v-else>
-                  <div v-if="reply.body" class="feedback-body">{{ reply.body }}</div>
-                </template>
-                <div v-if="reply.attachments.length" class="feedback-image-grid compact">
-                  <a v-for="img in reply.attachments" :key="img.id" :href="img.url" target="_blank" rel="noopener" class="feedback-image">
-                    <img :src="img.url" :alt="img.filename || 'feedback image'" />
-                  </a>
-                </div>
-                <div class="feedback-reaction-bar feedback-github-reactions">
-                  <button
-                    v-for="reaction in feedbackReactionSummary(reply)"
-                    :key="reaction.emoji"
-                    type="button"
-                    :class="['feedback-reaction-btn feedback-github-reaction-pill', reaction.reacted ? 'active' : '']"
-                    @click="toggleFeedbackReaction(reply, reaction.emoji)"
-                  >
-                    <span>{{ reaction.emoji }}</span>
-                    <b>{{ reaction.count }}</b>
-                  </button>
-                  <div class="feedback-reaction-add-wrap">
-                    <button
-                      type="button"
-                      :class="['feedback-add-reaction-btn', feedbackReactionPickerId===reply.id ? 'active' : '']"
-                      title="添加表情反应"
-                      aria-label="添加表情反应"
-                      @click.stop="toggleFeedbackReactionPicker(reply.id)"
-                    >☺</button>
-                    <div v-if="feedbackReactionPickerId===reply.id" class="feedback-reaction-picker">
-                      <button
-                        v-for="reaction in feedbackReactionOptions"
-                        :key="reaction"
-                        type="button"
-                        :class="['feedback-reaction-picker-btn', feedbackReactionItem(reply, reaction).reacted ? 'active' : '']"
-                        @click.stop="toggleFeedbackReaction(reply, reaction)"
-                      >
-                        <span>{{ reaction }}</span>
-                        <b v-if="feedbackReactionItem(reply, reaction).count">{{ feedbackReactionItem(reply, reaction).count }}</b>
-                      </button>
+                <span class="feedback-avatar feedback-comment-avatar feedback-message-avatar">{{ feedbackUserInitial(reply.user_display) }}</span>
+                <article class="feedback-message-card">
+                  <div class="feedback-message-card-head">
+                    <div class="feedback-message-author-line">
+                      <strong>{{ reply.user_display }}</strong>
+                      <span>{{ fmtDate(reply.created_at) }}</span>
+                      <span v-if="feedbackEditedText(reply)" class="feedback-edited">{{ feedbackEditedText(reply) }}</span>
+                    </div>
+                    <div class="feedback-message-head-actions">
+                      <span class="feedback-role-pill">{{ reply.user_token && reply.user_token===selectedFeedbackPost.user_token ? '作者' : '参与者' }}</span>
+                      <button v-if="canEditFeedbackMessage(reply)" type="button" class="btn btn-xs btn-outline" @click="startFeedbackEdit(reply)">编辑</button>
+                      <button v-if="isAdmin" type="button" class="btn btn-xs btn-danger" @click="deleteFeedbackReply(reply)">删除</button>
                     </div>
                   </div>
-                </div>
+                  <div class="feedback-message-card-body">
+                    <div v-if="feedbackEditing.id===reply.id" class="feedback-edit-box">
+                      <textarea
+                        :id="'feedback-edit-' + reply.id"
+                        v-model="feedbackEditing.body"
+                        class="feedback-textarea feedback-edit-textarea"
+                        maxlength="2000"
+                      ></textarea>
+                      <div class="feedback-edit-actions">
+                        <button class="btn btn-xs btn-outline" :disabled="feedbackEditing.saving" @click="cancelFeedbackEdit()">取消</button>
+                        <button class="btn btn-xs btn-primary" :disabled="feedbackEditing.saving" @click="saveFeedbackEdit(reply)">
+                          {{ feedbackEditing.saving ? '保存中...' : '保存编辑' }}
+                        </button>
+                      </div>
+                    </div>
+                    <template v-else>
+                      <div v-if="reply.body" class="feedback-body feedback-message-markdown markdown-body" v-html="feedbackMessageHtml(reply)"></div>
+                    </template>
+                    <div v-if="reply.attachments.length" class="feedback-image-grid compact">
+                      <a v-for="img in reply.attachments" :key="img.id" :href="img.url" target="_blank" rel="noopener" class="feedback-image">
+                        <img :src="img.url" :alt="img.filename || 'feedback image'" />
+                      </a>
+                    </div>
+                    <div class="feedback-reaction-bar feedback-github-reactions">
+                      <button
+                        v-for="reaction in feedbackReactionSummary(reply)"
+                        :key="reaction.emoji"
+                        type="button"
+                        :class="['feedback-reaction-btn feedback-github-reaction-pill', reaction.reacted ? 'active' : '']"
+                        @click="toggleFeedbackReaction(reply, reaction.emoji)"
+                      >
+                        <span>{{ reaction.emoji }}</span>
+                        <b>{{ reaction.count }}</b>
+                      </button>
+                      <div class="feedback-reaction-add-wrap">
+                        <button
+                          type="button"
+                          :class="['feedback-add-reaction-btn', feedbackReactionPickerId===reply.id ? 'active' : '']"
+                          title="添加表情反应"
+                          aria-label="添加表情反应"
+                          @click.stop="toggleFeedbackReactionPicker(reply.id)"
+                        >☺</button>
+                        <div v-if="feedbackReactionPickerId===reply.id" class="feedback-reaction-picker">
+                          <button
+                            v-for="reaction in feedbackReactionOptions"
+                            :key="reaction"
+                            type="button"
+                            :class="['feedback-reaction-picker-btn', feedbackReactionItem(reply, reaction).reacted ? 'active' : '']"
+                            @click.stop="toggleFeedbackReaction(reply, reaction)"
+                          >
+                            <span>{{ reaction }}</span>
+                            <b v-if="feedbackReactionItem(reply, reaction).count">{{ feedbackReactionItem(reply, reaction).count }}</b>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </article>
               </div>
             </div>
           </div>
@@ -721,10 +726,18 @@
             <div class="feedback-github-editor">
               <div class="feedback-editor-header">
                 <div class="feedback-editor-tabs">
-                  <button type="button" class="feedback-editor-tab active">Write</button>
-                  <button type="button" class="feedback-editor-tab" disabled>Preview</button>
+                  <button
+                    type="button"
+                    :class="['feedback-editor-tab', feedbackReplyEditorMode(selectedFeedbackPost.id)==='write' ? 'active' : '']"
+                    @click="setFeedbackReplyEditorMode(selectedFeedbackPost.id, 'write')"
+                  >Write</button>
+                  <button
+                    type="button"
+                    :class="['feedback-editor-tab', feedbackReplyEditorMode(selectedFeedbackPost.id)==='preview' ? 'active' : '']"
+                    @click="setFeedbackReplyEditorMode(selectedFeedbackPost.id, 'preview')"
+                  >Preview</button>
                 </div>
-                <div class="feedback-editor-toolbar" aria-label="回复工具栏">
+                <div v-if="feedbackReplyEditorMode(selectedFeedbackPost.id)==='write'" class="feedback-editor-toolbar" aria-label="回复工具栏">
                   <button type="button" title="标题" @mousedown.prevent="insertFeedbackSnippet('### ', '', '标题', selectedFeedbackPost.id)">H</button>
                   <button type="button" title="加粗" @mousedown.prevent="insertFeedbackSnippet('**', '**', '加粗文本', selectedFeedbackPost.id)"><strong>B</strong></button>
                   <button type="button" title="斜体" @mousedown.prevent="insertFeedbackSnippet('*', '*', '斜体文本', selectedFeedbackPost.id)"><em>I</em></button>
@@ -753,7 +766,11 @@
                   >{{ emoji }}</button>
                 </div>
               </div>
-              <div class="feedback-mention-host">
+              <div v-if="feedbackReplyEditorMode(selectedFeedbackPost.id)==='preview'" class="feedback-markdown-preview markdown-body">
+                <div v-if="(feedbackReplies[selectedFeedbackPost.id].body || '').trim()" v-html="feedbackReplyPreviewHtml(selectedFeedbackPost.id)"></div>
+                <div v-else class="feedback-preview-empty">暂无内容可预览</div>
+              </div>
+              <div v-else class="feedback-mention-host">
                 <textarea
                   v-model="feedbackReplies[selectedFeedbackPost.id].body"
                   class="feedback-textarea feedback-reply-textarea feedback-github-textarea"
