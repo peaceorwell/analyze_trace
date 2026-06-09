@@ -55,7 +55,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.60"
+APP_VERSION = "0.2.61"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
 FEEDBACK_DIRNAME = "feedback"
@@ -6381,6 +6381,85 @@ async def _resolve_reanalysis_trace(db, request: Request, job: dict, slot: str) 
     if not path or not os.path.exists(path):
         raise HTTPException(409, f"Trace file {slot.upper()} has been deleted")
     return path, name or os.path.basename(path), source_id
+
+
+@app.post("/api/jobs/{jid}/analyze-trace-slot", status_code=201)
+async def analyze_compare_trace_slot(request: Request, jid: str, body: dict):
+    db = await get_db()
+    new_jid = str(uuid.uuid4())
+    new_dir = job_dir(new_jid)
+    row = None
+    try:
+        user_token = await ensure_user_row(db, request)
+        job = await load_accessible_job(db, request, jid)
+        if not job:
+            raise HTTPException(404, "Job not found")
+        if job.get("mode") != "compare":
+            raise HTTPException(400, "Only compare jobs can derive a single trace analysis")
+        if job.get("status") in {"pending", "running"}:
+            raise HTTPException(409, "任务仍在分析中，完成后再单独分析 trace")
+
+        slot = str(body.get("slot") or "").strip().lower()
+        if slot not in {"a", "b"}:
+            raise HTTPException(400, "slot must be 'a' or 'b'")
+
+        project_id = body.get("project_id") if "project_id" in body else job.get("project_id")
+        await validate_project_access(db, request, project_id or None)
+
+        trace_path, trace_name, source_id = await _resolve_reanalysis_trace(db, request, job, slot)
+        try:
+            new_a_path, new_a_gzip_path = _copy_trace_reference(trace_path, os.path.join(new_dir, "trace_a.json"))
+        except OSError as e:
+            with contextlib.suppress(FileNotFoundError):
+                shutil.rmtree(new_dir)
+            raise HTTPException(500, f"Failed to copy trace file: {e}") from e
+
+        label = str(body.get("label") or "").strip() or f"{trace_name} · 单独分析"
+        await db.execute(
+            """INSERT INTO jobs(id, project_id, user_token, label, mode,
+                   file_a_name, file_a_path, file_a_gzip_path,
+                   source_job_a,
+                   save_triton_csv, save_triton_code)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                new_jid, project_id or None, user_token, label, "single",
+                trace_name, new_a_path, new_a_gzip_path,
+                source_id,
+                int(job.get("save_triton_csv", 0) or 0),
+                int(job.get("save_triton_code", 0) or 0),
+            ),
+        )
+        await _refresh_job_storage_cache(db, new_jid)
+        await write_audit(
+            db, request, "job.trace_slot_analysis_create",
+            resource_type="job", resource_id=new_jid,
+            details={
+                "source_compare_job": jid,
+                "slot": slot,
+                "source_job": source_id,
+                "project_id": project_id,
+                "label": label,
+            },
+        )
+        await db.commit()
+        row = await row_to_dict(await (await db.execute("SELECT * FROM jobs WHERE id=?", (new_jid,))).fetchone())
+    except HTTPException:
+        await db.rollback()
+        if row is None:
+            with contextlib.suppress(FileNotFoundError):
+                shutil.rmtree(new_dir)
+        raise
+    except Exception:
+        await db.rollback()
+        if row is None:
+            with contextlib.suppress(FileNotFoundError):
+                shutil.rmtree(new_dir)
+        raise
+    finally:
+        await db.close()
+
+    await enqueue_analysis_job(new_jid)
+    return row
 
 
 @app.post("/api/jobs/{jid}/reanalyze-steps", status_code=201)

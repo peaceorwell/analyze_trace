@@ -70,7 +70,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.60",
+        "version": "0.2.61",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -3094,6 +3094,129 @@ def test_step_reanalysis_creates_single_job(
     assert job["save_triton_code"] == 1
     assert Path(job["file_a_path"]).exists()
     assert enqueued == [job["id"]]
+
+
+def test_compare_trace_slot_analysis_creates_single_job(
+    client,
+    sample_trace_file,
+    tmp_path,
+    monkeypatch,
+):
+    enqueued = []
+
+    async def fake_enqueue(job_id):
+        enqueued.append(job_id)
+
+    trace_b = tmp_path / "b.json"
+    shutil.copyfile(sample_trace_file, trace_b)
+    monkeypatch.setattr(web_server, "enqueue_analysis_job", fake_enqueue)
+
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO jobs(
+                    id, label, mode, status,
+                    file_a_name, file_a_path,
+                    file_b_name, file_b_path,
+                    save_triton_csv, save_triton_code
+                ) VALUES(?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    "quick-compare", "a vs b", "compare", "done",
+                    "a.json", sample_trace_file,
+                    "b.json", str(trace_b),
+                    1, 1,
+                ),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+
+    response = client.post(
+        "/api/jobs/quick-compare/analyze-trace-slot",
+        json={"slot": "b"},
+    )
+
+    assert response.status_code == 201
+    job = response.json()
+    assert job["mode"] == "single"
+    assert job["label"] == "b.json · 单独分析"
+    assert job["file_a_name"] == "b.json"
+    assert job["file_a_path"]
+    assert Path(job["file_a_path"]).exists()
+    assert job["file_a_gzip_path"] is None
+    assert job["source_job_a"] is None
+    assert job["save_triton_csv"] == 1
+    assert job["save_triton_code"] == 1
+    assert enqueued == [job["id"]]
+
+
+def test_compare_trace_slot_analysis_runs_gzip_trace(
+    client,
+    sample_trace_file_gz,
+    tmp_path,
+    monkeypatch,
+):
+    enqueued = []
+
+    async def fake_enqueue(job_id):
+        enqueued.append(job_id)
+
+    trace_b = tmp_path / "b.json.gz"
+    shutil.copyfile(sample_trace_file_gz, trace_b)
+    monkeypatch.setattr(web_server, "enqueue_analysis_job", fake_enqueue)
+
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO jobs(
+                    id, label, mode, status,
+                    file_a_name, file_a_gzip_path,
+                    file_b_name, file_b_gzip_path
+                ) VALUES(?,?,?,?,?,?,?,?)
+                """,
+                (
+                    "quick-gzip-compare", "gzip a vs b", "compare", "done",
+                    "a.json.gz", sample_trace_file_gz,
+                    "b.json.gz", str(trace_b),
+                ),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+
+    response = client.post(
+        "/api/jobs/quick-gzip-compare/analyze-trace-slot",
+        json={"slot": "a"},
+    )
+
+    assert response.status_code == 201
+    job = response.json()
+    assert job["mode"] == "single"
+    assert job["file_a_path"] is None
+    assert job["file_a_gzip_path"].endswith(".json.gz")
+    assert enqueued == [job["id"]]
+
+    asyncio.run(web_server.run_analysis(job["id"]))
+
+    async def fetch_job():
+        db = await web_db.get_db()
+        try:
+            cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (job["id"],))
+            return await web_server.row_to_dict(await cursor.fetchone())
+        finally:
+            await db.close()
+
+    analyzed = asyncio.run(fetch_job())
+    assert analyzed["status"] == "done"
 
 
 def test_step_reanalysis_creates_compare_job_with_independent_steps(

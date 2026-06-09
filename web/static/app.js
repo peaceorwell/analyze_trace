@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.60");
+const appVersion = ref("0.2.61");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -142,6 +142,7 @@ const loginCaptchaRequired = ref(false);
 const loginCaptchaImage = ref("");
 const perfettoOpening = ref({});
 const compareRerunLoading = ref(false);
+const singleTraceAnalyzeLoadingSlot = ref("");
 const showStepReanalysisModal = ref(false);
 const stepReanalysisLoading = ref(false);
 const stepReanalysisLabel = ref("");
@@ -911,7 +912,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.60";
+  appVersion.value = cfg.version || "0.2.61";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -4884,6 +4885,37 @@ const openCompareSource = source => {
   router.push({ path: `/job/${source.id}` });
 };
 
+const analyzeCompareTraceSlot = async slot => {
+  const normalizedSlot = String(slot || "").trim().toLowerCase();
+  if (!["a", "b"].includes(normalizedSlot)) return;
+  if (singleTraceAnalyzeLoadingSlot.value) return;
+  if (!selectedJobId.value || selectedJob.value?.mode !== "compare") {
+    showToast("当前任务不是对比任务", "error");
+    return;
+  }
+  singleTraceAnalyzeLoadingSlot.value = normalizedSlot;
+  try {
+    const r = await fetch(`/api/jobs/${selectedJobId.value}/analyze-trace-slot`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ slot: normalizedSlot }),
+    });
+    const job = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      showToast(`单独分析 ${normalizedSlot.toUpperCase()} 失败: ` + (job.detail || "服务器错误"), "error");
+      return;
+    }
+    showToast(`已创建 ${normalizedSlot.toUpperCase()} trace 单独分析任务`, "success");
+    await refreshSidebarData();
+    router.push({ path: `/job/${job.id}` });
+  } catch (e) {
+    showToast(`单独分析 ${normalizedSlot.toUpperCase()} 失败: 网络错误`, "error");
+  } finally {
+    singleTraceAnalyzeLoadingSlot.value = "";
+  }
+};
+
 const rerunCompareSwapped = async () => {
   if (compareRerunLoading.value) return;
   if (!selectedJobId.value || selectedJob.value?.mode !== "compare") {
@@ -5420,8 +5452,15 @@ const JobDetail = {
               </div>
             </div>
             <span v-if="selectedJob.compare_sources[slot] && !selectedJob.compare_sources[slot].file_a_exists" class="tag-deleted">源文件已删除</span>
-            <button v-if="selectedJob.compare_sources[slot]" class="btn btn-xs btn-outline"
-                    @click="openCompareSource(selectedJob.compare_sources[slot])">查看源任务</button>
+            <div class="compare-source-actions">
+              <button class="btn btn-xs btn-outline"
+                      :disabled="singleTraceAnalyzeLoadingSlot === slot"
+                      @click="analyzeCompareTraceSlot(slot)">
+                {{ singleTraceAnalyzeLoadingSlot === slot ? '提交中...' : '单独分析 ' + slot.toUpperCase() }}
+              </button>
+              <button v-if="selectedJob.compare_sources[slot]" class="btn btn-xs btn-outline"
+                      @click="openCompareSource(selectedJob.compare_sources[slot])">查看源任务</button>
+            </div>
           </div>
         </div>
       </div>
@@ -5914,7 +5953,7 @@ const JobDetail = {
       switchTab,
       statusIcon,
       shareJob, togglePinJob, editLabel, moveProject, deleteJob, deleteFile,
-      openCompareSource, rerunCompareSwapped,
+      openCompareSource, rerunCompareSwapped, singleTraceAnalyzeLoadingSlot, analyzeCompareTraceSlot,
       downloadTraceFile, downloadReport, openInPerfetto, perfettoOpening, perfettoButtonLabel,
       setSort, startResize, downloadCsv,
       viewTritonCode, runSingleTriton, clearInductorCache,
