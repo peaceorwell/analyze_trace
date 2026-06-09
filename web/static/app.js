@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.54");
+const appVersion = ref("0.2.55");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -392,6 +392,7 @@ const feedbackSort = ref("updated");
 const feedbackLoading = ref(false);
 const feedbackSubmitting = ref(false);
 const feedbackForm = ref({ body: "", files: [], previews: [] });
+const feedbackPostEditorMode = ref("write");
 const feedbackReplies = ref({});
 const feedbackEditing = ref({ id: "", body: "", saving: false });
 const selectedFeedbackPostId = ref("");
@@ -886,7 +887,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.54";
+  appVersion.value = cfg.version || "0.2.55";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -1184,6 +1185,34 @@ const replaceFeedbackSelection = (target, insertText, options = {}) => {
   });
 };
 
+const replaceFeedbackRange = (target, rangeStart, rangeEnd, insertText, options = {}) => {
+  const { targetKey, form, text, textarea, hasTextarea } = feedbackDraftForTarget(target);
+  const start = Math.max(0, Math.min(rangeStart, text.length));
+  const end = Math.max(start, Math.min(rangeEnd, text.length));
+  const nextBody = `${text.slice(0, start)}${insertText}${text.slice(end)}`;
+  updateFeedbackDraftBody(targetKey, form, nextBody);
+  closeFeedbackMention();
+  feedbackEmojiPickerTarget.value = "";
+  const cursorStart = start + (options.selectStartOffset ?? insertText.length);
+  const cursorEnd = start + (options.selectEndOffset ?? options.selectStartOffset ?? insertText.length);
+  nextTick(() => {
+    if (hasTextarea) {
+      textarea.focus();
+      textarea.setSelectionRange(cursorStart, cursorEnd);
+    }
+  });
+};
+
+const feedbackSelectedLineRange = (text, start, end) => {
+  const safeStart = Math.max(0, Math.min(start, text.length));
+  const safeEnd = Math.max(safeStart, Math.min(end, text.length));
+  const effectiveEnd = safeEnd > safeStart && text[safeEnd - 1] === "\n" ? safeEnd - 1 : safeEnd;
+  const rangeStart = text.lastIndexOf("\n", Math.max(0, safeStart - 1)) + 1;
+  const nextBreak = text.indexOf("\n", effectiveEnd);
+  const rangeEnd = nextBreak === -1 ? text.length : nextBreak;
+  return { rangeStart, rangeEnd, block: text.slice(rangeStart, rangeEnd) };
+};
+
 const insertFeedbackEmoji = (emoji, target = "post") => {
   const targetKey = feedbackMentionTargetKey(target);
   const form = targetKey === "post" ? feedbackForm.value : ensureFeedbackReplyForm(targetKey);
@@ -1226,16 +1255,98 @@ const insertFeedbackSnippet = (prefix, suffix = "", placeholder = "", target = "
 const insertFeedbackList = (ordered = false, target = "post") => {
   const { text, start, end } = feedbackDraftForTarget(target);
   const selected = text.slice(start, end);
-  const rawLines = (selected || "列表项").split("\n");
-  const lines = rawLines.map((line, index) => {
-    const cleaned = line.replace(/^\s*(?:[-*+]\s+|\d+\.\s+)/, "");
-    return `${ordered ? `${index + 1}. ` : "- "}${cleaned || (selected ? "" : "列表项")}`;
+  const { rangeStart, rangeEnd, block } = feedbackSelectedLineRange(text, start, end);
+  if (!selected && !block.trim()) {
+    const template = ordered ? "1. 第一项\n2. 第二项\n3. 第三项" : "- 第一项\n- 第二项\n- 第三项";
+    const firstItemStart = ordered ? 3 : 2;
+    replaceFeedbackRange(target, rangeStart, rangeEnd, template, {
+      selectStartOffset: firstItemStart,
+      selectEndOffset: firstItemStart + 3,
+    });
+    return;
+  }
+
+  const markerRe = ordered ? /^(\s*)\d+\.\s+(.*)$/ : /^(\s*)[-*+]\s+(.*)$/;
+  const anyListRe = /^(\s*)(?:[-*+]\s+|\d+\.\s+)(.*)$/;
+  const lines = block.split("\n");
+  const contentLines = lines.filter(line => line.trim());
+  const toggleOff = contentLines.length > 0 && contentLines.every(line => markerRe.test(line));
+  let itemIndex = 1;
+  const insertText = lines.map(line => {
+    if (!line.trim()) return line;
+    const anyMatch = line.match(anyListRe);
+    const indent = anyMatch ? anyMatch[1] : (line.match(/^(\s*)/)?.[1] || "");
+    const content = anyMatch ? anyMatch[2] : line.slice(indent.length);
+    if (toggleOff) return `${indent}${content}`;
+    const marker = ordered ? `${itemIndex++}. ` : "- ";
+    return `${indent}${marker}${content}`;
+  }).join("\n");
+  replaceFeedbackRange(target, rangeStart, rangeEnd, insertText, {
+    selectStartOffset: insertText.length,
+    selectEndOffset: insertText.length,
   });
-  const insertText = lines.join("\n");
-  const markerLength = ordered ? 3 : 2;
-  replaceFeedbackSelection(target, insertText, {
-    selectStartOffset: selected ? insertText.length : markerLength,
-    selectEndOffset: selected ? insertText.length : insertText.length,
+};
+
+const insertFeedbackTaskList = (target = "post") => {
+  const { text, start, end } = feedbackDraftForTarget(target);
+  const selected = text.slice(start, end);
+  const { rangeStart, rangeEnd, block } = feedbackSelectedLineRange(text, start, end);
+  if (!selected && !block.trim()) {
+    const template = "- [ ] 第一项\n- [ ] 第二项\n- [ ] 第三项";
+    replaceFeedbackRange(target, rangeStart, rangeEnd, template, {
+      selectStartOffset: 6,
+      selectEndOffset: 9,
+    });
+    return;
+  }
+
+  const taskRe = /^(\s*)-\s+\[[ xX]\]\s+(.*)$/;
+  const listRe = /^(\s*)(?:[-*+]\s+|\d+\.\s+)(.*)$/;
+  const lines = block.split("\n");
+  const contentLines = lines.filter(line => line.trim());
+  const toggleOff = contentLines.length > 0 && contentLines.every(line => taskRe.test(line));
+  const insertText = lines.map(line => {
+    if (!line.trim()) return line;
+    const taskMatch = line.match(taskRe);
+    if (toggleOff && taskMatch) return `${taskMatch[1]}${taskMatch[2]}`;
+    const listMatch = line.match(listRe);
+    const indent = listMatch ? listMatch[1] : (line.match(/^(\s*)/)?.[1] || "");
+    const content = taskMatch ? taskMatch[2] : (listMatch ? listMatch[2] : line.slice(indent.length));
+    return `${indent}- [ ] ${content}`;
+  }).join("\n");
+  replaceFeedbackRange(target, rangeStart, rangeEnd, insertText, {
+    selectStartOffset: insertText.length,
+    selectEndOffset: insertText.length,
+  });
+};
+
+const insertFeedbackQuote = (target = "post") => {
+  const { text, start, end } = feedbackDraftForTarget(target);
+  const selected = text.slice(start, end);
+  const { rangeStart, rangeEnd, block } = feedbackSelectedLineRange(text, start, end);
+  if (!selected && !block.trim()) {
+    const template = "> 引用内容";
+    replaceFeedbackRange(target, rangeStart, rangeEnd, template, {
+      selectStartOffset: 2,
+      selectEndOffset: template.length,
+    });
+    return;
+  }
+
+  const quoteRe = /^(\s*)>\s?(.*)$/;
+  const lines = block.split("\n");
+  const contentLines = lines.filter(line => line.trim());
+  const toggleOff = contentLines.length > 0 && contentLines.every(line => quoteRe.test(line));
+  const insertText = lines.map(line => {
+    if (!line.trim()) return line;
+    const quoteMatch = line.match(quoteRe);
+    if (toggleOff && quoteMatch) return `${quoteMatch[1]}${quoteMatch[2]}`;
+    const indent = line.match(/^(\s*)/)?.[1] || "";
+    return `${indent}> ${line.slice(indent.length)}`;
+  }).join("\n");
+  replaceFeedbackRange(target, rangeStart, rangeEnd, insertText, {
+    selectStartOffset: insertText.length,
+    selectEndOffset: insertText.length,
   });
 };
 
@@ -1246,13 +1357,24 @@ const insertFeedbackCodeBlock = (target = "post") => {
   const after = text.slice(end);
   const leadingNewline = before && !before.endsWith("\n") ? "\n" : "";
   const trailingNewline = after && !after.startsWith("\n") ? "\n" : "";
-  const code = selected || "code";
-  const insertText = `${leadingNewline}\`\`\`\n${code}\n\`\`\`${trailingNewline}`;
-  const codeStart = leadingNewline.length + 4;
+  const code = selected || "# 粘贴命令或代码";
+  const fence = selected ? "```" : "```bash";
+  const insertText = `${leadingNewline}${fence}\n${code}\n\`\`\`${trailingNewline}`;
+  const codeStart = leadingNewline.length + fence.length + 1;
   replaceFeedbackSelection(target, insertText, {
     selectStartOffset: selected ? insertText.length : codeStart,
     selectEndOffset: selected ? insertText.length : codeStart + code.length,
   });
+};
+
+const insertFeedbackCode = (target = "post") => {
+  const { text, start, end } = feedbackDraftForTarget(target);
+  const selected = text.slice(start, end);
+  if (selected.includes("\n")) {
+    insertFeedbackCodeBlock(target);
+    return;
+  }
+  insertFeedbackSnippet("`", "`", "code", target);
 };
 
 const closeFeedbackMention = () => {
@@ -1454,6 +1576,7 @@ const clearFeedbackForm = (parentId = null) => {
   }
   revokeFeedbackPreviews(feedbackForm.value.previews);
   feedbackForm.value = { body: "", files: [], previews: [] };
+  feedbackPostEditorMode.value = "write";
 };
 
 const ensureFeedbackReplyForm = id => {
@@ -1465,6 +1588,12 @@ const ensureFeedbackReplyForm = id => {
 
 const feedbackReplyEditorMode = id => feedbackReplies.value[id]?.mode || "write";
 
+const setFeedbackPostEditorMode = (mode = "write") => {
+  feedbackPostEditorMode.value = mode === "preview" ? "preview" : "write";
+  closeFeedbackMention();
+  feedbackEmojiPickerTarget.value = "";
+};
+
 const setFeedbackReplyEditorMode = (id, mode = "write") => {
   const form = ensureFeedbackReplyForm(id);
   feedbackReplies.value = {
@@ -1474,6 +1603,8 @@ const setFeedbackReplyEditorMode = (id, mode = "write") => {
   closeFeedbackMention();
   feedbackEmojiPickerTarget.value = "";
 };
+
+const feedbackPostPreviewHtml = computed(() => renderMarkdown(feedbackForm.value.body || ""));
 
 const feedbackReplyPreviewHtml = id => renderMarkdown(feedbackReplies.value[id]?.body || "");
 
@@ -5768,18 +5899,19 @@ const App = {
       isDeletedOver10Days, restoreProject, permanentlyDeleteProject,
       showFeedbackBoard, showFeedbackComposer, feedbackItems, feedbackTotal, feedbackLoading,
       feedbackSort, feedbackSortOptions,
-      feedbackSubmitting, feedbackForm, feedbackReplies, feedbackEditing, feedbackHasMore,
+      feedbackSubmitting, feedbackForm, feedbackPostEditorMode, feedbackReplies, feedbackEditing, feedbackHasMore,
       feedbackEmailDiagLoading, feedbackEmailDiagResult, runFeedbackEmailDiagnostics,
       feedbackEmojiOptions, feedbackReactionOptions, feedbackReactionPickerId, feedbackEmojiPickerTarget,
       feedbackUserInitial, setFeedbackTextTarget, insertFeedbackEmoji, insertFeedbackSnippet,
-      insertFeedbackList, insertFeedbackCodeBlock,
+      insertFeedbackList, insertFeedbackTaskList, insertFeedbackQuote, insertFeedbackCodeBlock, insertFeedbackCode,
       feedbackMention, handleFeedbackMentionInput, handleFeedbackMentionKeydown, selectFeedbackMention,
       selectedFeedbackPostId, selectedFeedbackMessageId, selectedFeedbackPost, feedbackDetailLoading,
       feedbackPostTitle, feedbackPostExcerpt, feedbackPostReplyCount, feedbackPostActivity,
       feedbackEditedText, feedbackReactionSummary, feedbackReactionItem, canEditFeedbackMessage,
       feedbackMessageHtml,
       openFeedbackBoard, refreshFeedbackBoard, loadFeedback, setFeedbackSort, setFeedbackFiles, clearFeedbackForm,
-      toggleFeedbackReply, feedbackReplyEditorMode, setFeedbackReplyEditorMode, feedbackReplyPreviewHtml,
+      toggleFeedbackReply, feedbackReplyEditorMode, setFeedbackPostEditorMode,
+      setFeedbackReplyEditorMode, feedbackPostPreviewHtml, feedbackReplyPreviewHtml,
       selectFeedbackPost, closeFeedbackPost,
       openFeedbackComposer, closeFeedbackComposer, closeFeedbackBoard, submitFeedback,
       startFeedbackEdit, cancelFeedbackEdit, saveFeedbackEdit, toggleFeedbackReaction, toggleFeedbackReactionPicker,

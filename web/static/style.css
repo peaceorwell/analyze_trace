@@ -1815,7 +1815,7 @@ body.result-reading-active { overflow: hidden; }
   overflow: visible;
 }
 .feedback-compose-modal {
-  width: min(720px, calc(100vw - 24px));
+  width: min(980px, calc(100vw - 24px));
   padding: 20px;
 }
 .feedback-composer {
@@ -1828,14 +1828,16 @@ body.result-reading-active { overflow: hidden; }
 .feedback-composer-dialog {
   background: var(--card2);
 }
-.feedback-compose-toolbar {
-  justify-content: flex-start;
-  gap: 3px;
+.feedback-post-editor {
   margin-bottom: 10px;
-  padding: 6px;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  background: var(--card);
+}
+.feedback-post-editor::before,
+.feedback-post-editor::after {
+  display: none;
+}
+.feedback-compose-toolbar {
+  justify-content: flex-end;
+  margin-bottom: 0;
 }
 .feedback-textarea {
   width: 100%;
@@ -2538,6 +2540,11 @@ body.result-reading-active { overflow: hidden; }
   border-radius: 10px;
   background: var(--card);
   box-shadow: 0 4px 12px rgba(31,41,55,.04);
+  transition: border-color .16s ease, box-shadow .16s ease;
+}
+.feedback-github-editor:focus-within {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 2px rgba(37,99,235,.18), 0 8px 22px rgba(31,41,55,.08);
 }
 .feedback-github-editor::before,
 .feedback-github-editor::after {
@@ -2601,13 +2608,19 @@ body.result-reading-active { overflow: hidden; }
   display: inline-flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 2px;
+  gap: 3px;
   min-width: 0;
   flex-wrap: wrap;
 }
+.feedback-editor-separator {
+  width: 1px;
+  height: 22px;
+  margin: 0 5px;
+  background: var(--border);
+}
 .feedback-editor-toolbar button,
 .feedback-editor-file-btn {
-  width: 32px;
+  width: 34px;
   height: 30px;
   display: inline-flex;
   align-items: center;
@@ -2615,9 +2628,9 @@ body.result-reading-active { overflow: hidden; }
   border: 0;
   border-radius: 6px;
   background: transparent;
-  color: var(--text3);
+  color: var(--text2);
   cursor: pointer;
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 800;
 }
 .feedback-editor-toolbar .feedback-editor-codeblock-btn {
@@ -2629,8 +2642,8 @@ body.result-reading-active { overflow: hidden; }
 .feedback-editor-toolbar button:hover,
 .feedback-editor-toolbar button.active,
 .feedback-editor-file-btn:hover {
-  color: var(--purple);
-  background: var(--purple-bg);
+  color: var(--blue);
+  background: rgba(37,99,235,.10);
 }
 .feedback-editor-file-btn {
   position: relative;
@@ -2641,13 +2654,14 @@ body.result-reading-active { overflow: hidden; }
   grid-template-columns: repeat(10, 32px);
 }
 .feedback-github-textarea {
-  min-height: 170px;
+  min-height: 190px;
   border: 0;
   border-radius: 0;
   background: var(--card);
   box-shadow: none !important;
   font-family: var(--mono);
-  font-size: 14px;
+  font-size: 15px;
+  line-height: 1.75;
 }
 .feedback-github-textarea:focus {
   border-color: transparent;
