@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.51");
+const appVersion = ref("0.2.52");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -405,6 +405,8 @@ const feedbackEmojiOptions = Object.freeze([
   "🙂", "😅", "😭", "✨", "💪", "📝", "🔍", "⚠️", "💬", "🙇",
 ]);
 const feedbackReactionOptions = Object.freeze(["👍", "👎", "😄", "🎉", "🚀", "❤️", "👀", "💡"]);
+const feedbackReactionPickerId = ref("");
+const feedbackEmojiPickerTarget = ref("");
 const feedbackTextTarget = ref({ target: "post", textarea: null });
 const feedbackMention = ref({
   visible: false,
@@ -884,7 +886,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.51";
+  appVersion.value = cfg.version || "0.2.52";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -1093,6 +1095,21 @@ const feedbackEditedText = message => {
 };
 
 const feedbackReactionSummary = message => (message?.reactions || []).filter(item => Number(item.count || 0) > 0);
+const feedbackReactionItem = (message, emoji) =>
+  (message?.reactions || []).find(item => item.emoji === emoji) || { emoji, count: 0, reacted: false };
+
+const toggleFeedbackReactionPicker = messageId => {
+  feedbackReactionPickerId.value = feedbackReactionPickerId.value === messageId ? "" : messageId;
+  feedbackEmojiPickerTarget.value = "";
+  closeFeedbackMention();
+};
+
+const toggleFeedbackEmojiPicker = (target = "post") => {
+  const targetKey = feedbackMentionTargetKey(target);
+  feedbackEmojiPickerTarget.value = feedbackEmojiPickerTarget.value === targetKey ? "" : targetKey;
+  feedbackReactionPickerId.value = "";
+  closeFeedbackMention();
+};
 
 const updateFeedbackMessageInState = updated => {
   if (!updated?.id) return;
@@ -1147,11 +1164,48 @@ const insertFeedbackEmoji = (emoji, target = "post") => {
     };
   }
   const cursor = start + emoji.length;
+  feedbackEmojiPickerTarget.value = "";
   closeFeedbackMention();
   nextTick(() => {
     if (hasTextarea) {
       textarea.focus();
       textarea.setSelectionRange(cursor, cursor);
+    }
+  });
+};
+
+const insertFeedbackSnippet = (prefix, suffix = "", placeholder = "", target = "post") => {
+  const targetKey = feedbackMentionTargetKey(target);
+  const form = targetKey === "post" ? feedbackForm.value : ensureFeedbackReplyForm(targetKey);
+  const text = form.body || "";
+  const textarea = feedbackTextTarget.value.target === targetKey ? feedbackTextTarget.value.textarea : null;
+  const hasTextarea = textarea && document.contains(textarea);
+  const start = hasTextarea ? textarea.selectionStart ?? text.length : text.length;
+  const end = hasTextarea ? textarea.selectionEnd ?? start : start;
+  const selected = text.slice(start, end);
+  const insertText = `${prefix}${selected || placeholder}${suffix}`;
+  const nextBody = `${text.slice(0, start)}${insertText}${text.slice(end)}`;
+  if (targetKey === "post") {
+    feedbackForm.value = { ...feedbackForm.value, body: nextBody };
+  } else {
+    feedbackReplies.value = {
+      ...feedbackReplies.value,
+      [targetKey]: { ...form, body: nextBody },
+    };
+  }
+  closeFeedbackMention();
+  feedbackEmojiPickerTarget.value = "";
+  const selectStart = start + prefix.length;
+  const selectEnd = selectStart + (selected || placeholder).length;
+  nextTick(() => {
+    if (hasTextarea) {
+      textarea.focus();
+      if (!selected && placeholder) {
+        textarea.setSelectionRange(selectStart, selectEnd);
+      } else {
+        const cursor = start + insertText.length;
+        textarea.setSelectionRange(cursor, cursor);
+      }
     }
   });
 };
@@ -1668,6 +1722,7 @@ const toggleFeedbackReaction = async (message, emoji) => {
     const payload = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(payload.detail || "表情操作失败");
     setFeedbackMessageReactions(message.id, payload.reactions || []);
+    feedbackReactionPickerId.value = "";
   } catch (e) {
     showToast(e.message || "表情操作失败", "error");
   }
@@ -5654,15 +5709,17 @@ const App = {
       feedbackSort, feedbackSortOptions,
       feedbackSubmitting, feedbackForm, feedbackReplies, feedbackEditing, feedbackHasMore,
       feedbackEmailDiagLoading, feedbackEmailDiagResult, runFeedbackEmailDiagnostics,
-      feedbackEmojiOptions, feedbackReactionOptions, feedbackUserInitial, setFeedbackTextTarget, insertFeedbackEmoji,
+      feedbackEmojiOptions, feedbackReactionOptions, feedbackReactionPickerId, feedbackEmojiPickerTarget,
+      feedbackUserInitial, setFeedbackTextTarget, insertFeedbackEmoji, insertFeedbackSnippet,
       feedbackMention, handleFeedbackMentionInput, handleFeedbackMentionKeydown, selectFeedbackMention,
       selectedFeedbackPostId, selectedFeedbackMessageId, selectedFeedbackPost, feedbackDetailLoading,
       feedbackPostTitle, feedbackPostExcerpt, feedbackPostReplyCount, feedbackPostActivity,
-      feedbackEditedText, feedbackReactionSummary, canEditFeedbackMessage,
+      feedbackEditedText, feedbackReactionSummary, feedbackReactionItem, canEditFeedbackMessage,
       openFeedbackBoard, refreshFeedbackBoard, loadFeedback, setFeedbackSort, setFeedbackFiles, clearFeedbackForm,
       toggleFeedbackReply, selectFeedbackPost, closeFeedbackPost,
       openFeedbackComposer, closeFeedbackComposer, closeFeedbackBoard, submitFeedback,
-      startFeedbackEdit, cancelFeedbackEdit, saveFeedbackEdit, toggleFeedbackReaction,
+      startFeedbackEdit, cancelFeedbackEdit, saveFeedbackEdit, toggleFeedbackReaction, toggleFeedbackReactionPicker,
+      toggleFeedbackEmojiPicker,
       deleteFeedbackPost, deleteFeedbackReply,
       showStorageManager, storageSummary, storageSelection, storageJobsWithTrace,
       openStorageManager, toggleStorageSelection, toggleAllStorageSelection,

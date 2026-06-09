@@ -2248,10 +2248,6 @@ body.result-reading-active { overflow: hidden; }
 }
 .feedback-reply-form {
   margin-top: 12px;
-  padding: 12px;
-  border-radius: 10px;
-  border: 1px dashed var(--border2);
-  background: var(--card2);
 }
 .feedback-card-foot {
   display: flex;
@@ -2283,19 +2279,20 @@ body.result-reading-active { overflow: hidden; }
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
-  margin-top: 12px;
+  margin-top: 14px;
+  position: relative;
 }
 .feedback-reaction-btn {
-  min-width: 48px;
-  height: 30px;
+  min-width: 44px;
+  height: 28px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 5px;
   border: 1px solid var(--border);
   border-radius: 999px;
-  color: var(--text2);
-  background: var(--bg);
+  color: var(--text3);
+  background: var(--card2);
   cursor: pointer;
   font-size: 13px;
   font-weight: 800;
@@ -2303,8 +2300,8 @@ body.result-reading-active { overflow: hidden; }
 }
 .feedback-reaction-btn:hover {
   transform: translateY(-1px);
-  border-color: var(--purple);
-  color: var(--purple);
+  border-color: var(--border2);
+  color: var(--text);
   background: var(--purple-bg);
 }
 .feedback-reaction-btn.active {
@@ -2315,6 +2312,234 @@ body.result-reading-active { overflow: hidden; }
 .feedback-reaction-btn b {
   font-size: 12px;
   font-family: var(--mono);
+}
+.feedback-github-reactions {
+  min-height: 30px;
+}
+.feedback-github-reaction-pill {
+  padding: 0 10px;
+  border-color: var(--border2);
+}
+.feedback-reaction-add-wrap {
+  position: relative;
+  display: inline-flex;
+}
+.feedback-add-reaction-btn {
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border2);
+  border-radius: 999px;
+  color: var(--text3);
+  background: var(--card);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  transition: background .12s, border-color .12s, color .12s, box-shadow .12s;
+}
+.feedback-add-reaction-btn:hover,
+.feedback-add-reaction-btn.active {
+  color: var(--purple);
+  border-color: rgba(99,102,241,.38);
+  background: var(--purple-bg);
+  box-shadow: 0 3px 10px rgba(31,41,55,.08);
+}
+.feedback-reaction-picker,
+.feedback-emoji-popover {
+  position: absolute;
+  z-index: 45;
+  display: grid;
+  grid-template-columns: repeat(8, 32px);
+  gap: 5px;
+  padding: 8px;
+  border: 1px solid var(--border2);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 14px 30px rgba(31,41,55,.16);
+}
+.feedback-reaction-picker {
+  left: 0;
+  top: calc(100% + 8px);
+}
+.feedback-reaction-picker-btn {
+  width: 32px;
+  height: 32px;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 17px;
+  line-height: 1;
+}
+.feedback-reaction-picker-btn:hover,
+.feedback-reaction-picker-btn.active {
+  background: var(--purple-bg);
+}
+.feedback-reaction-picker-btn b {
+  position: absolute;
+  right: 2px;
+  bottom: 1px;
+  min-width: 12px;
+  height: 12px;
+  padding: 0 2px;
+  border-radius: 999px;
+  background: var(--purple);
+  color: white;
+  font-size: 9px;
+  line-height: 12px;
+  font-family: var(--mono);
+}
+.feedback-github-comment {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 12px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.feedback-comment-avatar {
+  width: 40px;
+  height: 40px;
+  align-self: start;
+  margin-top: 2px;
+  border-radius: 50%;
+  font-size: 13px;
+}
+.feedback-github-editor {
+  position: relative;
+  min-width: 0;
+  border: 1px solid var(--border2);
+  border-radius: 10px;
+  background: var(--card);
+  box-shadow: 0 4px 12px rgba(31,41,55,.04);
+}
+.feedback-github-editor::before,
+.feedback-github-editor::after {
+  content: "";
+  position: absolute;
+  top: 16px;
+  width: 0;
+  height: 0;
+  border-style: solid;
+}
+.feedback-github-editor::before {
+  left: -9px;
+  border-width: 8px 9px 8px 0;
+  border-color: transparent var(--border2) transparent transparent;
+}
+.feedback-github-editor::after {
+  left: -7px;
+  border-width: 8px 8px 8px 0;
+  border-color: transparent var(--card2) transparent transparent;
+}
+.feedback-editor-header {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 44px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--border);
+  border-radius: 10px 10px 0 0;
+  background: var(--card2);
+}
+.feedback-editor-tabs {
+  display: inline-flex;
+  align-items: stretch;
+  align-self: stretch;
+}
+.feedback-editor-tab {
+  min-width: 82px;
+  border: 0;
+  border-right: 1px solid transparent;
+  border-left: 1px solid transparent;
+  background: transparent;
+  color: var(--text3);
+  cursor: default;
+  font-size: 14px;
+  font-weight: 800;
+}
+.feedback-editor-tab.active {
+  margin-bottom: -1px;
+  border-right-color: var(--border);
+  border-left-color: var(--border);
+  background: var(--card);
+  color: var(--text);
+}
+.feedback-editor-tab:disabled {
+  opacity: .65;
+}
+.feedback-editor-toolbar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.feedback-editor-toolbar button,
+.feedback-editor-file-btn {
+  width: 32px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text3);
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 800;
+}
+.feedback-editor-toolbar button:hover,
+.feedback-editor-toolbar button.active,
+.feedback-editor-file-btn:hover {
+  color: var(--purple);
+  background: var(--purple-bg);
+}
+.feedback-editor-file-btn {
+  position: relative;
+}
+.feedback-emoji-popover {
+  right: 8px;
+  top: calc(100% + 8px);
+  grid-template-columns: repeat(10, 32px);
+}
+.feedback-github-textarea {
+  min-height: 170px;
+  border: 0;
+  border-radius: 0;
+  background: var(--card);
+  box-shadow: none !important;
+  font-family: var(--mono);
+  font-size: 14px;
+}
+.feedback-github-textarea:focus {
+  border-color: transparent;
+  box-shadow: none !important;
+}
+.feedback-editor-previews {
+  padding: 0 12px 10px;
+}
+.feedback-editor-footer {
+  padding: 10px 12px;
+  margin-top: 0;
+  border-top: 1px solid var(--border);
+  background: var(--card2);
+  border-radius: 0 0 10px 10px;
+}
+.feedback-upload-hint {
+  color: var(--text3);
+  font-size: 13px;
+  font-weight: 700;
 }
 @media (max-width: 760px) {
   .feedback-page-main { padding: 10px; }

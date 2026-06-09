@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>torch profiler analyzer</title>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.2.51" />
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.2.52" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
   <script src="https://unpkg.com/vue-router@4/dist/vue-router.global.prod.js"></script>
@@ -114,7 +114,7 @@
     <!-- ── Header ── -->
     <header v-if="authChecked && (!authRequired || currentUser)" class="header">
       <div class="header-brand" @click="$router.push('/')" style="cursor:pointer" title="返回上传页面">
-        <img class="header-logo" src="/static/favicon.svg?v=0.2.51" alt="" />
+        <img class="header-logo" src="/static/favicon.svg?v=0.2.52" alt="" />
         <span class="header-title">Torch Profiler Analyzer</span>
         <span class="header-version">v{{ appVersion }}</span>
       </div>
@@ -596,17 +596,38 @@
                   <img :src="img.url" :alt="img.filename || 'feedback image'" />
                 </a>
               </div>
-              <div class="feedback-reaction-bar">
+              <div class="feedback-reaction-bar feedback-github-reactions">
                 <button
-                  v-for="reaction in feedbackReactionOptions"
-                  :key="reaction"
+                  v-for="reaction in feedbackReactionSummary(selectedFeedbackPost)"
+                  :key="reaction.emoji"
                   type="button"
-                  :class="['feedback-reaction-btn', (selectedFeedbackPost.reactions || []).some(item => item.emoji===reaction && item.reacted) ? 'active' : '']"
-                  @click="toggleFeedbackReaction(selectedFeedbackPost, reaction)"
+                  :class="['feedback-reaction-btn feedback-github-reaction-pill', reaction.reacted ? 'active' : '']"
+                  @click="toggleFeedbackReaction(selectedFeedbackPost, reaction.emoji)"
                 >
-                  <span>{{ reaction }}</span>
-                  <b>{{ ((selectedFeedbackPost.reactions || []).find(item => item.emoji===reaction) || {}).count || 0 }}</b>
+                  <span>{{ reaction.emoji }}</span>
+                  <b>{{ reaction.count }}</b>
                 </button>
+                <div class="feedback-reaction-add-wrap">
+                  <button
+                    type="button"
+                    :class="['feedback-add-reaction-btn', feedbackReactionPickerId===selectedFeedbackPost.id ? 'active' : '']"
+                    title="添加表情反应"
+                    aria-label="添加表情反应"
+                    @click.stop="toggleFeedbackReactionPicker(selectedFeedbackPost.id)"
+                  >☺</button>
+                  <div v-if="feedbackReactionPickerId===selectedFeedbackPost.id" class="feedback-reaction-picker">
+                    <button
+                      v-for="reaction in feedbackReactionOptions"
+                      :key="reaction"
+                      type="button"
+                      :class="['feedback-reaction-picker-btn', feedbackReactionItem(selectedFeedbackPost, reaction).reacted ? 'active' : '']"
+                      @click.stop="toggleFeedbackReaction(selectedFeedbackPost, reaction)"
+                    >
+                      <span>{{ reaction }}</span>
+                      <b v-if="feedbackReactionItem(selectedFeedbackPost, reaction).count">{{ feedbackReactionItem(selectedFeedbackPost, reaction).count }}</b>
+                    </button>
+                  </div>
+                </div>
               </div>
             </article>
 
@@ -658,73 +679,119 @@
                     <img :src="img.url" :alt="img.filename || 'feedback image'" />
                   </a>
                 </div>
-                <div class="feedback-reaction-bar">
+                <div class="feedback-reaction-bar feedback-github-reactions">
                   <button
-                    v-for="reaction in feedbackReactionOptions"
-                    :key="reaction"
+                    v-for="reaction in feedbackReactionSummary(reply)"
+                    :key="reaction.emoji"
                     type="button"
-                    :class="['feedback-reaction-btn', (reply.reactions || []).some(item => item.emoji===reaction && item.reacted) ? 'active' : '']"
-                    @click="toggleFeedbackReaction(reply, reaction)"
+                    :class="['feedback-reaction-btn feedback-github-reaction-pill', reaction.reacted ? 'active' : '']"
+                    @click="toggleFeedbackReaction(reply, reaction.emoji)"
                   >
-                    <span>{{ reaction }}</span>
-                    <b>{{ ((reply.reactions || []).find(item => item.emoji===reaction) || {}).count || 0 }}</b>
+                    <span>{{ reaction.emoji }}</span>
+                    <b>{{ reaction.count }}</b>
                   </button>
+                  <div class="feedback-reaction-add-wrap">
+                    <button
+                      type="button"
+                      :class="['feedback-add-reaction-btn', feedbackReactionPickerId===reply.id ? 'active' : '']"
+                      title="添加表情反应"
+                      aria-label="添加表情反应"
+                      @click.stop="toggleFeedbackReactionPicker(reply.id)"
+                    >☺</button>
+                    <div v-if="feedbackReactionPickerId===reply.id" class="feedback-reaction-picker">
+                      <button
+                        v-for="reaction in feedbackReactionOptions"
+                        :key="reaction"
+                        type="button"
+                        :class="['feedback-reaction-picker-btn', feedbackReactionItem(reply, reaction).reacted ? 'active' : '']"
+                        @click.stop="toggleFeedbackReaction(reply, reaction)"
+                      >
+                        <span>{{ reaction }}</span>
+                        <b v-if="feedbackReactionItem(reply, reaction).count">{{ feedbackReactionItem(reply, reaction).count }}</b>
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
           </div>
 
-          <div v-if="feedbackReplies[selectedFeedbackPost.id]" class="feedback-reply-form feedback-thread-reply-form">
-            <div class="feedback-mention-host">
-              <textarea
-                v-model="feedbackReplies[selectedFeedbackPost.id].body"
-                class="feedback-textarea feedback-reply-textarea"
-                placeholder="在这个帖子里交流，可 @英文名 通知对方..."
-                maxlength="2000"
-                @input="handleFeedbackMentionInput($event, selectedFeedbackPost.id)"
-                @keydown="handleFeedbackMentionKeydown($event, selectedFeedbackPost.id)"
-                @focus="setFeedbackTextTarget($event, selectedFeedbackPost.id)"
-                @click="setFeedbackTextTarget($event, selectedFeedbackPost.id)"
-              ></textarea>
-              <div v-if="feedbackMention.visible && feedbackMention.target===selectedFeedbackPost.id" class="mention-candidate-box">
-                <div v-if="feedbackMention.loading" class="mention-candidate-empty">搜索中...</div>
-                <div v-else-if="!feedbackMention.candidates.length" class="mention-candidate-empty">无匹配人员</div>
-                <button
-                  v-for="(candidate, index) in feedbackMention.candidates"
-                  :key="candidate.username"
-                  type="button"
-                  :class="['mention-candidate-item', index===feedbackMention.activeIndex ? 'active' : '']"
-                  @mousedown.prevent="selectFeedbackMention(candidate, selectedFeedbackPost.id)"
-                >
-                  <span class="mention-candidate-main">{{ candidate.display_name || candidate.username }}</span>
-                  <span class="mention-candidate-meta">@{{ candidate.username }} · {{ candidate.email }}</span>
+          <div v-if="feedbackReplies[selectedFeedbackPost.id]" class="feedback-reply-form feedback-thread-reply-form feedback-github-comment">
+            <span class="feedback-avatar feedback-comment-avatar">{{ feedbackUserInitial(currentUser?.display_name || currentUser?.username || '用户') }}</span>
+            <div class="feedback-github-editor">
+              <div class="feedback-editor-header">
+                <div class="feedback-editor-tabs">
+                  <button type="button" class="feedback-editor-tab active">Write</button>
+                  <button type="button" class="feedback-editor-tab" disabled>Preview</button>
+                </div>
+                <div class="feedback-editor-toolbar" aria-label="回复工具栏">
+                  <button type="button" title="标题" @mousedown.prevent="insertFeedbackSnippet('### ', '', '标题', selectedFeedbackPost.id)">H</button>
+                  <button type="button" title="加粗" @mousedown.prevent="insertFeedbackSnippet('**', '**', '加粗文本', selectedFeedbackPost.id)"><strong>B</strong></button>
+                  <button type="button" title="斜体" @mousedown.prevent="insertFeedbackSnippet('*', '*', '斜体文本', selectedFeedbackPost.id)"><em>I</em></button>
+                  <button type="button" title="列表" @mousedown.prevent="insertFeedbackSnippet('- ', '', '列表项', selectedFeedbackPost.id)">≡</button>
+                  <button type="button" title="代码" @mousedown.prevent="insertFeedbackSnippet('`', '`', 'code', selectedFeedbackPost.id)">〈〉</button>
+                  <button type="button" title="链接" @mousedown.prevent="insertFeedbackSnippet('[', '](url)', '链接文本', selectedFeedbackPost.id)">🔗</button>
+                  <button type="button" title="@ 提及" @mousedown.prevent="insertFeedbackSnippet('@', '', '', selectedFeedbackPost.id)">@</button>
+                  <button
+                    type="button"
+                    :class="feedbackEmojiPickerTarget===selectedFeedbackPost.id ? 'active' : ''"
+                    title="插入表情"
+                    @mousedown.prevent="toggleFeedbackEmojiPicker(selectedFeedbackPost.id)"
+                  >☺</button>
+                  <label class="feedback-editor-file-btn" title="添加图片">
+                    📎
+                    <input class="hidden-file-input" type="file" accept="image/*" multiple @change="setFeedbackFiles($event, selectedFeedbackPost.id)" />
+                  </label>
+                </div>
+                <div v-if="feedbackEmojiPickerTarget===selectedFeedbackPost.id" class="feedback-emoji-popover">
+                  <button
+                    v-for="emoji in feedbackEmojiOptions"
+                    :key="emoji"
+                    type="button"
+                    class="feedback-emoji-btn"
+                    @mousedown.prevent="insertFeedbackEmoji(emoji, selectedFeedbackPost.id)"
+                  >{{ emoji }}</button>
+                </div>
+              </div>
+              <div class="feedback-mention-host">
+                <textarea
+                  v-model="feedbackReplies[selectedFeedbackPost.id].body"
+                  class="feedback-textarea feedback-reply-textarea feedback-github-textarea"
+                  placeholder="Use Markdown to format your comment. 可 @英文名 通知对方..."
+                  maxlength="2000"
+                  @input="handleFeedbackMentionInput($event, selectedFeedbackPost.id)"
+                  @keydown="handleFeedbackMentionKeydown($event, selectedFeedbackPost.id)"
+                  @focus="setFeedbackTextTarget($event, selectedFeedbackPost.id)"
+                  @click="setFeedbackTextTarget($event, selectedFeedbackPost.id)"
+                ></textarea>
+                <div v-if="feedbackMention.visible && feedbackMention.target===selectedFeedbackPost.id" class="mention-candidate-box">
+                  <div v-if="feedbackMention.loading" class="mention-candidate-empty">搜索中...</div>
+                  <div v-else-if="!feedbackMention.candidates.length" class="mention-candidate-empty">无匹配人员</div>
+                  <button
+                    v-for="(candidate, index) in feedbackMention.candidates"
+                    :key="candidate.username"
+                    type="button"
+                    :class="['mention-candidate-item', index===feedbackMention.activeIndex ? 'active' : '']"
+                    @mousedown.prevent="selectFeedbackMention(candidate, selectedFeedbackPost.id)"
+                  >
+                    <span class="mention-candidate-main">{{ candidate.display_name || candidate.username }}</span>
+                    <span class="mention-candidate-meta">@{{ candidate.username }} · {{ candidate.email }}</span>
+                  </button>
+                </div>
+              </div>
+              <div v-if="feedbackReplies[selectedFeedbackPost.id].previews.length" class="feedback-preview-grid compact feedback-editor-previews">
+                <div v-for="img in feedbackReplies[selectedFeedbackPost.id].previews" :key="img.url" class="feedback-preview">
+                  <img :src="img.url" :alt="img.name" />
+                </div>
+              </div>
+              <div class="feedback-composer-actions feedback-editor-footer">
+                <span class="feedback-upload-hint">📎 Paste, drop, or click to add images</span>
+                <span class="flex-spacer"></span>
+                <button class="btn btn-xs btn-outline" @click="clearFeedbackForm(selectedFeedbackPost.id)" :disabled="feedbackReplies[selectedFeedbackPost.id].submitting">清空</button>
+                <button class="btn btn-xs btn-primary" @click="submitFeedback(selectedFeedbackPost.id)" :disabled="feedbackReplies[selectedFeedbackPost.id].submitting">
+                  {{ feedbackReplies[selectedFeedbackPost.id].submitting ? '发送中...' : '发送交流' }}
                 </button>
               </div>
-            </div>
-            <div class="feedback-emoji-bar" aria-label="常用表情">
-              <button
-                v-for="emoji in feedbackEmojiOptions"
-                :key="emoji"
-                type="button"
-                class="feedback-emoji-btn"
-                @mousedown.prevent="insertFeedbackEmoji(emoji, selectedFeedbackPost.id)"
-              >{{ emoji }}</button>
-            </div>
-            <div v-if="feedbackReplies[selectedFeedbackPost.id].previews.length" class="feedback-preview-grid compact">
-              <div v-for="img in feedbackReplies[selectedFeedbackPost.id].previews" :key="img.url" class="feedback-preview">
-                <img :src="img.url" :alt="img.name" />
-              </div>
-            </div>
-            <div class="feedback-composer-actions">
-              <label class="btn btn-xs btn-outline">
-                添加图片
-                <input class="hidden-file-input" type="file" accept="image/*" multiple @change="setFeedbackFiles($event, selectedFeedbackPost.id)" />
-              </label>
-              <span class="flex-spacer"></span>
-              <button class="btn btn-xs btn-outline" @click="clearFeedbackForm(selectedFeedbackPost.id)" :disabled="feedbackReplies[selectedFeedbackPost.id].submitting">清空</button>
-              <button class="btn btn-xs btn-primary" @click="submitFeedback(selectedFeedbackPost.id)" :disabled="feedbackReplies[selectedFeedbackPost.id].submitting">
-                {{ feedbackReplies[selectedFeedbackPost.id].submitting ? '发送中...' : '发送交流' }}
-              </button>
             </div>
           </div>
         </section>
