@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.58");
+const appVersion = ref("0.2.59");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -896,7 +896,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.58";
+  appVersion.value = cfg.version || "0.2.59";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -2453,7 +2453,7 @@ const loadJob = async id => {
   aiDiagnosticsLoading.value = false;
   aiDiagnosticsError.value = "";
   aiDiagnosticsResult.value = null;
-  if (selectedJob.value?.ai_analysis?.status === "running") {
+  if (isAiAnalysisActive(selectedJob.value?.ai_analysis?.status)) {
     startAiAnalysisPolling();
   } else {
     stopAiAnalysisPolling();
@@ -2500,10 +2500,14 @@ const aiAnalysisHtml = computed(() => renderMarkdown(aiAnalysisContent.value));
 
 const aiAnalysisStatusText = status => ({
   not_started: "未开始",
+  queued: "排队中",
   running: "分析中",
   done: "已完成",
   error: "失败",
 }[status || "not_started"] || status);
+
+const AI_ANALYSIS_ACTIVE_STATUSES = new Set(["queued", "running"]);
+const isAiAnalysisActive = status => AI_ANALYSIS_ACTIVE_STATUSES.has(status || "");
 
 const formatDurationMs = ms => {
   const value = Math.max(0, Math.round(Number(ms) || 0));
@@ -2521,7 +2525,7 @@ const aiAnalysisElapsedMs = computed(() => {
   if (Number.isFinite(Number(meta.duration_ms))) return Number(meta.duration_ms);
   if (Number.isFinite(Number(meta.elapsed_ms))) return Number(meta.elapsed_ms);
   const started = Date.parse(meta.started_at || "");
-  if (meta.status === "running" && Number.isFinite(started)) {
+  if (isAiAnalysisActive(meta.status) && Number.isFinite(started)) {
     return Math.max(0, uiNow.value - started);
   }
   return 0;
@@ -2639,7 +2643,7 @@ const refreshAiAnalysis = async ({ silent = false, versionId } = {}) => {
   const jobLabel = selectedJob.value?.label || selectedJob.value?.file_a_name || jobId;
   const requestedVersionId = versionId !== undefined
     ? versionId
-    : (previousStatus === "running" ? "" : aiAnalysisSelectedVersionId.value);
+    : (isAiAnalysisActive(previousStatus) ? "" : aiAnalysisSelectedVersionId.value);
   const params = new URLSearchParams();
   if (requestedVersionId) params.set("version_id", requestedVersionId);
   const url = `/api/jobs/${jobId}/ai-analysis${params.toString() ? `?${params}` : ""}`;
@@ -2649,8 +2653,9 @@ const refreshAiAnalysis = async ({ silent = false, versionId } = {}) => {
     const r = await fetch(url, { credentials: "include" });
     const payload = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(payload.detail || "加载 AI 分析失败");
+    if (selectedJobId.value !== jobId) return;
     updateAiAnalysisState(payload);
-    if (previousStatus === "running" && payload.status && payload.status !== "running") {
+    if (isAiAnalysisActive(previousStatus) && payload.status && !isAiAnalysisActive(payload.status)) {
       notifyAiAnalysisCompleted({
         jobId,
         label: jobLabel,
@@ -2658,7 +2663,7 @@ const refreshAiAnalysis = async ({ silent = false, versionId } = {}) => {
         error: payload.error || "",
       });
     }
-    if (payload.status === "running") startAiAnalysisPolling();
+    if (isAiAnalysisActive(payload.status)) startAiAnalysisPolling();
     else stopAiAnalysisPolling();
   } catch (e) {
     aiAnalysisError.value = e.message || "加载 AI 分析失败";
@@ -2679,11 +2684,11 @@ const startAiAnalysisPolling = () => {
       return;
     }
     refreshAiAnalysis({ silent: true });
-  }, 2500);
+  }, 1000);
 };
 
 const openAiPromptModal = (force = false) => {
-  if (!selectedJobId.value || aiAnalysisStarting.value || aiAnalysisMeta.value.status === "running") return;
+  if (!selectedJobId.value || aiAnalysisStarting.value || isAiAnalysisActive(aiAnalysisMeta.value.status)) return;
   if (!claudeAnalysisEnabled.value) {
     showToast("AI 分析未启用，请在服务端设置 TRACE_ENABLE_CLAUDE_ANALYSIS=1", "error");
     return;
@@ -2708,6 +2713,7 @@ const confirmAiPromptModal = () => {
 
 const startAiAnalysis = async (force = false, prompt = "") => {
   if (!selectedJobId.value || aiAnalysisStarting.value) return;
+  const jobId = selectedJobId.value;
   if (!claudeAnalysisEnabled.value) {
     showToast("AI 分析未启用，请在服务端设置 TRACE_ENABLE_CLAUDE_ANALYSIS=1", "error");
     return;
@@ -2721,7 +2727,7 @@ const startAiAnalysis = async (force = false, prompt = "") => {
   aiDiagnosticsError.value = "";
   aiDiagnosticsResult.value = null;
   try {
-    const r = await fetch(`/api/jobs/${selectedJobId.value}/ai-analysis`, {
+    const r = await fetch(`/api/jobs/${jobId}/ai-analysis`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
@@ -2729,10 +2735,11 @@ const startAiAnalysis = async (force = false, prompt = "") => {
     });
     const payload = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(payload.detail || "提交 AI 分析失败");
+    if (selectedJobId.value !== jobId) return;
     updateAiAnalysisState(payload);
-    if (payload.status === "running") {
+    if (isAiAnalysisActive(payload.status)) {
       startAiAnalysisPolling();
-      showToast("AI 分析已开始", "success");
+      showToast(payload.status === "queued" ? "AI 分析已排队" : "AI 分析已开始", "success");
     }
   } catch (e) {
     aiAnalysisError.value = e.message || "提交 AI 分析失败";
@@ -5495,14 +5502,14 @@ const JobDetail = {
                 下载 Markdown
               </button>
               <button class="btn btn-sm btn-primary"
-                      :disabled="!claudeAnalysisEnabled || aiAnalysisStarting || aiAnalysisMeta.status==='running'"
+                      :disabled="!claudeAnalysisEnabled || aiAnalysisStarting || isAiAnalysisActive(aiAnalysisMeta.status)"
                       @click="openAiPromptModal(aiAnalysisMeta.report_exists || aiAnalysisMeta.status==='done')">
                 {{ aiAnalysisStarting ? '提交中...' : (aiAnalysisMeta.report_exists ? '重新分析' : '开始分析') }}
               </button>
             </div>
           </div>
 
-          <div v-if="aiAnalysisSelectedVersion || aiAnalysisMeta.started_at || aiAnalysisMeta.status==='running'" class="ai-meta-row">
+          <div v-if="aiAnalysisSelectedVersion || aiAnalysisMeta.started_at || isAiAnalysisActive(aiAnalysisMeta.status)" class="ai-meta-row">
             <label v-if="aiAnalysisVersions.length > 1" class="ai-version-picker">
               <span>历史版本</span>
               <select v-model="aiAnalysisSelectedVersionId"
@@ -5525,8 +5532,8 @@ const JobDetail = {
               <span>模型 <strong>{{ aiAnalysisVersionModel }}</strong></span>
             </div>
             <div v-else class="ai-version-info ai-version-info-muted">报告生成后会显示版本信息</div>
-            <div v-if="aiAnalysisMeta.started_at || aiAnalysisMeta.status==='running'" class="ai-duration-meta">
-              <span>{{ aiAnalysisMeta.status==='running' ? '已耗时' : '总耗时' }}</span>
+            <div v-if="aiAnalysisMeta.started_at || isAiAnalysisActive(aiAnalysisMeta.status)" class="ai-duration-meta">
+              <span>{{ isAiAnalysisActive(aiAnalysisMeta.status) ? '已耗时' : '总耗时' }}</span>
               <strong>{{ aiAnalysisElapsedText }}</strong>
             </div>
           </div>
@@ -5567,9 +5574,11 @@ const JobDetail = {
             </div>
           </div>
           <div v-if="aiAnalysisError" class="error-box mb-2">{{ aiAnalysisError }}</div>
-          <div v-if="aiAnalysisMeta.status==='running'" class="ai-analysis-running">
+          <div v-if="isAiAnalysisActive(aiAnalysisMeta.status)" class="ai-analysis-running">
             <span class="spinner-small"></span>
-            {{ aiAnalysisMeta.phase === 'diagnosing'
+            {{ aiAnalysisMeta.status === 'queued'
+              ? 'AI 分析已进入队列，开始后会自动更新状态。'
+              : aiAnalysisMeta.phase === 'diagnosing'
               ? '正在进行 AI 环境诊断，诊断通过后会自动开始分析。'
               : 'Claude Code 正在分析 trace，完成后这里会自动刷新。' }}
           </div>
@@ -5607,7 +5616,7 @@ const JobDetail = {
               </div>
             </div>
           </div>
-          <div v-if="!aiAnalysisContent && !aiAnalysisVisibleArtifacts.length && aiAnalysisMeta.status!=='running'" class="ai-analysis-empty">
+          <div v-if="!aiAnalysisContent && !aiAnalysisVisibleArtifacts.length && !isAiAnalysisActive(aiAnalysisMeta.status)" class="ai-analysis-empty">
             点击“开始分析”后，会调用服务端 Claude Code 和自定义 skill 生成报告。
           </div>
         </div>
@@ -5816,7 +5825,7 @@ const JobDetail = {
       showAiPromptModal, aiAnalysisPrompt, aiPromptForce,
       aiAnalysisVersionTrigger, aiAnalysisVersionModel, aiAnalysisVersionLabel,
       aiArtifactsExpanded, aiArtifactSummary, aiAnalysisHtml, aiAnalysisStatusText,
-      aiAnalysisElapsedText,
+      isAiAnalysisActive, aiAnalysisElapsedText,
       aiDiagnosticsLoading, aiDiagnosticsError, aiDiagnosticsResult, aiDiagnosticStatusText,
       refreshAiAnalysis, startAiAnalysis, openAiPromptModal, closeAiPromptModal, confirmAiPromptModal,
       copyAiAnalysisReport,
