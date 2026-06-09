@@ -1,4 +1,4 @@
-const { createApp, ref, computed, watch, nextTick } = Vue;
+const { createApp, ref, computed, watch, nextTick, onBeforeUnmount } = Vue;
 const { createRouter, createWebHashHistory } = VueRouter;
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.56");
+const appVersion = ref("0.2.57");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const currentUser = ref(null);
@@ -395,6 +395,12 @@ const feedbackForm = ref({ body: "", files: [], previews: [] });
 const feedbackPostEditorMode = ref("write");
 const feedbackReplies = ref({});
 const feedbackEditing = ref({ id: "", body: "", saving: false });
+const feedbackMarkdownEditorEnabled = ref(false);
+const FEEDBACK_MARKDOWN_EDITOR_CSS = "https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.css";
+const FEEDBACK_MARKDOWN_EDITOR_SCRIPTS = [
+  "https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js",
+  "https://unpkg.com/easymde/dist/easymde.min.js",
+];
 const selectedFeedbackPostId = ref("");
 const selectedFeedbackMessageId = ref("");
 const feedbackDetailLoading = ref(false);
@@ -422,6 +428,9 @@ const feedbackMention = ref({
 let feedbackMentionTimer = null;
 let feedbackMentionSeq = 0;
 let feedbackMentionTextarea = null;
+const FEEDBACK_BODY_LIMIT = 2000;
+const feedbackMarkdownEditors = new Map();
+let feedbackMarkdownEditorLoadPromise = null;
 
 const selectedFilterProject = computed(() =>
   projects.value.find(project => project.id === filterProject.value) || null
@@ -887,7 +896,7 @@ const deltaCellClass = (field, value) => {
 const loadConfig = async () => {
   const r = await fetch("/api/config");
   const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.56";
+  appVersion.value = cfg.version || "0.2.57";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -1147,15 +1156,231 @@ const setFeedbackTextTarget = (event, target = "post") => {
   };
 };
 
+const feedbackTargetForm = targetKey => {
+  if (targetKey === "post") return feedbackForm.value;
+  if (targetKey.startsWith("edit:")) return feedbackEditing.value;
+  return ensureFeedbackReplyForm(targetKey);
+};
+
+const feedbackMarkdownEditorElementId = target => {
+  const targetKey = feedbackMentionTargetKey(target);
+  if (targetKey === "post") return "feedback-compose-post-textarea";
+  if (targetKey.startsWith("edit:")) return `feedback-edit-${targetKey.slice(5)}`;
+  return `feedback-reply-editor-${targetKey}`;
+};
+
+const detectFeedbackMarkdownEditor = () => {
+  const ctor = typeof window !== "undefined" && typeof window.EasyMDE === "function"
+    ? window.EasyMDE
+    : null;
+  feedbackMarkdownEditorEnabled.value = Boolean(ctor);
+  return ctor;
+};
+
+const ensureFeedbackMarkdownEditorCss = () => {
+  if (typeof document === "undefined") return;
+  const exists = Array.from(document.querySelectorAll("link[rel='stylesheet']"))
+    .some(link => link.href === FEEDBACK_MARKDOWN_EDITOR_CSS);
+  if (exists) return;
+  const link = document.createElement("link");
+  link.rel = "stylesheet";
+  link.href = FEEDBACK_MARKDOWN_EDITOR_CSS;
+  document.head.appendChild(link);
+};
+
+const loadFeedbackMarkdownScript = src => new Promise(resolve => {
+  if (typeof document === "undefined") {
+    resolve(false);
+    return;
+  }
+  const script = document.createElement("script");
+  script.src = src;
+  script.async = true;
+  script.onload = () => resolve(Boolean(detectFeedbackMarkdownEditor()));
+  script.onerror = () => resolve(false);
+  document.head.appendChild(script);
+});
+
+const loadFeedbackMarkdownEditor = () => {
+  if (detectFeedbackMarkdownEditor()) return Promise.resolve(true);
+  if (feedbackMarkdownEditorLoadPromise) return feedbackMarkdownEditorLoadPromise;
+  ensureFeedbackMarkdownEditorCss();
+  feedbackMarkdownEditorLoadPromise = (async () => {
+    for (const src of FEEDBACK_MARKDOWN_EDITOR_SCRIPTS) {
+      const loaded = await loadFeedbackMarkdownScript(src);
+      if (loaded || detectFeedbackMarkdownEditor()) return true;
+    }
+    return Boolean(detectFeedbackMarkdownEditor());
+  })().finally(() => {
+    if (!feedbackMarkdownEditorEnabled.value) feedbackMarkdownEditorLoadPromise = null;
+  });
+  return feedbackMarkdownEditorLoadPromise;
+};
+
+const destroyFeedbackMarkdownEditor = target => {
+  const targetKey = feedbackMentionTargetKey(target);
+  const entry = feedbackMarkdownEditors.get(targetKey);
+  if (!entry) return;
+  try {
+    entry.instance?.toTextArea?.();
+  } catch (e) {
+    console.warn("destroy feedback markdown editor failed:", e);
+  }
+  feedbackMarkdownEditors.delete(targetKey);
+};
+
+const destroyFeedbackMarkdownEditors = () => {
+  for (const targetKey of [...feedbackMarkdownEditors.keys()]) {
+    destroyFeedbackMarkdownEditor(targetKey);
+  }
+};
+
+const syncFeedbackMarkdownEditor = (target, body) => {
+  const targetKey = feedbackMentionTargetKey(target);
+  const entry = feedbackMarkdownEditors.get(targetKey);
+  if (!entry?.instance) return;
+  const nextBody = String(body || "");
+  if (entry.instance.value() === nextBody) return;
+  entry.silent = true;
+  entry.instance.value(nextBody);
+  entry.instance.codemirror?.refresh();
+  entry.silent = false;
+};
+
+const handleFeedbackMarkdownMention = (target, editor) => {
+  const cm = editor?.codemirror;
+  if (!cm) return;
+  const targetKey = feedbackMentionTargetKey(target);
+  const text = editor.value() || "";
+  const cursor = cm.indexFromPos(cm.getCursor());
+  const detected = detectFeedbackMention(text, cursor);
+  if (!detected) {
+    if (feedbackMention.value.target === targetKey) closeFeedbackMention();
+    return;
+  }
+  feedbackMentionTextarea = null;
+  feedbackTextTarget.value = { target: targetKey, textarea: null };
+  feedbackMention.value = {
+    visible: true,
+    loading: true,
+    target: targetKey,
+    query: detected.query,
+    start: detected.start,
+    end: detected.end,
+    candidates: [],
+    activeIndex: 0,
+  };
+  scheduleFeedbackMentionFetch(detected.query, targetKey);
+};
+
+const initFeedbackMarkdownEditor = target => {
+  const MarkdownEditor = detectFeedbackMarkdownEditor();
+  if (!MarkdownEditor) return;
+  const targetKey = feedbackMentionTargetKey(target);
+  const editorId = feedbackMarkdownEditorElementId(targetKey);
+  const existing = feedbackMarkdownEditors.get(targetKey);
+  const existingWrapper = existing?.instance?.codemirror?.getWrapperElement?.();
+  if (existing && existingWrapper && document.contains(existingWrapper)) {
+    syncFeedbackMarkdownEditor(targetKey, feedbackTargetForm(targetKey).body || "");
+    existing.instance.codemirror?.refresh();
+    return;
+  }
+  if (existing) destroyFeedbackMarkdownEditor(targetKey);
+
+  const textarea = document.getElementById(editorId);
+  if (!textarea) return;
+  const editor = new MarkdownEditor({
+    element: textarea,
+    initialValue: feedbackTargetForm(targetKey).body || "",
+    forceSync: true,
+    spellChecker: false,
+    status: false,
+    minHeight: targetKey.startsWith("edit:") ? "130px" : "210px",
+    maxHeight: "52vh",
+    previewRender: value => renderMarkdown(value || ""),
+    placeholder: textarea.getAttribute("placeholder") || "Use Markdown to format your comment.",
+    toolbar: [
+      "heading", "bold", "italic", "strikethrough", "|",
+      "quote", "code", "unordered-list", "ordered-list", "|",
+      "link", "table", "horizontal-rule", "|",
+      "preview", "side-by-side", "fullscreen", "guide",
+    ],
+  });
+  const entry = { instance: editor, silent: false };
+  feedbackMarkdownEditors.set(targetKey, entry);
+
+  editor.codemirror.on("focus", () => {
+    feedbackTextTarget.value = { target: targetKey, textarea: null };
+  });
+  editor.codemirror.on("keydown", (_cm, event) => {
+    handleFeedbackMentionKeydown(event, targetKey);
+  });
+  editor.codemirror.on("cursorActivity", () => {
+    handleFeedbackMarkdownMention(targetKey, editor);
+  });
+  editor.codemirror.on("change", () => {
+    if (entry.silent) return;
+    let body = editor.value() || "";
+    if (body.length > FEEDBACK_BODY_LIMIT) {
+      body = body.slice(0, FEEDBACK_BODY_LIMIT);
+      syncFeedbackMarkdownEditor(targetKey, body);
+      showToast(`留言最多 ${FEEDBACK_BODY_LIMIT} 字`, "error");
+    }
+    updateFeedbackDraftBody(targetKey, feedbackTargetForm(targetKey), body);
+    handleFeedbackMarkdownMention(targetKey, editor);
+  });
+};
+
+const pruneFeedbackMarkdownEditors = () => {
+  for (const targetKey of [...feedbackMarkdownEditors.keys()]) {
+    const editorId = feedbackMarkdownEditorElementId(targetKey);
+    const entry = feedbackMarkdownEditors.get(targetKey);
+    const wrapper = entry?.instance?.codemirror?.getWrapperElement?.();
+    if (!document.getElementById(editorId) && (!wrapper || !document.contains(wrapper))) {
+      destroyFeedbackMarkdownEditor(targetKey);
+    }
+  }
+};
+
+const refreshFeedbackMarkdownEditors = () => {
+  nextTick(() => {
+    loadFeedbackMarkdownEditor().then(ready => {
+      if (!ready) return;
+      nextTick(() => {
+        pruneFeedbackMarkdownEditors();
+        if (showFeedbackComposer.value) initFeedbackMarkdownEditor("post");
+        if (selectedFeedbackPostId.value && feedbackReplies.value[selectedFeedbackPostId.value]) {
+          initFeedbackMarkdownEditor(selectedFeedbackPostId.value);
+        }
+        if (feedbackEditing.value.id) initFeedbackMarkdownEditor(`edit:${feedbackEditing.value.id}`);
+      });
+    });
+  });
+};
+
 const feedbackDraftForTarget = target => {
   const targetKey = feedbackMentionTargetKey(target);
-  const form = targetKey === "post" ? feedbackForm.value : ensureFeedbackReplyForm(targetKey);
+  const form = feedbackTargetForm(targetKey);
+  const entry = feedbackMarkdownEditors.get(targetKey);
+  const editor = entry?.instance;
+  const cm = editor?.codemirror;
+  if (cm) {
+    const text = editor.value() || "";
+    const selection = cm.listSelections()[0];
+    const anchor = selection?.anchor || cm.getCursor();
+    const head = selection?.head || anchor;
+    const anchorIndex = cm.indexFromPos(anchor);
+    const headIndex = cm.indexFromPos(head);
+    const start = Math.min(anchorIndex, headIndex);
+    const end = Math.max(anchorIndex, headIndex);
+    return { targetKey, form, text, textarea: null, hasTextarea: false, editor, cm, hasEditor: true, start, end };
+  }
   const text = form.body || "";
   const textarea = feedbackTextTarget.value.target === targetKey ? feedbackTextTarget.value.textarea : null;
   const hasTextarea = textarea && document.contains(textarea);
   const start = hasTextarea ? textarea.selectionStart ?? text.length : text.length;
   const end = hasTextarea ? textarea.selectionEnd ?? start : start;
-  return { targetKey, form, text, textarea, hasTextarea, start, end };
+  return { targetKey, form, text, textarea, hasTextarea, editor: null, cm: null, hasEditor: false, start, end };
 };
 
 const updateFeedbackDraftBody = (targetKey, form, body) => {
@@ -1163,14 +1388,18 @@ const updateFeedbackDraftBody = (targetKey, form, body) => {
     feedbackForm.value = { ...feedbackForm.value, body };
     return;
   }
+  if (targetKey.startsWith("edit:")) {
+    feedbackEditing.value = { ...feedbackEditing.value, body };
+    return;
+  }
   feedbackReplies.value = {
     ...feedbackReplies.value,
-    [targetKey]: { ...form, body },
+    [targetKey]: { ...(form || ensureFeedbackReplyForm(targetKey)), body },
   };
 };
 
 const replaceFeedbackSelection = (target, insertText, options = {}) => {
-  const { targetKey, form, text, textarea, hasTextarea, start, end } = feedbackDraftForTarget(target);
+  const { targetKey, form, text, textarea, hasTextarea, cm, hasEditor, start, end } = feedbackDraftForTarget(target);
   const nextBody = `${text.slice(0, start)}${insertText}${text.slice(end)}`;
   updateFeedbackDraftBody(targetKey, form, nextBody);
   closeFeedbackMention();
@@ -1178,7 +1407,11 @@ const replaceFeedbackSelection = (target, insertText, options = {}) => {
   const cursorStart = start + (options.selectStartOffset ?? insertText.length);
   const cursorEnd = start + (options.selectEndOffset ?? options.selectStartOffset ?? insertText.length);
   nextTick(() => {
-    if (hasTextarea) {
+    if (hasEditor && cm) {
+      syncFeedbackMarkdownEditor(targetKey, nextBody);
+      cm.focus();
+      cm.setSelection(cm.posFromIndex(cursorStart), cm.posFromIndex(cursorEnd));
+    } else if (hasTextarea) {
       textarea.focus();
       textarea.setSelectionRange(cursorStart, cursorEnd);
     }
@@ -1186,7 +1419,7 @@ const replaceFeedbackSelection = (target, insertText, options = {}) => {
 };
 
 const replaceFeedbackRange = (target, rangeStart, rangeEnd, insertText, options = {}) => {
-  const { targetKey, form, text, textarea, hasTextarea } = feedbackDraftForTarget(target);
+  const { targetKey, form, text, textarea, hasTextarea, cm, hasEditor } = feedbackDraftForTarget(target);
   const start = Math.max(0, Math.min(rangeStart, text.length));
   const end = Math.max(start, Math.min(rangeEnd, text.length));
   const nextBody = `${text.slice(0, start)}${insertText}${text.slice(end)}`;
@@ -1196,7 +1429,11 @@ const replaceFeedbackRange = (target, rangeStart, rangeEnd, insertText, options 
   const cursorStart = start + (options.selectStartOffset ?? insertText.length);
   const cursorEnd = start + (options.selectEndOffset ?? options.selectStartOffset ?? insertText.length);
   nextTick(() => {
-    if (hasTextarea) {
+    if (hasEditor && cm) {
+      syncFeedbackMarkdownEditor(targetKey, nextBody);
+      cm.focus();
+      cm.setSelection(cm.posFromIndex(cursorStart), cm.posFromIndex(cursorEnd));
+    } else if (hasTextarea) {
       textarea.focus();
       textarea.setSelectionRange(cursorStart, cursorEnd);
     }
@@ -1214,31 +1451,7 @@ const feedbackSelectedLineRange = (text, start, end) => {
 };
 
 const insertFeedbackEmoji = (emoji, target = "post") => {
-  const targetKey = feedbackMentionTargetKey(target);
-  const form = targetKey === "post" ? feedbackForm.value : ensureFeedbackReplyForm(targetKey);
-  const text = form.body || "";
-  const textarea = feedbackTextTarget.value.target === targetKey ? feedbackTextTarget.value.textarea : null;
-  const hasTextarea = textarea && document.contains(textarea);
-  const start = hasTextarea ? textarea.selectionStart ?? text.length : text.length;
-  const end = hasTextarea ? textarea.selectionEnd ?? start : start;
-  const nextBody = `${text.slice(0, start)}${emoji}${text.slice(end)}`;
-  if (targetKey === "post") {
-    feedbackForm.value = { ...feedbackForm.value, body: nextBody };
-  } else {
-    feedbackReplies.value = {
-      ...feedbackReplies.value,
-      [targetKey]: { ...form, body: nextBody },
-    };
-  }
-  const cursor = start + emoji.length;
-  feedbackEmojiPickerTarget.value = "";
-  closeFeedbackMention();
-  nextTick(() => {
-    if (hasTextarea) {
-      textarea.focus();
-      textarea.setSelectionRange(cursor, cursor);
-    }
-  });
+  replaceFeedbackSelection(target, emoji);
 };
 
 const insertFeedbackSnippet = (prefix, suffix = "", placeholder = "", target = "post") => {
@@ -1492,14 +1705,19 @@ const selectFeedbackMention = (candidate, target = "post") => {
   const targetKey = feedbackMentionTargetKey(target || state.target);
   if (state.target && state.target !== targetKey) return;
   const mention = `@${candidate.username} `;
+  let nextBody = "";
   if (targetKey === "post") {
     const text = feedbackForm.value.body || "";
-    const nextBody = `${text.slice(0, state.start)}${mention}${text.slice(state.end)}`;
+    nextBody = `${text.slice(0, state.start)}${mention}${text.slice(state.end)}`;
     feedbackForm.value = { ...feedbackForm.value, body: nextBody };
+  } else if (targetKey.startsWith("edit:")) {
+    const text = feedbackEditing.value.body || "";
+    nextBody = `${text.slice(0, state.start)}${mention}${text.slice(state.end)}`;
+    feedbackEditing.value = { ...feedbackEditing.value, body: nextBody };
   } else {
     const form = ensureFeedbackReplyForm(targetKey);
     const text = form.body || "";
-    const nextBody = `${text.slice(0, state.start)}${mention}${text.slice(state.end)}`;
+    nextBody = `${text.slice(0, state.start)}${mention}${text.slice(state.end)}`;
     feedbackReplies.value = {
       ...feedbackReplies.value,
       [targetKey]: { ...form, body: nextBody },
@@ -1507,9 +1725,15 @@ const selectFeedbackMention = (candidate, target = "post") => {
   }
   const cursor = state.start + mention.length;
   const textarea = feedbackMentionTextarea;
+  const editor = feedbackMarkdownEditors.get(targetKey)?.instance;
+  const cm = editor?.codemirror;
   closeFeedbackMention();
   nextTick(() => {
-    if (textarea && document.contains(textarea)) {
+    if (cm) {
+      syncFeedbackMarkdownEditor(targetKey, nextBody);
+      cm.focus();
+      cm.setCursor(cm.posFromIndex(cursor));
+    } else if (textarea && document.contains(textarea)) {
       textarea.focus();
       textarea.setSelectionRange(cursor, cursor);
     }
@@ -1572,11 +1796,13 @@ const clearFeedbackForm = (parentId = null) => {
       ...feedbackReplies.value,
       [parentId]: { open: false, body: "", files: [], previews: [], submitting: false, mode: "write" },
     };
+    nextTick(() => syncFeedbackMarkdownEditor(parentId, ""));
     return;
   }
   revokeFeedbackPreviews(feedbackForm.value.previews);
   feedbackForm.value = { body: "", files: [], previews: [] };
   feedbackPostEditorMode.value = "write";
+  nextTick(() => syncFeedbackMarkdownEditor("post", ""));
 };
 
 const ensureFeedbackReplyForm = id => {
@@ -1592,6 +1818,7 @@ const setFeedbackPostEditorMode = (mode = "write") => {
   feedbackPostEditorMode.value = mode === "preview" ? "preview" : "write";
   closeFeedbackMention();
   feedbackEmojiPickerTarget.value = "";
+  if (feedbackPostEditorMode.value === "write") refreshFeedbackMarkdownEditors();
 };
 
 const setFeedbackReplyEditorMode = (id, mode = "write") => {
@@ -1602,6 +1829,7 @@ const setFeedbackReplyEditorMode = (id, mode = "write") => {
   };
   closeFeedbackMention();
   feedbackEmojiPickerTarget.value = "";
+  if (feedbackReplies.value[id]?.mode === "write") refreshFeedbackMarkdownEditors();
 };
 
 const feedbackPostPreviewHtml = computed(() => renderMarkdown(feedbackForm.value.body || ""));
@@ -1629,6 +1857,7 @@ const toggleFeedbackReply = id => {
     ...feedbackReplies.value,
     [id]: { ...form, open: !form.open },
   };
+  refreshFeedbackMarkdownEditors();
 };
 
 const selectFeedbackPost = async (id, { refresh = true, focusMessageId = "" } = {}) => {
@@ -1650,6 +1879,7 @@ const selectFeedbackPost = async (id, { refresh = true, focusMessageId = "" } = 
     showToast(e.message || "加载帖子失败", "error");
   } finally {
     feedbackDetailLoading.value = false;
+    refreshFeedbackMarkdownEditors();
   }
 };
 
@@ -1657,6 +1887,7 @@ const closeFeedbackPost = () => {
   selectedFeedbackPostId.value = "";
   selectedFeedbackMessageId.value = "";
   cancelFeedbackEdit();
+  destroyFeedbackMarkdownEditors();
   if (router.currentRoute.value.name === "feedback" && router.currentRoute.value.params?.postId) {
     router.push({ name: "feedback" }).catch(() => {});
   }
@@ -1665,9 +1896,11 @@ const closeFeedbackPost = () => {
 const openFeedbackComposer = () => {
   clearFeedbackForm();
   showFeedbackComposer.value = true;
+  refreshFeedbackMarkdownEditors();
 };
 
 const closeFeedbackComposer = () => {
+  destroyFeedbackMarkdownEditor("post");
   clearFeedbackForm();
   closeFeedbackMention();
   showFeedbackComposer.value = false;
@@ -1679,6 +1912,7 @@ const closeFeedbackBoard = () => {
   closeFeedbackMention();
   selectedFeedbackPostId.value = "";
   selectedFeedbackMessageId.value = "";
+  destroyFeedbackMarkdownEditors();
   showFeedbackBoard.value = false;
   if (router.currentRoute.value.name === "feedback") router.push("/").catch(() => {});
 };
@@ -1840,7 +2074,10 @@ const submitFeedback = async (parentId = null) => {
     if (!r.ok) throw new Error(payload.detail || "提交留言失败");
     const targetPostId = isReply ? parentId : payload.id;
     clearFeedbackForm(parentId);
-    if (!isReply) showFeedbackComposer.value = false;
+    if (!isReply) {
+      destroyFeedbackMarkdownEditor("post");
+      showFeedbackComposer.value = false;
+    }
     await loadFeedback({ reset: true, selectId: targetPostId });
     if (targetPostId) await selectFeedbackPost(targetPostId, { refresh: true });
     showFeedbackSubmitResult(payload, isReply ? "回复已发布" : "帖子已发布");
@@ -1869,10 +2106,13 @@ const startFeedbackEdit = message => {
   nextTick(() => {
     const el = document.getElementById(`feedback-edit-${message.id}`);
     el?.focus();
+    initFeedbackMarkdownEditor(`edit:${message.id}`);
   });
 };
 
 const cancelFeedbackEdit = () => {
+  if (feedbackEditing.value.id) destroyFeedbackMarkdownEditor(`edit:${feedbackEditing.value.id}`);
+  closeFeedbackMention();
   feedbackEditing.value = { id: "", body: "", saving: false };
 };
 
@@ -5639,6 +5879,7 @@ router.beforeEach(async (to, from) => {
     selectedFeedbackMessageId.value = "";
     cancelFeedbackEdit();
     closeFeedbackMention();
+    destroyFeedbackMarkdownEditors();
   }
 
   const newJobId = to.params?.id || null;
@@ -5858,6 +6099,16 @@ const App = {
       visibleColumns.value = valid.length ? valid : [...fields];
     });
 
+    watch([showFeedbackComposer, selectedFeedbackPostId], () => {
+      refreshFeedbackMarkdownEditors();
+    });
+    watch(() => feedbackEditing.value.id, () => {
+      refreshFeedbackMarkdownEditors();
+    });
+    onBeforeUnmount(() => {
+      destroyFeedbackMarkdownEditors();
+    });
+
     // Return everything the root template (index.html) needs
     return {
       // Layout/theme
@@ -5899,7 +6150,8 @@ const App = {
       isDeletedOver10Days, restoreProject, permanentlyDeleteProject,
       showFeedbackBoard, showFeedbackComposer, feedbackItems, feedbackTotal, feedbackLoading,
       feedbackSort, feedbackSortOptions,
-      feedbackSubmitting, feedbackForm, feedbackPostEditorMode, feedbackReplies, feedbackEditing, feedbackHasMore,
+      feedbackSubmitting, feedbackForm, feedbackPostEditorMode, feedbackReplies, feedbackEditing,
+      feedbackMarkdownEditorEnabled, feedbackHasMore,
       feedbackEmailDiagLoading, feedbackEmailDiagResult, runFeedbackEmailDiagnostics,
       feedbackEmojiOptions, feedbackReactionOptions, feedbackReactionPickerId, feedbackEmojiPickerTarget,
       feedbackUserInitial, setFeedbackTextTarget, insertFeedbackEmoji, insertFeedbackSnippet,

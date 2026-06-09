@@ -2667,6 +2667,114 @@ body.result-reading-active { overflow: hidden; }
   border-color: transparent;
   box-shadow: none !important;
 }
+.feedback-easymde-host {
+  position: relative;
+}
+.feedback-easymde-host .EasyMDEContainer {
+  border: 0;
+  background: var(--card);
+  color: var(--text);
+}
+.feedback-easymde-host .editor-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-height: 44px;
+  padding: 6px 10px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 10px 10px 0 0;
+  background: var(--card2);
+  opacity: 1;
+}
+.feedback-easymde-host .editor-toolbar::before,
+.feedback-easymde-host .editor-toolbar::after {
+  display: none;
+}
+.feedback-easymde-host .editor-toolbar a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 30px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text2) !important;
+  background: transparent;
+}
+.feedback-easymde-host .editor-toolbar a:hover,
+.feedback-easymde-host .editor-toolbar a.active {
+  color: var(--blue) !important;
+  background: rgba(37,99,235,.10);
+  border-color: transparent;
+}
+.feedback-easymde-host .editor-toolbar i.separator {
+  width: 1px;
+  height: 22px;
+  margin: 0 6px;
+  border: 0;
+  border-left: 1px solid var(--border);
+}
+.feedback-easymde-host .CodeMirror {
+  min-height: 210px;
+  border: 0;
+  border-radius: 0;
+  background: var(--card);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 15px;
+  line-height: 1.75;
+}
+.feedback-easymde-host .CodeMirror-lines {
+  padding: 14px 0;
+}
+.feedback-easymde-host .CodeMirror pre.CodeMirror-line,
+.feedback-easymde-host .CodeMirror pre.CodeMirror-line-like {
+  padding: 0 18px;
+}
+.feedback-easymde-host .CodeMirror-placeholder {
+  color: var(--text3) !important;
+}
+.feedback-easymde-host .editor-preview,
+.feedback-easymde-host .editor-preview-side {
+  background: var(--card);
+  color: var(--text);
+  padding: 18px 20px;
+}
+.feedback-easymde-host .editor-statusbar {
+  display: none;
+}
+.feedback-easymde-host .CodeMirror-focused {
+  outline: none;
+}
+.feedback-easymde-host .editor-toolbar.fullscreen,
+.feedback-easymde-host .CodeMirror-fullscreen {
+  z-index: 80;
+}
+.feedback-easymde-host .editor-preview-side {
+  z-index: 81;
+  border-color: var(--border);
+}
+.feedback-edit-editor-host .CodeMirror {
+  min-height: 130px;
+}
+.feedback-edit-editor-host .editor-toolbar {
+  min-height: 38px;
+  padding: 4px 8px;
+}
+.feedback-edit-editor-host .editor-toolbar a {
+  width: 29px;
+  height: 28px;
+}
+.feedback-inline-file-btn {
+  flex-shrink: 0;
+}
+[data-theme="dark"] .feedback-easymde-host .CodeMirror-cursor {
+  border-left-color: var(--text);
+}
+[data-theme="dark"] .feedback-easymde-host .CodeMirror-selected {
+  background: rgba(99,102,241,.28);
+}
 .feedback-markdown-preview {
   min-height: 170px;
   padding: 18px 20px;
