@@ -55,7 +55,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.67"
+APP_VERSION = "0.2.68"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -109,6 +109,10 @@ ANALYSIS_CONCURRENCY = max(1, int(os.environ.get("TRACE_ANALYSIS_CONCURRENCY", "
 UPLOAD_CONCURRENCY = max(1, int(os.environ.get("TRACE_UPLOAD_CONCURRENCY", "3")))
 MAX_UPLOAD_BYTES = max(0, int(os.environ.get("TRACE_MAX_UPLOAD_BYTES", "0")))
 MIN_STORAGE_FREE_BYTES = max(0, int(os.environ.get("TRACE_MIN_STORAGE_FREE_BYTES", "0")))
+MAX_TRACE_JSON_BYTES = max(
+    0,
+    int(os.environ.get("TRACE_MAX_TRACE_JSON_BYTES", "0")),
+)
 CLAUDE_ANALYSIS_ENABLED = os.environ.get("TRACE_ENABLE_CLAUDE_ANALYSIS", "") == "1"
 AI_ANALYSIS_CONCURRENCY = max(1, int(os.environ.get("TRACE_AI_ANALYSIS_CONCURRENCY", "1")))
 CLAUDE_ANALYSIS_COMMAND = os.environ.get("TRACE_CLAUDE_COMMAND", "claude")
@@ -1191,6 +1195,15 @@ def _ensure_storage_capacity():
         )
 
 
+def _format_size(num_bytes: int) -> str:
+    value = float(max(0, num_bytes))
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if value < 1024 or unit == "TiB":
+            return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
+        value /= 1024
+    return f"{num_bytes} B"
+
+
 def _extract_gz_to_json(gz_path: str, dest_path: str):
     """Extract a .gz or .tar.gz file and write the contained JSON to dest_path.
 
@@ -1263,6 +1276,8 @@ async def save_and_extract(upload: UploadFile, dest_json: str, gzip_path: list):
         await save_upload(upload, gzip_path[0])
         try:
             is_tar_archive = await asyncio.to_thread(_is_tar_archive, gzip_path[0])
+            if not is_tar_archive:
+                return
             await asyncio.to_thread(_extract_gz_to_json, gzip_path[0], dest_json)
             if is_tar_archive:
                 await asyncio.to_thread(_compress_json_to_gz, dest_json, gzip_path[0])
@@ -3292,6 +3307,66 @@ def _iter_gzip_encoded(chunks):
         yield tail
 
 
+def _largest_archive_json_size(path: str) -> Optional[int]:
+    lower = path.lower()
+    if lower.endswith(".zip"):
+        with zipfile.ZipFile(path) as archive:
+            sizes = [
+                info.file_size
+                for info in archive.infolist()
+                if not info.is_dir() and info.filename.lower().endswith(".json")
+            ]
+        if not sizes:
+            raise ValueError("Archive does not contain a JSON trace")
+        return max(sizes)
+    if lower.endswith((".tar.gz", ".tgz")) or (lower.endswith(".gz") and _is_tar_archive(path)):
+        with tarfile.open(path, "r:*") as tar:
+            sizes = [
+                member.size
+                for member in tar.getmembers()
+                if member.isfile() and member.name.lower().endswith(".json")
+            ]
+        if not sizes:
+            raise ValueError("Archive does not contain a JSON trace")
+        return max(sizes)
+    if not lower.endswith(".gz"):
+        return os.path.getsize(path)
+    return None
+
+
+def _assert_trace_json_size_supported(path: str, slot: str = "trace") -> None:
+    if not MAX_TRACE_JSON_BYTES:
+        return
+    label = f"Trace {slot.upper()}" if slot else "Trace"
+    try:
+        known_size = _largest_archive_json_size(path)
+        if known_size is not None:
+            if known_size > MAX_TRACE_JSON_BYTES:
+                raise ValueError(
+                    f"{label} 解压后 JSON 大小 {_format_size(known_size)} 超过当前分析上限 "
+                    f"{_format_size(MAX_TRACE_JSON_BYTES)}。为了避免服务内存耗尽，已停止分析；"
+                    "可缩短 profiler 采样窗口、指定 step 重新导出，或在确认机器内存足够后设置 "
+                    "TRACE_MAX_TRACE_JSON_BYTES 调大/设为 0 关闭保护。"
+                )
+            return
+
+        # Plain gzip does not expose a reliable uncompressed size for >4GiB files.
+        # Count the stream up to the configured limit without materializing it.
+        total = 0
+        for chunk in _iter_json_chunks(path):
+            total += len(chunk)
+            if total > MAX_TRACE_JSON_BYTES:
+                raise ValueError(
+                    f"{label} 解压后 JSON 大小超过当前分析上限 {_format_size(MAX_TRACE_JSON_BYTES)}。"
+                    "为了避免服务内存耗尽，已停止分析；可缩短 profiler 采样窗口、指定 step 重新导出，"
+                    "或在确认机器内存足够后设置 TRACE_MAX_TRACE_JSON_BYTES 调大/设为 0 关闭保护。"
+                )
+    except ValueError:
+        raise
+    except Exception as e:
+        raise ValueError(f"{label} 文件预检失败: {e}") from e
+
+
 # ── Synchronous analysis (runs in thread pool, must not await) ────────────────
 
 def _run_sync_analysis(job, rdir, path_a, path_b, name_a, name_b):
@@ -3299,7 +3374,8 @@ def _run_sync_analysis(job, rdir, path_a, path_b, name_a, name_b):
     from trace_analyzer import (print_step_summary, print_kernel_type_breakdown, print_top_kernels,
                                 write_single, print_comparison, write_comparison)
 
-    def compute_trace(path, step_filter):
+    def compute_trace(path, step_filter, slot):
+        _assert_trace_json_size_supported(path, slot)
         parsed = parse_trace(path)
         steps = parse_step_filter(step_filter)
         if steps:
@@ -3313,7 +3389,7 @@ def _run_sync_analysis(job, rdir, path_a, path_b, name_a, name_b):
             step_filter_a = (job.get("step_filter_a") or "").strip()
             if step_filter_a:
                 print(f"Step filter A: {step_filter_a}")
-            data = compute_trace(path_a, step_filter_a)
+            data = compute_trace(path_a, step_filter_a, "a")
             fake_args = types.SimpleNamespace(
                 output_dir=rdir,
                 save_triton_csv=bool(job["save_triton_csv"]),
@@ -3331,8 +3407,8 @@ def _run_sync_analysis(job, rdir, path_a, path_b, name_a, name_b):
                 print(f"Step filter A: {step_filter_a}")
             if step_filter_b:
                 print(f"Step filter B: {step_filter_b}")
-            data_a = compute_trace(path_a, step_filter_a)
-            data_b = compute_trace(path_b, step_filter_b)
+            data_a = compute_trace(path_a, step_filter_a, "a")
+            data_b = compute_trace(path_b, step_filter_b, "b")
             fake_args = types.SimpleNamespace(output_dir=rdir)
             label_a = name_a or os.path.basename(path_a)
             label_b = name_b or os.path.basename(path_b)

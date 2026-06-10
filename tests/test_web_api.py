@@ -70,7 +70,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.67",
+        "version": "0.2.68",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -2520,6 +2520,37 @@ def test_zip_upload_is_normalized_to_json_gzip(
         assert json.load(f)["traceEvents"]
     with gzip.open(gzip_path[0], "rt", encoding="utf-8") as f:
         assert json.load(f)["traceEvents"]
+
+
+def test_plain_gzip_upload_keeps_compressed_without_materializing_json(
+    sample_trace_file_gz,
+    tmp_path,
+):
+    dest_json = tmp_path / "trace.json"
+    gzip_path = [None]
+
+    async def extract_upload():
+        with open(sample_trace_file_gz, "rb") as f:
+            upload = UploadFile(file=f, filename="trace.json.gz")
+            await web_server.save_and_extract(upload, str(dest_json), gzip_path)
+
+    asyncio.run(extract_upload())
+
+    assert not dest_json.exists()
+    assert gzip_path[0] == str(dest_json) + ".gz"
+    with gzip.open(gzip_path[0], "rt", encoding="utf-8") as f:
+        assert json.load(f)["traceEvents"]
+
+
+def test_trace_json_size_guard_rejects_oversized_plain_gzip(
+    sample_trace_file_gz,
+    isolated_server,
+    monkeypatch,
+):
+    monkeypatch.setattr(web_server, "MAX_TRACE_JSON_BYTES", 64)
+
+    with pytest.raises(ValueError, match="超过当前分析上限"):
+        web_server._assert_trace_json_size_supported(sample_trace_file_gz, "a")
 
 
 def test_trace_file_downloads_default_to_json_gzip_for_supported_formats(

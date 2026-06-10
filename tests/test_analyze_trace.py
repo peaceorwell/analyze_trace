@@ -116,6 +116,16 @@ class TestParseTrace:
         result = parse_trace(sample_trace_file_gz)
         assert result["step_durations"][0] == 100.0
 
+    def test_gzip_trace_streams_without_json_load(self, sample_trace_file_gz, monkeypatch):
+        def fail_json_load(*args, **kwargs):
+            raise AssertionError("json.load should not be used for trace parsing")
+
+        monkeypatch.setattr(json, "load", fail_json_load)
+
+        result = parse_trace(sample_trace_file_gz)
+
+        assert result["step_durations"][0] == 100.0
+
     def test_tar_gzip_trace(self, sample_trace_file_tar_gz):
         result = parse_trace(sample_trace_file_tar_gz)
         assert result["step_durations"][0] == 100.0

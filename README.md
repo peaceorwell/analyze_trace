@@ -2,7 +2,7 @@
 
 Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/内网性能分析工具。它可以解析 `.json`、`.json.gz`、`.gz`、`.json.zip`、`.zip`、`.tar.gz` 和 `.tgz` trace 文件，统计 GPU kernel、Triton kernel、ATen Ops、CNCL/NCCL 通信算子，并提供单 trace 分析、双 trace 对比、历史管理、AI 分析和 Web 可视化界面。
 
-当前版本：`0.2.67`
+当前版本：`0.2.68`
 
 ## 主要功能
 
@@ -103,7 +103,7 @@ Web 首页有两种上传模式：
 - `.tar.gz`
 - `.tgz`
 
-上传时可以选择项目和填写别名。压缩包中会自动提取可用 JSON trace；服务端内部会统一保留压缩副本。下载原始 trace 时默认提供 `.json.gz`，便于保存大文件并保持工具兼容性。上传阶段不会裁剪 trace；如果只想分析某些 step，可以在任务完成后通过 `指定 Step 重分析` 创建新的派生任务。
+上传时可以选择项目和填写别名。压缩包中会自动提取可用 JSON trace；服务端内部会统一保留压缩副本。普通 `.json.gz` 会保持压缩形态存储，分析时流式读取 `traceEvents`，避免 10GB+ trace 解压落盘或一次性读入内存。下载原始 trace 时默认提供 `.json.gz`，便于保存大文件并保持工具兼容性。上传阶段不会裁剪 trace；如果只想分析某些 step，可以在任务完成后通过 `指定 Step 重分析` 创建新的派生任务。
 
 ### 结果页
 
@@ -275,6 +275,7 @@ sudo chown -R cambricon:cambricon /data/analyze_trace
 | `TRACE_DB_TIMEOUT_SECONDS` | `30` | SQLite 写锁等待超时；服务会启用 WAL 与 busy timeout 以降低并发写入冲突 |
 | `TRACE_UPLOAD_CONCURRENCY` | `3` | 同时处理上传/解压的请求数 |
 | `TRACE_MAX_UPLOAD_BYTES` | `0` | 单个上传文件大小限制；`0` 表示不限制 |
+| `TRACE_MAX_TRACE_JSON_BYTES` | `0` | 分析前允许的解压后 trace JSON 大小上限；`0` 表示不限制。超大 trace 已使用流式解析，但机器资源不足时可设置该值做保护 |
 | `TRACE_MIN_STORAGE_FREE_BYTES` | `0` | 上传前要求保留的磁盘可用空间；`0` 表示不检查 |
 | `TRACE_ANALYSIS_CONCURRENCY` | `1` | 并发分析任务数 |
 | `TRACE_AI_ANALYSIS_CONCURRENCY` | `1` | 并发 Claude Code AI 分析任务数 |
