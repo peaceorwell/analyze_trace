@@ -55,7 +55,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.65"
+APP_VERSION = "0.2.66"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
 FEEDBACK_DIRNAME = "feedback"
@@ -4058,7 +4058,7 @@ def _feedback_notification_body(payload: dict) -> str:
     if PUBLIC_BASE_URL:
         lines.extend(["", f"打开留言: {_feedback_message_url(payload)}"])
     else:
-        lines.extend(["", "请打开 Torch Profiler Analyzer 右上角的“改进留言板”查看详情。"])
+        lines.extend(["", "请打开 Torch Profiler Analyzer 右上角的“灵感社区”查看详情。"])
     return "\n".join(lines)
 
 
