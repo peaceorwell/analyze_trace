@@ -120,11 +120,32 @@ class TestParseTrace:
         def fail_json_load(*args, **kwargs):
             raise AssertionError("json.load should not be used for trace parsing")
 
+        monkeypatch.setenv("TRACE_FAST_TRACE_JSON_BYTES", "0")
         monkeypatch.setattr(json, "load", fail_json_load)
 
         result = parse_trace(sample_trace_file_gz)
 
         assert result["step_durations"][0] == 100.0
+
+    def test_streaming_trace_reads_event_stream_once(self, sample_trace_file_gz, sample_trace_data, monkeypatch):
+        import trace_analyzer.core as core
+
+        monkeypatch.setenv("TRACE_FAST_TRACE_JSON_BYTES", "0")
+        events = sample_trace_data["traceEvents"]
+
+        calls = 0
+
+        def fake_iter_trace_events(_trace_file):
+            nonlocal calls
+            calls += 1
+            yield from events
+
+        monkeypatch.setattr(core, "_iter_trace_events", fake_iter_trace_events)
+
+        result = parse_trace(sample_trace_file_gz)
+
+        assert result["step_durations"][0] == 100.0
+        assert calls == 1
 
     def test_tar_gzip_trace(self, sample_trace_file_tar_gz):
         result = parse_trace(sample_trace_file_tar_gz)
