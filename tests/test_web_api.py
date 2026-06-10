@@ -70,7 +70,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.69",
+        "version": "0.2.70",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -2542,12 +2542,29 @@ def test_plain_gzip_upload_keeps_compressed_without_materializing_json(
         assert json.load(f)["traceEvents"]
 
 
-def test_trace_json_size_guard_rejects_oversized_plain_gzip(
+def test_trace_json_size_guard_skips_plain_gzip_without_strict_check(
     sample_trace_file_gz,
     isolated_server,
     monkeypatch,
 ):
     monkeypatch.setattr(web_server, "MAX_TRACE_JSON_BYTES", 64)
+    monkeypatch.setattr(web_server, "STRICT_GZIP_SIZE_CHECK", False)
+
+    def fail_iter(_path):
+        raise AssertionError("plain gzip should not be pre-scanned")
+
+    monkeypatch.setattr(web_server, "_iter_json_chunks", fail_iter)
+
+    web_server._assert_trace_json_size_supported(sample_trace_file_gz, "a")
+
+
+def test_trace_json_size_guard_rejects_oversized_plain_gzip_in_strict_mode(
+    sample_trace_file_gz,
+    isolated_server,
+    monkeypatch,
+):
+    monkeypatch.setattr(web_server, "MAX_TRACE_JSON_BYTES", 64)
+    monkeypatch.setattr(web_server, "STRICT_GZIP_SIZE_CHECK", True)
 
     with pytest.raises(ValueError, match="超过当前分析上限"):
         web_server._assert_trace_json_size_supported(sample_trace_file_gz, "a")

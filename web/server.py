@@ -55,7 +55,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.69"
+APP_VERSION = "0.2.70"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -113,6 +113,7 @@ MAX_TRACE_JSON_BYTES = max(
     0,
     int(os.environ.get("TRACE_MAX_TRACE_JSON_BYTES", "0")),
 )
+STRICT_GZIP_SIZE_CHECK = os.environ.get("TRACE_STRICT_GZIP_SIZE_CHECK", "") == "1"
 CLAUDE_ANALYSIS_ENABLED = os.environ.get("TRACE_ENABLE_CLAUDE_ANALYSIS", "") == "1"
 AI_ANALYSIS_CONCURRENCY = max(1, int(os.environ.get("TRACE_AI_ANALYSIS_CONCURRENCY", "1")))
 CLAUDE_ANALYSIS_COMMAND = os.environ.get("TRACE_CLAUDE_COMMAND", "claude")
@@ -3350,8 +3351,13 @@ def _assert_trace_json_size_supported(path: str, slot: str = "trace") -> None:
                 )
             return
 
-        # Plain gzip does not expose a reliable uncompressed size for >4GiB files.
-        # Count the stream up to the configured limit without materializing it.
+        # Plain gzip does not expose a reliable uncompressed size for >4GiB
+        # files.  The parser handles gzip traces in a streaming-safe way, so
+        # avoid a full pre-scan by default; otherwise large traces are
+        # decompressed twice before producing any result.
+        if not STRICT_GZIP_SIZE_CHECK:
+            return
+
         total = 0
         for chunk in _iter_json_chunks(path):
             total += len(chunk)
