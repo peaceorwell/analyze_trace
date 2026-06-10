@@ -70,7 +70,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.66",
+        "version": "0.2.67",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -2253,40 +2253,61 @@ def test_triton_code_paths_reject_sibling_prefix_traversal(isolated_server, monk
     assert exc_info.value.detail == "Invalid path"
 
 
-def test_startup_marks_interrupted_jobs_error(isolated_server):
-    job_id = "interrupted-job"
+def test_startup_requeues_interrupted_jobs(isolated_server, monkeypatch):
+    seen = []
+    running_job_id = "interrupted-running-job"
+    legacy_error_job_id = "interrupted-error-job"
     os.makedirs(Path(web_db.DB_PATH).parent, exist_ok=True)
+
+    async def fake_run_analysis(job_id):
+        seen.append(job_id)
 
     async def seed_db():
         await web_db.init_db()
         db = await aiosqlite.connect(web_db.DB_PATH)
         try:
-            await db.execute(
-                "INSERT INTO jobs(id, label, mode, status) VALUES(?,?,?,?)",
-                (job_id, "running", "single", "running"),
+            await db.executemany(
+                "INSERT INTO jobs(id, label, mode, status, error_msg) VALUES(?,?,?,?,?)",
+                [
+                    (running_job_id, "running", "single", "running", ""),
+                    (
+                        legacy_error_job_id,
+                        "interrupted error",
+                        "single",
+                        "error",
+                        web_server.INTERRUPTED_ANALYSIS_ERROR,
+                    ),
+                ],
             )
             await db.commit()
         finally:
             await db.close()
 
     asyncio.run(seed_db())
+    monkeypatch.setattr(web_server, "run_analysis", fake_run_analysis)
 
     with TestClient(isolated_server.app):
-        pass
+        for _ in range(50):
+            if set(seen) == {running_job_id, legacy_error_job_id}:
+                break
+            time.sleep(0.01)
 
-    async def fetch_job():
+    async def fetch_jobs():
         db = await web_db.get_db()
         try:
-            row = await (
-                await db.execute("SELECT status, error_msg FROM jobs WHERE id=?", (job_id,))
-            ).fetchone()
-            return dict(row)
+            rows = await (
+                await db.execute("SELECT id, status, error_msg FROM jobs ORDER BY id")
+            ).fetchall()
+            return {row["id"]: dict(row) for row in rows}
         finally:
             await db.close()
 
-    row = asyncio.run(fetch_job())
-    assert row["status"] == "error"
-    assert "Server restarted" in row["error_msg"]
+    rows = asyncio.run(fetch_jobs())
+    assert set(seen) == {running_job_id, legacy_error_job_id}
+    assert rows[running_job_id]["status"] == "pending"
+    assert rows[running_job_id]["error_msg"] == ""
+    assert rows[legacy_error_job_id]["status"] == "pending"
+    assert rows[legacy_error_job_id]["error_msg"] == ""
 
 
 def test_startup_enqueues_pending_jobs(isolated_server, monkeypatch):

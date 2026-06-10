@@ -55,7 +55,8 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.66"
+APP_VERSION = "0.2.67"
+INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
 FEEDBACK_DIRNAME = "feedback"
@@ -766,7 +767,7 @@ async def write_audit(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
-    await mark_interrupted_jobs()
+    await recover_interrupted_jobs()
     mark_interrupted_ai_analysis()
     await refresh_storage_cache_for_all_jobs()
     await enqueue_pending_jobs()
@@ -862,16 +863,22 @@ app.add_middleware(
 )
 
 
-async def mark_interrupted_jobs():
-    """Fail jobs that were actively running when the previous process exited."""
+async def recover_interrupted_jobs():
+    """Requeue analysis jobs interrupted by a previous process restart."""
     db = await get_db()
     try:
-        await db.execute("""
+        cursor = await db.execute("""
             UPDATE jobs
-            SET status='error',
-                error_msg='Server restarted before this analysis completed'
+            SET status='pending',
+                error_msg=''
             WHERE status='running'
-        """)
+               OR (status='error' AND error_msg=?)
+        """, (INTERRUPTED_ANALYSIS_ERROR,))
+        if cursor.rowcount:
+            logger.info(
+                "analysis_jobs_recovered",
+                extra={"event": "analysis_jobs_recovered", "count": cursor.rowcount},
+            )
         await db.commit()
     finally:
         await db.close()
