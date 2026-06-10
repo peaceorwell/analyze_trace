@@ -70,7 +70,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.63",
+        "version": "0.2.64",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -2624,9 +2624,15 @@ def test_uploaded_trace_formats_download_as_json_gzip(
         job_id = created.json()["id"]
 
         asyncio.run(web_server.run_analysis(job_id))
-        job_resp = client.get(f"/api/jobs/{job_id}")
-        assert job_resp.status_code == 200
-        job = job_resp.json()
+        job = None
+        for _ in range(100):
+            job_resp = client.get(f"/api/jobs/{job_id}")
+            assert job_resp.status_code == 200
+            job = job_resp.json()
+            if job["status"] == "done":
+                break
+            time.sleep(0.05)
+        assert job is not None
         assert job["status"] == "done", job.get("error_msg")
 
         json_resp = client.get(f"/api/jobs/{job_id}/files/a?format=json")

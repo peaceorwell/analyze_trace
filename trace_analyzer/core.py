@@ -219,6 +219,7 @@ def write_triton_code_file(code_dir, idx, kernel):
 
 
 _TRITON_NUMERIC_SUFFIX_RE = re.compile(r"(_\d+)+$")
+_TRITON_DEF_NAME_RE = re.compile(r"\bdef\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 
 
 def _normalize_triton_kernel_name(name):
@@ -234,15 +235,65 @@ def _stable_text_hash(value):
     return hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:16]
 
 
+def _stable_triton_code_signature_hash(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        stripped = _TRITON_DEF_NAME_RE.sub("def KERNEL(", stripped)
+        lines.append(stripped)
+    normalized = re.sub(r"\s+", "", "\n".join(lines))
+    if not normalized:
+        return ""
+    return hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:16]
+
+
+def _stable_triton_tiling_hash(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    parts = [part.strip() for part in text.split(",") if part.strip()]
+    if parts and all("=" in part for part in parts):
+        pairs = []
+        for part in parts:
+            key, val = part.split("=", 1)
+            pairs.append((key.strip(), val.strip()))
+        text = ",".join(f"{key}={val}" for key, val in sorted(pairs))
+    return _stable_text_hash(text)
+
+
+def _triton_hash_values(stats, plural_field, singular_field):
+    values = stats.get(plural_field)
+    if values is None:
+        values = []
+    if isinstance(values, str):
+        values = [values]
+    try:
+        result = {str(value) for value in values if value}
+    except TypeError:
+        result = set()
+    single = stats.get(singular_field) or ""
+    if single:
+        result.add(str(single))
+    return sorted(result)
+
+
 def _triton_match_candidates(name, stats):
     normalized_name = stats.get("triton_normalized_name") or _normalize_triton_kernel_name(name)
     normalized_key = normalized_name.lower()
     candidates = [("exact_name", f"exact:{name}")]
-    code_hash = stats.get("triton_code_hash") or ""
-    if code_hash:
+    for code_hash in _triton_hash_values(stats, "triton_code_hashes", "triton_code_hash"):
         candidates.append(("code_hash", f"code:{code_hash}"))
-    tiling_hash = stats.get("triton_tiling_hash") or ""
-    if normalized_key and tiling_hash:
+    for signature_hash in _triton_hash_values(
+            stats, "triton_code_signature_hashes", "triton_code_signature_hash"):
+        candidates.append(("code_signature", f"code_sig:{signature_hash}"))
+    for tiling_hash in _triton_hash_values(stats, "triton_tiling_hashes", "triton_tiling_hash"):
+        if not normalized_key:
+            continue
         candidates.append(("normalized_name_tiling", f"name_tiling:{normalized_key}:{tiling_hash}"))
     if normalized_key:
         candidates.append(("normalized_name", f"name:{normalized_key}"))
@@ -744,6 +795,7 @@ def compute_avgs(parsed):
         "io_eff_sum": 0.0,
         "io_eff_count": 0,
         "code_hashes": set(),
+        "code_signature_hashes": set(),
         "tiling_hashes": set(),
     }))
     for step, kernels in step_to_triton.items():
@@ -759,7 +811,10 @@ def compute_avgs(parsed):
             code_hash = _stable_text_hash(k.get("triton_output_code"))
             if code_hash:
                 a["code_hashes"].add(code_hash)
-            tiling_hash = _stable_text_hash(k.get("tiling config"))
+            code_signature_hash = _stable_triton_code_signature_hash(k.get("triton_output_code"))
+            if code_signature_hash:
+                a["code_signature_hashes"].add(code_signature_hash)
+            tiling_hash = _stable_triton_tiling_hash(k.get("tiling config"))
             if tiling_hash:
                 a["tiling_hashes"].add(tiling_hash)
 
@@ -770,12 +825,14 @@ def compute_avgs(parsed):
     avg_triton = {}
     for name in all_triton_names:
         code_hashes = set()
+        code_signature_hashes = set()
         tiling_hashes = set()
         for step in all_steps:
             stats = step_triton_agg[step].get(name)
             if not stats:
                 continue
             code_hashes.update(stats.get("code_hashes", set()))
+            code_signature_hashes.update(stats.get("code_signature_hashes", set()))
             tiling_hashes.update(stats.get("tiling_hashes", set()))
         io_eff_sum = sum(step_triton_agg[s].get(name, {"io_eff_sum": 0.0})["io_eff_sum"] for s in all_steps)
         io_eff_count = sum(step_triton_agg[s].get(name, {"io_eff_count": 0})["io_eff_count"] for s in all_steps)
@@ -786,7 +843,13 @@ def compute_avgs(parsed):
             "avg_io_eff": (io_eff_sum / io_eff_count) if io_eff_count else None,
             "triton_normalized_name": _normalize_triton_kernel_name(name),
             "triton_code_hash": next(iter(code_hashes)) if len(code_hashes) == 1 else "",
+            "triton_code_hashes": sorted(code_hashes),
+            "triton_code_signature_hash": (
+                next(iter(code_signature_hashes)) if len(code_signature_hashes) == 1 else ""
+            ),
+            "triton_code_signature_hashes": sorted(code_signature_hashes),
             "triton_tiling_hash": next(iter(tiling_hashes)) if len(tiling_hashes) == 1 else "",
+            "triton_tiling_hashes": sorted(tiling_hashes),
         }
     avg_triton = dict(sorted(avg_triton.items(), key=lambda x: -x[1]["avg_dur_ms"]))
 
@@ -1037,7 +1100,7 @@ def _write_triton_cmp_csv(path, avg_triton_a, avg_triton_b):
     remaining_a = set(avg_triton_a)
     remaining_b = set(avg_triton_b)
     matched = []
-    for method in ("exact_name", "code_hash", "normalized_name_tiling", "normalized_name"):
+    for method in ("exact_name", "code_hash", "code_signature", "normalized_name_tiling", "normalized_name"):
         by_key_a = defaultdict(list)
         by_key_b = defaultdict(list)
         for name in remaining_a:
@@ -1055,6 +1118,8 @@ def _write_triton_cmp_csv(path, avg_triton_a, avg_triton_b):
                 continue
             name_a = names_a[0]
             name_b = names_b[0]
+            if name_a not in remaining_a or name_b not in remaining_b:
+                continue
             matched.append((name_a, name_b, method))
             remaining_a.remove(name_a)
             remaining_b.remove(name_b)

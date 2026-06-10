@@ -2,7 +2,7 @@
 
 Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/内网性能分析工具。它可以解析 `.json`、`.json.gz`、`.gz`、`.json.zip`、`.zip`、`.tar.gz` 和 `.tgz` trace 文件，统计 GPU kernel、Triton kernel、ATen Ops、CNCL/NCCL 通信算子，并提供单 trace 分析、双 trace 对比、历史管理、AI 分析和 Web 可视化界面。
 
-当前版本：`0.2.63`
+当前版本：`0.2.64`
 
 ## 主要功能
 
@@ -111,7 +111,7 @@ Web 首页有两种上传模式：
 - `性能总览`：摘要卡片、TopN 柱状图、占比图、对比回退/优化列表，默认排除通信类 kernel/op，支持点击下钻到相关表格。
 - `控制台`：展示分析脚本输出，支持搜索、section 跳转、折叠生成文件日志和 Delta 着色。
 - `Kernel 类型` / `类型对比`：按 family 聚合，点击类型行可跳到相关 Kernel 表格。
-- `所有 Kernel`、`Triton`、`ATen Ops`、`CNCL Ops`：表格化查看明细；`Triton 对比` 会优先用 Triton code 指纹匹配 A/B kernel，减少末尾数字后缀不同导致的错位。
+- `所有 Kernel`、`Triton`、`ATen Ops`、`CNCL Ops`：表格化查看明细；`Triton 对比` 会优先用 Triton code 指纹、code signature、多 step 指纹交集和规整化名称匹配 A/B kernel，减少末尾数字后缀不同导致的错位。
 - `Triton Step N`：当保存了 per-step Triton CSV 时显示。
 - `AI 分析`：服务端启用 Claude Code 后显示。
 
@@ -476,7 +476,7 @@ analyze-trace baseline.json.gz optimized.json.gz -o ./output
 | 文件 | 内容 |
 | --- | --- |
 | `all_kernels_cmp.csv` | 两个 trace 的 kernel 耗时和调用次数 delta |
-| `triton_kernels_cmp.csv` | Triton kernel 对比；包含 `match_method`、`kernel_name_A`、`kernel_name_B`，优先按 code hash 匹配，再按规整化名称和 tiling 信息匹配 |
+| `triton_kernels_cmp.csv` | Triton kernel 对比；包含 `match_method`、`kernel_name_A`、`kernel_name_B`，优先按 exact name、code hash、多 step code hash 交集、code signature、规整化名称 + tiling、规整化名称匹配 |
 | `aten_ops_cmp.csv` | ATen Ops 对比 |
 | `kernel_types_cmp.csv` | Kernel family 对比 |
 | `cncl_ops_cmp.csv` | CNCL/NCCL 通信算子对比 |

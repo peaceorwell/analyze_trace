@@ -295,7 +295,11 @@ class TestComputeAvgs:
 
         assert triton["triton_normalized_name"] == "triton_poi_fused_add"
         assert triton["triton_code_hash"]
+        assert triton["triton_code_hashes"] == [triton["triton_code_hash"]]
+        assert triton["triton_code_signature_hash"]
+        assert triton["triton_code_signature_hashes"] == [triton["triton_code_signature_hash"]]
         assert triton["triton_tiling_hash"]
+        assert triton["triton_tiling_hashes"] == [triton["triton_tiling_hash"]]
 
     def test_collective_kernel_is_excluded_from_compute_duration(self, tmp_path):
         trace_path = tmp_path / "trace.json"
@@ -479,6 +483,140 @@ class TestEndToEnd:
         assert rows[0]["kernel_name_B"] == "triton_poi_fused_add_55"
         assert rows[0]["match_method"] == "code_hash"
         assert rows[0]["delta_dur_ms"] == "3"
+
+    def test_triton_compare_matches_by_code_hash_intersection(self, temp_output_dir):
+        data_a = {
+            "KERNEL_TYPES": [],
+            "kt_avgs": {"other": (0, 0), "collective": (0, 0)},
+            "avg_kernels": {},
+            "kernel_families": {},
+            "avg_triton": {
+                "triton_poi_fused_add_46": {
+                    "avg_count": 1,
+                    "avg_dur_ms": 10,
+                    "avg_io_gb": 1,
+                    "avg_io_eff": 100,
+                    "triton_code_hashes": ["a_only", "shared"],
+                    "triton_normalized_name": "triton_poi_fused_add",
+                },
+            },
+            "avg_aten": {},
+            "avg_cncl": {},
+        }
+        data_b = {
+            "KERNEL_TYPES": [],
+            "kt_avgs": {"other": (0, 0), "collective": (0, 0)},
+            "avg_kernels": {},
+            "kernel_families": {},
+            "avg_triton": {
+                "triton_poi_fused_add_55": {
+                    "avg_count": 1,
+                    "avg_dur_ms": 13,
+                    "avg_io_gb": 1,
+                    "avg_io_eff": 100,
+                    "triton_code_hashes": ["b_only", "shared"],
+                    "triton_normalized_name": "triton_poi_fused_add",
+                },
+            },
+            "avg_aten": {},
+            "avg_cncl": {},
+        }
+        args = type("Args", (), {"output_dir": temp_output_dir})
+
+        write_comparison(data_a, data_b, args)
+
+        with open(os.path.join(temp_output_dir, "triton_kernels_cmp.csv")) as f:
+            rows = list(csv.DictReader(f))
+
+        assert len(rows) == 1
+        assert rows[0]["match_method"] == "code_hash"
+        assert rows[0]["kernel_name_A"] == "triton_poi_fused_add_46"
+        assert rows[0]["kernel_name_B"] == "triton_poi_fused_add_55"
+
+    def test_triton_compare_matches_by_code_signature(self, tmp_path, temp_output_dir):
+        trace_a = tmp_path / "trace_a.json"
+        trace_b = tmp_path / "trace_b.json"
+        trace_a.write_text(json.dumps({
+            "traceEvents": [
+                {"name": "ProfilerStep#0", "cat": "user_annotation", "ts": 1000, "dur": 1000},
+                {
+                    "name": "triton_poi_fused_add_46",
+                    "cat": "kernel",
+                    "ts": 1100,
+                    "dur": 10000,
+                    "args": {
+                        "triton output code": "# generated for A\n"
+                                              "def triton_poi_fused_add_46(x):\n"
+                                              "    return x + 1\n",
+                    },
+                },
+            ],
+        }))
+        trace_b.write_text(json.dumps({
+            "traceEvents": [
+                {"name": "ProfilerStep#0", "cat": "user_annotation", "ts": 1000, "dur": 1000},
+                {
+                    "name": "triton_poi_fused_add_55",
+                    "cat": "kernel",
+                    "ts": 1100,
+                    "dur": 13000,
+                    "args": {
+                        "triton output code": "# generated for B\n"
+                                              "def triton_poi_fused_add_55(x):\n"
+                                              "    return x + 1\n",
+                    },
+                },
+            ],
+        }))
+        args = type("Args", (), {"output_dir": temp_output_dir})
+
+        write_comparison(compute_avgs(parse_trace(str(trace_a))), compute_avgs(parse_trace(str(trace_b))), args)
+
+        with open(os.path.join(temp_output_dir, "triton_kernels_cmp.csv")) as f:
+            rows = list(csv.DictReader(f))
+
+        assert len(rows) == 1
+        assert rows[0]["match_method"] == "code_signature"
+        assert rows[0]["kernel_name"] == "triton_poi_fused_add"
+        assert rows[0]["delta_dur_ms"] == "3"
+
+    def test_triton_compare_matches_orderless_tiling_kwargs(self, tmp_path, temp_output_dir):
+        trace_a = tmp_path / "trace_a.json"
+        trace_b = tmp_path / "trace_b.json"
+        trace_a.write_text(json.dumps({
+            "traceEvents": [
+                {"name": "ProfilerStep#0", "cat": "user_annotation", "ts": 1000, "dur": 1000},
+                {
+                    "name": "triton_poi_fused_add_46",
+                    "cat": "kernel",
+                    "ts": 1100,
+                    "dur": 10000,
+                    "args": {"kernel kwargs": "M=128, N=256"},
+                },
+            ],
+        }))
+        trace_b.write_text(json.dumps({
+            "traceEvents": [
+                {"name": "ProfilerStep#0", "cat": "user_annotation", "ts": 1000, "dur": 1000},
+                {
+                    "name": "triton_poi_fused_add_55",
+                    "cat": "kernel",
+                    "ts": 1100,
+                    "dur": 13000,
+                    "args": {"kernel kwargs": "N=256,M=128"},
+                },
+            ],
+        }))
+        args = type("Args", (), {"output_dir": temp_output_dir})
+
+        write_comparison(compute_avgs(parse_trace(str(trace_a))), compute_avgs(parse_trace(str(trace_b))), args)
+
+        with open(os.path.join(temp_output_dir, "triton_kernels_cmp.csv")) as f:
+            rows = list(csv.DictReader(f))
+
+        assert len(rows) == 1
+        assert rows[0]["match_method"] == "normalized_name_tiling"
+        assert rows[0]["kernel_name"] == "triton_poi_fused_add"
 
     def test_single_csv_outputs_do_not_include_percentage_columns(self, temp_output_dir):
         data = {
