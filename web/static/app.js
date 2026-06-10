@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.70");
+const appVersion = ref("0.2.71");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -987,7 +987,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.2.70";
+  appVersion.value = cfg.version || "0.2.71";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -5650,7 +5650,7 @@ const JobDetail = {
       </div>
 
       <div v-if="selectedJob.status==='running' || selectedJob.status==='pending'" class="loading">
-        <span class="spinner"></span> 分析中...
+        <span class="spinner"></span> {{ selectedJob.console_out || '分析中...' }}
       </div>
       <div v-else-if="selectedJob.status==='error'" class="error-box">
         {{ selectedJob.error_msg }}

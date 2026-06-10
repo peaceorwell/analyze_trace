@@ -16,6 +16,7 @@ from collections import defaultdict
 from decimal import Decimal
 
 import ijson
+import orjson
 
 
 def fmt3(val):
@@ -81,7 +82,14 @@ _EVENT_CNCL = 3
 
 def extract_step_number(name: str):
     """Return a numeric step id for common profiler step marker names."""
-    text = (name or "").strip()
+    if not name:
+        return None
+    if "step" not in name and "Step" not in name:
+        return None
+    first = name[0]
+    if first not in ("P", "p", "s", "S", " "):
+        return None
+    text = name.strip()
     for pattern in _STEP_NAME_PATTERNS:
         match = pattern.match(text)
         if match:
@@ -91,7 +99,11 @@ def extract_step_number(name: str):
 
 def is_fallback_step_marker(name: str) -> bool:
     """Return True for common non-numbered model step wrappers."""
-    return bool(_RUN_STEP_RE.search(name or ""))
+    if not name:
+        return False
+    if "step" not in name and "Step" not in name:
+        return False
+    return bool(_RUN_STEP_RE.search(name))
 
 
 def extract_kernel_family(name: str) -> str:
@@ -407,7 +419,7 @@ def _fast_trace_json_limit():
         return _FAST_TRACE_JSON_BYTES_DEFAULT
 
 
-def _gzip_uncompressed_size(path):
+def _gzip_footer_uncompressed_size(path):
     try:
         with open(path, "rb") as f:
             f.seek(-4, os.SEEK_END)
@@ -423,10 +435,21 @@ def _trace_events_from_payload(payload):
     return []
 
 
-def _read_trace_events_fast(trace_file):
-    """Return traceEvents via json.load for moderate-size traces, else None.
+def _load_trace_events_fast(file_obj):
+    return _trace_events_from_payload(orjson.loads(file_obj.read()))
 
-    CPython's JSON decoder is much faster than object-by-object streaming for
+
+def _load_trace_events_fast_limited(file_obj, limit):
+    data = file_obj.read(limit + 1)
+    if len(data) > limit:
+        return None
+    return _trace_events_from_payload(orjson.loads(data))
+
+
+def _read_trace_events_fast(trace_file):
+    """Return traceEvents via a fast whole-file JSON parser, else None.
+
+    Whole-file parsing is much faster than object-by-object streaming for
     normal-size traces.  Keep streaming as the large-file fallback so 10GB+
     traces do not need to be fully materialized in memory.
     """
@@ -449,7 +472,7 @@ def _read_trace_events_fast(trace_file):
             if member.file_size > limit:
                 return None
             with archive.open(member) as extracted:
-                return _trace_events_from_payload(json.load(extracted))
+                return _load_trace_events_fast(extracted)
 
     if trace_name.endswith((".tar.gz", ".tgz")):
         with tarfile.open(trace_file, "r:*") as tar:
@@ -466,22 +489,25 @@ def _read_trace_events_fast(trace_file):
             if extracted is None:
                 raise ValueError(f"Unable to read JSON trace from archive: {trace_file}")
             with extracted:
-                return _trace_events_from_payload(json.load(extracted))
+                return _load_trace_events_fast(extracted)
 
     if trace_name.endswith(".gz"):
-        # The gzip footer stores the uncompressed size modulo 4GB.  Use it only
-        # as a fast-path guard, and also require the compressed file itself to
-        # be comfortably below the same limit.
-        inflated_size = _gzip_uncompressed_size(trace_file)
-        if file_size > limit or inflated_size is None or inflated_size > limit:
+        # The gzip footer stores the uncompressed size modulo 4GB.  It is safe
+        # as a rejection guard when it is already above the threshold, but not
+        # as proof that a trace is small.  The limit+1 read below is the final
+        # safety check before whole-file parsing.
+        if file_size > limit:
+            return None
+        footer_size = _gzip_footer_uncompressed_size(trace_file)
+        if footer_size is None or footer_size > limit:
             return None
         with gzip.open(trace_file, "rb") as f:
-            return _trace_events_from_payload(json.load(f))
+            return _load_trace_events_fast_limited(f, limit)
 
     if file_size > limit:
         return None
     with open(trace_file, "rb") as f:
-        return _trace_events_from_payload(json.load(f))
+        return _load_trace_events_fast(f)
 
 
 def _flush_spool_batch(spool, batch):
@@ -519,12 +545,12 @@ def _iter_trace_events(trace_file):
                 raise ValueError(f"No JSON trace found in archive: {trace_file}")
             member = max(members, key=lambda info: info.file_size)
             with archive.open(member) as extracted:
-                yield from ijson.items(extracted, "traceEvents.item")
+                yield from ijson.items(extracted, "traceEvents.item", use_float=True)
         return
 
     if not trace_name.endswith((".gz", ".tgz")):
         with open(trace_file, "rb") as f:
-            yield from ijson.items(f, "traceEvents.item")
+            yield from ijson.items(f, "traceEvents.item", use_float=True)
         return
 
     if trace_name.endswith((".tar.gz", ".tgz")):
@@ -540,11 +566,11 @@ def _iter_trace_events(trace_file):
             if extracted is None:
                 raise ValueError(f"Unable to read JSON trace from archive: {trace_file}")
             with extracted:
-                yield from ijson.items(extracted, "traceEvents.item")
+                yield from ijson.items(extracted, "traceEvents.item", use_float=True)
         return
 
     with gzip.open(trace_file, "rb") as f:
-        yield from ijson.items(f, "traceEvents.item")
+        yield from ijson.items(f, "traceEvents.item", use_float=True)
 
 
 def parse_trace(trace_file):
@@ -569,15 +595,35 @@ def parse_trace(trace_file):
     kernel_families   = {}
     analyzable_intervals = []
     fallback_intervals = []
+    step_cache_dirty = True
+    cached_step_starts = []
+    cached_step_ends = []
+    cached_step_nums = []
+
+    step_to_triton       = defaultdict(list)
+    step_to_kernels      = defaultdict(lambda: defaultdict(lambda: {"count": 0, "dur_ms": 0.0}))
+    step_to_aten         = defaultdict(lambda: defaultdict(lambda: {"count": 0, "dur_ms": 0.0}))
+    step_to_cncl         = defaultdict(lambda: defaultdict(lambda: {"count": 0, "dur_ms": 0.0}))
+    family_cache = {}
 
     def event_interval(e):
-        ts = safe_float(e.get("ts"))
+        raw_ts = e.get("ts")
+        if raw_ts is None:
+            return None
+        ts = float(raw_ts) if isinstance(raw_ts, (int, float)) else safe_float(raw_ts)
         if ts is None:
             return None
-        dur = safe_float(e.get("dur")) or 0.0
+        raw_dur = e.get("dur")
+        if raw_dur is None:
+            dur = 0.0
+        elif isinstance(raw_dur, (int, float)):
+            dur = float(raw_dur)
+        else:
+            dur = safe_float(raw_dur) or 0.0
         return ts, ts + max(dur, 0.0)
 
     def add_step_range(step_num, ts, dur):
+        nonlocal step_cache_dirty
         start = ts
         end = ts + dur
         if step_num in step_ranges:
@@ -586,6 +632,20 @@ def parse_trace(trace_file):
             end = max(old_end, end)
         step_ranges[step_num] = (start, end)
         step_durations[step_num] = (end - start) / 1000
+        step_cache_dirty = True
+
+    def find_known_step(ts):
+        nonlocal step_cache_dirty, cached_step_starts, cached_step_ends, cached_step_nums
+        if step_cache_dirty:
+            sorted_steps = sorted(step_ranges.items(), key=lambda x: x[1][0])
+            cached_step_starts = [v[0] for _, v in sorted_steps]
+            cached_step_ends = [v[1] for _, v in sorted_steps]
+            cached_step_nums = [k for k, _ in sorted_steps]
+            step_cache_dirty = False
+        i = bisect.bisect_right(cached_step_starts, ts) - 1
+        if i >= 0 and ts <= cached_step_ends[i]:
+            return cached_step_nums[i]
+        return None
 
     def is_interesting_event(name, cat):
         return (
@@ -596,9 +656,8 @@ def parse_trace(trace_file):
 
     def compact_record(e, name, cat, interval):
         raw_dur = e.get("dur")
-        dur = safe_float(raw_dur)
-        has_dur = dur is not None
-        dur_ms = dur / 1000 if has_dur else 0.0
+        has_dur = raw_dur is not None
+        dur_ms = max(interval[1] - interval[0], 0.0) / 1000 if has_dur else 0.0
         ts = interval[0]
         if cat == "kernel":
             args = e.get("args", {}) or {}
@@ -620,25 +679,84 @@ def parse_trace(trace_file):
             return (_EVENT_ATEN, name, ts, dur_ms)
         return (_EVENT_CNCL, name, ts, dur_ms)
 
-    def scan_event(e, record_sink=None):
+    def aggregate_record(record, step):
+        kind = record[0]
+        if kind == _EVENT_KERNEL:
+            (
+                _,
+                name,
+                _ts,
+                dur_ms,
+                has_dur,
+                collective_name,
+                total_io_gb,
+                io_efficiency,
+                tiling_config,
+                triton_output_code,
+            ) = record
+            step_to_kernels[step][name]["count"] += 1
+            step_to_kernels[step][name]["dur_ms"] += dur_ms
+
+            family_key = (name, collective_name or "")
+            family = family_cache.get(family_key)
+            if family is None:
+                args = {"Collective name": collective_name} if collective_name else {}
+                family = classify_kernel(name, args)
+                family_cache[family_key] = family
+            if name not in kernel_families or family == "collective":
+                kernel_families[name] = family
+            if family == "collective":
+                step_to_cncl[step][name]["count"] += 1
+                step_to_cncl[step][name]["dur_ms"] += dur_ms
+
+            if name.startswith("triton_"):
+                step_to_triton[step].append({
+                    "kernel_name":         name,
+                    "dur(ms)":             dur_ms if has_dur else None,
+                    "total io(GB)":        total_io_gb,
+                    "IO efficiency(GB/s)": io_efficiency,
+                    "tiling config":       tiling_config,
+                    "triton_output_code":  triton_output_code,
+                })
+            return
+
+        _, name, _ts, dur_ms = record
+        if kind == _EVENT_ATEN:
+            step_to_aten[step][name]["count"] += 1
+            step_to_aten[step][name]["dur_ms"] += dur_ms
+        elif kind == _EVENT_CNCL:
+            step_to_cncl[step][name]["count"] += 1
+            step_to_cncl[step][name]["dur_ms"] += dur_ms
+
+    def scan_event(e, record_sink=None, *, allow_direct=False):
         name = e.get("name", "")
         cat  = e.get("cat", "")
         step_num = extract_step_number(name)
-        interval = event_interval(e)
         if step_num is not None and cat != "kernel":
+            interval = event_interval(e)
             if interval is not None:
                 add_step_range(step_num, interval[0], interval[1] - interval[0])
             return
-        if cat != "kernel" and is_fallback_step_marker(name) and interval:
-            if interval[1] > interval[0]:
-                if not step_ranges:
-                    fallback_intervals.append(interval)
+        if cat != "kernel" and is_fallback_step_marker(name):
+            interval = event_interval(e)
+            if interval and interval[1] > interval[0] and not step_ranges:
+                fallback_intervals.append(interval)
             return
-        if is_interesting_event(name, cat) and interval is not None:
+        if not is_interesting_event(name, cat):
+            return
+
+        interval = event_interval(e)
+        if interval is not None:
             if not step_ranges:
                 analyzable_intervals.append(interval)
+            record = compact_record(e, name, cat, interval)
+            if allow_direct and step_ranges:
+                step = find_known_step(interval[0])
+                if step is not None:
+                    aggregate_record(record, step)
+                    return
             if record_sink is not None:
-                record_sink(compact_record(e, name, cat, interval))
+                record_sink(record)
 
     def fast_records(events):
         for e in events:
@@ -662,7 +780,7 @@ def parse_trace(trace_file):
                 _spool_record(spool, spool_batch, record)
 
             for e in _iter_trace_events(trace_file):
-                scan_event(e, record_to_spool)
+                scan_event(e, record_to_spool, allow_direct=True)
             _flush_spool_batch(spool, spool_batch)
 
         def add_fallback_step_ranges():
@@ -704,62 +822,13 @@ def parse_trace(trace_file):
                 return step_nums[i]
             return None
 
-        step_to_triton       = defaultdict(list)
-        step_to_kernels      = defaultdict(lambda: defaultdict(lambda: {"count": 0, "dur_ms": 0.0}))
-        step_to_aten         = defaultdict(lambda: defaultdict(lambda: {"count": 0, "dur_ms": 0.0}))
-        step_to_cncl         = defaultdict(lambda: defaultdict(lambda: {"count": 0, "dur_ms": 0.0}))
-
         record_iter = fast_records(fast_events) if fast_events is not None else _iter_spooled_records(spool)
         for record in record_iter:
-            kind = record[0]
-            if kind == _EVENT_KERNEL:
-                (
-                    _,
-                    name,
-                    ts,
-                    dur_ms,
-                    has_dur,
-                    collective_name,
-                    total_io_gb,
-                    io_efficiency,
-                    tiling_config,
-                    triton_output_code,
-                ) = record
-                step = find_step(ts)
-                if step is None:
-                    continue
-                step_to_kernels[step][name]["count"] += 1
-                step_to_kernels[step][name]["dur_ms"] += dur_ms
-
-                args = {"Collective name": collective_name} if collective_name else {}
-                family = classify_kernel(name, args)
-                if name not in kernel_families or family == "collective":
-                    kernel_families[name] = family
-                if family == "collective":
-                    step_to_cncl[step][name]["count"] += 1
-                    step_to_cncl[step][name]["dur_ms"] += dur_ms
-
-                if name.startswith("triton_"):
-                    step_to_triton[step].append({
-                        "kernel_name":         name,
-                        "dur(ms)":             dur_ms if has_dur else None,
-                        "total io(GB)":        total_io_gb,
-                        "IO efficiency(GB/s)": io_efficiency,
-                        "tiling config":       tiling_config,
-                        "triton_output_code":  triton_output_code,
-                    })
-                continue
-
-            _, name, ts, dur_ms = record
+            ts = record[2]
             step = find_step(ts)
             if step is None:
                 continue
-            if kind == _EVENT_ATEN:
-                step_to_aten[step][name]["count"] += 1
-                step_to_aten[step][name]["dur_ms"] += dur_ms
-            elif kind == _EVENT_CNCL:
-                step_to_cncl[step][name]["count"] += 1
-                step_to_cncl[step][name]["dur_ms"] += dur_ms
+            aggregate_record(record, step)
 
         return {
             "step_to_triton":       step_to_triton,

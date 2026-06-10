@@ -2,7 +2,7 @@
 
 Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/内网性能分析工具。它可以解析 `.json`、`.json.gz`、`.gz`、`.json.zip`、`.zip`、`.tar.gz` 和 `.tgz` trace 文件，统计 GPU kernel、Triton kernel、ATen Ops、CNCL/NCCL 通信算子，并提供单 trace 分析、双 trace 对比、历史管理、AI 分析和 Web 可视化界面。
 
-当前版本：`0.2.70`
+当前版本：`0.2.71`
 
 ## 主要功能
 
@@ -92,6 +92,7 @@ Web 首页有两种上传模式：
 
 - `单文件/批量`：拖拽或选择一个或多个 trace 文件，批量提交后每个文件生成一个任务。
 - `快速对比`：同时上传 A/B 两个 trace，直接生成对比任务。
+- 大 trace 分析期间，任务页会持续显示当前阶段和已用时间；如果正在解析 10GB+ trace，等待几十秒到数分钟是正常现象。
 
 支持的输入格式：
 
@@ -277,7 +278,7 @@ sudo chown -R cambricon:cambricon /data/analyze_trace
 | `TRACE_MAX_UPLOAD_BYTES` | `0` | 单个上传文件大小限制；`0` 表示不限制 |
 | `TRACE_MAX_TRACE_JSON_BYTES` | `0` | 分析前允许的解压后 trace JSON 大小上限；`0` 表示不限制。该保护会直接检查 plain JSON/zip/tar 中可获得的 JSON 大小；普通 `.json.gz` 默认不额外预扫描，避免 10GB+ trace 被重复解压 |
 | `TRACE_STRICT_GZIP_SIZE_CHECK` | `0` | 设置为 `1` 后，普通 `.json.gz` 也会在分析前流式扫描解压后大小。该模式更严格，但会让 gzip trace 至少多解压一遍，超大文件会明显变慢 |
-| `TRACE_FAST_TRACE_JSON_BYTES` | `268435456` | 小/中等 trace 走快速整文件 JSON 解析的大小阈值；内存充裕时可适当调高，`0` 表示全部使用流式解析 |
+| `TRACE_FAST_TRACE_JSON_BYTES` | `268435456` | 小/中等 trace 走 `orjson` 快速整文件解析的大小阈值；超出阈值会自动回退流式解析，`0` 表示全部使用流式解析。调高会显著提升中大 trace 速度，但需要按解压后 JSON 大小预留数倍内存 |
 | `TRACE_MIN_STORAGE_FREE_BYTES` | `0` | 上传前要求保留的磁盘可用空间；`0` 表示不检查 |
 | `TRACE_ANALYSIS_CONCURRENCY` | `1` | 并发分析任务数 |
 | `TRACE_AI_ANALYSIS_CONCURRENCY` | `1` | 并发 Claude Code AI 分析任务数 |

@@ -16,6 +16,7 @@ import shlex
 import shutil
 import smtplib
 import socket
+import sqlite3
 import subprocess
 import sys
 import tarfile
@@ -47,7 +48,7 @@ from trace_analyzer import (  # noqa: E402
     run_triton_code_and_get_efficiency,
 )
 
-from db import get_db, init_db, row_to_dict  # noqa: E402
+from db import DB_BUSY_TIMEOUT_MS, DB_PATH, DB_TIMEOUT_SECONDS, get_db, init_db, row_to_dict  # noqa: E402
 import auth as ldap_auth  # noqa: E402
 
 WEB_DIR = os.path.dirname(__file__)
@@ -55,7 +56,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.70"
+APP_VERSION = "0.2.71"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -3375,17 +3376,50 @@ def _assert_trace_json_size_supported(path: str, slot: str = "trace") -> None:
 
 # ── Synchronous analysis (runs in thread pool, must not await) ────────────────
 
-def _run_sync_analysis(job, rdir, path_a, path_b, name_a, name_b):
+def _format_elapsed(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    minutes, sec = divmod(seconds, 60)
+    if minutes:
+        return f"{minutes}分{sec}秒"
+    return f"{sec}秒"
+
+
+def _write_analysis_progress(job_id: str, message: str) -> None:
+    try:
+        with sqlite3.connect(DB_PATH, timeout=DB_TIMEOUT_SECONDS) as conn:
+            conn.execute(f"PRAGMA busy_timeout={DB_BUSY_TIMEOUT_MS}")
+            conn.execute(
+                "UPDATE jobs SET console_out=? WHERE id=? AND status='running'",
+                (message, job_id),
+            )
+            conn.commit()
+    except Exception:
+        logger.debug(
+            "analysis_progress_update_failed",
+            extra={"event": "analysis_progress_update_failed", "job_id": job_id},
+            exc_info=True,
+        )
+
+
+def _run_sync_analysis(job, rdir, path_a, path_b, name_a, name_b, progress_callback=None):
     """All blocking I/O lives here so the event loop stays free."""
     from trace_analyzer import (print_step_summary, print_kernel_type_breakdown, print_top_kernels,
                                 write_single, print_comparison, write_comparison)
 
+    def stage(message: str):
+        if progress_callback:
+            progress_callback(message)
+
     def compute_trace(path, step_filter, slot):
+        stage(f"预检 Trace {slot.upper()}")
         _assert_trace_json_size_supported(path, slot)
+        stage(f"解析 Trace {slot.upper()}: {os.path.basename(path)}")
         parsed = parse_trace(path)
         steps = parse_step_filter(step_filter)
         if steps:
+            stage(f"筛选 Trace {slot.upper()} step: {step_filter}")
             parsed = filter_parsed_steps(parsed, steps)
+        stage(f"聚合 Trace {slot.upper()} 指标")
         return compute_avgs(parsed)
 
     buf = io.StringIO()
@@ -3401,6 +3435,7 @@ def _run_sync_analysis(job, rdir, path_a, path_b, name_a, name_b):
                 save_triton_csv=bool(job["save_triton_csv"]),
                 save_triton_code=bool(job["save_triton_code"]),
             )
+            stage("生成单 trace 结果")
             print_step_summary(data)
             print_kernel_type_breakdown(data)
             print_top_kernels(data)
@@ -3418,6 +3453,7 @@ def _run_sync_analysis(job, rdir, path_a, path_b, name_a, name_b):
             fake_args = types.SimpleNamespace(output_dir=rdir)
             label_a = name_a or os.path.basename(path_a)
             label_b = name_b or os.path.basename(path_b)
+            stage("生成对比结果")
             print_comparison(data_a, data_b, label_a, label_b)
             print_top_kernels(data_a, label=label_a)
             print_top_kernels(data_b, label=label_b)
@@ -3437,6 +3473,8 @@ def _run_sync_analysis(job, rdir, path_a, path_b, name_a, name_b):
 
 async def run_analysis(job_id: str):
     db = await get_db()
+    progress_task = None
+    progress_state = None
     try:
         claim = await db.execute(
             "UPDATE jobs SET status='running', error_msg='' WHERE id=? AND status='pending'",
@@ -3452,6 +3490,24 @@ async def run_analysis(job_id: str):
             return
 
         logger.info("analysis_started", extra={"event": "analysis_started", "job_id": job_id, "mode": job["mode"]})
+        progress_started_at = time.perf_counter()
+        progress_state = {"message": "准备分析任务", "done": False}
+
+        def set_progress(message: str) -> None:
+            progress_state["message"] = message
+            elapsed = _format_elapsed(time.perf_counter() - progress_started_at)
+            _write_analysis_progress(job_id, f"{message} · 已用 {elapsed}")
+
+        async def progress_heartbeat():
+            while not progress_state["done"]:
+                await asyncio.sleep(5)
+                if progress_state["done"]:
+                    return
+                elapsed = _format_elapsed(time.perf_counter() - progress_started_at)
+                _write_analysis_progress(job_id, f"{progress_state['message']} · 已用 {elapsed}")
+
+        progress_task = asyncio.create_task(progress_heartbeat())
+        set_progress("准备分析任务")
 
         rdir = result_dir(job_id)
         os.makedirs(rdir, exist_ok=True)
@@ -3484,8 +3540,11 @@ async def run_analysis(job_id: str):
 
         # Run all blocking analysis in a thread pool so the event loop stays responsive
         console_out = await asyncio.to_thread(
-            _run_sync_analysis, job, rdir, path_a, path_b, name_a, name_b
+            _run_sync_analysis,
+            job, rdir, path_a, path_b, name_a, name_b,
+            set_progress,
         )
+        set_progress("压缩并整理 trace 文件")
 
         # Post-analysis: keep only .json.gz files to save storage space
         for slot in ("a", "b"):
@@ -3522,6 +3581,12 @@ async def run_analysis(job_id: str):
         await db.commit()
         logger.exception("analysis_failed", extra={"event": "analysis_failed", "job_id": job_id})
     finally:
+        if progress_state is not None:
+            progress_state["done"] = True
+        if progress_task is not None:
+            progress_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await progress_task
         await db.close()
 
 

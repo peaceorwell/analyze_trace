@@ -1,4 +1,5 @@
 import csv
+import gzip
 import json
 import os
 import shutil
@@ -126,6 +127,39 @@ class TestParseTrace:
         result = parse_trace(sample_trace_file_gz)
 
         assert result["step_durations"][0] == 100.0
+
+    def test_small_plain_trace_uses_fast_path(self, sample_trace_file, monkeypatch):
+        import trace_analyzer.core as core
+
+        monkeypatch.setenv("TRACE_FAST_TRACE_JSON_BYTES", "999999")
+
+        def fail_iter_trace_events(_trace_file):
+            raise AssertionError("streaming parser should not be used for small traces")
+
+        monkeypatch.setattr(core, "_iter_trace_events", fail_iter_trace_events)
+
+        result = parse_trace(sample_trace_file)
+
+        assert result["step_durations"][0] == 100.0
+
+    def test_gzip_fast_path_falls_back_when_decompressed_size_exceeds_limit(self, tmp_path, monkeypatch):
+        trace_path = tmp_path / "trace.json.gz"
+        payload = (
+            b'{"traceEvents":['
+            + b" " * 512
+            + b'{"name":"ProfilerStep#0","cat":"user_annotation","ts":0,"dur":1000},'
+            + b'{"name":"gemm_kernel","cat":"kernel","ts":100,"dur":200,"args":{}}'
+            + b"]}"
+        )
+        with gzip.open(trace_path, "wb") as f:
+            f.write(payload)
+
+        monkeypatch.setenv("TRACE_FAST_TRACE_JSON_BYTES", "128")
+
+        result = parse_trace(trace_path)
+
+        assert result["step_durations"][0] == 1.0
+        assert result["step_to_kernels"][0]["gemm_kernel"]["count"] == 1
 
     def test_streaming_trace_reads_event_stream_once(self, sample_trace_file_gz, sample_trace_data, monkeypatch):
         import trace_analyzer.core as core
