@@ -123,9 +123,10 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.64");
+const appVersion = ref("0.2.65");
 const authRequired = ref(false);
 const authChecked = ref(false);
+const authInitError = ref("");
 const currentUser = ref(null);
 const currentUserIsAdmin = ref(false);
 const LOGIN_USERNAME_KEY = "tpa-login-username";
@@ -927,10 +928,66 @@ const deltaCellClass = (field, value) => {
 // Data fetching
 // ══════════════════════════════════════════════════════════════════════════════
 
+class ApiRequestError extends Error {
+  constructor(message, { status = 0, authExpired = false } = {}) {
+    super(message);
+    this.name = "ApiRequestError";
+    this.status = status;
+    this.authExpired = authExpired;
+  }
+}
+
+const readJsonResponse = async (response, fallback = {}) => {
+  const text = await response.text();
+  if (!text) return fallback;
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new ApiRequestError("服务返回了非 JSON 响应，请稍后重试或刷新页面", {
+      status: response.status,
+    });
+  }
+};
+
+const apiErrorMessage = (response, payload, fallback) =>
+  payload?.detail || payload?.message || `${fallback}: HTTP ${response.status}`;
+
+const fetchJson = async (url, options = {}, fallback = "请求失败") => {
+  const response = await fetch(url, options);
+  const payload = await readJsonResponse(response, {});
+  if (!response.ok) {
+    throw new ApiRequestError(apiErrorMessage(response, payload, fallback), {
+      status: response.status,
+      authExpired: response.status === 401,
+    });
+  }
+  return payload;
+};
+
+const handleAuthExpired = () => {
+  if (!authRequired.value) return;
+  currentUser.value = null;
+  currentUserIsAdmin.value = false;
+  authChecked.value = true;
+  clearInterval(pollTimer);
+  pollTimer = null;
+  stopAiAnalysisPolling();
+  cancelResultTableRequest();
+  clearAiDiagnostics();
+};
+
+const normalizeApiError = (error, fallback = "请求失败") => {
+  if (error?.name === "AbortError") return fallback;
+  if (error?.authExpired) {
+    handleAuthExpired();
+    return "登录已过期，请重新登录";
+  }
+  return error?.message || fallback;
+};
+
 const loadConfig = async () => {
-  const r = await fetch("/api/config");
-  const cfg = await r.json();
-  appVersion.value = cfg.version || "0.2.64";
+  const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
+  appVersion.value = cfg.version || "0.2.65";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -939,13 +996,18 @@ const loadConfig = async () => {
 
 const loadMe = async () => {
   const r = await fetch("/api/me", { credentials: "include" });
-  if (!r.ok) {
+  const data = await readJsonResponse(r, {});
+  if (r.status === 401) {
     currentUser.value = null;
     currentUserIsAdmin.value = false;
     authChecked.value = true;
     return null;
   }
-  const data = await r.json();
+  if (!r.ok) {
+    throw new ApiRequestError(apiErrorMessage(r, data, "检查登录状态失败"), {
+      status: r.status,
+    });
+  }
   currentUser.value = data.authenticated ? data.user : null;
   currentUserIsAdmin.value = Boolean(data.is_admin);
   authChecked.value = true;
@@ -1004,9 +1066,7 @@ const submitLogin = async () => {
     appInitialized = true;
     await loadProjects();
     await refreshSidebarData();
-    if (router.currentRoute.value.name === "feedback") {
-      await openFeedbackRoute(router.currentRoute.value);
-    }
+    await resumeCurrentRouteAfterLogin();
   } catch (e) {
     loginError.value = e.message || "登录失败";
   } finally {
@@ -1030,9 +1090,7 @@ const logout = async () => {
 
 const loadProjects = async () => {
   try {
-    const r = await fetch("/api/projects", { credentials: "include" });
-    if (!r.ok) throw new Error("加载项目失败: HTTP " + r.status);
-    projects.value = await r.json();
+    projects.value = await fetchJson("/api/projects", { credentials: "include" }, "加载项目失败");
     if (
       filterProject.value &&
       filterProject.value !== "__none__" &&
@@ -1041,7 +1099,9 @@ const loadProjects = async () => {
       filterProject.value = "";
     }
   } catch (e) {
+    const message = normalizeApiError(e, "加载项目失败");
     console.error("loadProjects error:", e);
+    if (e?.authExpired) showToast(message, "error");
   }
 };
 
@@ -2298,6 +2358,7 @@ const deleteSelectedStorageFiles = async () => {
 let historyGroupsController = null;
 let compareJobsController = null;
 let resultTableController = null;
+let loadJobRequestSeq = 0;
 const historyGroupControllers = {};
 
 const cancelResultTableRequest = () => {
@@ -2328,7 +2389,13 @@ const loadHistoryGroups = async () => {
       credentials: "include",
       signal: controller.signal,
     });
-    const data = await r.json();
+    const data = await readJsonResponse(r, {});
+    if (!r.ok) {
+      throw new ApiRequestError(apiErrorMessage(r, data, "加载历史记录失败"), {
+        status: r.status,
+        authExpired: r.status === 401,
+      });
+    }
     if (historyGroupsController !== controller) return;
     historyGroups.value = (data.data || []).map(group => ({
       ...group,
@@ -2353,7 +2420,7 @@ const loadHistoryGroups = async () => {
     const expandedGroups = historyGroups.value.filter(group => collapsedGroups.value[group.id]);
     await Promise.all(expandedGroups.map(group => loadHistoryGroupJobs(group.id, true)));
   } catch (e) {
-    if (e.name !== "AbortError") showToast("加载历史记录失败", "error");
+    if (e.name !== "AbortError") showToast(normalizeApiError(e, "加载历史记录失败"), "error");
   } finally {
     if (historyGroupsController === controller) {
       historyGroupsLoading.value = false;
@@ -2387,7 +2454,13 @@ const loadHistoryGroupJobs = async (groupId, reset = false) => {
       credentials: "include",
       signal: controller.signal,
     });
-    const data = await r.json();
+    const data = await readJsonResponse(r, {});
+    if (!r.ok) {
+      throw new ApiRequestError(apiErrorMessage(r, data, "加载项目任务失败"), {
+        status: r.status,
+        authExpired: r.status === 401,
+      });
+    }
     if (historyGroupControllers[groupId] !== controller) return;
     const latest = historyGroups.value.find(item => item.id === groupId);
     if (!latest) return;
@@ -2402,7 +2475,7 @@ const loadHistoryGroupJobs = async (groupId, reset = false) => {
   } catch (e) {
     if (e.name !== "AbortError") {
       updateHistoryGroup(groupId, { jobs_loading: false });
-      showToast("加载项目任务失败", "error");
+      showToast(normalizeApiError(e, "加载项目任务失败"), "error");
     }
   } finally {
     if (historyGroupControllers[groupId] === controller) {
@@ -2426,7 +2499,13 @@ const loadCompareJobs = async () => {
       credentials: "include",
       signal: controller.signal,
     });
-    const data = await r.json();
+    const data = await readJsonResponse(r, {});
+    if (!r.ok) {
+      throw new ApiRequestError(apiErrorMessage(r, data, "加载对比候选失败"), {
+        status: r.status,
+        authExpired: r.status === 401,
+      });
+    }
     if (compareJobsController !== controller) return;
     compareJobs.value = data.data || [];
     compareJobsTotal.value = data.total || 0;
@@ -2445,7 +2524,7 @@ const loadCompareJobs = async () => {
     }
     batchSelectionDetails.value = batchDetails;
   } catch (e) {
-    if (e.name !== "AbortError") showToast("加载对比候选失败", "error");
+    if (e.name !== "AbortError") showToast(normalizeApiError(e, "加载对比候选失败"), "error");
   } finally {
     if (compareJobsController === controller) {
       compareJobsLoading.value = false;
@@ -2458,13 +2537,50 @@ const refreshSidebarData = async () => {
   await Promise.all([loadHistoryGroups(), loadCompareJobs()]);
 };
 
+const initializeAppData = async () => {
+  if (appInitialized && !authInitError.value) {
+    return !authRequired.value || Boolean(currentUser.value);
+  }
+  authInitError.value = "";
+  try {
+    await loadConfig();
+    await loadMe();
+    if (authRequired.value && !currentUser.value) {
+      appInitialized = true;
+      return false;
+    }
+    await loadProjects();
+    await refreshSidebarData();
+    appInitialized = true;
+    return true;
+  } catch (e) {
+    appInitialized = false;
+    authChecked.value = true;
+    authInitError.value = normalizeApiError(e, "初始化失败");
+    return false;
+  }
+};
+
 const loadJob = async id => {
-  const r = await fetch(`/api/jobs/${id}`, { credentials: "include" });
+  const jobId = String(id || "");
+  const requestSeq = ++loadJobRequestSeq;
+  const r = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`, { credentials: "include" });
+  const data = await readJsonResponse(r, {});
+  if (requestSeq !== loadJobRequestSeq || selectedJobId.value !== jobId) return "stale";
   if (!r.ok) {
+    if (r.status === 401) {
+      handleAuthExpired();
+      return false;
+    }
+    if (r.status !== 404) {
+      throw new ApiRequestError(apiErrorMessage(r, data, "加载任务失败"), {
+        status: r.status,
+      });
+    }
     selectedJob.value = null;
     return false;
   }
-  selectedJob.value = await r.json();
+  selectedJob.value = data;
   resultTable.value = { fields: [], rows: [], total: 0, filtered_total: 0, limit: tableLimit.value, offset: tableOffset.value };
   resultTableFile.value = "";
   consoleSearch.value = "";
@@ -2685,8 +2801,13 @@ const refreshAiAnalysis = async ({ silent = false, versionId } = {}) => {
   aiAnalysisError.value = "";
   try {
     const r = await fetch(url, { credentials: "include" });
-    const payload = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(payload.detail || "加载 AI 分析失败");
+    const payload = await readJsonResponse(r, {});
+    if (!r.ok) {
+      throw new ApiRequestError(apiErrorMessage(r, payload, "加载 AI 分析失败"), {
+        status: r.status,
+        authExpired: r.status === 401,
+      });
+    }
     if (selectedJobId.value !== jobId) return;
     updateAiAnalysisState(payload);
     if (isAiAnalysisActive(previousStatus) && payload.status && !isAiAnalysisActive(payload.status)) {
@@ -2700,9 +2821,11 @@ const refreshAiAnalysis = async ({ silent = false, versionId } = {}) => {
     if (isAiAnalysisActive(payload.status)) startAiAnalysisPolling();
     else stopAiAnalysisPolling();
   } catch (e) {
-    aiAnalysisError.value = e.message || "加载 AI 分析失败";
+    if (selectedJobId.value === jobId) {
+      aiAnalysisError.value = normalizeApiError(e, "加载 AI 分析失败");
+    }
   } finally {
-    aiAnalysisLoading.value = false;
+    if (selectedJobId.value === jobId) aiAnalysisLoading.value = false;
   }
 };
 
@@ -2767,8 +2890,13 @@ const startAiAnalysis = async (force = false, prompt = "") => {
       credentials: "include",
       body: JSON.stringify({ force, prompt: String(prompt || "").trim() }),
     });
-    const payload = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(payload.detail || "提交 AI 分析失败");
+    const payload = await readJsonResponse(r, {});
+    if (!r.ok) {
+      throw new ApiRequestError(apiErrorMessage(r, payload, "提交 AI 分析失败"), {
+        status: r.status,
+        authExpired: r.status === 401,
+      });
+    }
     if (selectedJobId.value !== jobId) return;
     updateAiAnalysisState(payload);
     if (isAiAnalysisActive(payload.status)) {
@@ -2776,7 +2904,7 @@ const startAiAnalysis = async (force = false, prompt = "") => {
       showToast(payload.status === "queued" ? "AI 分析已排队" : "AI 分析已开始", "success");
     }
   } catch (e) {
-    aiAnalysisError.value = e.message || "提交 AI 分析失败";
+    aiAnalysisError.value = normalizeApiError(e, "提交 AI 分析失败");
     showToast(aiAnalysisError.value, "error");
   } finally {
     aiAnalysisStarting.value = false;
@@ -2844,12 +2972,17 @@ const runAiDiagnostics = async () => {
       method: "POST",
       credentials: "include",
     });
-    const payload = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(payload.detail || "AI 环境诊断失败");
+    const payload = await readJsonResponse(r, {});
+    if (!r.ok) {
+      throw new ApiRequestError(apiErrorMessage(r, payload, "AI 环境诊断失败"), {
+        status: r.status,
+        authExpired: r.status === 401,
+      });
+    }
     aiDiagnosticsResult.value = payload;
     showToast(payload.ok ? "AI 环境诊断通过" : "AI 环境诊断未通过", payload.ok ? "success" : "error");
   } catch (e) {
-    aiDiagnosticsError.value = e.message || "AI 环境诊断失败";
+    aiDiagnosticsError.value = normalizeApiError(e, "AI 环境诊断失败");
     showToast(aiDiagnosticsError.value, "error");
   } finally {
     aiDiagnosticsLoading.value = false;
@@ -2903,20 +3036,26 @@ const buildResultTableParams = (overrides = {}) => {
 };
 
 const fetchResultTable = async (filename, options = {}) => {
+  const jobId = options.jobId || selectedJobId.value;
+  if (!jobId) throw new Error("未选择任务");
   const params = buildResultTableParams(options);
   const r = await fetch(
-    `/api/jobs/${selectedJobId.value}/results/${encodeURIComponent(filename)}?${params}`,
+    `/api/jobs/${encodeURIComponent(jobId)}/results/${encodeURIComponent(filename)}?${params}`,
     { credentials: "include", signal: options.signal },
   );
+  const data = await readJsonResponse(r, {});
   if (!r.ok) {
-    const err = await r.json().catch(() => ({}));
-    throw new Error(err.detail || "加载表格失败");
+    throw new ApiRequestError(apiErrorMessage(r, data, "加载表格失败"), {
+      status: r.status,
+      authExpired: r.status === 401,
+    });
   }
-  return await r.json();
+  return data;
 };
 
 const loadResultTable = async ({ resetOffset = false, filename = resultTab.value, viewState = null } = {}) => {
-  if (!selectedJobId.value || !filename?.endsWith(".csv")) return;
+  const jobId = selectedJobId.value;
+  if (!jobId || !filename?.endsWith(".csv")) return;
   if (resetOffset) {
     if (viewState) viewState = { ...viewState, tableOffset: 0 };
     else tableOffset.value = 0;
@@ -2932,15 +3071,18 @@ const loadResultTable = async ({ resetOffset = false, filename = resultTab.value
     resultTable.value = emptyResultTableForTab(filename);
   }
   try {
-    const data = await fetchResultTable(filename, { signal: controller.signal, viewState });
+    const data = await fetchResultTable(filename, { jobId, signal: controller.signal, viewState });
     if (resultTableController !== controller) return;
+    if (selectedJobId.value !== jobId) return;
     if (resultTableFile.value !== filename) return;
     if (resultTab.value !== filename) return;
     resultTable.value = data;
     tableLimit.value = data.limit || tableLimit.value;
     tableOffset.value = data.offset || 0;
   } catch (e) {
-    if (e.name !== "AbortError") resultTableError.value = e.message || "加载表格失败";
+    if (e.name !== "AbortError" && selectedJobId.value === jobId) {
+      resultTableError.value = normalizeApiError(e, "加载表格失败");
+    }
   } finally {
     if (resultTableController === controller) {
       resultTableController = null;
@@ -2963,7 +3105,7 @@ const activateCsvTab = async (filename, { updateRoute = true, savePrevious = tru
   resultTableError.value = "";
 
   try {
-    const data = await fetchResultTable(filename, { signal: controller.signal, viewState: state });
+    const data = await fetchResultTable(filename, { jobId, signal: controller.signal, viewState: state });
     if (resultTableController !== controller) return;
     if (selectedJobId.value !== jobId) return;
     applyResultViewState(state);
@@ -2985,7 +3127,7 @@ const activateCsvTab = async (filename, { updateRoute = true, savePrevious = tru
     resultTableFile.value = filename;
     resultTable.value = emptyResultTableForTab(filename);
     resultTableLoading.value = false;
-    resultTableError.value = e.message || "加载表格失败";
+    resultTableError.value = normalizeApiError(e, "加载表格失败");
     showColumnMenu.value = false;
     skipNextResultTabWatch();
     resultTab.value = filename;
@@ -3378,6 +3520,7 @@ const drillDownChart = async row => {
 
 const buildChart = async () => {
   await nextTick();
+  const jobId = selectedJobId.value;
   if (!ktChart.value || !selectedJob.value?.result_files) {
     chartLoading.value = false;
     return;
@@ -3399,13 +3542,15 @@ const buildChart = async () => {
       chartTables.value = {
         ...chartTables.value,
         [sourceConfig.file]: await fetchResultTable(sourceConfig.file, {
+          jobId,
           limit: CHART_FETCH_LIMIT,
           offset: 0,
           ignoreViewState: true,
         }),
       };
+      if (selectedJobId.value !== jobId) return;
     } catch (e) {
-      chartError.value = e.message || "加载图表数据失败";
+      chartError.value = normalizeApiError(e, "加载图表数据失败");
       chartLoading.value = false;
       return;
     }
@@ -6013,81 +6158,7 @@ const router = createRouter({
   ],
 });
 
-// ══════════════════════════════════════════════════════════════════════════════
-// Navigation guard
-// ══════════════════════════════════════════════════════════════════════════════
-
-router.beforeEach(async (to, from) => {
-  // Ensure config/data is loaded on first navigation
-  if (!appInitialized) {
-    await loadConfig();
-    await loadMe();
-    if (authRequired.value && !currentUser.value) {
-      appInitialized = true;
-      return;
-    }
-    await loadProjects();
-    await refreshSidebarData();
-    appInitialized = true;
-  }
-
-  if (authRequired.value && !currentUser.value) return;
-
-  if (to.name === "feedback") {
-    await openFeedbackRoute(to);
-    return;
-  }
-  if (showFeedbackBoard.value) {
-    showFeedbackBoard.value = false;
-    selectedFeedbackPostId.value = "";
-    selectedFeedbackMessageId.value = "";
-    cancelFeedbackEdit();
-    closeFeedbackMention();
-    destroyFeedbackMarkdownEditors();
-  }
-
-  const newJobId = to.params?.id || null;
-
-  if (!newJobId) {
-    // Navigated to home -- clean up
-    saveResultViewState();
-    isReadingMode.value = false;
-    if (ktChartInst.value)     { ktChartInst.value.destroy();     ktChartInst.value = null; }
-    if (ktPieChartInst.value)  { ktPieChartInst.value.destroy();  ktPieChartInst.value = null; }
-    if (ktPieChartInstB.value) { ktPieChartInstB.value.destroy(); ktPieChartInstB.value = null; }
-    clearInterval(pollTimer);
-    pollTimer = null;
-    stopAiAnalysisPolling();
-    cancelResultTableRequest();
-    clearAiDiagnostics();
-    selectedJobId.value = null;
-    selectedJob.value = null;
-    jobLoading.value = false;
-    resultTab.value = DEFAULT_RESULT_TAB;
-    resultTableFile.value = "";
-    activeResultStateJobId = null;
-    return;
-  }
-
-  const requestedTabForSameJob = to.params?.tab || "";
-
-  // Same job, just switch tab
-  if (newJobId === selectedJobId.value) {
-    const validTabs = availableTabs.value.map(t => t.key);
-    const targetTab = resolveResultTab(newJobId, requestedTabForSameJob, validTabs);
-    if (targetTab !== resultTab.value) {
-      if (targetTab.endsWith(".csv")) {
-        await activateCsvTab(targetTab, { updateRoute: false });
-      } else {
-        cancelResultTableRequest();
-        resultTab.value = targetTab;
-      }
-    }
-    return;
-  }
-
-  // Different job -- full load
-  saveResultViewState();
+const resetJobRuntimeState = () => {
   isReadingMode.value = false;
   if (ktChartInst.value)     { ktChartInst.value.destroy();     ktChartInst.value = null; }
   if (ktPieChartInst.value)  { ktPieChartInst.value.destroy();  ktPieChartInst.value = null; }
@@ -6095,13 +6166,47 @@ router.beforeEach(async (to, from) => {
   stopAiAnalysisPolling();
   cancelResultTableRequest();
   clearAiDiagnostics();
+};
+
+const clearSelectedJobRoute = () => {
+  saveResultViewState();
+  resetJobRuntimeState();
+  clearInterval(pollTimer);
+  pollTimer = null;
+  selectedJobId.value = null;
+  selectedJob.value = null;
+  jobLoading.value = false;
+  resultTab.value = DEFAULT_RESULT_TAB;
+  resultTableFile.value = "";
+  activeResultStateJobId = null;
+};
+
+const loadJobRoute = async to => {
+  const newJobId = to.params?.id || null;
+  if (!newJobId) return true;
+
+  saveResultViewState();
+  resetJobRuntimeState();
 
   selectedJobId.value = newJobId;
   selectedJob.value = null;
   jobLoading.value = true;
   resultTableFile.value = "";
-  const loaded = await loadJob(newJobId);
 
+  let loaded;
+  try {
+    loaded = await loadJob(newJobId);
+  } catch (e) {
+    jobLoading.value = false;
+    const message = normalizeApiError(e, "加载任务失败");
+    if (!e?.authExpired) showToast(message, "error");
+    return false;
+  }
+
+  if (loaded === "stale") {
+    jobLoading.value = false;
+    return false;
+  }
   if (!loaded) {
     selectedJobId.value = null;
     clearAiDiagnostics();
@@ -6132,6 +6237,86 @@ router.beforeEach(async (to, from) => {
   }
   sidebarTab.value = "jobs";
   jobLoading.value = false;
+  return true;
+};
+
+const resumeCurrentRouteAfterLogin = async () => {
+  const route = router.currentRoute.value;
+  if (route.name === "feedback") {
+    await openFeedbackRoute(route);
+    return;
+  }
+  if (route.params?.id) {
+    const result = await loadJobRoute(route);
+    if (result && result !== true) await router.replace(result);
+  }
+};
+
+const retryInitializeApp = async () => {
+  authInitError.value = "";
+  authChecked.value = false;
+  appInitialized = false;
+  const ready = await initializeAppData();
+  if (ready) await resumeCurrentRouteAfterLogin();
+};
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Navigation guard
+// ══════════════════════════════════════════════════════════════════════════════
+
+router.beforeEach(async (to, from) => {
+  // Ensure config/data is loaded on first navigation
+  if (!appInitialized) {
+    const ready = await initializeAppData();
+    if (!ready) {
+      if (authInitError.value) return false;
+      return;
+    }
+  }
+
+  if (authRequired.value && !currentUser.value) return;
+
+  if (to.name === "feedback") {
+    await openFeedbackRoute(to);
+    return;
+  }
+  if (showFeedbackBoard.value) {
+    showFeedbackBoard.value = false;
+    selectedFeedbackPostId.value = "";
+    selectedFeedbackMessageId.value = "";
+    cancelFeedbackEdit();
+    closeFeedbackMention();
+    destroyFeedbackMarkdownEditors();
+  }
+
+  const newJobId = to.params?.id || null;
+
+  if (!newJobId) {
+    // Navigated to home -- clean up
+    clearSelectedJobRoute();
+    return;
+  }
+
+  const requestedTabForSameJob = to.params?.tab || "";
+
+  // Same job, just switch tab
+  if (newJobId === selectedJobId.value) {
+    const validTabs = availableTabs.value.map(t => t.key);
+    const targetTab = resolveResultTab(newJobId, requestedTabForSameJob, validTabs);
+    if (targetTab !== resultTab.value) {
+      if (targetTab.endsWith(".csv")) {
+        await activateCsvTab(targetTab, { updateRoute: false });
+      } else {
+        cancelResultTableRequest();
+        resultTab.value = targetTab;
+      }
+    }
+    return;
+  }
+
+  // Different job -- full load
+  const result = await loadJobRoute(to);
+  if (result !== true) return result;
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -6278,9 +6463,9 @@ const App = {
       // Layout/theme
       isDark, toggleTheme, sidebarWidth, sidebarCollapsed, appVersion, isFeedbackRoute,
       toggleSidebar, startSidebarResize,
-      authRequired, authChecked, currentUser, isAdmin, loginForm, loginRememberUsername, loginLoading, loginError,
+      authRequired, authChecked, authInitError, currentUser, isAdmin, loginForm, loginRememberUsername, loginLoading, loginError,
       loginCaptchaRequired, loginCaptchaImage,
-      submitLogin, refreshLoginCaptcha, logout,
+      retryInitializeApp, submitLogin, refreshLoginCaptcha, logout,
 
       // Sidebar data
       projects,
