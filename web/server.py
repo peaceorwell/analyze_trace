@@ -55,7 +55,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.72"
+APP_VERSION = "0.2.73"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -3413,10 +3413,23 @@ def _run_sync_analysis(job, rdir, path_a, path_b, name_a, name_b, progress_callb
             progress_callback(message)
 
     def compute_trace(path, step_filter, slot):
+        trace_label = os.path.basename(path)
+
+        def parse_progress(events_seen, records_seen):
+            stage(
+                f"解析 Trace {slot.upper()}: {trace_label} · "
+                f"已读 {events_seen:,} events · 命中 {records_seen:,} 条"
+            )
+
         stage(f"预检 Trace {slot.upper()}")
         _assert_trace_json_size_supported(path, slot)
-        stage(f"解析 Trace {slot.upper()}: {os.path.basename(path)}")
-        parsed = parse_trace(path)
+        stage(f"解析 Trace {slot.upper()}: {trace_label}")
+        keep_triton_code = bool(job["save_triton_csv"] or job["save_triton_code"])
+        parsed = parse_trace(
+            path,
+            keep_triton_code=keep_triton_code,
+            progress_callback=parse_progress,
+        )
         steps = parse_step_filter(step_filter)
         if steps:
             stage(f"筛选 Trace {slot.upper()} step: {step_filter}")
@@ -3479,7 +3492,13 @@ async def run_analysis(job_id: str):
     progress_state = None
     try:
         claim = await db.execute(
-            "UPDATE jobs SET status='running', error_msg='' WHERE id=? AND status='pending'",
+            """
+            UPDATE jobs
+            SET status='running',
+                error_msg='',
+                console_out='准备分析任务 · 已用 0秒'
+            WHERE id=? AND status='pending'
+            """,
             (job_id,),
         )
         await db.commit()

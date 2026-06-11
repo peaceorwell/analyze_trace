@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import zipfile
 from collections import defaultdict
 from decimal import Decimal
@@ -573,12 +574,12 @@ def _iter_trace_events(trace_file):
         yield from ijson.items(f, "traceEvents.item", use_float=True)
 
 
-def parse_trace(trace_file):
+def parse_trace(trace_file, *, keep_triton_code=False, progress_callback=None):
     """Parse a PyTorch profiler trace JSON.
 
     Returns:
         step_to_triton:       step -> [{kernel_name, dur(ms), total io(GB), IO efficiency(GB/s),
-                                        tiling config, triton_output_code}]
+                                        tiling config, triton hashes, optional triton_output_code}]
         step_to_kernels:      step -> {kernel_name -> {"count": int, "dur_ms": float}}
         step_to_aten:         step -> {op_name -> {"count": int, "dur_ms": float}}
         step_to_cncl:         step -> {op/kernel_name -> {"count": int, "dur_ms": float}}
@@ -605,6 +606,24 @@ def parse_trace(trace_file):
     step_to_aten         = defaultdict(lambda: defaultdict(lambda: {"count": 0, "dur_ms": 0.0}))
     step_to_cncl         = defaultdict(lambda: defaultdict(lambda: {"count": 0, "dur_ms": 0.0}))
     family_cache = {}
+    parse_events_seen = 0
+    parse_records_seen = 0
+    last_progress_at = time.perf_counter()
+    last_progress_snapshot = None
+
+    def maybe_report_parse_progress(*, force=False):
+        nonlocal last_progress_at, last_progress_snapshot
+        if not progress_callback:
+            return
+        now = time.perf_counter()
+        if not force and now - last_progress_at < 5:
+            return
+        snapshot = (parse_events_seen, parse_records_seen)
+        if force and snapshot == last_progress_snapshot:
+            return
+        progress_callback(parse_events_seen, parse_records_seen)
+        last_progress_snapshot = snapshot
+        last_progress_at = now
 
     def event_interval(e):
         raw_ts = e.get("ts")
@@ -663,6 +682,11 @@ def parse_trace(trace_file):
             args = e.get("args", {}) or {}
             if not isinstance(args, dict):
                 args = {}
+            triton_output_code = args.get("triton output code")
+            triton_code_hash = _stable_text_hash(triton_output_code) if triton_output_code else ""
+            triton_code_signature_hash = (
+                _stable_triton_code_signature_hash(triton_output_code) if triton_output_code else ""
+            )
             return (
                 _EVENT_KERNEL,
                 name,
@@ -673,7 +697,9 @@ def parse_trace(trace_file):
                 safe_float(args.get("kernel num(GB)")),
                 safe_float(args.get("IO efficiency(GB/s)")),
                 args.get("kernel kwargs"),
-                args.get("triton output code"),
+                triton_code_hash,
+                triton_code_signature_hash,
+                triton_output_code if keep_triton_code else None,
             )
         if name.startswith("aten::"):
             return (_EVENT_ATEN, name, ts, dur_ms)
@@ -692,6 +718,8 @@ def parse_trace(trace_file):
                 total_io_gb,
                 io_efficiency,
                 tiling_config,
+                triton_code_hash,
+                triton_code_signature_hash,
                 triton_output_code,
             ) = record
             step_to_kernels[step][name]["count"] += 1
@@ -716,6 +744,8 @@ def parse_trace(trace_file):
                     "total io(GB)":        total_io_gb,
                     "IO efficiency(GB/s)": io_efficiency,
                     "tiling config":       tiling_config,
+                    "triton_code_hash":    triton_code_hash,
+                    "triton_code_signature_hash": triton_code_signature_hash,
                     "triton_output_code":  triton_output_code,
                 })
             return
@@ -754,9 +784,20 @@ def parse_trace(trace_file):
                 step = find_known_step(interval[0])
                 if step is not None:
                     aggregate_record(record, step)
-                    return
+                    return True
             if record_sink is not None:
                 record_sink(record)
+            return True
+        return False
+
+    def scan_events_with_progress(events, record_sink=None, *, allow_direct=False):
+        nonlocal parse_events_seen, parse_records_seen
+        for event in events:
+            parse_events_seen += 1
+            if scan_event(event, record_sink, allow_direct=allow_direct):
+                parse_records_seen += 1
+            if parse_events_seen % 50000 == 0:
+                maybe_report_parse_progress()
 
     def fast_records(events):
         for e in events:
@@ -771,17 +812,16 @@ def parse_trace(trace_file):
     spool_batch = []
     try:
         if fast_events is not None:
-            for e in fast_events:
-                scan_event(e)
+            scan_events_with_progress(fast_events)
         else:
             spool = tempfile.SpooledTemporaryFile(max_size=_SPOOL_MEMORY_BYTES)
 
             def record_to_spool(record):
                 _spool_record(spool, spool_batch, record)
 
-            for e in _iter_trace_events(trace_file):
-                scan_event(e, record_to_spool, allow_direct=True)
+            scan_events_with_progress(_iter_trace_events(trace_file), record_to_spool, allow_direct=True)
             _flush_spool_batch(spool, spool_batch)
+        maybe_report_parse_progress(force=True)
 
         def add_fallback_step_ranges():
             fallback_intervals.sort(key=lambda item: item[0])
@@ -1063,10 +1103,15 @@ def compute_avgs(parsed):
                 a["io_eff_sum"] += k["IO efficiency(GB/s)"]
                 a["io_eff_count"] += 1
             meta = triton_meta_cache.setdefault(kernel_name, {})
+            code_hash = k.get("triton_code_hash") or ""
+            code_signature_hash = k.get("triton_code_signature_hash") or ""
             code_text = k.get("triton_output_code")
             if code_text and "code_hash" not in meta:
                 meta["code_hash"] = _stable_text_hash(code_text)
                 meta["code_signature_hash"] = _stable_triton_code_signature_hash(code_text)
+            elif code_hash and "code_hash" not in meta:
+                meta["code_hash"] = code_hash
+                meta["code_signature_hash"] = code_signature_hash
             tiling_text = k.get("tiling config")
             if tiling_text and "tiling_hash" not in meta:
                 meta["tiling_hash"] = _stable_triton_tiling_hash(tiling_text)
@@ -1504,7 +1549,7 @@ def write_single(data, args):
     if args.save_triton_csv or args.save_triton_code:
         triton_fields = ["kernel_name", "dur(ms)", "total io(GB)", "IO efficiency(GB/s)", "tiling config", "triton_code_file"]
         for step in data["all_steps"]:
-            kernels = [k for k in data["step_to_triton"][step] if k["triton_output_code"] is not None]
+            kernels = [k for k in data["step_to_triton"][step] if k.get("triton_output_code") is not None]
             if not kernels:
                 continue
             code_dir = os.path.join(args.output_dir, f"step_{step}_triton_codes")
@@ -1597,7 +1642,10 @@ def main(argv=None):
         parser.error("At most two trace files can be provided.")
 
     if len(args.trace_files) == 1:
-        parsed = parse_trace(args.trace_files[0])
+        parsed = parse_trace(
+            args.trace_files[0],
+            keep_triton_code=bool(args.save_triton_csv or args.save_triton_code),
+        )
         step_filter = args.steps_a or args.steps
         if step_filter:
             parsed = filter_parsed_steps(parsed, step_filter)
@@ -1612,8 +1660,9 @@ def main(argv=None):
         label_b = os.path.basename(args.trace_files[1])
         step_filter_a = args.steps_a or args.steps
         step_filter_b = args.steps_b or args.steps
-        parsed_a = parse_trace(args.trace_files[0])
-        parsed_b = parse_trace(args.trace_files[1])
+        keep_triton_code = bool(args.save_triton_csv or args.save_triton_code)
+        parsed_a = parse_trace(args.trace_files[0], keep_triton_code=keep_triton_code)
+        parsed_b = parse_trace(args.trace_files[1], keep_triton_code=keep_triton_code)
         if step_filter_a:
             parsed_a = filter_parsed_steps(parsed_a, step_filter_a)
             print(f"Step filter A: {step_filter_a}")

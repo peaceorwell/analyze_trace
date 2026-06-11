@@ -366,6 +366,63 @@ class TestComputeAvgs:
         assert triton["triton_tiling_hash"]
         assert triton["triton_tiling_hashes"] == [triton["triton_tiling_hash"]]
 
+    def test_parse_trace_drops_triton_code_by_default_but_keeps_hashes(self, tmp_path):
+        trace_path = tmp_path / "trace.json"
+        trace_path.write_text(json.dumps({
+            "traceEvents": [
+                {"name": "ProfilerStep#0", "cat": "user_annotation", "ts": 1000, "dur": 1000},
+                {
+                    "name": "triton_poi_fused_add_46",
+                    "cat": "kernel",
+                    "ts": 1100,
+                    "dur": 100,
+                    "args": {"triton output code": "def kernel():\n    return 1\n"},
+                },
+            ],
+        }))
+
+        parsed = parse_trace(str(trace_path))
+        kernel = parsed["step_to_triton"][0][0]
+        avgs = compute_avgs(parsed)
+
+        assert kernel["triton_output_code"] is None
+        assert kernel["triton_code_hash"]
+        assert avgs["avg_triton"]["triton_poi_fused_add_46"]["triton_code_hash"]
+
+    def test_parse_trace_can_keep_triton_code_for_exports(self, tmp_path):
+        trace_path = tmp_path / "trace.json"
+        code = "def kernel():\n    return 1\n"
+        trace_path.write_text(json.dumps({
+            "traceEvents": [
+                {"name": "ProfilerStep#0", "cat": "user_annotation", "ts": 1000, "dur": 1000},
+                {
+                    "name": "triton_poi_fused_add_46",
+                    "cat": "kernel",
+                    "ts": 1100,
+                    "dur": 100,
+                    "args": {"triton output code": code},
+                },
+            ],
+        }))
+
+        parsed = parse_trace(str(trace_path), keep_triton_code=True)
+
+        assert parsed["step_to_triton"][0][0]["triton_output_code"] == code
+
+    def test_parse_trace_reports_progress_counts(self, tmp_path):
+        trace_path = tmp_path / "trace.json"
+        trace_path.write_text(json.dumps({
+            "traceEvents": [
+                {"name": "ProfilerStep#0", "cat": "user_annotation", "ts": 1000, "dur": 1000},
+                {"name": "gemm_cuda_kernel", "cat": "kernel", "ts": 1100, "dur": 100, "args": {}},
+            ],
+        }))
+        progress = []
+
+        parse_trace(str(trace_path), progress_callback=lambda events, records: progress.append((events, records)))
+
+        assert progress[-1] == (2, 1)
+
     def test_collective_kernel_is_excluded_from_compute_duration(self, tmp_path):
         trace_path = tmp_path / "trace.json"
         trace_path.write_text(json.dumps({
