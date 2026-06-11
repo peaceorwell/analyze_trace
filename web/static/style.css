@@ -2227,6 +2227,7 @@ body.result-reading-active { overflow: hidden; }
   line-height: 1.35;
 }
 .feedback-detail-scroll {
+  flex: 0 0 auto;
   min-height: 0;
   overflow: auto;
   padding: 12px 2px;
@@ -2258,10 +2259,13 @@ body.result-reading-active { overflow: hidden; }
   gap: 14px;
   padding-left: 0;
   border-left: none;
+  margin-bottom: 18px;
 }
 .feedback-thread-reply-form {
   flex-shrink: 0;
-  margin-top: 0;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
 }
 .feedback-thread-reply-form .feedback-github-editor {
   display: flex;
