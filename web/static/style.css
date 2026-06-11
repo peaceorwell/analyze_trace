@@ -1727,6 +1727,32 @@ body.result-reading-active { overflow: hidden; }
   gap: 8px;
   flex-wrap: wrap;
 }
+.feedback-page-card .btn,
+.feedback-compose-modal .btn {
+  font-size: 13px;
+  font-weight: 850;
+  line-height: 1.25;
+}
+.feedback-page-card .btn-xs,
+.feedback-compose-modal .btn-xs {
+  min-height: 30px;
+  padding: 5px 11px;
+  border-radius: 8px;
+}
+.feedback-page-card .btn-sm,
+.feedback-compose-modal .btn-sm {
+  min-height: 34px;
+  padding: 7px 13px;
+  border-radius: 9px;
+}
+.feedback-title-actions .btn,
+.feedback-detail-actions .btn,
+.feedback-message-head-actions .btn,
+.feedback-edit-actions .btn,
+.feedback-editor-footer .btn,
+.feedback-composer-actions .btn {
+  box-shadow: 0 1px 2px rgba(31, 41, 55, .04);
+}
 .feedback-email-diag {
   margin: 0 0 10px;
   padding: 9px 10px;
@@ -1840,10 +1866,10 @@ body.result-reading-active { overflow: hidden; }
 .feedback-sort-tab {
   border: none;
   border-radius: 8px;
-  padding: 7px 12px;
+  padding: 8px 14px;
   background: transparent;
   color: var(--text3);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 800;
   cursor: pointer;
 }
@@ -2147,7 +2173,8 @@ body.result-reading-active { overflow: hidden; }
   flex-shrink: 0;
 }
 .feedback-admin-delete {
-  padding: 3px 7px;
+  min-height: 28px;
+  padding: 5px 10px;
   line-height: 1.2;
 }
 .feedback-reply-pill {
@@ -2472,8 +2499,8 @@ body.result-reading-active { overflow: hidden; }
   position: relative;
 }
 .feedback-reaction-btn {
-  min-width: 44px;
-  height: 28px;
+  min-width: 48px;
+  height: 31px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2483,7 +2510,7 @@ body.result-reading-active { overflow: hidden; }
   color: var(--text3);
   background: var(--card2);
   cursor: pointer;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 800;
   transition: transform .12s, border-color .12s, background .12s, color .12s;
 }
@@ -2514,8 +2541,8 @@ body.result-reading-active { overflow: hidden; }
   display: inline-flex;
 }
 .feedback-add-reaction-btn {
-  width: 30px;
-  height: 30px;
+  width: 34px;
+  height: 34px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2524,7 +2551,7 @@ body.result-reading-active { overflow: hidden; }
   color: var(--text3);
   background: var(--card);
   cursor: pointer;
-  font-size: 18px;
+  font-size: 19px;
   line-height: 1;
   transition: background .12s, border-color .12s, color .12s, box-shadow .12s;
 }
@@ -2540,11 +2567,11 @@ body.result-reading-active { overflow: hidden; }
   position: absolute;
   z-index: 45;
   display: grid;
-  grid-template-columns: repeat(8, 32px);
-  gap: 5px;
-  padding: 8px;
+  grid-template-columns: repeat(8, 36px);
+  gap: 6px;
+  padding: 9px;
   border: 1px solid var(--border2);
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--surface);
   box-shadow: 0 14px 30px rgba(31,41,55,.16);
 }
@@ -2553,17 +2580,17 @@ body.result-reading-active { overflow: hidden; }
   top: calc(100% + 8px);
 }
 .feedback-reaction-picker-btn {
-  width: 32px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
   position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border: 0;
-  border-radius: 7px;
+  border-radius: 9px;
   background: transparent;
   cursor: pointer;
-  font-size: 17px;
+  font-size: 19px;
   line-height: 1;
 }
 .feedback-reaction-picker-btn:hover,
@@ -2687,23 +2714,23 @@ body.result-reading-active { overflow: hidden; }
 }
 .feedback-editor-toolbar button,
 .feedback-editor-file-btn {
-  width: 34px;
-  height: 30px;
+  width: 36px;
+  height: 32px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border: 0;
-  border-radius: 6px;
+  border-radius: 8px;
   background: transparent;
   color: var(--text2);
   cursor: pointer;
-  font-size: 16px;
+  font-size: 17px;
   font-weight: 800;
 }
 .feedback-editor-toolbar .feedback-editor-codeblock-btn {
-  width: 40px;
+  width: 46px;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 13px;
   letter-spacing: 0;
 }
 .feedback-editor-toolbar button:hover,
@@ -2718,7 +2745,7 @@ body.result-reading-active { overflow: hidden; }
 .feedback-emoji-popover {
   right: 8px;
   top: calc(100% + 8px);
-  grid-template-columns: repeat(10, 32px);
+  grid-template-columns: repeat(10, 36px);
 }
 .feedback-github-textarea {
   min-height: 190px;
@@ -2758,19 +2785,22 @@ body.result-reading-active { overflow: hidden; }
 .feedback-easymde-host .editor-toolbar::after {
   display: none;
 }
-.feedback-easymde-host .editor-toolbar a {
+.feedback-easymde-host .editor-toolbar a,
+.feedback-easymde-host .editor-toolbar button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 30px;
+  width: 34px;
+  height: 32px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--text2) !important;
   background: transparent;
 }
 .feedback-easymde-host .editor-toolbar a:hover,
-.feedback-easymde-host .editor-toolbar a.active {
+.feedback-easymde-host .editor-toolbar a.active,
+.feedback-easymde-host .editor-toolbar button:hover,
+.feedback-easymde-host .editor-toolbar button.active {
   color: var(--blue) !important;
   background: rgba(37,99,235,.10);
   border-color: transparent;
@@ -2849,9 +2879,10 @@ body.result-reading-active { overflow: hidden; }
   min-height: 38px;
   padding: 4px 8px;
 }
-.feedback-edit-editor-host .editor-toolbar a {
-  width: 29px;
-  height: 28px;
+.feedback-edit-editor-host .editor-toolbar a,
+.feedback-edit-editor-host .editor-toolbar button {
+  width: 31px;
+  height: 30px;
 }
 .feedback-inline-file-btn {
   flex-shrink: 0;
@@ -2954,9 +2985,10 @@ body.result-reading-active { overflow: hidden; }
     min-height: 36px;
     padding: 3px 8px;
   }
-  .feedback-thread-reply-form .feedback-reply-editor-host .editor-toolbar a {
-    width: 28px;
-    height: 26px;
+  .feedback-thread-reply-form .feedback-reply-editor-host .editor-toolbar a,
+  .feedback-thread-reply-form .feedback-reply-editor-host .editor-toolbar button {
+    width: 32px;
+    height: 30px;
   }
   .feedback-thread-reply-form .feedback-reply-editor-host .CodeMirror {
     min-height: 88px !important;
