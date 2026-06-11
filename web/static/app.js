@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.78");
+const appVersion = ref("0.2.84");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -987,7 +987,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.2.78";
+  appVersion.value = cfg.version || "0.2.84";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -1391,8 +1391,8 @@ const initFeedbackMarkdownEditor = target => {
     forceSync: true,
     spellChecker: false,
     status: false,
-    minHeight: isReplyTarget ? "118px" : isEditTarget ? "130px" : "210px",
-    maxHeight: isReplyTarget ? "180px" : "52vh",
+    minHeight: isReplyTarget ? "104px" : isEditTarget ? "130px" : "210px",
+    maxHeight: isReplyTarget ? "150px" : "52vh",
     previewRender: value => renderMarkdown(value || ""),
     placeholder: textarea.getAttribute("placeholder") || "Use Markdown to format your comment.",
     toolbar: [
@@ -1440,15 +1440,18 @@ const pruneFeedbackMarkdownEditors = () => {
 
 const refreshFeedbackMarkdownEditors = () => {
   nextTick(() => {
+    if (shouldRevealFeedbackReplyForm()) revealFeedbackReplyFormIfNeeded();
     loadFeedbackMarkdownEditor().then(ready => {
-      if (!ready) return;
       nextTick(() => {
-        pruneFeedbackMarkdownEditors();
-        if (showFeedbackComposer.value) initFeedbackMarkdownEditor("post");
-        if (selectedFeedbackPostId.value && feedbackReplies.value[selectedFeedbackPostId.value]) {
-          initFeedbackMarkdownEditor(selectedFeedbackPostId.value);
+        if (ready) {
+          pruneFeedbackMarkdownEditors();
+          if (showFeedbackComposer.value) initFeedbackMarkdownEditor("post");
+          if (selectedFeedbackPostId.value && feedbackReplies.value[selectedFeedbackPostId.value]) {
+            initFeedbackMarkdownEditor(selectedFeedbackPostId.value);
+          }
+          if (feedbackEditing.value.id) initFeedbackMarkdownEditor(`edit:${feedbackEditing.value.id}`);
         }
-        if (feedbackEditing.value.id) initFeedbackMarkdownEditor(`edit:${feedbackEditing.value.id}`);
+        if (shouldRevealFeedbackReplyForm()) revealFeedbackReplyFormIfNeeded();
       });
     });
   });
@@ -1954,6 +1957,49 @@ const focusFeedbackMessage = id => {
   });
 };
 
+const revealFeedbackReplyFormIfNeeded = () => {
+  nextTick(() => {
+    const adjust = () => {
+      const form = document.querySelector(".feedback-thread-reply-form");
+      const scroller = document.querySelector(".feedback-page-main");
+      if (!form || !scroller) return;
+      const formRect = form.getBoundingClientRect();
+      const scrollerRect = scroller.getBoundingClientRect();
+      const overflow = formRect.bottom - (scrollerRect.bottom - 16);
+      if (overflow > 4) {
+        const maxScrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+        const nextScrollTop = Math.min(maxScrollTop, scroller.scrollTop + overflow);
+        scroller.scrollTop = nextScrollTop;
+        window.requestAnimationFrame(() => {
+          const nextFormRect = form.getBoundingClientRect();
+          const nextScrollerRect = scroller.getBoundingClientRect();
+          if (nextFormRect.bottom > nextScrollerRect.bottom - 8) {
+            form.scrollIntoView({ block: "end", behavior: "auto" });
+          }
+        });
+      }
+    };
+    window.requestAnimationFrame(() => {
+      adjust();
+      window.setTimeout(adjust, 180);
+      window.setTimeout(adjust, 420);
+      window.setTimeout(adjust, 900);
+      window.setTimeout(adjust, 1600);
+    });
+  });
+};
+
+const scheduleFeedbackReplyReveal = () => {
+  revealFeedbackReplyFormIfNeeded();
+  window.setTimeout(revealFeedbackReplyFormIfNeeded, 300);
+  window.setTimeout(revealFeedbackReplyFormIfNeeded, 900);
+};
+
+const shouldRevealFeedbackReplyForm = () =>
+  Boolean(selectedFeedbackPostId.value
+    && feedbackReplies.value[selectedFeedbackPostId.value]
+    && !selectedFeedbackMessageId.value);
+
 const toggleFeedbackReply = id => {
   const form = ensureFeedbackReplyForm(id);
   feedbackReplies.value = {
@@ -1966,8 +2012,9 @@ const toggleFeedbackReply = id => {
 const selectFeedbackPost = async (id, { refresh = true, focusMessageId = "" } = {}) => {
   if (!id) return;
   selectedFeedbackPostId.value = id;
-  if (focusMessageId) selectedFeedbackMessageId.value = focusMessageId;
+  selectedFeedbackMessageId.value = focusMessageId || "";
   ensureFeedbackReplyForm(id);
+  const shouldRevealReplyForm = !focusMessageId;
   if (!refresh) return;
   feedbackDetailLoading.value = true;
   try {
@@ -1983,6 +2030,7 @@ const selectFeedbackPost = async (id, { refresh = true, focusMessageId = "" } = 
   } finally {
     feedbackDetailLoading.value = false;
     refreshFeedbackMarkdownEditors();
+    if (shouldRevealReplyForm) revealFeedbackReplyFormIfNeeded();
   }
 };
 
@@ -2127,9 +2175,13 @@ const openFeedbackDeepLink = async ({ postId = "", messageId = "" } = {}) => {
     await loadFeedback({ reset: true });
     return;
   }
-  selectedFeedbackMessageId.value = messageId || targetPostId;
+  selectedFeedbackMessageId.value = messageId || "";
   await loadFeedback({ reset: true, selectId: targetPostId });
   await selectFeedbackPost(targetPostId, { refresh: true, focusMessageId: selectedFeedbackMessageId.value });
+  if (!messageId) {
+    scheduleFeedbackReplyReveal();
+    window.setTimeout(revealFeedbackReplyFormIfNeeded, 1500);
+  }
 };
 
 const routeString = value => Array.isArray(value) ? (value[0] || "") : (value || "");
@@ -6337,6 +6389,14 @@ router.beforeEach(async (to, from) => {
   if (result !== true) return result;
 });
 
+router.afterEach(to => {
+  if (to.name !== "feedback") return;
+  const postId = routeString(to.params?.postId);
+  const messageId = routeString(to.query?.message);
+  if (!postId || messageId) return;
+  scheduleFeedbackReplyReveal();
+});
+
 // ══════════════════════════════════════════════════════════════════════════════
 // Root App component (wraps the #app DOM template in index.html)
 // ══════════════════════════════════════════════════════════════════════════════
@@ -6469,6 +6529,32 @@ const App = {
     watch([showFeedbackComposer, selectedFeedbackPostId], () => {
       refreshFeedbackMarkdownEditors();
     });
+    watch(
+      () => [
+        selectedFeedbackPostId.value,
+        selectedFeedbackPost.value?.id || "",
+        selectedFeedbackPost.value?.replies?.length || 0,
+        feedbackDetailLoading.value,
+      ],
+      () => {
+        if (shouldRevealFeedbackReplyForm()) revealFeedbackReplyFormIfNeeded();
+      },
+      { flush: "post" },
+    );
+    watch(
+      () => [
+        isFeedbackRoute.value,
+        routeString(router.currentRoute.value.params?.postId),
+        routeString(router.currentRoute.value.query?.message),
+        selectedFeedbackPostId.value,
+        selectedFeedbackPost.value?.replies?.length || 0,
+      ],
+      ([onFeedbackRoute, postId, messageId]) => {
+        if (!onFeedbackRoute || !postId || messageId) return;
+        scheduleFeedbackReplyReveal();
+      },
+      { flush: "post", immediate: true },
+    );
     watch(() => feedbackEditing.value.id, () => {
       refreshFeedbackMarkdownEditors();
     });
@@ -6533,6 +6619,7 @@ const App = {
       setFeedbackReplyEditorMode, feedbackPostPreviewHtml, feedbackReplyPreviewHtml,
       selectFeedbackPost, closeFeedbackPost,
       openFeedbackComposer, closeFeedbackComposer, closeFeedbackBoard, submitFeedback,
+      revealFeedbackReplyFormIfNeeded,
       startFeedbackEdit, cancelFeedbackEdit, saveFeedbackEdit, toggleFeedbackReaction, toggleFeedbackReactionPicker,
       toggleFeedbackEmojiPicker,
       deleteFeedbackPost, deleteFeedbackReply,
@@ -6567,4 +6654,8 @@ const App = {
 
 const app = createApp(App);
 app.use(router);
+app.directive("feedback-reveal", {
+  mounted: scheduleFeedbackReplyReveal,
+  updated: scheduleFeedbackReplyReveal,
+});
 app.mount("#app");

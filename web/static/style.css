@@ -1913,10 +1913,11 @@ body.result-reading-active { overflow: hidden; }
   background: linear-gradient(180deg, var(--card), var(--bg));
   border-radius: 12px;
   padding: 14px;
+  overflow: visible;
 }
 .feedback-thread-detail-full {
-  flex: 1 1 auto;
-  min-height: min(72vh, 820px);
+  flex: 0 0 auto;
+  min-height: 0;
 }
 .feedback-page-card .feedback-detail-scroll {
   overflow: visible;
@@ -2250,7 +2251,7 @@ body.result-reading-active { overflow: hidden; }
 .feedback-detail-scroll {
   flex: 0 0 auto;
   min-height: 0;
-  overflow: auto;
+  overflow: visible;
   padding: 12px 2px;
 }
 .feedback-detail-empty {
@@ -2283,17 +2284,20 @@ body.result-reading-active { overflow: hidden; }
   margin-bottom: 18px;
 }
 .feedback-thread-reply-form {
+  position: relative;
   flex-shrink: 0;
-  margin-top: 18px;
+  margin-top: 20px;
   padding-top: 16px;
   border-top: 1px solid var(--border);
+  z-index: 0;
 }
 .feedback-thread-reply-form .feedback-github-editor {
   display: flex;
   flex-direction: column;
-  max-height: min(360px, calc(100vh - 180px));
-  overflow: auto;
-  overscroll-behavior: contain;
+  width: 100%;
+  max-height: none;
+  overflow: visible;
+  overscroll-behavior: auto;
 }
 .feedback-detail-back {
   display: inline-flex;
@@ -2885,17 +2889,17 @@ body.result-reading-active { overflow: hidden; }
 }
 .feedback-thread-reply-form .feedback-reply-editor-host .CodeMirror,
 .feedback-reply-editor-host .CodeMirror {
-  min-height: 118px !important;
-  height: clamp(96px, 18vh, 140px) !important;
-  max-height: 180px !important;
+  min-height: 104px !important;
+  height: clamp(92px, 14vh, 124px) !important;
+  max-height: 150px !important;
 }
 .feedback-thread-reply-form .feedback-reply-editor-host .CodeMirror-scroll {
   min-height: inherit !important;
   max-height: inherit !important;
 }
 .feedback-thread-reply-form .feedback-reply-textarea {
-  min-height: 118px;
-  max-height: 180px;
+  min-height: 104px;
+  max-height: 150px;
 }
 .feedback-edit-editor-host .CodeMirror {
   min-height: 130px;
@@ -2942,9 +2946,8 @@ body.result-reading-active { overflow: hidden; }
   border-radius: 0 0 10px 10px;
 }
 .feedback-thread-reply-form .feedback-editor-footer {
-  position: sticky;
-  bottom: 0;
-  z-index: 4;
+  position: static;
+  z-index: auto;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -3002,9 +3005,57 @@ body.result-reading-active { overflow: hidden; }
     padding: 12px;
   }
 }
-@media (max-height: 760px) {
+@media (max-height: 820px) {
+  .feedback-page-main {
+    padding-top: 8px;
+    padding-bottom: 12px;
+  }
+  .feedback-page-card {
+    min-height: calc(100vh - 64px);
+    padding: 10px 12px;
+  }
+  .feedback-page-card .modal-title.feedback-title {
+    min-height: 26px;
+    margin-bottom: 6px;
+  }
+  .feedback-thread-detail {
+    padding: 10px;
+  }
+  .feedback-detail-head {
+    padding: 0 2px 7px;
+  }
+  .feedback-detail-head h3 {
+    font-size: 17px;
+  }
+  .feedback-detail-scroll {
+    padding: 7px 2px;
+  }
+  .feedback-card {
+    padding: 10px 12px;
+    margin-bottom: 8px;
+  }
+  .feedback-conversation-title {
+    padding: 3px 2px 6px;
+  }
+  .feedback-thread-replies {
+    gap: 8px;
+    margin-top: 6px;
+    margin-bottom: 8px;
+  }
+  .feedback-message-card-head {
+    min-height: 34px;
+    padding: 0 10px;
+  }
+  .feedback-message-card-body {
+    padding: 9px 10px;
+  }
+  .feedback-thread-reply-form {
+    margin-top: 8px;
+    padding-top: 8px;
+  }
   .feedback-thread-reply-form .feedback-github-editor {
-    max-height: min(300px, calc(100vh - 140px));
+    max-height: none;
+    overflow: visible;
   }
   .feedback-thread-reply-form .feedback-reply-editor-host .editor-toolbar {
     min-height: 36px;
@@ -3016,14 +3067,17 @@ body.result-reading-active { overflow: hidden; }
     height: 30px;
   }
   .feedback-thread-reply-form .feedback-reply-editor-host .CodeMirror {
-    min-height: 88px !important;
-    height: 88px !important;
+    min-height: 70px !important;
+    height: 70px !important;
+    max-height: 96px !important;
   }
   .feedback-thread-reply-form .feedback-reply-textarea {
-    min-height: 88px;
+    min-height: 70px;
+    max-height: 96px;
   }
   .feedback-thread-reply-form .feedback-editor-footer {
-    padding: 7px 10px;
+    position: static;
+    padding: 6px 10px;
   }
 }
 .storage-total-grid {

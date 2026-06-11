@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>torch profiler analyzer</title>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.2.78" />
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.2.84" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.css" />
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
@@ -12,7 +12,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js"></script>
-  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="/static/style.css?v=0.2.84" />
   <script>
     // Apply saved theme or system preference before page paint to avoid flash
     (function() {
@@ -143,7 +143,7 @@
     <!-- ── Header ── -->
     <header v-if="authChecked && (!authRequired || currentUser)" class="header">
       <div class="header-brand" @click="$router.push('/')" style="cursor:pointer" title="返回上传页面">
-        <img class="header-logo" src="/static/favicon.svg?v=0.2.78" alt="" />
+        <img class="header-logo" src="/static/favicon.svg?v=0.2.84" alt="" />
         <span class="header-title">Torch Profiler Analyzer</span>
         <span class="header-version">v{{ appVersion }}</span>
       </div>
@@ -745,92 +745,95 @@
                 </article>
               </div>
             </div>
-          </div>
-
-          <div v-if="feedbackReplies[selectedFeedbackPost.id]" class="feedback-reply-form feedback-thread-reply-form feedback-github-comment">
-            <span class="feedback-avatar feedback-comment-avatar">{{ feedbackUserInitial(currentUser?.display_name || currentUser?.username || '用户') }}</span>
-            <div class="feedback-github-editor">
-              <div v-if="!feedbackMarkdownEditorEnabled" class="feedback-editor-header">
-                <div class="feedback-editor-tabs">
-                  <button
-                    type="button"
-                    :class="['feedback-editor-tab', feedbackReplyEditorMode(selectedFeedbackPost.id)==='write' ? 'active' : '']"
-                    @click="setFeedbackReplyEditorMode(selectedFeedbackPost.id, 'write')"
-                  >Write</button>
-                  <button
-                    type="button"
-                    :class="['feedback-editor-tab', feedbackReplyEditorMode(selectedFeedbackPost.id)==='preview' ? 'active' : '']"
-                    @click="setFeedbackReplyEditorMode(selectedFeedbackPost.id, 'preview')"
-                  >Preview</button>
+            <div
+              v-if="feedbackReplies[selectedFeedbackPost.id]"
+              class="feedback-reply-form feedback-thread-reply-form feedback-github-comment"
+              v-feedback-reveal
+            >
+              <span class="feedback-avatar feedback-comment-avatar">{{ feedbackUserInitial(currentUser?.display_name || currentUser?.username || '用户') }}</span>
+              <div class="feedback-github-editor">
+                <div v-if="!feedbackMarkdownEditorEnabled" class="feedback-editor-header">
+                  <div class="feedback-editor-tabs">
+                    <button
+                      type="button"
+                      :class="['feedback-editor-tab', feedbackReplyEditorMode(selectedFeedbackPost.id)==='write' ? 'active' : '']"
+                      @click="setFeedbackReplyEditorMode(selectedFeedbackPost.id, 'write')"
+                    >Write</button>
+                    <button
+                      type="button"
+                      :class="['feedback-editor-tab', feedbackReplyEditorMode(selectedFeedbackPost.id)==='preview' ? 'active' : '']"
+                      @click="setFeedbackReplyEditorMode(selectedFeedbackPost.id, 'preview')"
+                    >Preview</button>
+                  </div>
+                  <div v-if="feedbackReplyEditorMode(selectedFeedbackPost.id)==='write'" class="feedback-editor-toolbar" aria-label="回复工具栏">
+                    <button type="button" title="标题" @mousedown.prevent="insertFeedbackSnippet('### ', '', '标题', selectedFeedbackPost.id)">H</button>
+                    <button type="button" title="加粗" @mousedown.prevent="insertFeedbackSnippet('**', '**', '加粗文本', selectedFeedbackPost.id)"><strong>B</strong></button>
+                    <button type="button" title="斜体" @mousedown.prevent="insertFeedbackSnippet('*', '*', '斜体文本', selectedFeedbackPost.id)"><em>I</em></button>
+                    <span class="feedback-editor-separator"></span>
+                    <button type="button" title="引用：支持多行" @mousedown.prevent="insertFeedbackQuote(selectedFeedbackPost.id)">❝</button>
+                    <button type="button" title="代码：选中多行时自动转代码块" @mousedown.prevent="insertFeedbackCode(selectedFeedbackPost.id)">〈〉</button>
+                    <button type="button" class="feedback-editor-codeblock-btn" title="代码块" @mousedown.prevent="insertFeedbackCodeBlock(selectedFeedbackPost.id)">```</button>
+                    <button type="button" title="链接" @mousedown.prevent="insertFeedbackSnippet('[', '](url)', '链接文本', selectedFeedbackPost.id)">🔗</button>
+                    <span class="feedback-editor-separator"></span>
+                    <button type="button" title="无序列表：支持多行" @mousedown.prevent="insertFeedbackList(false, selectedFeedbackPost.id)">•</button>
+                    <button type="button" title="有序列表：支持多行" @mousedown.prevent="insertFeedbackList(true, selectedFeedbackPost.id)">1.</button>
+                    <button type="button" title="任务列表：支持多行" @mousedown.prevent="insertFeedbackTaskList(selectedFeedbackPost.id)">☑</button>
+                    <span class="feedback-editor-separator"></span>
+                    <button type="button" title="@ 提及" @mousedown.prevent="insertFeedbackSnippet('@', '', '', selectedFeedbackPost.id)">@</button>
+                    <label class="feedback-editor-file-btn" title="添加图片">
+                      📎
+                      <input class="hidden-file-input" type="file" accept="image/*" multiple @change="setFeedbackFiles($event, selectedFeedbackPost.id)" />
+                    </label>
+                  </div>
                 </div>
-                <div v-if="feedbackReplyEditorMode(selectedFeedbackPost.id)==='write'" class="feedback-editor-toolbar" aria-label="回复工具栏">
-                  <button type="button" title="标题" @mousedown.prevent="insertFeedbackSnippet('### ', '', '标题', selectedFeedbackPost.id)">H</button>
-                  <button type="button" title="加粗" @mousedown.prevent="insertFeedbackSnippet('**', '**', '加粗文本', selectedFeedbackPost.id)"><strong>B</strong></button>
-                  <button type="button" title="斜体" @mousedown.prevent="insertFeedbackSnippet('*', '*', '斜体文本', selectedFeedbackPost.id)"><em>I</em></button>
-                  <span class="feedback-editor-separator"></span>
-                  <button type="button" title="引用：支持多行" @mousedown.prevent="insertFeedbackQuote(selectedFeedbackPost.id)">❝</button>
-                  <button type="button" title="代码：选中多行时自动转代码块" @mousedown.prevent="insertFeedbackCode(selectedFeedbackPost.id)">〈〉</button>
-                  <button type="button" class="feedback-editor-codeblock-btn" title="代码块" @mousedown.prevent="insertFeedbackCodeBlock(selectedFeedbackPost.id)">```</button>
-                  <button type="button" title="链接" @mousedown.prevent="insertFeedbackSnippet('[', '](url)', '链接文本', selectedFeedbackPost.id)">🔗</button>
-                  <span class="feedback-editor-separator"></span>
-                  <button type="button" title="无序列表：支持多行" @mousedown.prevent="insertFeedbackList(false, selectedFeedbackPost.id)">•</button>
-                  <button type="button" title="有序列表：支持多行" @mousedown.prevent="insertFeedbackList(true, selectedFeedbackPost.id)">1.</button>
-                  <button type="button" title="任务列表：支持多行" @mousedown.prevent="insertFeedbackTaskList(selectedFeedbackPost.id)">☑</button>
-                  <span class="feedback-editor-separator"></span>
-                  <button type="button" title="@ 提及" @mousedown.prevent="insertFeedbackSnippet('@', '', '', selectedFeedbackPost.id)">@</button>
-                  <label class="feedback-editor-file-btn" title="添加图片">
-                    📎
+                <div v-if="!feedbackMarkdownEditorEnabled && feedbackReplyEditorMode(selectedFeedbackPost.id)==='preview'" class="feedback-markdown-preview markdown-body">
+                  <div v-if="(feedbackReplies[selectedFeedbackPost.id].body || '').trim()" v-html="feedbackReplyPreviewHtml(selectedFeedbackPost.id)"></div>
+                  <div v-else class="feedback-preview-empty">暂无内容可预览</div>
+                </div>
+                <div v-else class="feedback-mention-host feedback-easymde-host feedback-reply-editor-host" @click.stop>
+                  <textarea
+                    :id="'feedback-reply-editor-' + selectedFeedbackPost.id"
+                    v-model="feedbackReplies[selectedFeedbackPost.id].body"
+                    class="feedback-textarea feedback-reply-textarea feedback-github-textarea"
+                    placeholder="Use Markdown to format your comment. 可 @英文名 通知对方..."
+                    maxlength="2000"
+                    @input="handleFeedbackMentionInput($event, selectedFeedbackPost.id)"
+                    @keydown="handleFeedbackMentionKeydown($event, selectedFeedbackPost.id)"
+                    @focus="setFeedbackTextTarget($event, selectedFeedbackPost.id)"
+                    @click="setFeedbackTextTarget($event, selectedFeedbackPost.id)"
+                  ></textarea>
+                  <div v-if="feedbackMention.visible && feedbackMention.target===selectedFeedbackPost.id" class="mention-candidate-box">
+                    <div v-if="feedbackMention.loading" class="mention-candidate-empty">搜索中...</div>
+                    <div v-else-if="!feedbackMention.candidates.length" class="mention-candidate-empty">无匹配人员</div>
+                    <button
+                      v-for="(candidate, index) in feedbackMention.candidates"
+                      :key="candidate.username"
+                      type="button"
+                      :class="['mention-candidate-item', index===feedbackMention.activeIndex ? 'active' : '']"
+                      @mousedown.prevent="selectFeedbackMention(candidate, selectedFeedbackPost.id)"
+                    >
+                      <span class="mention-candidate-main">{{ candidate.display_name || candidate.username }}</span>
+                      <span class="mention-candidate-meta">@{{ candidate.username }} · {{ candidate.email }}</span>
+                    </button>
+                  </div>
+                </div>
+                <div v-if="feedbackReplies[selectedFeedbackPost.id].previews.length" class="feedback-preview-grid compact feedback-editor-previews">
+                  <div v-for="img in feedbackReplies[selectedFeedbackPost.id].previews" :key="img.url" class="feedback-preview">
+                    <img :src="img.url" :alt="img.name" />
+                  </div>
+                </div>
+                <div class="feedback-composer-actions feedback-editor-footer">
+                  <label class="btn btn-xs btn-outline feedback-inline-file-btn">
+                    添加图片
                     <input class="hidden-file-input" type="file" accept="image/*" multiple @change="setFeedbackFiles($event, selectedFeedbackPost.id)" />
                   </label>
-                </div>
-              </div>
-              <div v-if="!feedbackMarkdownEditorEnabled && feedbackReplyEditorMode(selectedFeedbackPost.id)==='preview'" class="feedback-markdown-preview markdown-body">
-                <div v-if="(feedbackReplies[selectedFeedbackPost.id].body || '').trim()" v-html="feedbackReplyPreviewHtml(selectedFeedbackPost.id)"></div>
-                <div v-else class="feedback-preview-empty">暂无内容可预览</div>
-              </div>
-              <div v-else class="feedback-mention-host feedback-easymde-host feedback-reply-editor-host" @click.stop>
-                <textarea
-                  :id="'feedback-reply-editor-' + selectedFeedbackPost.id"
-                  v-model="feedbackReplies[selectedFeedbackPost.id].body"
-                  class="feedback-textarea feedback-reply-textarea feedback-github-textarea"
-                  placeholder="Use Markdown to format your comment. 可 @英文名 通知对方..."
-                  maxlength="2000"
-                  @input="handleFeedbackMentionInput($event, selectedFeedbackPost.id)"
-                  @keydown="handleFeedbackMentionKeydown($event, selectedFeedbackPost.id)"
-                  @focus="setFeedbackTextTarget($event, selectedFeedbackPost.id)"
-                  @click="setFeedbackTextTarget($event, selectedFeedbackPost.id)"
-                ></textarea>
-                <div v-if="feedbackMention.visible && feedbackMention.target===selectedFeedbackPost.id" class="mention-candidate-box">
-                  <div v-if="feedbackMention.loading" class="mention-candidate-empty">搜索中...</div>
-                  <div v-else-if="!feedbackMention.candidates.length" class="mention-candidate-empty">无匹配人员</div>
-                  <button
-                    v-for="(candidate, index) in feedbackMention.candidates"
-                    :key="candidate.username"
-                    type="button"
-                    :class="['mention-candidate-item', index===feedbackMention.activeIndex ? 'active' : '']"
-                    @mousedown.prevent="selectFeedbackMention(candidate, selectedFeedbackPost.id)"
-                  >
-                    <span class="mention-candidate-main">{{ candidate.display_name || candidate.username }}</span>
-                    <span class="mention-candidate-meta">@{{ candidate.username }} · {{ candidate.email }}</span>
+                  <span class="feedback-upload-hint">Paste, drop, or click to add images</span>
+                  <span class="flex-spacer"></span>
+                  <button class="btn btn-xs btn-outline" @click="clearFeedbackForm(selectedFeedbackPost.id)" :disabled="feedbackReplies[selectedFeedbackPost.id].submitting">清空</button>
+                  <button class="btn btn-xs btn-primary" @click="submitFeedback(selectedFeedbackPost.id)" :disabled="feedbackReplies[selectedFeedbackPost.id].submitting">
+                    {{ feedbackReplies[selectedFeedbackPost.id].submitting ? '发送中...' : '发送交流' }}
                   </button>
                 </div>
-              </div>
-              <div v-if="feedbackReplies[selectedFeedbackPost.id].previews.length" class="feedback-preview-grid compact feedback-editor-previews">
-                <div v-for="img in feedbackReplies[selectedFeedbackPost.id].previews" :key="img.url" class="feedback-preview">
-                  <img :src="img.url" :alt="img.name" />
-                </div>
-              </div>
-              <div class="feedback-composer-actions feedback-editor-footer">
-                <label class="btn btn-xs btn-outline feedback-inline-file-btn">
-                  添加图片
-                  <input class="hidden-file-input" type="file" accept="image/*" multiple @change="setFeedbackFiles($event, selectedFeedbackPost.id)" />
-                </label>
-                <span class="feedback-upload-hint">Paste, drop, or click to add images</span>
-                <span class="flex-spacer"></span>
-                <button class="btn btn-xs btn-outline" @click="clearFeedbackForm(selectedFeedbackPost.id)" :disabled="feedbackReplies[selectedFeedbackPost.id].submitting">清空</button>
-                <button class="btn btn-xs btn-primary" @click="submitFeedback(selectedFeedbackPost.id)" :disabled="feedbackReplies[selectedFeedbackPost.id].submitting">
-                  {{ feedbackReplies[selectedFeedbackPost.id].submitting ? '发送中...' : '发送交流' }}
-                </button>
               </div>
             </div>
           </div>
@@ -1277,6 +1280,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=39"></script>
+  <script src="/static/app.js?v=0.2.84"></script>
 </body>
 </html>
