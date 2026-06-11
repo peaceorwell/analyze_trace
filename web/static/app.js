@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.77");
+const appVersion = ref("0.2.78");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -987,7 +987,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.2.77";
+  appVersion.value = cfg.version || "0.2.78";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -4029,6 +4029,13 @@ const toggleSelectLoadedHistoryJobs = () => {
 const clearHistorySelection = () => {
   historySelection.value = [];
 };
+
+document.addEventListener("click", event => {
+  if (!historyBulkMode.value) return;
+  if (event.target?.closest?.(".sidebar")) return;
+  historyBulkMode.value = false;
+  clearHistorySelection();
+});
 
 const openBulkMoveProject = () => {
   if (!historySelection.value.length) return;
