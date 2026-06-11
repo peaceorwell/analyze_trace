@@ -16,7 +16,6 @@ import shlex
 import shutil
 import smtplib
 import socket
-import sqlite3
 import subprocess
 import sys
 import tarfile
@@ -48,7 +47,7 @@ from trace_analyzer import (  # noqa: E402
     run_triton_code_and_get_efficiency,
 )
 
-from db import DB_BUSY_TIMEOUT_MS, DB_PATH, DB_TIMEOUT_SECONDS, get_db, init_db, row_to_dict  # noqa: E402
+from db import get_db, init_db, row_to_dict  # noqa: E402
 import auth as ldap_auth  # noqa: E402
 
 WEB_DIR = os.path.dirname(__file__)
@@ -56,7 +55,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.71"
+APP_VERSION = "0.2.72"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -3384,21 +3383,24 @@ def _format_elapsed(seconds: float) -> str:
     return f"{sec}秒"
 
 
-def _write_analysis_progress(job_id: str, message: str) -> None:
+async def _write_analysis_progress(job_id: str, message: str) -> None:
+    progress_db = None
     try:
-        with sqlite3.connect(DB_PATH, timeout=DB_TIMEOUT_SECONDS) as conn:
-            conn.execute(f"PRAGMA busy_timeout={DB_BUSY_TIMEOUT_MS}")
-            conn.execute(
-                "UPDATE jobs SET console_out=? WHERE id=? AND status='running'",
-                (message, job_id),
-            )
-            conn.commit()
+        progress_db = await get_db()
+        await progress_db.execute(
+            "UPDATE jobs SET console_out=? WHERE id=? AND status='running'",
+            (message, job_id),
+        )
+        await progress_db.commit()
     except Exception:
         logger.debug(
             "analysis_progress_update_failed",
             extra={"event": "analysis_progress_update_failed", "job_id": job_id},
             exc_info=True,
         )
+    finally:
+        if progress_db is not None:
+            await progress_db.close()
 
 
 def _run_sync_analysis(job, rdir, path_a, path_b, name_a, name_b, progress_callback=None):
@@ -3490,21 +3492,20 @@ async def run_analysis(job_id: str):
             return
 
         logger.info("analysis_started", extra={"event": "analysis_started", "job_id": job_id, "mode": job["mode"]})
+        loop = asyncio.get_running_loop()
         progress_started_at = time.perf_counter()
         progress_state = {"message": "准备分析任务", "done": False}
 
         def set_progress(message: str) -> None:
-            progress_state["message"] = message
-            elapsed = _format_elapsed(time.perf_counter() - progress_started_at)
-            _write_analysis_progress(job_id, f"{message} · 已用 {elapsed}")
+            # Called from the analysis worker thread; keep it non-blocking so
+            # SQLite/file I/O can never stall trace parsing.
+            loop.call_soon_threadsafe(progress_state.__setitem__, "message", message)
 
         async def progress_heartbeat():
             while not progress_state["done"]:
-                await asyncio.sleep(5)
-                if progress_state["done"]:
-                    return
                 elapsed = _format_elapsed(time.perf_counter() - progress_started_at)
-                _write_analysis_progress(job_id, f"{progress_state['message']} · 已用 {elapsed}")
+                await _write_analysis_progress(job_id, f"{progress_state['message']} · 已用 {elapsed}")
+                await asyncio.sleep(5)
 
         progress_task = asyncio.create_task(progress_heartbeat())
         set_progress("准备分析任务")

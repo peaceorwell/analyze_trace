@@ -70,7 +70,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.71",
+        "version": "0.2.72",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -2715,6 +2715,58 @@ def test_uploaded_trace_formats_download_as_json_gzip(
         assert gzip_resp.headers["content-type"].startswith("application/gzip")
         assert 'filename="trace.json.gz"' in gzip_resp.headers["content-disposition"]
         assert json.loads(gzip.decompress(gzip_resp.content))["traceEvents"]
+
+
+def test_run_analysis_does_not_block_on_slow_progress_writer(
+    isolated_server,
+    sample_trace_file,
+    tmp_path,
+    monkeypatch,
+):
+    trace_path = tmp_path / "trace.json"
+    shutil.copyfile(sample_trace_file, trace_path)
+    progress_calls = []
+
+    async def slow_progress_writer(job_id, message):
+        progress_calls.append((job_id, message))
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr(web_server, "_write_analysis_progress", slow_progress_writer)
+
+    async def run_job():
+        await web_db.init_db()
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO jobs(
+                    id, user_token, label, mode, status, file_a_name, file_a_path,
+                    save_triton_csv, save_triton_code
+                )
+                VALUES(?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    "slow-progress-job", "local", "slow progress", "single", "pending",
+                    "trace.json", str(trace_path), 0, 0,
+                ),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+        await asyncio.wait_for(web_server.run_analysis("slow-progress-job"), timeout=5)
+
+        db = await web_db.get_db()
+        try:
+            cursor = await db.execute("SELECT status, error_msg FROM jobs WHERE id=?", ("slow-progress-job",))
+            return await web_server.row_to_dict(await cursor.fetchone())
+        finally:
+            await db.close()
+
+    row = asyncio.run(run_job())
+
+    assert row["status"] == "done", row["error_msg"]
+    assert progress_calls
 
 
 def test_direct_two_file_upload_creates_compare_job(client, sample_trace_file, sample_trace_file_gz):
