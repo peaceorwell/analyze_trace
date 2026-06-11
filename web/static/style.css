@@ -2229,6 +2229,13 @@ body.result-reading-active { overflow: hidden; }
   flex-shrink: 0;
   margin-top: 0;
 }
+.feedback-thread-reply-form .feedback-github-editor {
+  display: flex;
+  flex-direction: column;
+  max-height: min(360px, calc(100vh - 180px));
+  overflow: auto;
+  overscroll-behavior: contain;
+}
 .feedback-detail-back {
   display: inline-flex;
   flex-shrink: 0;
@@ -2808,10 +2815,25 @@ body.result-reading-active { overflow: hidden; }
   z-index: 81;
   border-color: var(--border);
 }
+.feedback-thread-reply-form .feedback-reply-editor-host {
+  min-height: 0;
+}
+.feedback-thread-reply-form .feedback-reply-editor-host .EasyMDEContainer {
+  min-height: 0;
+}
+.feedback-thread-reply-form .feedback-reply-editor-host .CodeMirror,
 .feedback-reply-editor-host .CodeMirror {
-  min-height: 150px !important;
-  height: 150px !important;
-  max-height: 240px !important;
+  min-height: 118px !important;
+  height: clamp(96px, 18vh, 140px) !important;
+  max-height: 180px !important;
+}
+.feedback-thread-reply-form .feedback-reply-editor-host .CodeMirror-scroll {
+  min-height: inherit !important;
+  max-height: inherit !important;
+}
+.feedback-thread-reply-form .feedback-reply-textarea {
+  min-height: 118px;
+  max-height: 180px;
 }
 .feedback-edit-editor-host .CodeMirror {
   min-height: 130px;
@@ -2856,6 +2878,24 @@ body.result-reading-active { overflow: hidden; }
   background: var(--card2);
   border-radius: 0 0 10px 10px;
 }
+.feedback-thread-reply-form .feedback-editor-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.feedback-thread-reply-form .feedback-editor-footer .flex-spacer {
+  min-width: 12px;
+}
+.feedback-thread-reply-form .feedback-upload-hint {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .feedback-upload-hint {
   color: var(--text3);
   font-size: 13px;
@@ -2897,6 +2937,29 @@ body.result-reading-active { overflow: hidden; }
   }
   .feedback-message-card-body {
     padding: 12px;
+  }
+}
+@media (max-height: 760px) {
+  .feedback-thread-reply-form .feedback-github-editor {
+    max-height: min(300px, calc(100vh - 140px));
+  }
+  .feedback-thread-reply-form .feedback-reply-editor-host .editor-toolbar {
+    min-height: 36px;
+    padding: 3px 8px;
+  }
+  .feedback-thread-reply-form .feedback-reply-editor-host .editor-toolbar a {
+    width: 28px;
+    height: 26px;
+  }
+  .feedback-thread-reply-form .feedback-reply-editor-host .CodeMirror {
+    min-height: 88px !important;
+    height: 88px !important;
+  }
+  .feedback-thread-reply-form .feedback-reply-textarea {
+    min-height: 88px;
+  }
+  .feedback-thread-reply-form .feedback-editor-footer {
+    padding: 7px 10px;
   }
 }
 .storage-total-grid {

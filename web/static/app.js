@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.73");
+const appVersion = ref("0.2.74");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -987,7 +987,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.2.73";
+  appVersion.value = cfg.version || "0.2.74";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -1391,8 +1391,8 @@ const initFeedbackMarkdownEditor = target => {
     forceSync: true,
     spellChecker: false,
     status: false,
-    minHeight: isReplyTarget ? "150px" : isEditTarget ? "130px" : "210px",
-    maxHeight: isReplyTarget ? "240px" : "52vh",
+    minHeight: isReplyTarget ? "118px" : isEditTarget ? "130px" : "210px",
+    maxHeight: isReplyTarget ? "180px" : "52vh",
     previewRender: value => renderMarkdown(value || ""),
     placeholder: textarea.getAttribute("placeholder") || "Use Markdown to format your comment.",
     toolbar: [
