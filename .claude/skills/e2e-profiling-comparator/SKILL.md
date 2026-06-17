@@ -56,6 +56,7 @@ artifact files, then cite those files from the report.
 ## Resources
 
 - `scripts/collect_profile_tables.py`: collect host summaries and device breakdown tables for one cnperf DB over one explicit time range.
+- `scripts/compare_profile_tables.py`: compare baseline/current table JSON files and emit A/B/delta evidence.
 - `scripts/torch_trace_to_cnperf_db.py`: convert PyTorch profiler Chrome trace JSON/JSON.GZ to a cnperf-compatible SQLite DB before table collection.
 - `references/db_schema.md`: load when writing direct DB queries or interpreting table fields.
 - `references/profiling_concepts.md`: load before turning observed differences into causal hypotheses.
@@ -82,17 +83,20 @@ artifact files, then cite those files from the report.
    - Write each collection output to the temporary analysis directory. Prefer JSON for machine-readable comparison and keep text logs when useful for review.
    - Use the same range semantics across files when comparing.
    - The script includes rows whose `start` is in `[start_ms, end_ms)` and clips duration at `end_ms`.
-5. Compare from coarse to fine.
+5. Build the delta evidence.
+   - Run `compare_profile_tables.py` on the baseline/current JSON outputs.
+   - Use the generated JSON or Markdown delta as primary comparison evidence, then inspect raw per-file tables for details.
+6. Compare from coarse to fine.
    - Start from upstream E2E windows: raw, preparation, stable.
    - Focus on categories where current is worse than baseline; only briefly record current advantages.
    - Use Device Breakdown Overview to locate current regressions across compute, communication, memcpy, compute gap, pure gap, and other activity.
    - Always compare Compute Kernel Summary at name level, because device kernel cost is usually the primary investigation target.
    - Enter other name-level tables for additional regressed categories.
    - Use Host Function Summary and Host Internal Operation Summary as lightweight follow-up signals; inspect sync-like function names there when needed.
-6. Generate a Markdown analysis document.
-   - Write the report to `<analysis_dir>/report.md` unless the user requests another path.
-   - Put basic information and the final conclusion at the top.
-   - Put detailed summaries, analysis evidence, and follow-up suggestions below.
+7. Generate the final Markdown analysis document.
+   - Write the report to `$REPORT_MD` and, in Web/server-side automatic mode, also to `report.md` in the current working directory.
+   - Use the exact structure from `Final Report Contract`.
+   - Put large raw tables in supporting artifacts, then cite those artifact filenames from `## 产物`.
 
 ## Commands
 
@@ -153,6 +157,17 @@ python3 "$SKILL_DIR/scripts/collect_profile_tables.py" \
 ```
 
 `collect_profile_tables.py` only accepts cnperf DB input. JSON conversion, E2E window selection, and basic information collection are upstream steps.
+
+Compare collected baseline/current tables:
+
+```bash
+python3 "$SKILL_DIR/scripts/compare_profile_tables.py" \
+  "$ANALYSIS_DIR/baseline.tables.json" "$ANALYSIS_DIR/current.tables.json" \
+  --format json > "$ANALYSIS_DIR/comparison_delta.json"
+python3 "$SKILL_DIR/scripts/compare_profile_tables.py" \
+  "$ANALYSIS_DIR/baseline.tables.json" "$ANALYSIS_DIR/current.tables.json" \
+  --format text > "$ANALYSIS_DIR/comparison_evidence.md"
+```
 
 ## Output Tables
 
