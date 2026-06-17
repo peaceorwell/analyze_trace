@@ -55,7 +55,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.85"
+APP_VERSION = "0.2.86"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -120,6 +120,12 @@ CLAUDE_ANALYSIS_COMMAND = os.environ.get("TRACE_CLAUDE_COMMAND", "claude")
 CLAUDE_ANALYSIS_COMMAND_TEMPLATE = os.environ.get("TRACE_CLAUDE_COMMAND_TEMPLATE", "")
 DEFAULT_CLAUDE_ANALYSIS_EXTRA_ARGS = "--dangerously-skip-permissions"
 CLAUDE_ANALYSIS_EXTRA_ARGS = os.environ.get("TRACE_CLAUDE_EXTRA_ARGS", DEFAULT_CLAUDE_ANALYSIS_EXTRA_ARGS)
+TRACE_CLAUDE_CUSTOM_HEADERS = os.environ.get("TRACE_CLAUDE_CUSTOM_HEADERS", "").strip()
+CLAUDE_CUSTOM_HEADERS = (
+    TRACE_CLAUDE_CUSTOM_HEADERS
+    or os.environ.get("ANTHROPIC_CUSTOM_HEADERS", "").strip()
+    or "x-project: torch_mlu"
+)
 CLAUDE_ANALYSIS_TIMEOUT_SECONDS = max(30, int(os.environ.get("TRACE_CLAUDE_TIMEOUT_SECONDS", "1800")))
 CLAUDE_DIAGNOSTIC_TIMEOUT_SECONDS = max(5, int(os.environ.get("TRACE_CLAUDE_DIAGNOSTIC_TIMEOUT_SECONDS", "60")))
 CLAUDE_ANALYSIS_SKILLS_DIR = os.environ.get("TRACE_CLAUDE_SKILLS_DIR", PROJECT_CLAUDE_SKILLS_DIR)
@@ -2155,6 +2161,29 @@ def _mount_claude_skills_for_analysis(analysis_dir: str, skills_dir: str) -> Non
     shutil.copytree(skills_dir, target, dirs_exist_ok=True)
 
 
+def _write_claude_env_settings(claude_dir: str, custom_headers: str) -> None:
+    if not custom_headers:
+        return
+    settings_path = os.path.join(claude_dir, "settings.local.json")
+    settings: dict = {}
+    if os.path.exists(settings_path):
+        try:
+            with open(settings_path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                settings = loaded
+        except Exception:
+            settings = {}
+    env_settings = settings.get("env")
+    if not isinstance(env_settings, dict):
+        env_settings = {}
+    env_settings["ANTHROPIC_CUSTOM_HEADERS"] = custom_headers
+    settings["env"] = env_settings
+    with open(settings_path, "w", encoding="utf-8") as f:
+        json.dump(settings, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+
+
 def _build_claude_env(base_env: dict, analysis_dir: str, extra: Optional[dict] = None) -> dict:
     env = base_env.copy()
     if extra:
@@ -2164,6 +2193,14 @@ def _build_claude_env(base_env: dict, analysis_dir: str, extra: Optional[dict] =
     env.setdefault("CLAUDE_PROJECT_DIR", analysis_dir)
     env.setdefault("CLAUDE_CODE_PROJECT_DIR", analysis_dir)
     env.setdefault("TRACE_CLAUDE_PROJECT_DIR", analysis_dir)
+    if TRACE_CLAUDE_CUSTOM_HEADERS:
+        env["ANTHROPIC_CUSTOM_HEADERS"] = TRACE_CLAUDE_CUSTOM_HEADERS
+    elif CLAUDE_CUSTOM_HEADERS:
+        env.setdefault("ANTHROPIC_CUSTOM_HEADERS", CLAUDE_CUSTOM_HEADERS)
+    custom_headers = str(env.get("ANTHROPIC_CUSTOM_HEADERS", "")).strip()
+    if custom_headers:
+        env["ANTHROPIC_CUSTOM_HEADERS"] = custom_headers
+        _write_claude_env_settings(claude_dir, custom_headers)
     return env
 
 

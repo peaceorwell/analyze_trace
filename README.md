@@ -2,7 +2,7 @@
 
 Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/内网性能分析工具。它可以解析 `.json`、`.json.gz`、`.gz`、`.json.zip`、`.zip`、`.tar.gz` 和 `.tgz` trace 文件，统计 GPU kernel、Triton kernel、ATen Ops、CNCL/NCCL 通信算子，并提供单 trace 分析、双 trace 对比、历史管理、AI 分析和 Web 可视化界面。
 
-当前版本：`0.2.85`
+当前版本：`0.2.86`
 
 ## 主要功能
 
@@ -183,6 +183,7 @@ AI 分析默认关闭。开启后，已完成任务会出现 `AI 分析` 页签�
 | `TRACE_CLAUDE_COMMAND` | `claude` | Claude Code 命令 |
 | `TRACE_CLAUDE_EXTRA_ARGS` | `--dangerously-skip-permissions` | 追加给 Claude Code 的参数 |
 | `TRACE_CLAUDE_COMMAND_TEMPLATE` | 空 | 完整命令模板，可使用 `{prompt}`、`{trace_a}`、`{trace_b}`、`{skill}`、`{skills_dir}`、`{results_dir}`、`{analysis_dir}`、`{report_path}` |
+| `TRACE_CLAUDE_CUSTOM_HEADERS` | `x-project: torch_mlu` | 注入到 Claude Code 子进程的 `ANTHROPIC_CUSTOM_HEADERS`；用于网关侧项目标识 |
 | `TRACE_CLAUDE_SKILLS_DIR` | `.claude/skills` | Claude skills 目录 |
 | `TRACE_CLAUDE_SINGLE_SKILL` | `e2e-profiling-analyzer` | 单 trace skill 名称 |
 | `TRACE_CLAUDE_COMPARE_SKILL` | `e2e-profiling-comparator` | 对比 skill 名称 |
@@ -196,6 +197,7 @@ AI 分析默认关闭。开启后，已完成任务会出现 `AI 分析` 页签�
 TRACE_ENABLE_CLAUDE_ANALYSIS=1 \
 TRACE_CLAUDE_COMMAND=/usr/local/node20/bin/claude \
 TRACE_CLAUDE_EXTRA_ARGS=--dangerously-skip-permissions \
+TRACE_CLAUDE_CUSTOM_HEADERS='x-project: torch_mlu' \
 uv run --extra web python web/server.py --host 0.0.0.0 --port 8181
 ```
 
@@ -315,6 +317,7 @@ TRACE_LOG_FILE=/data/analyze_trace/logs/app.jsonl
 TRACE_ENABLE_CLAUDE_ANALYSIS=1
 TRACE_CLAUDE_COMMAND=/usr/local/node20/bin/claude
 TRACE_CLAUDE_EXTRA_ARGS=--dangerously-skip-permissions
+TRACE_CLAUDE_CUSTOM_HEADERS="x-project: torch_mlu"
 TRACE_PUBLIC_BASE_URL=http://tpa.cambricon.com:1818
 # 向 IT 确认真正可解析、可连通的 SMTP 主机；不要直接使用占位示例
 TRACE_SMTP_HOST=<it-provided-smtp-host>

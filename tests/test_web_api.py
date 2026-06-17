@@ -70,7 +70,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.85",
+        "version": "0.2.86",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -253,6 +253,39 @@ def test_claude_skills_mount_is_writable_copy(tmp_path):
     env = web_server._build_claude_env({"HOME": str(tmp_path)}, str(analysis_dir), {"TRACE_AI_JOB_ID": "x"})
     assert env["CLAUDE_PROJECT_DIR"] == str(analysis_dir)
     assert env["CLAUDE_CODE_PROJECT_DIR"] == str(analysis_dir)
+    assert env["ANTHROPIC_CUSTOM_HEADERS"] == "x-project: torch_mlu"
+    settings = json.loads((analysis_dir / ".claude" / "settings.local.json").read_text(encoding="utf-8"))
+    assert settings["env"]["ANTHROPIC_CUSTOM_HEADERS"] == "x-project: torch_mlu"
+
+
+def test_claude_env_preserves_existing_custom_headers(tmp_path, monkeypatch):
+    monkeypatch.setattr(web_server, "TRACE_CLAUDE_CUSTOM_HEADERS", "")
+    monkeypatch.setattr(web_server, "CLAUDE_CUSTOM_HEADERS", "x-project: torch_mlu")
+    analysis_dir = tmp_path / "analysis"
+
+    env = web_server._build_claude_env(
+        {"HOME": str(tmp_path), "ANTHROPIC_CUSTOM_HEADERS": "x-project: existing"},
+        str(analysis_dir),
+    )
+
+    assert env["ANTHROPIC_CUSTOM_HEADERS"] == "x-project: existing"
+    settings = json.loads((analysis_dir / ".claude" / "settings.local.json").read_text(encoding="utf-8"))
+    assert settings["env"]["ANTHROPIC_CUSTOM_HEADERS"] == "x-project: existing"
+
+
+def test_claude_env_trace_custom_headers_override_base_env(tmp_path, monkeypatch):
+    monkeypatch.setattr(web_server, "TRACE_CLAUDE_CUSTOM_HEADERS", "x-project: override")
+    monkeypatch.setattr(web_server, "CLAUDE_CUSTOM_HEADERS", "x-project: override")
+    analysis_dir = tmp_path / "analysis"
+
+    env = web_server._build_claude_env(
+        {"HOME": str(tmp_path), "ANTHROPIC_CUSTOM_HEADERS": "x-project: existing"},
+        str(analysis_dir),
+    )
+
+    assert env["ANTHROPIC_CUSTOM_HEADERS"] == "x-project: override"
+    settings = json.loads((analysis_dir / ".claude" / "settings.local.json").read_text(encoding="utf-8"))
+    assert settings["env"]["ANTHROPIC_CUSTOM_HEADERS"] == "x-project: override"
 
 
 def _fake_claude_template(tmp_path: Path, analysis_body: str) -> str:
