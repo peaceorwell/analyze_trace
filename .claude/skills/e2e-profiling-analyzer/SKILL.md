@@ -34,8 +34,11 @@ Do not assume the bottleneck is communication, a specific kernel family, TCDP, o
 
 - `scripts/basic_info.py`: host/device time ranges, device model, device count, per-device kernel usage.
 - `scripts/device_timeline.py`: device projection into compute, uncovered communication, uncovered memcpy/memset/atomic, and projection gap.
-- `scripts/gap_summary.py`: compute-kernel gap summary and non-mini gap list with `prev_corr` / `next_corr`.
+- `scripts/gap_summary.py`: merged compute-coverage gap summary and non-mini exposed gap list with `prev_corr` / `next_corr`.
 - `scripts/gap_detail.py`: dependency chain for one compute gap from `--prev-corr` and `--next-corr`.
+- `scripts/compute_breakdown.py`: top compute kernels and per-process/device compute skew.
+- `scripts/comm_breakdown.py`: communication kernel total/uncovered time, per-process/device exposure, and top long events.
+- `scripts/rank_compare.py`: cross-DB process/device span, compute, uncovered communication, and compute-gap skew.
 - `scripts/query_common.py`: shared helpers and `--host-stack=<function_corr_id>` CLI.
 - `scripts/torch_trace_to_cnperf_db.py`: self-contained torch profiler Chrome trace converter. Requires Python module `simdjson` from package `pysimdjson`.
 - `references/profiling_concepts.md`: required concepts and causal models. Always load this before starting analysis.
@@ -273,12 +276,21 @@ Question: when effective compute dominates, which compute kernels consume time, 
 
 Workflow:
 
-1. Aggregate `device_task_kernel_data` rows where `isComputation=1`.
-2. Report observed top compute kernel names by count, total time, average, and max duration.
-3. If multiple DBs are involved, compare per-rank compute totals and top compute kernel counts/time.
-4. If optional cluster computation CSV exists, compare profiler categories, FLOPs, and achieved throughput.
-5. Separate "more work" from "slower hardware" by comparing count/FLOPs versus average duration/FLOPS.
-6. Report whether compute optimization is likely worthwhile or whether non-effective time remains the bigger target.
+1. Run `compute_breakdown.py` for the selected DBs.
+
+   ```bash
+   python3 "$SKILL_DIR/scripts/compute_breakdown.py" <cnperf_db> [<cnperf_db> ...] \
+     --format json > "$ANALYSIS_DIR/compute_breakdown.json"
+   python3 "$SKILL_DIR/scripts/compute_breakdown.py" <cnperf_db> [<cnperf_db> ...] \
+     --format text > "$ANALYSIS_DIR/compute_breakdown.md"
+   ```
+
+2. Aggregate `device_task_kernel_data` rows where `isComputation=1`.
+3. Report observed top compute kernel names by count, total time, average, and max duration.
+4. If multiple DBs are involved, compare per-rank compute totals and top compute kernel counts/time.
+5. If optional cluster computation CSV exists, compare profiler categories, FLOPs, and achieved throughput.
+6. Separate "more work" from "slower hardware" by comparing count/FLOPs versus average duration/FLOPS.
+7. Report whether compute optimization is likely worthwhile or whether non-effective time remains the bigger target.
 
 Output contract:
 
@@ -305,8 +317,26 @@ Workflow:
    - Ask for sibling `cnperf_data_*.db` files, a directory containing all rank DBs, or optional `cluster_aggregation/step` CSVs before making cross-rank fast/slow card or slow-arriver conclusions.
    - Continue with single-rank local communication breakdown only if the user cannot provide more inputs or explicitly asks to proceed.
 3. Build communication breakdown from DB kernel rows by observed communication/non-compute kernel name: count, total/exposed time, average, max, top long events.
+   Use `comm_breakdown.py`:
+
+   ```bash
+   python3 "$SKILL_DIR/scripts/comm_breakdown.py" <cnperf_db> [<cnperf_db> ...] \
+     --format json > "$ANALYSIS_DIR/comm_breakdown.json"
+   python3 "$SKILL_DIR/scripts/comm_breakdown.py" <cnperf_db> [<cnperf_db> ...] \
+     --format text > "$ANALYSIS_DIR/comm_breakdown.md"
+   ```
+
 4. Must perform fast/slow card analysis.
    - For multiple DBs/devices, compare per-rank or per-card compute time, uncovered communication time, compute gap time, host-blocking/gap indicators, device span, launch progress, and top kernels.
+   - Use `rank_compare.py` when multiple DBs/devices are available:
+
+     ```bash
+     python3 "$SKILL_DIR/scripts/rank_compare.py" <cnperf_db> [<cnperf_db> ...] \
+       --format json > "$ANALYSIS_DIR/rank_compare.json"
+     python3 "$SKILL_DIR/scripts/rank_compare.py" <cnperf_db> [<cnperf_db> ...] \
+       --format text > "$ANALYSIS_DIR/rank_compare.md"
+     ```
+
    - Identify fast cards/ranks and slow cards/ranks by progress and blocking evidence, not by communication total alone.
    - Report whether high-communication ranks are waiting ranks, slow ranks, or both.
    - If only one DB/device is available, explicitly mark fast/slow card analysis as blocked and list the missing sibling rank/card DBs or aligned cluster CSVs needed.
