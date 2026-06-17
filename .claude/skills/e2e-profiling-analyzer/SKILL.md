@@ -54,9 +54,10 @@ Do not assume the bottleneck is communication, a specific kernel family, TCDP, o
 - `host_blocking` does not explain itself; trace the host-side blocker before naming a cause.
 - Keep different `threadId` timelines separate. Do not merge overlapping threads into one call tree.
 
-## Web Output Contract
+## Final Report Contract
 
-When running in `automatic-final` for the Web app, produce a stable, user-facing result:
+For both Web/server-side automatic runs and interactive final synthesis, produce one stable,
+user-facing final report:
 
 - Write the final user-visible report to `$TRACE_AI_REPORT_PATH` when that environment variable is set.
 - Also write the same final report to `report.md` in the current working directory.
@@ -65,7 +66,7 @@ When running in `automatic-final` for the Web app, produce a stable, user-facing
 - If analysis cannot proceed because a trace file, DB table, Python dependency, or tool permission is missing, write a concise failure report instead of a partial or fabricated performance report.
 - Prefer Chinese report text when the request is Chinese.
 
-The final `report.md` should use this exact high-level structure:
+The final `report.md` must use this exact high-level structure:
 
 1. `# AI 性能分析报告`
 2. `## 结论概览`
@@ -83,7 +84,8 @@ The final `report.md` should use this exact high-level structure:
 7. `## 产物`
    - Generated DBs, stage reports, evidence logs, and analysis directory.
 
-Keep the final report concise enough for Web reading. Move large raw tables and long logs into artifact files, then cite those files from the report.
+Keep the final report concise enough for Web reading. Move large raw tables and long logs into
+artifact files such as `evidence_summary.md`, then cite those files from the report.
 
 ## Setup And Inputs
 
@@ -163,7 +165,7 @@ Write these Markdown reports in both modes:
 - `phase2_<branch>_report.md`: detailed report for each completed branch.
 - `report.md`: final synthesis report after automatic branch execution completes, or after the user asks to conclude/declines more branches in `interactive-phased` mode.
 
-Do not duplicate full per-branch detailed reports inside `report.md`; reference their filenames from `Artifacts`. `report.md` must include raw table evidence in `Raw Tables Appendix`.
+Do not duplicate full per-branch detailed reports inside `report.md`; reference their filenames from `产物`. Keep raw table excerpts in stage reports or `evidence_summary.md`, and cite those artifacts from the final report.
 
 Stage reports and logs should include enough filenames and raw excerpts for later audit.
 
@@ -435,28 +437,24 @@ Workflow:
 
 Final `report.md` structure:
 
-1. `Executive Summary`
-2. `Scope And Evidence`
-3. `Time Breakdown`
-4. `Findings And Candidate Causes`
-5. `Optimization Recommendations`
-6. `Non-Additivity Notes`
-7. `Open Questions`
-8. `Raw Tables Appendix`
-9. `Artifacts`
+Use the exact structure defined in `Final Report Contract`:
+
+1. `# AI 性能分析报告`
+2. `## 结论概览`
+3. `## 关键指标`
+4. `## 主要发现`
+5. `## 优化建议`
+6. `## 不确定性与下一步`
+7. `## 产物`
 
 Output contract:
 
-- `Scope And Evidence`: DBs/ranks/devices analyzed, scripts or tables used, completed branches, optional CSVs used.
-- `Executive Summary`: 3-5 bullets with the highest-confidence conclusions.
-- `Time Breakdown`: category, measured time/share, source, and whether it is effective compute, exposed non-effective time, or uncertain.
-- `Findings And Candidate Causes`: `status`, `cause`, `evidence`, `counter-evidence`, `affected ranks/devices`, `estimated impact`, `confidence`, and `overlap notes`.
-- `Optimization Recommendations`: `priority`, `action`, `expected benefit`, `confidence`, `evidence link`, and `risk/validation`.
-- `Non-Additivity Notes`: benefit estimates that overlap and must not be summed directly.
-- `Open Questions`: missing data or unresolved hypotheses, plus the branch/input needed to resolve each.
-- `Final Next Step`: one recommended action to take first.
-- `Raw Tables Appendix`: raw table excerpts from `basic_info.py`, `device_timeline.py`, `gap_summary.py`, selected branch scripts such as `gap_detail.py`, and direct SQL/query outputs used as evidence.
-- `Artifacts`: analysis directory, report path, stage report paths, generated DB paths, and logs used as evidence.
+- `结论概览`: 3-6 prioritized findings. Use one `### 发现 N：short title` subsection per finding with separate `**结论：**`, `**证据：**`, and `**建议：**` paragraphs.
+- `关键指标`: compact table with metric, measured value/share, source artifact, and interpretation.
+- `主要发现`: status, cause/hypothesis, evidence, counter-evidence, affected ranks/devices, estimated impact, confidence, and overlap/non-additivity notes.
+- `优化建议`: priority, action, expected benefit, confidence, evidence link, risk/cost, and validation method.
+- `不确定性与下一步`: missing data or unresolved hypotheses, plus the branch/input needed to resolve each and one recommended first next step.
+- `产物`: analysis directory, report path, stage report paths, generated DB paths, `evidence_summary.md`, and logs used as evidence.
 
 ## Validation And Failure Handling
 

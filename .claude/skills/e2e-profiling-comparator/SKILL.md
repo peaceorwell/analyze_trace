@@ -18,9 +18,10 @@ In this mode, never ask follow-up questions. Treat trace A as baseline, trace B 
 
 If the prompt is an environment diagnostic or smoke test and asks to reply only `OK`, reply exactly `OK` and do not run tools or load references.
 
-## Web Output Contract
+## Final Report Contract
 
-When running for the Web app, produce a stable, user-facing result:
+For both Web/server-side automatic runs and interactive final synthesis, produce one stable,
+user-facing final report:
 
 - Write the final user-visible report to `$TRACE_AI_REPORT_PATH` when that environment variable is set.
 - Also write the same final report to `report.md` in the current working directory.
@@ -29,7 +30,7 @@ When running for the Web app, produce a stable, user-facing result:
 - If analysis cannot proceed because a trace file, DB table, Python dependency, or tool permission is missing, write a concise failure report instead of a partial or fabricated comparison.
 - Prefer Chinese report text when the request is Chinese.
 
-The final `report.md` should use this exact high-level structure:
+The final `report.md` must use this exact high-level structure:
 
 1. `# AI 对比分析报告`
 2. `## 结论概览`
@@ -49,7 +50,8 @@ The final `report.md` should use this exact high-level structure:
 8. `## 产物`
    - Converted DBs, collected table JSON files, evidence logs, and analysis directory.
 
-Keep the final report concise enough for Web reading. Move large raw tables and long logs into artifact files, then cite those files from the report.
+Keep the final report concise enough for Web reading. Move large raw tables and long logs into
+artifact files, then cite those files from the report.
 
 ## Resources
 
@@ -219,15 +221,9 @@ Group memcpy by copy direction or type.
 
 - Treat the chosen baseline/current meaning as part of the analysis contract before comparing tables.
 - Prioritize current regressions: larger total time, higher count, worse avg/p90/max, higher uncovered time, lower bandwidth, or higher gap/idle share.
-- Write the final deliverable as a Markdown report with this order:
-  1. `Basic Information`: comparison goal, baseline/current files, selected ranges, device/environment notes, and upstream E2E window summary when available.
-  2. `Executive Conclusion`: prioritized findings about where current is worse than baseline. Include supporting baseline/current/delta data beside each finding.
-  3. `Key Evidence Summary`: compact evidence grouped by Device Breakdown Overview, Compute Kernel Summary, Communication/Memcpy Summary, and Host Summary.
-  4. `Detailed Analysis`: compute kernel comparison first, then communication, memcpy, gap/other activity, and host signals as needed.
-  5. `Suggestions / Next Checks`: concrete follow-up branches or extra checks.
-  6. `Appendix`: raw baseline/current tables or long copied table excerpts when useful.
-- Include an `Artifacts` note with the temporary analysis directory, report path, converted DB paths, and table collection outputs used as evidence.
-- In `Executive Conclusion`, include the supporting summary data next to each claim. For each highlighted regression, show the relevant baseline value, current value, delta, and table source when both values are available.
+- Write the final deliverable using the exact `Final Report Contract` structure.
+- Include an `## 产物` section with the temporary analysis directory, report path, converted DB paths, table collection outputs, and delta comparison outputs used as evidence.
+- In `## 结论概览`, include supporting summary data next to each claim. For each highlighted regression, show the relevant baseline value, current value, delta, and table source when both values are available.
 - Prefer compact evidence snippets over separate comparison tables, for example: `stable compute kernel total: baseline 820 ms, current 970 ms, +150 ms (+18.3%), from Device Breakdown Overview`.
 - Always include a detailed Compute Kernel Summary comparison in the conclusion: compare high-share kernel names by total/count/avg/p90/max/share, and call out whether the regression is from slower kernels, more launches, or long-tail changes.
 - Use the summary rows exactly as emitted by `collect_profile_tables.py`; they already cover the leading 95% share plus `other`, so do not apply another top-k or 95% compression pass when reading them.
