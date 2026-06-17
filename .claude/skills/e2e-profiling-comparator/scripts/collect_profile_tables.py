@@ -445,19 +445,29 @@ def blocking_event_reason(cur, process_id, device_id, queue_id, gap_start, gap_e
 
 
 def compute_gap_summary(cur, strings, start, end, preloaded_rows, top=20):
-    last_by_group = {}
+    coverage_by_group = {}
     reasons = {}
     gaps = []
     for process_id, device_id, queue_id, k_start, k_end, corr_id, name_id in preloaded_rows:
         group = (process_id, device_id)
-        prev = last_by_group.get(group)
-        last_by_group[group] = (queue_id, k_end, corr_id, name_id)
-        if prev is None:
+        coverage = coverage_by_group.get(group)
+        if coverage is None:
+            coverage_by_group[group] = {
+                "end": k_end,
+                "end_kernel": (queue_id, k_end, corr_id, name_id),
+            }
             continue
-        prev_queue, prev_end, prev_corr, prev_name = prev
+        if k_start <= coverage["end"]:
+            if k_end > coverage["end"]:
+                coverage["end"] = k_end
+                coverage["end_kernel"] = (queue_id, k_end, corr_id, name_id)
+            continue
+        prev_queue, prev_end, prev_corr, prev_name = coverage["end_kernel"]
         gap_start = max(prev_end, start)
         gap_end = min(k_start, end)
         gap = gap_end - gap_start
+        coverage["end"] = k_end
+        coverage["end_kernel"] = (queue_id, k_end, corr_id, name_id)
         if gap <= 0:
             continue
         if gap < DEFAULT_GAP_THRESHOLD_NS:
@@ -475,6 +485,7 @@ def compute_gap_summary(cur, strings, start, end, preloaded_rows, top=20):
         gaps.append(
             {
                 "reason": reason,
+                "gap_type": "compute_coverage_gap",
                 "duration_ms": ms(gap),
                 "start_ms": ms(gap_start),
                 "process_id": process_id,

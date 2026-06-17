@@ -46,7 +46,7 @@ Do not assume the bottleneck is communication, a specific kernel family, TCDP, o
 - Start every analysis by loading `references/profiling_concepts.md`.
 - Primary evidence comes from DB tables. Cluster CSVs can validate or label DB-derived findings, but are never required.
 - `device_timeline.py` non-compute categories are uncovered/exposed non-effective time. Do not treat them as total task time.
-- `gap_summary.py` accounts for intervals between adjacent compute kernels. It is separate from `device_timeline.py`.
+- `gap_summary.py` accounts for exposed intervals after merging overlapping compute kernels per process/device. It is separate from `device_timeline.py`.
 - Load `string_table` per DB. Do not mix `nameId` mappings across DBs.
 - Report observed kernel names first. Name-based grouping is heuristic.
 - Do not infer root cause from one high-level percentage.

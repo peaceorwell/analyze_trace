@@ -131,6 +131,12 @@ def build_summary(stats_by_group):
     total_stats = merge_stats(stats_by_group)
 
     return {
+        "gap_type": "compute_coverage_gap",
+        "method": (
+            "Merge overlapping compute kernels per process/device before measuring "
+            "idle intervals. This avoids treating queue-local stalls hidden by other "
+            "compute kernels as exposed compute gaps."
+        ),
         "stats": format_stats(total_stats),
         "stats_by_group": [
             {
@@ -171,28 +177,38 @@ def analyze_device_gaps(
 
     stats_by_group = {}
     results = []
-    last_kernel_by_group = {}
+    coverage_by_group = {}
 
     for row in kernel_cursor:
         row_process_id, row_device_id, queue_id, start, end, corr_id, name_id = row
         group_key = (row_process_id, row_device_id)
-        prev_kernel = last_kernel_by_group.get(group_key)
-        last_kernel_by_group[group_key] = (queue_id, end, corr_id, name_id)
-
-        if prev_kernel is None:
-            continue
-
-        prev_queue_id, prev_end, prev_corr_id, prev_name_id = prev_kernel
-        gap = start - prev_end
-
-        if gap <= 0:
-            continue
         group_stats = stats_by_group.setdefault(group_key, build_initial_stats())
+        coverage = coverage_by_group.get(group_key)
+
+        if coverage is None:
+            coverage_by_group[group_key] = {
+                "end": end,
+                "end_kernel": (queue_id, end, corr_id, name_id),
+            }
+            continue
+
+        if start <= coverage["end"]:
+            if end > coverage["end"]:
+                coverage["end"] = end
+                coverage["end_kernel"] = (queue_id, end, corr_id, name_id)
+            continue
+
+        prev_queue_id, prev_end, prev_corr_id, prev_name_id = coverage["end_kernel"]
+        gap = start - prev_end
+        coverage["end"] = end
+        coverage["end_kernel"] = (queue_id, end, corr_id, name_id)
+
         if gap < gap_threshold:
             record_gap_stat(group_stats, "mini_gap", gap)
             continue
 
         item = {
+            "gap_type": "compute_coverage_gap",
             "process_id": row_process_id,
             "device_id": row_device_id,
             "reason": "other",
@@ -281,6 +297,7 @@ def emit_json_output(db_path, params, summary_payload, results, out):
             "gaps": [
                 {
                     "reason": item["reason"],
+                    "gap_type": item.get("gap_type", "compute_coverage_gap"),
                     "start": item["start"],
                     "duration": item["duration"],
                     "prev": item["prev"],
@@ -298,8 +315,10 @@ def emit_json_output(db_path, params, summary_payload, results, out):
 def emit_text_output(cursor, summary_payload, results, out):
     string_map = load_string_map(cursor)
     print(f"\n{'=' * 80}", file=out)
-    print("Gap Summary", file=out)
+    print("Compute Coverage Gap Summary", file=out)
     print(f"{'=' * 80}", file=out)
+    print(summary_payload.get("method", ""), file=out)
+    print(file=out)
     print(
         f"{'pid':<8} {'dev':<5} {'reason':<20} {'count':<8} {'time(ms)':<12} "
         f"{'avg(ms)':<10} {'max(ms)':<10} {'share':<8}",

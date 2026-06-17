@@ -168,7 +168,7 @@ Required categories:
 - `compute kernel`: `device_task_kernel_data` where `isComputation = 1`.
 - `communication kernel`: `device_task_kernel_data` where `isComputation = 0`.
 - `memcpy`: `device_task_memcpy_data`.
-- `compute gap`: positive intervals between adjacent compute kernels on the same process/device timeline.
+- `compute gap`: exposed positive intervals after merging overlapping compute kernels on the same process/device timeline.
 - `pure gap`: time in the selected range not covered by known device-side activity used in this overview.
 - `other activity`: known device-side activity outside compute/communication/memcpy, currently notifier, atomic operation, and memset.
 
