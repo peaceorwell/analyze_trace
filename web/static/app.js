@@ -1,4 +1,4 @@
-const { createApp, ref, computed, watch, nextTick } = Vue;
+const { createApp, ref, computed, watch, nextTick, onBeforeUnmount } = Vue;
 const { createRouter, createWebHashHistory } = VueRouter;
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -6,6 +6,7 @@ const { createRouter, createWebHashHistory } = VueRouter;
 // ══════════════════════════════════════════════════════════════════════════════
 
 let appInitialized = false;
+const DEFAULT_RESULT_TAB = "chart";
 
 const readStoredJson = (key, fallback) => {
   try {
@@ -39,7 +40,7 @@ const toggleTheme = () => {
   document.documentElement.setAttribute('data-theme', t);
   localStorage.setItem('tpa-theme', t);
   if (resultTab.value === 'chart' && selectedJob.value?.status === 'done') {
-    nextTick(() => buildChart());
+    scheduleBuildChart();
   }
 };
 
@@ -80,7 +81,7 @@ const form = ref({
 });
 
 // ── Result view ─────────────────────────────────────────────────────────
-const resultTab   = ref("console");
+const resultTab   = ref(DEFAULT_RESULT_TAB);
 const tableSearch = ref("");
 const sortCol     = ref("");
 const sortAsc     = ref(true);
@@ -101,6 +102,7 @@ const colFilters    = ref({});
 const colFilterOps  = ref({});
 const visibleColumns = ref([]);
 const showColumnMenu = ref(false);
+const openActionMenu = ref("");
 const ktChartInst     = ref(null);
 const ktChart         = ref(null);
 const ktPieChartInst  = ref(null);
@@ -120,14 +122,70 @@ const chartPieRows      = ref([]);
 
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
-const appVersion = ref("0.1.8");
+const claudeAnalysisEnabled = ref(false);
+const appVersion = ref("0.2.86");
+const authRequired = ref(false);
+const authChecked = ref(false);
+const authInitError = ref("");
+const currentUser = ref(null);
+const currentUserIsAdmin = ref(false);
+const LOGIN_USERNAME_KEY = "tpa-login-username";
+const LOGIN_REMEMBER_USERNAME_KEY = "tpa-login-remember-username";
+const loginRememberUsername = ref(readStoredBool(LOGIN_REMEMBER_USERNAME_KEY, true));
+const loginForm = ref({
+  username: localStorage.getItem(LOGIN_USERNAME_KEY) || "",
+  password: "",
+  captcha: "",
+});
+const loginLoading = ref(false);
+const loginError = ref("");
+const loginCaptchaRequired = ref(false);
+const loginCaptchaImage = ref("");
 const perfettoOpening = ref({});
 const compareRerunLoading = ref(false);
+const singleTraceAnalyzeLoadingSlot = ref("");
+const showStepReanalysisModal = ref(false);
+const stepReanalysisLoading = ref(false);
+const stepReanalysisLabel = ref("");
+const stepReanalysisFilterA = ref("");
+const stepReanalysisFilterB = ref("");
+const aiAnalysisLoading = ref(false);
+const aiAnalysisStarting = ref(false);
+const aiAnalysisError = ref("");
+const aiAnalysisContent = ref("");
+const aiAnalysisArtifacts = ref([]);
+const aiAnalysisVersions = ref([]);
+const aiAnalysisSelectedVersionId = ref("");
+const showAiPromptModal = ref(false);
+const aiPromptForce = ref(false);
+const aiAnalysisPrompt = ref("");
+const aiArtifactsExpanded = ref(false);
+const aiDiagnosticsLoading = ref(false);
+const aiDiagnosticsError = ref("");
+const aiDiagnosticsResult = ref(null);
+const uiNow = ref(Date.now());
 let activeResultStateJobId = null;
+let aiAnalysisPollTimer = null;
+let aiCompletionTitleResetTimer = null;
+const defaultDocumentTitle = document.title || "torch profiler analyzer";
+const isAdmin = computed(() => currentUserIsAdmin.value);
+
+setInterval(() => {
+  uiNow.value = Date.now();
+}, 1000);
+
+const toggleActionMenu = key => {
+  openActionMenu.value = openActionMenu.value === key ? "" : key;
+};
+const closeActionMenu = () => {
+  openActionMenu.value = "";
+};
+document.addEventListener("click", closeActionMenu);
 
 const resultStateKey = jobId => `tpa-result-state:${jobId}`;
 const readResultMemory = jobId =>
-  jobId ? readStoredJson(resultStateKey(jobId), { lastTab: "console", tabs: {} }) : { lastTab: "console", tabs: {} };
+  jobId ? readStoredJson(resultStateKey(jobId), { lastTab: DEFAULT_RESULT_TAB, tabs: {} }) : { lastTab: DEFAULT_RESULT_TAB, tabs: {} };
+const hasResultMemory = jobId => Boolean(jobId && localStorage.getItem(resultStateKey(jobId)) !== null);
 const writeResultMemory = (jobId, memory) => {
   if (!jobId) return;
   localStorage.setItem(resultStateKey(jobId), JSON.stringify(memory));
@@ -178,6 +236,17 @@ const rememberResultTabSelection = (jobId, tab) => {
   memory.lastTab = tab;
   writeResultMemory(jobId, memory);
 };
+const resolveResultTab = (jobId, requestedTab, validTabs) => {
+  const fallback = validTabs.includes(DEFAULT_RESULT_TAB)
+    ? DEFAULT_RESULT_TAB
+    : (validTabs[0] || "console");
+  if (requestedTab) return validTabs.includes(requestedTab) ? requestedTab : fallback;
+  if (hasResultMemory(jobId)) {
+    const remembered = readResultMemory(jobId).lastTab;
+    if (validTabs.includes(remembered)) return remembered;
+  }
+  return fallback;
+};
 const defaultResultViewState = () => ({
   tableSearch: "",
   sortCol: "",
@@ -210,11 +279,9 @@ const applyResultViewState = state => {
 const restoreResultViewState = (jobId, tab) => {
   applyResultViewState(resultViewStateFor(jobId, tab));
 };
-const rememberedResultTab = jobId => readResultMemory(jobId).lastTab || "console";
-
 const refreshReadingLayout = () => {
   if (resultTab.value === "chart" && selectedJob.value?.status === "done") {
-    nextTick(() => buildChart());
+    scheduleBuildChart();
   }
 };
 
@@ -303,6 +370,7 @@ const startSidebarResize = (e) => {
 const showNewProject  = ref(false);
 const newProjectName  = ref("");
 const newProjectDesc  = ref("");
+const newProjectShared = ref(false);
 
 const showRenameProject = ref(false);
 const renameProjectId = ref("");
@@ -321,9 +389,77 @@ const renameJobName = ref("");
 
 const showDeletedProjects = ref(false);
 const deletedProjects = ref([]);
+const showFeedbackBoard = ref(false);
+const showFeedbackComposer = ref(false);
+const feedbackItems = ref([]);
+const feedbackTotal = ref(0);
+const feedbackLimit = ref(30);
+const feedbackOffset = ref(0);
+const feedbackSort = ref("updated");
+const feedbackLoading = ref(false);
+const feedbackSubmitting = ref(false);
+const feedbackForm = ref({ body: "", files: [], previews: [] });
+const feedbackPostEditorMode = ref("write");
+const feedbackReplies = ref({});
+const feedbackEditing = ref({ id: "", body: "", saving: false });
+const feedbackMarkdownEditorEnabled = ref(false);
+const FEEDBACK_MARKDOWN_EDITOR_CSS = "https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.css";
+const FEEDBACK_MARKDOWN_EDITOR_SCRIPTS = [
+  "https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js",
+  "https://unpkg.com/easymde/dist/easymde.min.js",
+];
+const selectedFeedbackPostId = ref("");
+const selectedFeedbackMessageId = ref("");
+const feedbackDetailLoading = ref(false);
+const feedbackEmailDiagLoading = ref(false);
+const feedbackEmailDiagResult = ref(null);
+const feedbackEmojiOptions = Object.freeze([
+  "👍", "👎", "😄", "🎉", "🚀", "❤️", "👀", "💡", "✅", "🙏",
+  "🔥", "🤔", "😕", "👏", "🙌", "💯", "🧠", "🛠️", "📌", "❓",
+  "🙂", "😅", "😭", "✨", "💪", "📝", "🔍", "⚠️", "💬", "🙇",
+]);
+const feedbackReactionOptions = Object.freeze(["👍", "👎", "😄", "🎉", "🚀", "❤️", "👀", "💡"]);
+const feedbackReactionPickerId = ref("");
+const feedbackEmojiPickerTarget = ref("");
+const feedbackTextTarget = ref({ target: "post", textarea: null });
+const feedbackMention = ref({
+  visible: false,
+  loading: false,
+  target: "",
+  query: "",
+  start: -1,
+  end: -1,
+  candidates: [],
+  activeIndex: 0,
+});
+let feedbackMentionTimer = null;
+let feedbackMentionSeq = 0;
+let feedbackMentionTextarea = null;
+const FEEDBACK_BODY_LIMIT = 2000;
+const feedbackMarkdownEditors = new Map();
+let feedbackMarkdownEditorLoadPromise = null;
+
+const selectedFilterProject = computed(() =>
+  projects.value.find(project => project.id === filterProject.value) || null
+);
+
+const projectOptionLabel = project =>
+  `${project.name}${project.is_public ? " · 共享" : ""}`;
 const showStorageManager = ref(false);
 const storageSummary = ref({ totals: {}, projects: [], jobs: [] });
 const storageSelection = ref([]);
+const showAdminUsage = ref(false);
+const adminUsageLoading = ref(false);
+const adminUsageError = ref("");
+const adminUsageDays = ref(14);
+const adminUsage = ref({
+  timezone: "",
+  today: {},
+  seven_days: {},
+  all_time: {},
+  daily: [],
+  top_users_today: [],
+});
 
 const loadDeletedProjects = async () => {
   const r = await fetch("/api/deleted-projects", { credentials: "include" });
@@ -394,6 +530,12 @@ const compareSelection  = ref([]);
 const compareSelectionDetails = ref({});
 const compareLabel      = ref("");
 const compareProjectId  = ref("");
+const batchCompareMode  = ref(false);
+const batchBaselineId   = ref("");
+const batchCandidateIds = ref([]);
+const batchSelectionDetails = ref({});
+const batchCompareLabelPrefix = ref("");
+const batchCompareLoading = ref(false);
 const compareJobs       = ref([]);
 const compareJobsTotal  = ref(0);
 const compareJobsLimit  = ref(50);
@@ -419,6 +561,14 @@ const selectedCompareJobs = computed(() =>
     .map(id => compareSelectionDetails.value[id])
     .filter(Boolean)
 );
+const selectedBatchBaseline = computed(() =>
+  batchBaselineId.value ? batchSelectionDetails.value[batchBaselineId.value] : null
+);
+const selectedBatchCandidates = computed(() =>
+  batchCandidateIds.value
+    .map(id => batchSelectionDetails.value[id])
+    .filter(Boolean)
+);
 
 const availableTabs = computed(() => {
   const res = selectedJob.value?.result_files || selectedJob.value?.results;
@@ -433,6 +583,10 @@ const availableTabs = computed(() => {
   };
   for (const [file, label] of Object.entries(primaryTypeTabs)) {
     if (res[file]) tabs.push({ key: file, label });
+  }
+  const aiMeta = selectedJob.value?.ai_analysis || {};
+  if (claudeAnalysisEnabled.value || aiMeta.report_exists || ["running", "done", "error"].includes(aiMeta.status)) {
+    tabs.push({ key: "ai", label: "AI 分析" });
   }
   const csvMap = {
     "all_kernels_avg.csv":      "所有 Kernel",
@@ -457,6 +611,16 @@ const availableTabs = computed(() => {
   return tabs;
 });
 
+const jobStepFilterLabel = computed(() => {
+  const job = selectedJob.value;
+  if (!job) return "";
+  const a = (job.step_filter_a || "").trim();
+  const b = (job.step_filter_b || "").trim();
+  if (!a && !b) return "";
+  if (job.mode === "compare") return `Step A: ${a || "全部"} / B: ${b || "全部"}`;
+  return `Step: ${a}`;
+});
+
 const CHART_SOURCE_CONFIGS = [
   { file: "kernel_types_cmp.csv", label: "类型对比", mode: "compare", nameField: "type", defaultMetric: "delta_dur_ms" },
   { file: "all_kernels_cmp.csv", label: "Kernel Delta", mode: "compare", nameField: "kernel_name", defaultMetric: "delta_dur_ms" },
@@ -469,6 +633,20 @@ const CHART_SOURCE_CONFIGS = [
   { file: "aten_ops_avg.csv", label: "Aten Ops", mode: "single", nameField: "op_name", defaultMetric: "avg_dur_ms" },
   { file: "cncl_ops_avg.csv", label: "CNCL Ops", mode: "single", nameField: "op_name", defaultMetric: "avg_dur_ms" },
 ];
+
+const CHART_COMMUNICATION_SOURCE_FILES = new Set([
+  "cncl_ops_avg.csv",
+  "cncl_ops_cmp.csv",
+]);
+const CHART_COMMUNICATION_FAMILIES = new Set([
+  "collective",
+  "communication",
+  "comm",
+  "cncl",
+  "nccl",
+]);
+const CHART_COMMUNICATION_NAME_RE =
+  /(^|[_:\s./\\-])(tcdp|cncl|nccl|tccl|hccl|mpi)(?=$|[_:\s./\\-])|all[_-]?reduce|all[_-]?gather|all[_-]?to[_-]?all|allconnected|reduce[_-]?scatter|reducescatter|sendrecv|(^|[_:\s./\\-])i?(send|recv)(?=$|[_:\s./\\-])/i;
 
 const CHART_METRIC_DEFS = [
   { key: "delta_dur_ms", label: "耗时 Delta (B-A)", unit: "ms", signed: true },
@@ -490,7 +668,11 @@ const CHART_METRIC_DEFS = [
 const chartSourceOptions = computed(() => {
   const res = selectedJob.value?.result_files || {};
   const mode = selectedJob.value?.mode === "compare" ? "compare" : "single";
-  return CHART_SOURCE_CONFIGS.filter(item => item.mode === mode && res[item.file]);
+  return CHART_SOURCE_CONFIGS.filter(item =>
+    item.mode === mode
+      && res[item.file]
+      && !CHART_COMMUNICATION_SOURCE_FILES.has(item.file)
+  );
 });
 
 const chartMetricOptions = computed(() => {
@@ -559,6 +741,21 @@ const hiddenColumnCount = computed(() =>
 const storageJobsWithTrace = computed(() =>
   storageSummary.value.jobs.filter(job => job.has_original_trace)
 );
+
+const adminUsageCards = computed(() => {
+  const today = adminUsage.value.today || {};
+  const seven = adminUsage.value.seven_days || {};
+  return [
+    { label: "今日日活", value: today.dau || 0, hint: today.day || "今天" },
+    { label: "今日请求", value: today.requests || 0, hint: `时区 ${adminUsage.value.timezone || "-"}` },
+    { label: "近 7 日活跃", value: seven.active_users || 0, hint: `${fmtCount(seven.requests || 0)} 次请求` },
+    {
+      label: "近 7 日任务",
+      value: (seven.upload_jobs || 0) + (seven.compare_jobs || 0),
+      hint: `AI ${fmtCount(seven.ai_runs || 0)} · 留言 ${fmtCount(seven.feedback_messages || 0)}`,
+    },
+  ];
+});
 
 const hasColFilters = computed(() =>
   Object.values(colFilters.value).some(v => v)
@@ -645,6 +842,23 @@ const fmtBytes = bytes => {
   return `${value >= 10 ? value.toFixed(1) : value.toFixed(2)} ${unit}`;
 };
 
+const fmtCount = value => Number(value || 0).toLocaleString("zh-CN");
+
+const traceFormatLabel = filename => {
+  const name = String(filename || "").toLowerCase();
+  if (name.endsWith(".json.gz")) return "json.gz";
+  if (name.endsWith(".json.zip")) return "json.zip";
+  if (name.endsWith(".tar.gz")) return "tar.gz";
+  if (name.endsWith(".tgz")) return "tgz";
+  if (name.endsWith(".zip")) return "zip";
+  if (name.endsWith(".gz")) return "gz";
+  if (name.endsWith(".json")) return "json";
+  return "trace";
+};
+
+const uploadFileMeta = file =>
+  file ? `${traceFormatLabel(file.name)} · ${fmtBytes(file.size)}` : "";
+
 const isColumnVisible = field =>
   !visibleColumns.value.length || visibleColumns.value.includes(field);
 
@@ -678,6 +892,19 @@ const toggleColumnVisibility = field => {
 // ══════════════════════════════════════════════════════════════════════════════
 
 const fmtDate = iso => iso ? iso.replace("T", " ").slice(0, 16) : "";
+const fmtDateTime = iso => {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (!Number.isNaN(date.getTime())) {
+    const pad = value => String(value).padStart(2, "0");
+    return [
+      date.getFullYear(),
+      pad(date.getMonth() + 1),
+      pad(date.getDate()),
+    ].join("-") + ` ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  }
+  return iso.replace("T", " ").slice(0, 19);
+};
 
 const statusIcon = s => ({ pending: "⏳", running: "⟳", done: "✓", error: "✗" }[s] || s);
 
@@ -701,19 +928,169 @@ const deltaCellClass = (field, value) => {
 // Data fetching
 // ══════════════════════════════════════════════════════════════════════════════
 
+class ApiRequestError extends Error {
+  constructor(message, { status = 0, authExpired = false } = {}) {
+    super(message);
+    this.name = "ApiRequestError";
+    this.status = status;
+    this.authExpired = authExpired;
+  }
+}
+
+const readJsonResponse = async (response, fallback = {}) => {
+  const text = await response.text();
+  if (!text) return fallback;
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new ApiRequestError("服务返回了非 JSON 响应，请稍后重试或刷新页面", {
+      status: response.status,
+    });
+  }
+};
+
+const apiErrorMessage = (response, payload, fallback) =>
+  payload?.detail || payload?.message || `${fallback}: HTTP ${response.status}`;
+
+const fetchJson = async (url, options = {}, fallback = "请求失败") => {
+  const response = await fetch(url, options);
+  const payload = await readJsonResponse(response, {});
+  if (!response.ok) {
+    throw new ApiRequestError(apiErrorMessage(response, payload, fallback), {
+      status: response.status,
+      authExpired: response.status === 401,
+    });
+  }
+  return payload;
+};
+
+const handleAuthExpired = () => {
+  if (!authRequired.value) return;
+  currentUser.value = null;
+  currentUserIsAdmin.value = false;
+  authChecked.value = true;
+  clearInterval(pollTimer);
+  pollTimer = null;
+  stopAiAnalysisPolling();
+  cancelResultTableRequest();
+  clearAiDiagnostics();
+};
+
+const normalizeApiError = (error, fallback = "请求失败") => {
+  if (error?.name === "AbortError") return fallback;
+  if (error?.authExpired) {
+    handleAuthExpired();
+    return "登录已过期，请重新登录";
+  }
+  return error?.message || fallback;
+};
+
 const loadConfig = async () => {
-  const r = await fetch("/api/config");
-  const cfg = await r.json();
-  appVersion.value = cfg.version || "0.1.8";
+  const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
+  appVersion.value = cfg.version || "0.2.86";
+  authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
+  claudeAnalysisEnabled.value = cfg.claude_analysis_enabled ?? false;
+};
+
+const loadMe = async () => {
+  const r = await fetch("/api/me", { credentials: "include" });
+  const data = await readJsonResponse(r, {});
+  if (r.status === 401) {
+    currentUser.value = null;
+    currentUserIsAdmin.value = false;
+    authChecked.value = true;
+    return null;
+  }
+  if (!r.ok) {
+    throw new ApiRequestError(apiErrorMessage(r, data, "检查登录状态失败"), {
+      status: r.status,
+    });
+  }
+  currentUser.value = data.authenticated ? data.user : null;
+  currentUserIsAdmin.value = Boolean(data.is_admin);
+  authChecked.value = true;
+  return currentUser.value;
+};
+
+const applyLoginCaptcha = payload => {
+  loginCaptchaRequired.value = Boolean(payload?.captcha_required);
+  loginCaptchaImage.value = payload?.captcha_image || "";
+  if (loginCaptchaRequired.value) {
+    loginForm.value.captcha = "";
+  }
+};
+
+const refreshLoginCaptcha = async () => {
+  if (!authRequired.value) return;
+  const username = loginForm.value.username.trim();
+  const r = await fetch(`/api/login-captcha?username=${encodeURIComponent(username)}`, {
+    credentials: "include",
+  });
+  const payload = await r.json().catch(() => ({}));
+  applyLoginCaptcha(payload);
+};
+
+const submitLogin = async () => {
+  loginLoading.value = true;
+  loginError.value = "";
+  try {
+    const r = await fetch("/api/login", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(loginForm.value),
+    });
+    if (!r.ok) {
+      const payload = await r.json().catch(() => ({}));
+      applyLoginCaptcha(payload);
+      throw new Error(payload.detail || "登录失败");
+    }
+    const data = await r.json();
+    const username = loginForm.value.username.trim();
+    localStorage.setItem(LOGIN_REMEMBER_USERNAME_KEY, String(loginRememberUsername.value));
+    if (loginRememberUsername.value && username) {
+      localStorage.setItem(LOGIN_USERNAME_KEY, username);
+    } else {
+      localStorage.removeItem(LOGIN_USERNAME_KEY);
+    }
+    currentUser.value = data.user || null;
+    currentUserIsAdmin.value = Boolean(data.is_admin);
+    window.setTimeout(() => {
+      loginForm.value.password = "";
+      loginForm.value.captcha = "";
+    }, 300);
+    loginCaptchaRequired.value = false;
+    loginCaptchaImage.value = "";
+    appInitialized = true;
+    await loadProjects();
+    await refreshSidebarData();
+    await resumeCurrentRouteAfterLogin();
+  } catch (e) {
+    loginError.value = e.message || "登录失败";
+  } finally {
+    loginLoading.value = false;
+  }
+};
+
+const logout = async () => {
+  await fetch("/api/logout", { method: "POST", credentials: "include" }).catch(() => {});
+  currentUser.value = null;
+  currentUserIsAdmin.value = false;
+  appInitialized = false;
+  projects.value = [];
+  historyGroups.value = [];
+  compareJobs.value = [];
+  selectedJobId.value = null;
+  selectedJob.value = null;
+  clearAiDiagnostics();
+  router.push({ path: "/" });
 };
 
 const loadProjects = async () => {
   try {
-    const r = await fetch("/api/projects", { credentials: "include" });
-    if (!r.ok) throw new Error("加载项目失败: HTTP " + r.status);
-    projects.value = await r.json();
+    projects.value = await fetchJson("/api/projects", { credentials: "include" }, "加载项目失败");
     if (
       filterProject.value &&
       filterProject.value !== "__none__" &&
@@ -722,7 +1099,9 @@ const loadProjects = async () => {
       filterProject.value = "";
     }
   } catch (e) {
+    const message = normalizeApiError(e, "加载项目失败");
     console.error("loadProjects error:", e);
+    if (e?.authExpired) showToast(message, "error");
   }
 };
 
@@ -741,6 +1120,1201 @@ const openStorageManager = async () => {
   await loadStorageSummary();
   showStorageManager.value = true;
 };
+
+const loadAdminUsage = async () => {
+  adminUsageLoading.value = true;
+  adminUsageError.value = "";
+  try {
+    const days = Math.max(1, Math.min(Number(adminUsageDays.value) || 14, 90));
+    adminUsageDays.value = days;
+    const r = await fetch(`/api/admin/usage?days=${days}`, { credentials: "include" });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${r.status}`);
+    }
+    adminUsage.value = await r.json();
+  } catch (e) {
+    adminUsageError.value = e.message || "加载使用统计失败";
+    showToast(adminUsageError.value, "error");
+  } finally {
+    adminUsageLoading.value = false;
+  }
+};
+
+const openAdminUsage = async () => {
+  showAdminUsage.value = true;
+  await loadAdminUsage();
+};
+
+const feedbackHasMore = computed(() => feedbackItems.value.length < feedbackTotal.value);
+const selectedFeedbackPost = computed(() =>
+  feedbackItems.value.find(item => item.id === selectedFeedbackPostId.value) || null
+);
+const feedbackSortOptions = [
+  { key: "updated", label: "最新更新" },
+  { key: "created", label: "发布时间" },
+  { key: "hot", label: "热度" },
+];
+
+const feedbackPostTitle = item => {
+  const text = (item?.body || "").trim();
+  if (!text) return (item?.attachments || []).length ? "图片帖子" : "无标题帖子";
+  const firstLine = text.split(/\r?\n/).map(line => line.trim()).find(Boolean) || text;
+  return firstLine.length > 58 ? `${firstLine.slice(0, 58)}...` : firstLine;
+};
+
+const feedbackPostExcerpt = item => {
+  const text = (item?.body || "").replace(/\s+/g, " ").trim();
+  if (!text) return (item?.attachments || []).length ? "包含图片附件" : "暂无正文";
+  return text.length > 110 ? `${text.slice(0, 110)}...` : text;
+};
+
+const feedbackPostReplyCount = item => Number(item?.reply_count ?? item?.replies?.length ?? 0);
+const feedbackPostActivity = item => item?.last_activity_at || item?.updated_at || item?.created_at || "";
+const feedbackMentionTargetKey = target => String(target || "post");
+const feedbackUserInitial = value => {
+  const text = String(value || "用户").trim();
+  const chars = Array.from(text);
+  const chineseChars = chars.filter(ch => /[\u4e00-\u9fff]/.test(ch));
+  if (chineseChars.length >= 2) return chineseChars.slice(-2).join("");
+  if (chineseChars.length === 1) return chineseChars[0];
+  const compact = chars.filter(ch => !/\s/.test(ch));
+  return compact.slice(-2).join("") || "用户";
+};
+
+const currentFeedbackUserToken = computed(() =>
+  currentUser.value?.username || (!authRequired.value ? "local" : "")
+);
+
+const canEditFeedbackMessage = message => {
+  if (!message?.id) return false;
+  if (isAdmin.value) return true;
+  return Boolean(message.user_token && message.user_token === currentFeedbackUserToken.value);
+};
+
+const feedbackEditedText = message => {
+  if (!message?.edited_at) return "";
+  const count = Number(message.edit_count || 0);
+  return count > 1 ? `已编辑 ${count} 次` : "已编辑";
+};
+
+const feedbackReactionSummary = message => (message?.reactions || []).filter(item => Number(item.count || 0) > 0);
+const feedbackReactionItem = (message, emoji) =>
+  (message?.reactions || []).find(item => item.emoji === emoji) || { emoji, count: 0, reacted: false };
+
+const toggleFeedbackReactionPicker = messageId => {
+  feedbackReactionPickerId.value = feedbackReactionPickerId.value === messageId ? "" : messageId;
+  feedbackEmojiPickerTarget.value = "";
+  closeFeedbackMention();
+};
+
+const toggleFeedbackEmojiPicker = (target = "post") => {
+  const targetKey = feedbackMentionTargetKey(target);
+  feedbackEmojiPickerTarget.value = feedbackEmojiPickerTarget.value === targetKey ? "" : targetKey;
+  feedbackReactionPickerId.value = "";
+  closeFeedbackMention();
+};
+
+const updateFeedbackMessageInState = updated => {
+  if (!updated?.id) return;
+  feedbackItems.value = feedbackItems.value.map(post => {
+    if (post.id === updated.id) {
+      return {
+        ...post,
+        ...updated,
+        replies: post.replies || updated.replies || [],
+        reply_count: post.reply_count ?? updated.reply_count ?? 0,
+      };
+    }
+    const replies = (post.replies || []).map(reply => (
+      reply.id === updated.id ? { ...reply, ...updated } : reply
+    ));
+    const changed = replies.some((reply, index) => reply !== (post.replies || [])[index]);
+    if (!changed) return post;
+    return {
+      ...post,
+      replies,
+      last_activity_at: updated.updated_at || post.last_activity_at,
+    };
+  });
+};
+
+const setFeedbackMessageReactions = (messageId, reactions) => {
+  updateFeedbackMessageInState({ id: messageId, reactions: reactions || [] });
+};
+
+const setFeedbackTextTarget = (event, target = "post") => {
+  feedbackTextTarget.value = {
+    target: feedbackMentionTargetKey(target),
+    textarea: event?.target || null,
+  };
+};
+
+const feedbackTargetForm = targetKey => {
+  if (targetKey === "post") return feedbackForm.value;
+  if (targetKey.startsWith("edit:")) return feedbackEditing.value;
+  return ensureFeedbackReplyForm(targetKey);
+};
+
+const feedbackMarkdownEditorElementId = target => {
+  const targetKey = feedbackMentionTargetKey(target);
+  if (targetKey === "post") return "feedback-compose-post-textarea";
+  if (targetKey.startsWith("edit:")) return `feedback-edit-${targetKey.slice(5)}`;
+  return `feedback-reply-editor-${targetKey}`;
+};
+
+const detectFeedbackMarkdownEditor = () => {
+  const ctor = typeof window !== "undefined" && typeof window.EasyMDE === "function"
+    ? window.EasyMDE
+    : null;
+  feedbackMarkdownEditorEnabled.value = Boolean(ctor);
+  return ctor;
+};
+
+const ensureFeedbackMarkdownEditorCss = () => {
+  if (typeof document === "undefined") return;
+  const exists = Array.from(document.querySelectorAll("link[rel='stylesheet']"))
+    .some(link => link.href === FEEDBACK_MARKDOWN_EDITOR_CSS);
+  if (exists) return;
+  const link = document.createElement("link");
+  link.rel = "stylesheet";
+  link.href = FEEDBACK_MARKDOWN_EDITOR_CSS;
+  document.head.appendChild(link);
+};
+
+const loadFeedbackMarkdownScript = src => new Promise(resolve => {
+  if (typeof document === "undefined") {
+    resolve(false);
+    return;
+  }
+  const script = document.createElement("script");
+  script.src = src;
+  script.async = true;
+  script.onload = () => resolve(Boolean(detectFeedbackMarkdownEditor()));
+  script.onerror = () => resolve(false);
+  document.head.appendChild(script);
+});
+
+const loadFeedbackMarkdownEditor = () => {
+  if (detectFeedbackMarkdownEditor()) return Promise.resolve(true);
+  if (feedbackMarkdownEditorLoadPromise) return feedbackMarkdownEditorLoadPromise;
+  ensureFeedbackMarkdownEditorCss();
+  feedbackMarkdownEditorLoadPromise = (async () => {
+    for (const src of FEEDBACK_MARKDOWN_EDITOR_SCRIPTS) {
+      const loaded = await loadFeedbackMarkdownScript(src);
+      if (loaded || detectFeedbackMarkdownEditor()) return true;
+    }
+    return Boolean(detectFeedbackMarkdownEditor());
+  })().finally(() => {
+    if (!feedbackMarkdownEditorEnabled.value) feedbackMarkdownEditorLoadPromise = null;
+  });
+  return feedbackMarkdownEditorLoadPromise;
+};
+
+const destroyFeedbackMarkdownEditor = target => {
+  const targetKey = feedbackMentionTargetKey(target);
+  const entry = feedbackMarkdownEditors.get(targetKey);
+  if (!entry) return;
+  try {
+    entry.instance?.toTextArea?.();
+  } catch (e) {
+    console.warn("destroy feedback markdown editor failed:", e);
+  }
+  feedbackMarkdownEditors.delete(targetKey);
+};
+
+const destroyFeedbackMarkdownEditors = () => {
+  for (const targetKey of [...feedbackMarkdownEditors.keys()]) {
+    destroyFeedbackMarkdownEditor(targetKey);
+  }
+};
+
+const syncFeedbackMarkdownEditor = (target, body) => {
+  const targetKey = feedbackMentionTargetKey(target);
+  const entry = feedbackMarkdownEditors.get(targetKey);
+  if (!entry?.instance) return;
+  const nextBody = String(body || "");
+  if (entry.instance.value() === nextBody) return;
+  entry.silent = true;
+  entry.instance.value(nextBody);
+  entry.instance.codemirror?.refresh();
+  entry.silent = false;
+};
+
+const handleFeedbackMarkdownMention = (target, editor) => {
+  const cm = editor?.codemirror;
+  if (!cm) return;
+  const targetKey = feedbackMentionTargetKey(target);
+  const text = editor.value() || "";
+  const cursor = cm.indexFromPos(cm.getCursor());
+  const detected = detectFeedbackMention(text, cursor);
+  if (!detected) {
+    if (feedbackMention.value.target === targetKey) closeFeedbackMention();
+    return;
+  }
+  feedbackMentionTextarea = null;
+  feedbackTextTarget.value = { target: targetKey, textarea: null };
+  feedbackMention.value = {
+    visible: true,
+    loading: true,
+    target: targetKey,
+    query: detected.query,
+    start: detected.start,
+    end: detected.end,
+    candidates: [],
+    activeIndex: 0,
+  };
+  scheduleFeedbackMentionFetch(detected.query, targetKey);
+};
+
+const initFeedbackMarkdownEditor = target => {
+  const MarkdownEditor = detectFeedbackMarkdownEditor();
+  if (!MarkdownEditor) return;
+  const targetKey = feedbackMentionTargetKey(target);
+  const isEditTarget = targetKey.startsWith("edit:");
+  const isReplyTarget = targetKey !== "post" && !isEditTarget;
+  const editorId = feedbackMarkdownEditorElementId(targetKey);
+  const existing = feedbackMarkdownEditors.get(targetKey);
+  const existingWrapper = existing?.instance?.codemirror?.getWrapperElement?.();
+  if (existing && existingWrapper && document.contains(existingWrapper)) {
+    syncFeedbackMarkdownEditor(targetKey, feedbackTargetForm(targetKey).body || "");
+    existing.instance.codemirror?.refresh();
+    return;
+  }
+  if (existing) destroyFeedbackMarkdownEditor(targetKey);
+
+  const textarea = document.getElementById(editorId);
+  if (!textarea) return;
+  const editor = new MarkdownEditor({
+    element: textarea,
+    initialValue: feedbackTargetForm(targetKey).body || "",
+    forceSync: true,
+    spellChecker: false,
+    status: false,
+    minHeight: isReplyTarget ? "104px" : isEditTarget ? "130px" : "210px",
+    maxHeight: isReplyTarget ? "150px" : "52vh",
+    previewRender: value => renderMarkdown(value || ""),
+    placeholder: textarea.getAttribute("placeholder") || "Use Markdown to format your comment.",
+    toolbar: [
+      "heading", "bold", "italic", "strikethrough", "|",
+      "quote", "code", "unordered-list", "ordered-list", "|",
+      "link", "table", "horizontal-rule", "|",
+      "preview", "side-by-side", "fullscreen", "guide",
+    ],
+  });
+  const entry = { instance: editor, silent: false };
+  feedbackMarkdownEditors.set(targetKey, entry);
+
+  editor.codemirror.on("focus", () => {
+    feedbackTextTarget.value = { target: targetKey, textarea: null };
+  });
+  editor.codemirror.on("keydown", (_cm, event) => {
+    handleFeedbackMentionKeydown(event, targetKey);
+  });
+  editor.codemirror.on("cursorActivity", () => {
+    handleFeedbackMarkdownMention(targetKey, editor);
+  });
+  editor.codemirror.on("change", () => {
+    if (entry.silent) return;
+    let body = editor.value() || "";
+    if (body.length > FEEDBACK_BODY_LIMIT) {
+      body = body.slice(0, FEEDBACK_BODY_LIMIT);
+      syncFeedbackMarkdownEditor(targetKey, body);
+      showToast(`留言最多 ${FEEDBACK_BODY_LIMIT} 字`, "error");
+    }
+    updateFeedbackDraftBody(targetKey, feedbackTargetForm(targetKey), body);
+    handleFeedbackMarkdownMention(targetKey, editor);
+  });
+};
+
+const pruneFeedbackMarkdownEditors = () => {
+  for (const targetKey of [...feedbackMarkdownEditors.keys()]) {
+    const editorId = feedbackMarkdownEditorElementId(targetKey);
+    const entry = feedbackMarkdownEditors.get(targetKey);
+    const wrapper = entry?.instance?.codemirror?.getWrapperElement?.();
+    if (!document.getElementById(editorId) && (!wrapper || !document.contains(wrapper))) {
+      destroyFeedbackMarkdownEditor(targetKey);
+    }
+  }
+};
+
+const refreshFeedbackMarkdownEditors = () => {
+  nextTick(() => {
+    loadFeedbackMarkdownEditor().then(ready => {
+      nextTick(() => {
+        if (ready) {
+          pruneFeedbackMarkdownEditors();
+          if (showFeedbackComposer.value) initFeedbackMarkdownEditor("post");
+          if (selectedFeedbackPostId.value && feedbackReplies.value[selectedFeedbackPostId.value]) {
+            initFeedbackMarkdownEditor(selectedFeedbackPostId.value);
+          }
+          if (feedbackEditing.value.id) initFeedbackMarkdownEditor(`edit:${feedbackEditing.value.id}`);
+        }
+      });
+    });
+  });
+};
+
+const feedbackDraftForTarget = target => {
+  const targetKey = feedbackMentionTargetKey(target);
+  const form = feedbackTargetForm(targetKey);
+  const entry = feedbackMarkdownEditors.get(targetKey);
+  const editor = entry?.instance;
+  const cm = editor?.codemirror;
+  if (cm) {
+    const text = editor.value() || "";
+    const selection = cm.listSelections()[0];
+    const anchor = selection?.anchor || cm.getCursor();
+    const head = selection?.head || anchor;
+    const anchorIndex = cm.indexFromPos(anchor);
+    const headIndex = cm.indexFromPos(head);
+    const start = Math.min(anchorIndex, headIndex);
+    const end = Math.max(anchorIndex, headIndex);
+    return { targetKey, form, text, textarea: null, hasTextarea: false, editor, cm, hasEditor: true, start, end };
+  }
+  const text = form.body || "";
+  const textarea = feedbackTextTarget.value.target === targetKey ? feedbackTextTarget.value.textarea : null;
+  const hasTextarea = textarea && document.contains(textarea);
+  const start = hasTextarea ? textarea.selectionStart ?? text.length : text.length;
+  const end = hasTextarea ? textarea.selectionEnd ?? start : start;
+  return { targetKey, form, text, textarea, hasTextarea, editor: null, cm: null, hasEditor: false, start, end };
+};
+
+const updateFeedbackDraftBody = (targetKey, form, body) => {
+  if (targetKey === "post") {
+    feedbackForm.value = { ...feedbackForm.value, body };
+    return;
+  }
+  if (targetKey.startsWith("edit:")) {
+    feedbackEditing.value = { ...feedbackEditing.value, body };
+    return;
+  }
+  feedbackReplies.value = {
+    ...feedbackReplies.value,
+    [targetKey]: { ...(form || ensureFeedbackReplyForm(targetKey)), body },
+  };
+};
+
+const replaceFeedbackSelection = (target, insertText, options = {}) => {
+  const { targetKey, form, text, textarea, hasTextarea, cm, hasEditor, start, end } = feedbackDraftForTarget(target);
+  const nextBody = `${text.slice(0, start)}${insertText}${text.slice(end)}`;
+  updateFeedbackDraftBody(targetKey, form, nextBody);
+  closeFeedbackMention();
+  feedbackEmojiPickerTarget.value = "";
+  const cursorStart = start + (options.selectStartOffset ?? insertText.length);
+  const cursorEnd = start + (options.selectEndOffset ?? options.selectStartOffset ?? insertText.length);
+  nextTick(() => {
+    if (hasEditor && cm) {
+      syncFeedbackMarkdownEditor(targetKey, nextBody);
+      cm.focus();
+      cm.setSelection(cm.posFromIndex(cursorStart), cm.posFromIndex(cursorEnd));
+    } else if (hasTextarea) {
+      textarea.focus();
+      textarea.setSelectionRange(cursorStart, cursorEnd);
+    }
+  });
+};
+
+const replaceFeedbackRange = (target, rangeStart, rangeEnd, insertText, options = {}) => {
+  const { targetKey, form, text, textarea, hasTextarea, cm, hasEditor } = feedbackDraftForTarget(target);
+  const start = Math.max(0, Math.min(rangeStart, text.length));
+  const end = Math.max(start, Math.min(rangeEnd, text.length));
+  const nextBody = `${text.slice(0, start)}${insertText}${text.slice(end)}`;
+  updateFeedbackDraftBody(targetKey, form, nextBody);
+  closeFeedbackMention();
+  feedbackEmojiPickerTarget.value = "";
+  const cursorStart = start + (options.selectStartOffset ?? insertText.length);
+  const cursorEnd = start + (options.selectEndOffset ?? options.selectStartOffset ?? insertText.length);
+  nextTick(() => {
+    if (hasEditor && cm) {
+      syncFeedbackMarkdownEditor(targetKey, nextBody);
+      cm.focus();
+      cm.setSelection(cm.posFromIndex(cursorStart), cm.posFromIndex(cursorEnd));
+    } else if (hasTextarea) {
+      textarea.focus();
+      textarea.setSelectionRange(cursorStart, cursorEnd);
+    }
+  });
+};
+
+const feedbackSelectedLineRange = (text, start, end) => {
+  const safeStart = Math.max(0, Math.min(start, text.length));
+  const safeEnd = Math.max(safeStart, Math.min(end, text.length));
+  const effectiveEnd = safeEnd > safeStart && text[safeEnd - 1] === "\n" ? safeEnd - 1 : safeEnd;
+  const rangeStart = text.lastIndexOf("\n", Math.max(0, safeStart - 1)) + 1;
+  const nextBreak = text.indexOf("\n", effectiveEnd);
+  const rangeEnd = nextBreak === -1 ? text.length : nextBreak;
+  return { rangeStart, rangeEnd, block: text.slice(rangeStart, rangeEnd) };
+};
+
+const insertFeedbackEmoji = (emoji, target = "post") => {
+  replaceFeedbackSelection(target, emoji);
+};
+
+const insertFeedbackSnippet = (prefix, suffix = "", placeholder = "", target = "post") => {
+  const { text, start, end } = feedbackDraftForTarget(target);
+  const selected = text.slice(start, end);
+  const innerText = selected || placeholder;
+  const insertText = `${prefix}${innerText}${suffix}`;
+  replaceFeedbackSelection(target, insertText, {
+    selectStartOffset: !selected && placeholder ? prefix.length : insertText.length,
+    selectEndOffset: !selected && placeholder ? prefix.length + innerText.length : insertText.length,
+  });
+};
+
+const insertFeedbackList = (ordered = false, target = "post") => {
+  const { text, start, end } = feedbackDraftForTarget(target);
+  const selected = text.slice(start, end);
+  const { rangeStart, rangeEnd, block } = feedbackSelectedLineRange(text, start, end);
+  if (!selected && !block.trim()) {
+    const template = ordered ? "1. 第一项\n2. 第二项\n3. 第三项" : "- 第一项\n- 第二项\n- 第三项";
+    const firstItemStart = ordered ? 3 : 2;
+    replaceFeedbackRange(target, rangeStart, rangeEnd, template, {
+      selectStartOffset: firstItemStart,
+      selectEndOffset: firstItemStart + 3,
+    });
+    return;
+  }
+
+  const markerRe = ordered ? /^(\s*)\d+\.\s+(.*)$/ : /^(\s*)[-*+]\s+(.*)$/;
+  const anyListRe = /^(\s*)(?:[-*+]\s+|\d+\.\s+)(.*)$/;
+  const lines = block.split("\n");
+  const contentLines = lines.filter(line => line.trim());
+  const toggleOff = contentLines.length > 0 && contentLines.every(line => markerRe.test(line));
+  let itemIndex = 1;
+  const insertText = lines.map(line => {
+    if (!line.trim()) return line;
+    const anyMatch = line.match(anyListRe);
+    const indent = anyMatch ? anyMatch[1] : (line.match(/^(\s*)/)?.[1] || "");
+    const content = anyMatch ? anyMatch[2] : line.slice(indent.length);
+    if (toggleOff) return `${indent}${content}`;
+    const marker = ordered ? `${itemIndex++}. ` : "- ";
+    return `${indent}${marker}${content}`;
+  }).join("\n");
+  replaceFeedbackRange(target, rangeStart, rangeEnd, insertText, {
+    selectStartOffset: insertText.length,
+    selectEndOffset: insertText.length,
+  });
+};
+
+const insertFeedbackTaskList = (target = "post") => {
+  const { text, start, end } = feedbackDraftForTarget(target);
+  const selected = text.slice(start, end);
+  const { rangeStart, rangeEnd, block } = feedbackSelectedLineRange(text, start, end);
+  if (!selected && !block.trim()) {
+    const template = "- [ ] 第一项\n- [ ] 第二项\n- [ ] 第三项";
+    replaceFeedbackRange(target, rangeStart, rangeEnd, template, {
+      selectStartOffset: 6,
+      selectEndOffset: 9,
+    });
+    return;
+  }
+
+  const taskRe = /^(\s*)-\s+\[[ xX]\]\s+(.*)$/;
+  const listRe = /^(\s*)(?:[-*+]\s+|\d+\.\s+)(.*)$/;
+  const lines = block.split("\n");
+  const contentLines = lines.filter(line => line.trim());
+  const toggleOff = contentLines.length > 0 && contentLines.every(line => taskRe.test(line));
+  const insertText = lines.map(line => {
+    if (!line.trim()) return line;
+    const taskMatch = line.match(taskRe);
+    if (toggleOff && taskMatch) return `${taskMatch[1]}${taskMatch[2]}`;
+    const listMatch = line.match(listRe);
+    const indent = listMatch ? listMatch[1] : (line.match(/^(\s*)/)?.[1] || "");
+    const content = taskMatch ? taskMatch[2] : (listMatch ? listMatch[2] : line.slice(indent.length));
+    return `${indent}- [ ] ${content}`;
+  }).join("\n");
+  replaceFeedbackRange(target, rangeStart, rangeEnd, insertText, {
+    selectStartOffset: insertText.length,
+    selectEndOffset: insertText.length,
+  });
+};
+
+const insertFeedbackQuote = (target = "post") => {
+  const { text, start, end } = feedbackDraftForTarget(target);
+  const selected = text.slice(start, end);
+  const { rangeStart, rangeEnd, block } = feedbackSelectedLineRange(text, start, end);
+  if (!selected && !block.trim()) {
+    const template = "> 引用内容";
+    replaceFeedbackRange(target, rangeStart, rangeEnd, template, {
+      selectStartOffset: 2,
+      selectEndOffset: template.length,
+    });
+    return;
+  }
+
+  const quoteRe = /^(\s*)>\s?(.*)$/;
+  const lines = block.split("\n");
+  const contentLines = lines.filter(line => line.trim());
+  const toggleOff = contentLines.length > 0 && contentLines.every(line => quoteRe.test(line));
+  const insertText = lines.map(line => {
+    if (!line.trim()) return line;
+    const quoteMatch = line.match(quoteRe);
+    if (toggleOff && quoteMatch) return `${quoteMatch[1]}${quoteMatch[2]}`;
+    const indent = line.match(/^(\s*)/)?.[1] || "";
+    return `${indent}> ${line.slice(indent.length)}`;
+  }).join("\n");
+  replaceFeedbackRange(target, rangeStart, rangeEnd, insertText, {
+    selectStartOffset: insertText.length,
+    selectEndOffset: insertText.length,
+  });
+};
+
+const insertFeedbackCodeBlock = (target = "post") => {
+  const { text, start, end } = feedbackDraftForTarget(target);
+  const selected = text.slice(start, end);
+  const before = text.slice(0, start);
+  const after = text.slice(end);
+  const leadingNewline = before && !before.endsWith("\n") ? "\n" : "";
+  const trailingNewline = after && !after.startsWith("\n") ? "\n" : "";
+  const code = selected || "# 粘贴命令或代码";
+  const fence = selected ? "```" : "```bash";
+  const insertText = `${leadingNewline}${fence}\n${code}\n\`\`\`${trailingNewline}`;
+  const codeStart = leadingNewline.length + fence.length + 1;
+  replaceFeedbackSelection(target, insertText, {
+    selectStartOffset: selected ? insertText.length : codeStart,
+    selectEndOffset: selected ? insertText.length : codeStart + code.length,
+  });
+};
+
+const insertFeedbackCode = (target = "post") => {
+  const { text, start, end } = feedbackDraftForTarget(target);
+  const selected = text.slice(start, end);
+  if (selected.includes("\n")) {
+    insertFeedbackCodeBlock(target);
+    return;
+  }
+  insertFeedbackSnippet("`", "`", "code", target);
+};
+
+const closeFeedbackMention = () => {
+  if (feedbackMentionTimer) {
+    clearTimeout(feedbackMentionTimer);
+    feedbackMentionTimer = null;
+  }
+  feedbackMention.value = {
+    ...feedbackMention.value,
+    visible: false,
+    loading: false,
+    candidates: [],
+    activeIndex: 0,
+  };
+};
+
+const closeFeedbackTransientPanels = () => {
+  feedbackReactionPickerId.value = "";
+  feedbackEmojiPickerTarget.value = "";
+  closeFeedbackMention();
+};
+document.addEventListener("click", closeFeedbackTransientPanels);
+
+const detectFeedbackMention = (text, cursor) => {
+  const before = (text || "").slice(0, cursor);
+  const match = before.match(/(^|[\s([{"'，。！？；：、])@([A-Za-z0-9_.-]{0,40})$/);
+  if (!match) return null;
+  const query = match[2] || "";
+  if (!query || !/^[A-Za-z][A-Za-z0-9_.-]*$/.test(query)) return null;
+  const start = before.lastIndexOf("@");
+  return { query, start, end: cursor };
+};
+
+const fetchFeedbackMentionCandidates = async (query, target, seq) => {
+  const targetKey = feedbackMentionTargetKey(target);
+  try {
+    const params = new URLSearchParams({ q: query, limit: "8" });
+    const r = await fetch(`/api/mention-candidates?${params}`, { credentials: "include" });
+    const payload = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(payload.detail || "加载候选失败");
+    if (
+      seq !== feedbackMentionSeq ||
+      !feedbackMention.value.visible ||
+      feedbackMention.value.query !== query ||
+      feedbackMention.value.target !== targetKey
+    ) return;
+    feedbackMention.value = {
+      ...feedbackMention.value,
+      loading: false,
+      candidates: payload.data || [],
+      activeIndex: 0,
+    };
+  } catch (e) {
+    if (seq !== feedbackMentionSeq) return;
+    feedbackMention.value = {
+      ...feedbackMention.value,
+      loading: false,
+      candidates: [],
+      activeIndex: 0,
+    };
+  }
+};
+
+const scheduleFeedbackMentionFetch = (query, target) => {
+  if (feedbackMentionTimer) clearTimeout(feedbackMentionTimer);
+  const seq = ++feedbackMentionSeq;
+  feedbackMentionTimer = setTimeout(() => {
+    feedbackMentionTimer = null;
+    fetchFeedbackMentionCandidates(query, target, seq);
+  }, 140);
+};
+
+const handleFeedbackMentionInput = (event, target = "post") => {
+  const textarea = event?.target;
+  if (!textarea) return;
+  setFeedbackTextTarget(event, target);
+  feedbackMentionTextarea = textarea;
+  const detected = detectFeedbackMention(textarea.value, textarea.selectionStart ?? textarea.value.length);
+  if (!detected) {
+    closeFeedbackMention();
+    return;
+  }
+  const targetKey = feedbackMentionTargetKey(target);
+  feedbackMention.value = {
+    visible: true,
+    loading: true,
+    target: targetKey,
+    query: detected.query,
+    start: detected.start,
+    end: detected.end,
+    candidates: [],
+    activeIndex: 0,
+  };
+  scheduleFeedbackMentionFetch(detected.query, targetKey);
+};
+
+const handleFeedbackMentionKeydown = (event, target = "post") => {
+  const state = feedbackMention.value;
+  if (!state.visible || state.target !== feedbackMentionTargetKey(target)) return;
+  const count = state.candidates.length;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeFeedbackMention();
+    return;
+  }
+  if (!count) return;
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    feedbackMention.value = { ...state, activeIndex: (state.activeIndex + 1) % count };
+  } else if (event.key === "ArrowUp") {
+    event.preventDefault();
+    feedbackMention.value = { ...state, activeIndex: (state.activeIndex - 1 + count) % count };
+  } else if (event.key === "Enter" || event.key === "Tab") {
+    event.preventDefault();
+    selectFeedbackMention(state.candidates[state.activeIndex], target);
+  }
+};
+
+const selectFeedbackMention = (candidate, target = "post") => {
+  if (!candidate?.username) return;
+  const state = feedbackMention.value;
+  const targetKey = feedbackMentionTargetKey(target || state.target);
+  if (state.target && state.target !== targetKey) return;
+  const mention = `@${candidate.username} `;
+  let nextBody = "";
+  if (targetKey === "post") {
+    const text = feedbackForm.value.body || "";
+    nextBody = `${text.slice(0, state.start)}${mention}${text.slice(state.end)}`;
+    feedbackForm.value = { ...feedbackForm.value, body: nextBody };
+  } else if (targetKey.startsWith("edit:")) {
+    const text = feedbackEditing.value.body || "";
+    nextBody = `${text.slice(0, state.start)}${mention}${text.slice(state.end)}`;
+    feedbackEditing.value = { ...feedbackEditing.value, body: nextBody };
+  } else {
+    const form = ensureFeedbackReplyForm(targetKey);
+    const text = form.body || "";
+    nextBody = `${text.slice(0, state.start)}${mention}${text.slice(state.end)}`;
+    feedbackReplies.value = {
+      ...feedbackReplies.value,
+      [targetKey]: { ...form, body: nextBody },
+    };
+  }
+  const cursor = state.start + mention.length;
+  const textarea = feedbackMentionTextarea;
+  const editor = feedbackMarkdownEditors.get(targetKey)?.instance;
+  const cm = editor?.codemirror;
+  closeFeedbackMention();
+  nextTick(() => {
+    if (cm) {
+      syncFeedbackMarkdownEditor(targetKey, nextBody);
+      cm.focus();
+      cm.setCursor(cm.posFromIndex(cursor));
+    } else if (textarea && document.contains(textarea)) {
+      textarea.focus();
+      textarea.setSelectionRange(cursor, cursor);
+    }
+  });
+};
+
+const mergeFeedbackPost = post => {
+  if (!post?.id) return;
+  const idx = feedbackItems.value.findIndex(item => item.id === post.id);
+  if (idx >= 0) {
+    const next = [...feedbackItems.value];
+    next[idx] = { ...next[idx], ...post };
+    feedbackItems.value = next;
+    return;
+  }
+  feedbackItems.value = [post, ...feedbackItems.value];
+  feedbackTotal.value += 1;
+  feedbackOffset.value = feedbackItems.value.length;
+};
+
+const revokeFeedbackPreviews = previews => {
+  for (const preview of previews || []) {
+    if (preview.url) URL.revokeObjectURL(preview.url);
+  }
+};
+
+const feedbackFilePreviews = files =>
+  files.map(file => ({
+    name: file.name,
+    url: URL.createObjectURL(file),
+  }));
+
+const setFeedbackFiles = (event, parentId = null) => {
+  const selected = Array.from(event.target.files || []).filter(file => file.type.startsWith("image/"));
+  if (selected.length !== (event.target.files || []).length) {
+    showToast("仅支持图片文件", "error");
+  }
+  const files = selected.slice(0, 4);
+  if (selected.length > 4) showToast("最多选择 4 张图片", "error");
+  if (parentId) {
+    const form = feedbackReplies.value[parentId] || { open: true, body: "", files: [], previews: [], submitting: false, mode: "write" };
+    revokeFeedbackPreviews(form.previews);
+    feedbackReplies.value = {
+      ...feedbackReplies.value,
+      [parentId]: { ...form, files, previews: feedbackFilePreviews(files) },
+    };
+  } else {
+    revokeFeedbackPreviews(feedbackForm.value.previews);
+    feedbackForm.value = { ...feedbackForm.value, files, previews: feedbackFilePreviews(files) };
+  }
+  event.target.value = "";
+};
+
+const clearFeedbackForm = (parentId = null) => {
+  closeFeedbackMention();
+  if (parentId) {
+    const form = feedbackReplies.value[parentId];
+    revokeFeedbackPreviews(form?.previews || []);
+    feedbackReplies.value = {
+      ...feedbackReplies.value,
+      [parentId]: { open: false, body: "", files: [], previews: [], submitting: false, mode: "write" },
+    };
+    nextTick(() => syncFeedbackMarkdownEditor(parentId, ""));
+    return;
+  }
+  revokeFeedbackPreviews(feedbackForm.value.previews);
+  feedbackForm.value = { body: "", files: [], previews: [] };
+  feedbackPostEditorMode.value = "write";
+  nextTick(() => syncFeedbackMarkdownEditor("post", ""));
+};
+
+const ensureFeedbackReplyForm = id => {
+  if (feedbackReplies.value[id]) return feedbackReplies.value[id];
+  const form = { open: false, body: "", files: [], previews: [], submitting: false, mode: "write" };
+  feedbackReplies.value = { ...feedbackReplies.value, [id]: form };
+  return form;
+};
+
+const feedbackReplyEditorMode = id => feedbackReplies.value[id]?.mode || "write";
+
+const setFeedbackPostEditorMode = (mode = "write") => {
+  feedbackPostEditorMode.value = mode === "preview" ? "preview" : "write";
+  closeFeedbackMention();
+  feedbackEmojiPickerTarget.value = "";
+  if (feedbackPostEditorMode.value === "write") refreshFeedbackMarkdownEditors();
+};
+
+const setFeedbackReplyEditorMode = (id, mode = "write") => {
+  const form = ensureFeedbackReplyForm(id);
+  feedbackReplies.value = {
+    ...feedbackReplies.value,
+    [id]: { ...form, mode: mode === "preview" ? "preview" : "write" },
+  };
+  closeFeedbackMention();
+  feedbackEmojiPickerTarget.value = "";
+  if (feedbackReplies.value[id]?.mode === "write") refreshFeedbackMarkdownEditors();
+};
+
+const feedbackPostPreviewHtml = computed(() => renderMarkdown(feedbackForm.value.body || ""));
+
+const feedbackReplyPreviewHtml = id => renderMarkdown(feedbackReplies.value[id]?.body || "");
+
+const feedbackMessageHtml = message => renderMarkdown(message?.body || "");
+
+const focusFeedbackMessage = id => {
+  selectedFeedbackMessageId.value = id || "";
+  if (!id) return;
+  nextTick(() => {
+    const el = document.getElementById(`feedback-message-${id}`);
+    if (!el) return;
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    window.setTimeout(() => {
+      if (selectedFeedbackMessageId.value === id) selectedFeedbackMessageId.value = "";
+    }, 6000);
+  });
+};
+
+const toggleFeedbackReply = id => {
+  const form = ensureFeedbackReplyForm(id);
+  feedbackReplies.value = {
+    ...feedbackReplies.value,
+    [id]: { ...form, open: !form.open },
+  };
+  refreshFeedbackMarkdownEditors();
+};
+
+const selectFeedbackPost = async (id, { refresh = true, focusMessageId = "" } = {}) => {
+  if (!id) return;
+  selectedFeedbackPostId.value = id;
+  selectedFeedbackMessageId.value = focusMessageId || "";
+  ensureFeedbackReplyForm(id);
+  if (!refresh) return;
+  feedbackDetailLoading.value = true;
+  try {
+    const r = await fetch(`/api/feedback/${encodeURIComponent(id)}`, { credentials: "include" });
+    const payload = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(payload.detail || "加载帖子失败");
+    mergeFeedbackPost(payload);
+    selectedFeedbackPostId.value = payload.id || id;
+    ensureFeedbackReplyForm(selectedFeedbackPostId.value);
+    focusFeedbackMessage(focusMessageId || selectedFeedbackMessageId.value);
+  } catch (e) {
+    showToast(e.message || "加载帖子失败", "error");
+  } finally {
+    feedbackDetailLoading.value = false;
+    refreshFeedbackMarkdownEditors();
+  }
+};
+
+const closeFeedbackPost = () => {
+  selectedFeedbackPostId.value = "";
+  selectedFeedbackMessageId.value = "";
+  cancelFeedbackEdit();
+  destroyFeedbackMarkdownEditors();
+  if (router.currentRoute.value.name === "feedback" && router.currentRoute.value.params?.postId) {
+    router.push({ name: "feedback" }).catch(() => {});
+  }
+};
+
+const openFeedbackComposer = () => {
+  clearFeedbackForm();
+  showFeedbackComposer.value = true;
+  refreshFeedbackMarkdownEditors();
+};
+
+const closeFeedbackComposer = () => {
+  destroyFeedbackMarkdownEditor("post");
+  clearFeedbackForm();
+  closeFeedbackMention();
+  showFeedbackComposer.value = false;
+};
+
+const closeFeedbackBoard = () => {
+  closeFeedbackComposer();
+  cancelFeedbackEdit();
+  closeFeedbackMention();
+  selectedFeedbackPostId.value = "";
+  selectedFeedbackMessageId.value = "";
+  destroyFeedbackMarkdownEditors();
+  showFeedbackBoard.value = false;
+  if (router.currentRoute.value.name === "feedback") router.push("/").catch(() => {});
+};
+
+const showFeedbackSubmitResult = (payload, fallbackMessage) => {
+  const notification = payload?.notification;
+  if (!notification) {
+    showToast(fallbackMessage, "success");
+    return;
+  }
+  if (notification.status === "sent") {
+    showToast(`${fallbackMessage}，邮件通知已发送`, "success", 4200);
+    return;
+  }
+  if (notification.status === "queued") {
+    showToast(`${fallbackMessage}，邮件通知已提交`, "success", 4200);
+    return;
+  }
+  if (notification.status === "no_recipients" || notification.status === "disabled") {
+    showToast(fallbackMessage, "success");
+    return;
+  }
+  const detail = notification.detail || "邮件通知未发送";
+  showToast(`${fallbackMessage}，但${detail}`, "error", 8000);
+};
+
+const runFeedbackEmailDiagnostics = async () => {
+  feedbackEmailDiagLoading.value = true;
+  try {
+    const r = await fetch("/api/email/diagnostics", { credentials: "include" });
+    const payload = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(payload.detail || `HTTP ${r.status}`);
+    feedbackEmailDiagResult.value = payload;
+    showToast(payload.ok ? "邮件环境诊断通过" : "邮件环境诊断未通过", payload.ok ? "success" : "error", 5000);
+  } catch (e) {
+    feedbackEmailDiagResult.value = {
+      ok: false,
+      checks: [{ status: "fail", label: "诊断请求", detail: e.message || "邮件诊断失败" }],
+    };
+    showToast(e.message || "邮件诊断失败", "error", 7000);
+  } finally {
+    feedbackEmailDiagLoading.value = false;
+  }
+};
+
+const setFeedbackSort = async sortKey => {
+  if (!sortKey || feedbackSort.value === sortKey) return;
+  feedbackSort.value = sortKey;
+  selectedFeedbackPostId.value = "";
+  await loadFeedback({ reset: true });
+};
+
+const loadFeedback = async ({ reset = false, selectId = "" } = {}) => {
+  if (feedbackLoading.value) return;
+  feedbackLoading.value = true;
+  if (reset) {
+    feedbackOffset.value = 0;
+    feedbackItems.value = [];
+  }
+  const params = new URLSearchParams({
+    limit: String(feedbackLimit.value),
+    offset: String(feedbackOffset.value),
+    sort: feedbackSort.value,
+  });
+  try {
+    const r = await fetch(`/api/feedback?${params}`, { credentials: "include" });
+    const payload = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(payload.detail || "加载留言失败");
+    const rows = payload.data || [];
+    feedbackItems.value = reset ? rows : [...feedbackItems.value, ...rows];
+    feedbackTotal.value = payload.total || 0;
+    feedbackOffset.value = feedbackItems.value.length;
+    const desiredId = selectId || selectedFeedbackPostId.value;
+    if (desiredId && feedbackItems.value.some(item => item.id === desiredId)) {
+      selectedFeedbackPostId.value = desiredId;
+      ensureFeedbackReplyForm(desiredId);
+    } else if (reset) {
+      selectedFeedbackPostId.value = "";
+    }
+  } catch (e) {
+    showToast(e.message || "加载留言失败", "error");
+  } finally {
+    feedbackLoading.value = false;
+  }
+};
+
+const openFeedbackBoard = async () => {
+  if (router.currentRoute.value.name !== "feedback") {
+    await router.push({ name: "feedback" }).catch(() => {});
+    return;
+  }
+  await loadMe().catch(() => {});
+  showFeedbackBoard.value = true;
+  selectedFeedbackPostId.value = "";
+  selectedFeedbackMessageId.value = "";
+  await loadFeedback({ reset: true });
+};
+
+const openFeedbackDeepLink = async ({ postId = "", messageId = "" } = {}) => {
+  const targetPostId = postId || messageId;
+  await loadMe().catch(() => {});
+  showFeedbackBoard.value = true;
+  showFeedbackComposer.value = false;
+  cancelFeedbackEdit();
+  closeFeedbackMention();
+  if (!targetPostId) {
+    selectedFeedbackPostId.value = "";
+    selectedFeedbackMessageId.value = "";
+    await loadFeedback({ reset: true });
+    return;
+  }
+  selectedFeedbackMessageId.value = messageId || "";
+  await loadFeedback({ reset: true, selectId: targetPostId });
+  await selectFeedbackPost(targetPostId, { refresh: true, focusMessageId: selectedFeedbackMessageId.value });
+};
+
+const routeString = value => Array.isArray(value) ? (value[0] || "") : (value || "");
+const openFeedbackRoute = route => openFeedbackDeepLink({
+  postId: routeString(route.params?.postId),
+  messageId: routeString(route.query?.message),
+});
+
+const refreshFeedbackBoard = async () => {
+  await loadMe().catch(() => {});
+  if (selectedFeedbackPostId.value) {
+    await selectFeedbackPost(selectedFeedbackPostId.value, { refresh: true });
+  } else {
+    await loadFeedback({ reset: true });
+  }
+};
+
+const submitFeedback = async (parentId = null) => {
+  const isReply = Boolean(parentId);
+  const form = isReply ? ensureFeedbackReplyForm(parentId) : feedbackForm.value;
+  const body = (form.body || "").trim();
+  if (!body && !(form.files || []).length) {
+    showToast("请输入文字或选择图片", "error");
+    return;
+  }
+  if (isReply) {
+    feedbackReplies.value = {
+      ...feedbackReplies.value,
+      [parentId]: { ...form, submitting: true },
+    };
+  } else {
+    feedbackSubmitting.value = true;
+  }
+  const fd = new FormData();
+  fd.append("body", body);
+  if (parentId) fd.append("parent_id", parentId);
+  for (const file of form.files || []) fd.append("images", file);
+  try {
+    const r = await fetch("/api/feedback", {
+      method: "POST",
+      credentials: "include",
+      body: fd,
+    });
+    const payload = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(payload.detail || "提交留言失败");
+    const targetPostId = isReply ? parentId : payload.id;
+    clearFeedbackForm(parentId);
+    if (!isReply) {
+      destroyFeedbackMarkdownEditor("post");
+      showFeedbackComposer.value = false;
+    }
+    await loadFeedback({ reset: true, selectId: targetPostId });
+    if (targetPostId) await selectFeedbackPost(targetPostId, { refresh: true });
+    showFeedbackSubmitResult(payload, isReply ? "回复已发布" : "帖子已发布");
+  } catch (e) {
+    showToast(e.message || "提交留言失败", "error");
+  } finally {
+    if (isReply) {
+      const latest = feedbackReplies.value[parentId] || form;
+      feedbackReplies.value = {
+        ...feedbackReplies.value,
+        [parentId]: { ...latest, submitting: false },
+      };
+    } else {
+      feedbackSubmitting.value = false;
+    }
+  }
+};
+
+const startFeedbackEdit = message => {
+  if (!canEditFeedbackMessage(message)) return;
+  feedbackEditing.value = {
+    id: message.id,
+    body: message.body || "",
+    saving: false,
+  };
+  nextTick(() => {
+    const el = document.getElementById(`feedback-edit-${message.id}`);
+    el?.focus();
+    initFeedbackMarkdownEditor(`edit:${message.id}`);
+  });
+};
+
+const cancelFeedbackEdit = () => {
+  if (feedbackEditing.value.id) destroyFeedbackMarkdownEditor(`edit:${feedbackEditing.value.id}`);
+  closeFeedbackMention();
+  feedbackEditing.value = { id: "", body: "", saving: false };
+};
+
+const saveFeedbackEdit = async message => {
+  if (!message?.id || feedbackEditing.value.id !== message.id) return;
+  const body = (feedbackEditing.value.body || "").trim();
+  if (!body && !(message.attachments || []).length) {
+    showToast("留言内容不能为空", "error");
+    return;
+  }
+  feedbackEditing.value = { ...feedbackEditing.value, saving: true };
+  try {
+    const r = await fetch(`/api/feedback/${encodeURIComponent(message.id)}`, {
+      method: "PATCH",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ body }),
+    });
+    const payload = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(payload.detail || "编辑失败");
+    updateFeedbackMessageInState(payload);
+    cancelFeedbackEdit();
+    showToast("已保存编辑", "success");
+  } catch (e) {
+    showToast(e.message || "编辑失败", "error");
+    feedbackEditing.value = { ...feedbackEditing.value, saving: false };
+  }
+};
+
+const toggleFeedbackReaction = async (message, emoji) => {
+  if (!message?.id || !emoji) return;
+  try {
+    const r = await fetch(`/api/feedback/${encodeURIComponent(message.id)}/reactions`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ emoji }),
+    });
+    const payload = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(payload.detail || "表情操作失败");
+    setFeedbackMessageReactions(message.id, payload.reactions || []);
+    feedbackReactionPickerId.value = "";
+  } catch (e) {
+    showToast(e.message || "表情操作失败", "error");
+  }
+};
+
+const deleteFeedbackMessage = async (message, kind = "post") => {
+  if (!isAdmin.value || !message?.id) return;
+  const isReply = kind === "reply" || Boolean(message.parent_id);
+  const ok = await askConfirm(
+    isReply
+      ? "确定删除这条交流？图片附件也会一起删除。"
+      : "确定删除这个帖子？帖子里的所有交流和图片附件都会一起删除。",
+    {
+      title: "管理员删除",
+      confirmText: "删除",
+      tone: "danger",
+    },
+  );
+  if (!ok) return;
+
+  try {
+    const r = await fetch(`/api/feedback/${encodeURIComponent(message.id)}`, {
+      method: "DELETE",
+      credentials: "include",
+    });
+    const payload = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(payload.detail || "删除失败");
+
+    const deletedIds = new Set(payload.ids || [message.id]);
+    if (isReply) {
+      feedbackItems.value = feedbackItems.value.map(post => {
+        const removedReplies = (post.replies || []).filter(reply => deletedIds.has(reply.id)).length;
+        if (!removedReplies) return post;
+        return {
+          ...post,
+          replies: (post.replies || []).filter(reply => !deletedIds.has(reply.id)),
+          reply_count: Math.max(0, Number(post.reply_count || 0) - removedReplies),
+        };
+      });
+      if (selectedFeedbackPostId.value) {
+        await selectFeedbackPost(selectedFeedbackPostId.value, { refresh: true });
+      }
+    } else {
+      feedbackItems.value = feedbackItems.value.filter(post => !deletedIds.has(post.id));
+      feedbackTotal.value = Math.max(0, feedbackTotal.value - 1);
+      feedbackOffset.value = feedbackItems.value.length;
+      if (deletedIds.has(selectedFeedbackPostId.value)) selectedFeedbackPostId.value = "";
+    }
+    showToast(isReply ? "交流已删除" : "帖子已删除", "success");
+  } catch (e) {
+    showToast(e.message || "删除失败", "error");
+  }
+};
+
+const deleteFeedbackPost = post => deleteFeedbackMessage(post, "post");
+const deleteFeedbackReply = reply => deleteFeedbackMessage(reply, "reply");
 
 const toggleStorageSelection = jobId => {
   const idx = storageSelection.value.indexOf(jobId);
@@ -792,6 +2366,7 @@ const deleteSelectedStorageFiles = async () => {
 let historyGroupsController = null;
 let compareJobsController = null;
 let resultTableController = null;
+let loadJobRequestSeq = 0;
 const historyGroupControllers = {};
 
 const cancelResultTableRequest = () => {
@@ -822,7 +2397,13 @@ const loadHistoryGroups = async () => {
       credentials: "include",
       signal: controller.signal,
     });
-    const data = await r.json();
+    const data = await readJsonResponse(r, {});
+    if (!r.ok) {
+      throw new ApiRequestError(apiErrorMessage(r, data, "加载历史记录失败"), {
+        status: r.status,
+        authExpired: r.status === 401,
+      });
+    }
     if (historyGroupsController !== controller) return;
     historyGroups.value = (data.data || []).map(group => ({
       ...group,
@@ -838,11 +2419,16 @@ const loadHistoryGroups = async () => {
       collapsedGroups.value = Object.fromEntries(
         historyGroups.value.map(group => [group.id, true])
       );
+    } else if (!historyGroups.value.some(group => collapsedGroups.value[group.id]) && historyGroups.value.length) {
+      collapsedGroups.value = {
+        ...collapsedGroups.value,
+        [historyGroups.value[0].id]: true,
+      };
     }
     const expandedGroups = historyGroups.value.filter(group => collapsedGroups.value[group.id]);
     await Promise.all(expandedGroups.map(group => loadHistoryGroupJobs(group.id, true)));
   } catch (e) {
-    if (e.name !== "AbortError") showToast("加载历史记录失败", "error");
+    if (e.name !== "AbortError") showToast(normalizeApiError(e, "加载历史记录失败"), "error");
   } finally {
     if (historyGroupsController === controller) {
       historyGroupsLoading.value = false;
@@ -876,7 +2462,13 @@ const loadHistoryGroupJobs = async (groupId, reset = false) => {
       credentials: "include",
       signal: controller.signal,
     });
-    const data = await r.json();
+    const data = await readJsonResponse(r, {});
+    if (!r.ok) {
+      throw new ApiRequestError(apiErrorMessage(r, data, "加载项目任务失败"), {
+        status: r.status,
+        authExpired: r.status === 401,
+      });
+    }
     if (historyGroupControllers[groupId] !== controller) return;
     const latest = historyGroups.value.find(item => item.id === groupId);
     if (!latest) return;
@@ -891,7 +2483,7 @@ const loadHistoryGroupJobs = async (groupId, reset = false) => {
   } catch (e) {
     if (e.name !== "AbortError") {
       updateHistoryGroup(groupId, { jobs_loading: false });
-      showToast("加载项目任务失败", "error");
+      showToast(normalizeApiError(e, "加载项目任务失败"), "error");
     }
   } finally {
     if (historyGroupControllers[groupId] === controller) {
@@ -915,7 +2507,13 @@ const loadCompareJobs = async () => {
       credentials: "include",
       signal: controller.signal,
     });
-    const data = await r.json();
+    const data = await readJsonResponse(r, {});
+    if (!r.ok) {
+      throw new ApiRequestError(apiErrorMessage(r, data, "加载对比候选失败"), {
+        status: r.status,
+        authExpired: r.status === 401,
+      });
+    }
     if (compareJobsController !== controller) return;
     compareJobs.value = data.data || [];
     compareJobsTotal.value = data.total || 0;
@@ -925,8 +2523,16 @@ const loadCompareJobs = async () => {
       if (compareSelection.value.includes(job.id)) details[job.id] = job;
     }
     compareSelectionDetails.value = details;
+
+    const batchDetails = { ...batchSelectionDetails.value };
+    for (const job of compareJobs.value) {
+      if (batchBaselineId.value === job.id || batchCandidateIds.value.includes(job.id)) {
+        batchDetails[job.id] = job;
+      }
+    }
+    batchSelectionDetails.value = batchDetails;
   } catch (e) {
-    if (e.name !== "AbortError") showToast("加载对比候选失败", "error");
+    if (e.name !== "AbortError") showToast(normalizeApiError(e, "加载对比候选失败"), "error");
   } finally {
     if (compareJobsController === controller) {
       compareJobsLoading.value = false;
@@ -939,13 +2545,50 @@ const refreshSidebarData = async () => {
   await Promise.all([loadHistoryGroups(), loadCompareJobs()]);
 };
 
+const initializeAppData = async () => {
+  if (appInitialized && !authInitError.value) {
+    return !authRequired.value || Boolean(currentUser.value);
+  }
+  authInitError.value = "";
+  try {
+    await loadConfig();
+    await loadMe();
+    if (authRequired.value && !currentUser.value) {
+      appInitialized = true;
+      return false;
+    }
+    await loadProjects();
+    await refreshSidebarData();
+    appInitialized = true;
+    return true;
+  } catch (e) {
+    appInitialized = false;
+    authChecked.value = true;
+    authInitError.value = normalizeApiError(e, "初始化失败");
+    return false;
+  }
+};
+
 const loadJob = async id => {
-  const r = await fetch(`/api/jobs/${id}`, { credentials: "include" });
+  const jobId = String(id || "");
+  const requestSeq = ++loadJobRequestSeq;
+  const r = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`, { credentials: "include" });
+  const data = await readJsonResponse(r, {});
+  if (requestSeq !== loadJobRequestSeq || selectedJobId.value !== jobId) return "stale";
   if (!r.ok) {
+    if (r.status === 401) {
+      handleAuthExpired();
+      return false;
+    }
+    if (r.status !== 404) {
+      throw new ApiRequestError(apiErrorMessage(r, data, "加载任务失败"), {
+        status: r.status,
+      });
+    }
     selectedJob.value = null;
     return false;
   }
-  selectedJob.value = await r.json();
+  selectedJob.value = data;
   resultTable.value = { fields: [], rows: [], total: 0, filtered_total: 0, limit: tableLimit.value, offset: tableOffset.value };
   resultTableFile.value = "";
   consoleSearch.value = "";
@@ -958,7 +2601,406 @@ const loadJob = async id => {
   chartSpeedups.value = [];
   chartBarRows.value = [];
   chartPieRows.value = [];
+  aiAnalysisError.value = "";
+  aiAnalysisContent.value = "";
+  aiAnalysisArtifacts.value = [];
+  aiAnalysisVersions.value = [];
+  aiAnalysisSelectedVersionId.value = "";
+  aiAnalysisPrompt.value = "";
+  aiArtifactsExpanded.value = false;
+  aiDiagnosticsLoading.value = false;
+  aiDiagnosticsError.value = "";
+  aiDiagnosticsResult.value = null;
+  if (isAiAnalysisActive(selectedJob.value?.ai_analysis?.status)) {
+    startAiAnalysisPolling();
+  } else {
+    stopAiAnalysisPolling();
+  }
+  if (resultTab.value === "ai") refreshAiAnalysis({ silent: true });
   return true;
+};
+
+const aiAnalysisMeta = computed(() => selectedJob.value?.ai_analysis || {
+  enabled: claudeAnalysisEnabled.value,
+  status: "not_started",
+  report_exists: false,
+});
+const aiAnalysisSelectedVersion = computed(() => {
+  const versions = aiAnalysisVersions.value || [];
+  const selected = versions.find(item => item.id === aiAnalysisSelectedVersionId.value);
+  return selected || aiAnalysisMeta.value?.selected_version || null;
+});
+const aiAnalysisVersionTrigger = computed(() => {
+  const version = aiAnalysisSelectedVersion.value || {};
+  return version.trigger_user_display || version.trigger_user_token || "未知";
+});
+const aiAnalysisVersionModel = computed(() => {
+  const version = aiAnalysisSelectedVersion.value || {};
+  return version.model || aiAnalysisMeta.value?.model || "未知";
+});
+const aiAnalysisVersionLabel = version => {
+  const timeText = fmtDateTime(version.generated_at || version.finished_at) || "未知时间";
+  const statusText = aiAnalysisStatusText(version.status || "done");
+  const triggerText = version.trigger_user_display || version.trigger_user_token || "未知触发人";
+  return `${timeText} · ${statusText} · ${triggerText}`;
+};
+const aiAnalysisVisibleArtifacts = computed(() => {
+  const artifacts = aiAnalysisArtifacts.value || [];
+  if (!aiAnalysisContent.value) return artifacts;
+  return artifacts.filter(item => item.path !== "ai_analysis.md");
+});
+const aiArtifactSummary = computed(() =>
+  aiAnalysisVisibleArtifacts.value
+    .map(item => `${item.path} (${fmtBytes(item.size)})`)
+    .join(" · ")
+);
+const aiAnalysisHtml = computed(() => renderMarkdown(aiAnalysisContent.value));
+
+const aiAnalysisStatusText = status => ({
+  not_started: "未开始",
+  queued: "排队中",
+  running: "分析中",
+  done: "已完成",
+  error: "失败",
+}[status || "not_started"] || status);
+
+const AI_ANALYSIS_ACTIVE_STATUSES = new Set(["queued", "running"]);
+const isAiAnalysisActive = status => AI_ANALYSIS_ACTIVE_STATUSES.has(status || "");
+
+const formatDurationMs = ms => {
+  const value = Math.max(0, Math.round(Number(ms) || 0));
+  const totalSeconds = Math.floor(value / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours) return `${hours}时${String(minutes).padStart(2, "0")}分${String(seconds).padStart(2, "0")}秒`;
+  if (minutes) return `${minutes}分${String(seconds).padStart(2, "0")}秒`;
+  return `${seconds}秒`;
+};
+
+const aiAnalysisElapsedMs = computed(() => {
+  const meta = aiAnalysisMeta.value || {};
+  if (Number.isFinite(Number(meta.duration_ms))) return Number(meta.duration_ms);
+  if (Number.isFinite(Number(meta.elapsed_ms))) return Number(meta.elapsed_ms);
+  const started = Date.parse(meta.started_at || "");
+  if (isAiAnalysisActive(meta.status) && Number.isFinite(started)) {
+    return Math.max(0, uiNow.value - started);
+  }
+  return 0;
+});
+
+const aiAnalysisElapsedText = computed(() => formatDurationMs(aiAnalysisElapsedMs.value));
+
+const updateAiAnalysisState = payload => {
+  if (!payload || !selectedJob.value) return;
+  const { content, artifacts, diagnostics, versions, selected_version, selected_version_id, ...meta } = payload;
+  const nextVersions = Array.isArray(versions) ? versions : [];
+  const nextSelectedId = selected_version_id
+    || selected_version?.id
+    || meta.latest_version_id
+    || nextVersions[0]?.id
+    || "";
+  const nextSelectedVersion = selected_version
+    || nextVersions.find(item => item.id === nextSelectedId)
+    || null;
+  aiAnalysisVersions.value = nextVersions;
+  aiAnalysisSelectedVersionId.value = nextSelectedId;
+  selectedJob.value = {
+    ...selectedJob.value,
+    ai_analysis: {
+      ...meta,
+      diagnostics,
+      versions: nextVersions,
+      selected_version_id: nextSelectedId,
+      selected_version: nextSelectedVersion,
+    },
+  };
+  aiAnalysisContent.value = content || "";
+  aiAnalysisArtifacts.value = Array.isArray(artifacts) ? artifacts : [];
+  aiDiagnosticsLoading.value = false;
+  aiDiagnosticsError.value = "";
+  aiDiagnosticsResult.value = diagnostics || null;
+};
+
+const stopAiAnalysisPolling = () => {
+  if (aiAnalysisPollTimer) {
+    clearInterval(aiAnalysisPollTimer);
+    aiAnalysisPollTimer = null;
+  }
+};
+
+const clearAiDiagnostics = () => {
+  aiDiagnosticsLoading.value = false;
+  aiDiagnosticsError.value = "";
+  aiDiagnosticsResult.value = null;
+};
+
+const requestAiCompletionNotificationPermission = () => {
+  if (!("Notification" in window)) return;
+  if (Notification.permission !== "default") return;
+  Notification.requestPermission().catch(() => {});
+};
+
+const resetAiCompletionTitle = () => {
+  if (aiCompletionTitleResetTimer) {
+    clearTimeout(aiCompletionTitleResetTimer);
+    aiCompletionTitleResetTimer = null;
+  }
+  if (document.title !== defaultDocumentTitle) document.title = defaultDocumentTitle;
+};
+
+const markAiCompletionTitle = title => {
+  if (aiCompletionTitleResetTimer) clearTimeout(aiCompletionTitleResetTimer);
+  document.title = `${title} - ${defaultDocumentTitle}`;
+  aiCompletionTitleResetTimer = setTimeout(resetAiCompletionTitle, 15000);
+};
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) resetAiCompletionTitle();
+});
+
+const notifyAiAnalysisCompleted = ({ jobId, label, status, error }) => {
+  const ok = status === "done";
+  const title = ok ? "AI 分析已完成" : "AI 分析失败";
+  const kind = ok ? "success" : "error";
+  const taskName = label || jobId || "当前任务";
+  const body = ok
+    ? `任务「${taskName}」的 AI 分析报告已生成。`
+    : `任务「${taskName}」AI 分析失败，请返回查看诊断信息。`;
+  const pageInForeground = !document.hidden && document.hasFocus();
+  if (pageInForeground) {
+    showToast(title, kind, 5000);
+    return;
+  }
+
+  markAiCompletionTitle(title);
+  let notified = false;
+  if ("Notification" in window && Notification.permission === "granted") {
+    try {
+      const notification = new Notification(title, {
+        body: error ? `${body}\n${error}` : body,
+        tag: `tpa-ai-analysis-${jobId || "current"}`,
+      });
+      notification.onclick = () => {
+        window.focus();
+        if (jobId) window.location.hash = `#/job/${encodeURIComponent(jobId)}/ai`;
+        notification.close();
+      };
+      notified = true;
+    } catch {
+      notified = false;
+    }
+  }
+  if (!notified) showToast(title, kind, 10000);
+};
+
+const refreshAiAnalysis = async ({ silent = false, versionId } = {}) => {
+  if (!selectedJobId.value) return;
+  const jobId = selectedJobId.value;
+  const previousStatus = selectedJob.value?.ai_analysis?.status || "not_started";
+  const jobLabel = selectedJob.value?.label || selectedJob.value?.file_a_name || jobId;
+  const requestedVersionId = versionId !== undefined
+    ? versionId
+    : (isAiAnalysisActive(previousStatus) ? "" : aiAnalysisSelectedVersionId.value);
+  const params = new URLSearchParams();
+  if (requestedVersionId) params.set("version_id", requestedVersionId);
+  const url = `/api/jobs/${jobId}/ai-analysis${params.toString() ? `?${params}` : ""}`;
+  if (!silent) aiAnalysisLoading.value = true;
+  aiAnalysisError.value = "";
+  try {
+    const r = await fetch(url, { credentials: "include" });
+    const payload = await readJsonResponse(r, {});
+    if (!r.ok) {
+      throw new ApiRequestError(apiErrorMessage(r, payload, "加载 AI 分析失败"), {
+        status: r.status,
+        authExpired: r.status === 401,
+      });
+    }
+    if (selectedJobId.value !== jobId) return;
+    updateAiAnalysisState(payload);
+    if (isAiAnalysisActive(previousStatus) && payload.status && !isAiAnalysisActive(payload.status)) {
+      notifyAiAnalysisCompleted({
+        jobId,
+        label: jobLabel,
+        status: payload.status,
+        error: payload.error || "",
+      });
+    }
+    if (isAiAnalysisActive(payload.status)) startAiAnalysisPolling();
+    else stopAiAnalysisPolling();
+  } catch (e) {
+    if (selectedJobId.value === jobId) {
+      aiAnalysisError.value = normalizeApiError(e, "加载 AI 分析失败");
+    }
+  } finally {
+    if (selectedJobId.value === jobId) aiAnalysisLoading.value = false;
+  }
+};
+
+const changeAiAnalysisVersion = () => {
+  refreshAiAnalysis({ versionId: aiAnalysisSelectedVersionId.value });
+};
+
+const startAiAnalysisPolling = () => {
+  if (aiAnalysisPollTimer) return;
+  aiAnalysisPollTimer = setInterval(() => {
+    if (!selectedJobId.value) {
+      stopAiAnalysisPolling();
+      return;
+    }
+    refreshAiAnalysis({ silent: true });
+  }, 1000);
+};
+
+const openAiPromptModal = (force = false) => {
+  if (!selectedJobId.value || aiAnalysisStarting.value || isAiAnalysisActive(aiAnalysisMeta.value.status)) return;
+  if (!claudeAnalysisEnabled.value) {
+    showToast("AI 分析未启用，请在服务端设置 TRACE_ENABLE_CLAUDE_ANALYSIS=1", "error");
+    return;
+  }
+  aiPromptForce.value = Boolean(force);
+  aiAnalysisPrompt.value = "";
+  showAiPromptModal.value = true;
+  nextTick(() => document.getElementById("ai-analysis-prompt-modal")?.focus());
+};
+
+const closeAiPromptModal = () => {
+  if (aiAnalysisStarting.value) return;
+  showAiPromptModal.value = false;
+};
+
+const confirmAiPromptModal = () => {
+  const force = aiPromptForce.value;
+  const prompt = aiAnalysisPrompt.value;
+  showAiPromptModal.value = false;
+  startAiAnalysis(force, prompt);
+};
+
+const startAiAnalysis = async (force = false, prompt = "") => {
+  if (!selectedJobId.value || aiAnalysisStarting.value) return;
+  const jobId = selectedJobId.value;
+  if (!claudeAnalysisEnabled.value) {
+    showToast("AI 分析未启用，请在服务端设置 TRACE_ENABLE_CLAUDE_ANALYSIS=1", "error");
+    return;
+  }
+  requestAiCompletionNotificationPermission();
+  aiAnalysisStarting.value = true;
+  aiAnalysisError.value = "";
+  aiAnalysisSelectedVersionId.value = "";
+  aiArtifactsExpanded.value = false;
+  aiDiagnosticsLoading.value = false;
+  aiDiagnosticsError.value = "";
+  aiDiagnosticsResult.value = null;
+  try {
+    const r = await fetch(`/api/jobs/${jobId}/ai-analysis`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ force, prompt: String(prompt || "").trim() }),
+    });
+    const payload = await readJsonResponse(r, {});
+    if (!r.ok) {
+      throw new ApiRequestError(apiErrorMessage(r, payload, "提交 AI 分析失败"), {
+        status: r.status,
+        authExpired: r.status === 401,
+      });
+    }
+    if (selectedJobId.value !== jobId) return;
+    updateAiAnalysisState(payload);
+    if (isAiAnalysisActive(payload.status)) {
+      startAiAnalysisPolling();
+      showToast(payload.status === "queued" ? "AI 分析已排队" : "AI 分析已开始", "success");
+    }
+  } catch (e) {
+    aiAnalysisError.value = normalizeApiError(e, "提交 AI 分析失败");
+    showToast(aiAnalysisError.value, "error");
+  } finally {
+    aiAnalysisStarting.value = false;
+  }
+};
+
+const copyAiAnalysisReport = async () => {
+  if (!aiAnalysisContent.value) return;
+  await copyTextToClipboard(aiAnalysisContent.value);
+  showToast("AI 分析报告已复制", "success");
+};
+
+const downloadAiAnalysisReport = () => {
+  if (!selectedJobId.value || !aiAnalysisContent.value) return;
+  const a = document.createElement("a");
+  const params = new URLSearchParams();
+  if (aiAnalysisSelectedVersionId.value) params.set("version_id", aiAnalysisSelectedVersionId.value);
+  a.href = `/api/jobs/${selectedJobId.value}/ai-analysis/report.md${params.toString() ? `?${params}` : ""}`;
+  a.click();
+};
+
+const copyAiAnalysisArtifact = async artifact => {
+  if (!artifact?.content) return;
+  await copyTextToClipboard(artifact.content);
+  showToast(`${artifact.path || "AI 产物"} 已复制`, "success");
+};
+
+const aiDiagnosticStatusText = status => ({
+  ok: "OK",
+  error: "失败",
+  skipped: "跳过",
+}[status || ""] || status || "");
+
+const formatAiDiagnostics = payload => {
+  if (!payload) return "";
+  const lines = [
+    `AI 环境诊断：${payload.ok ? "通过" : "未通过"}`,
+    `skills_dir: ${payload.skills_dir || "-"}`,
+    `single_skill: ${payload.single_skill || "-"}`,
+    `compare_skill: ${payload.compare_skill || "-"}`,
+    `duration_ms: ${payload.duration_ms ?? "-"}`,
+    "",
+  ];
+  for (const check of payload.checks || []) {
+    lines.push(`[${aiDiagnosticStatusText(check.status)}] ${check.label || check.name}: ${check.detail || ""}`);
+    if (check.command) lines.push(`command: ${check.command}`);
+    if (check.stdout_tail) lines.push(`stdout:\n${check.stdout_tail}`);
+    if (check.stderr_tail) lines.push(`stderr:\n${check.stderr_tail}`);
+    lines.push("");
+  }
+  return lines.join("\n").trim();
+};
+
+const runAiDiagnostics = async () => {
+  if (aiDiagnosticsLoading.value) return;
+  if (!claudeAnalysisEnabled.value) {
+    showToast("AI 分析未启用，请先设置 TRACE_ENABLE_CLAUDE_ANALYSIS=1", "error");
+    return;
+  }
+  aiDiagnosticsLoading.value = true;
+  aiDiagnosticsError.value = "";
+  aiDiagnosticsResult.value = null;
+  try {
+    const r = await fetch("/api/ai/diagnostics", {
+      method: "POST",
+      credentials: "include",
+    });
+    const payload = await readJsonResponse(r, {});
+    if (!r.ok) {
+      throw new ApiRequestError(apiErrorMessage(r, payload, "AI 环境诊断失败"), {
+        status: r.status,
+        authExpired: r.status === 401,
+      });
+    }
+    aiDiagnosticsResult.value = payload;
+    showToast(payload.ok ? "AI 环境诊断通过" : "AI 环境诊断未通过", payload.ok ? "success" : "error");
+  } catch (e) {
+    aiDiagnosticsError.value = normalizeApiError(e, "AI 环境诊断失败");
+    showToast(aiDiagnosticsError.value, "error");
+  } finally {
+    aiDiagnosticsLoading.value = false;
+  }
+};
+
+const copyAiDiagnostics = async () => {
+  if (!aiDiagnosticsResult.value) return;
+  await copyTextToClipboard(formatAiDiagnostics(aiDiagnosticsResult.value));
+  showToast("AI 诊断结果已复制", "success");
 };
 
 const activeColumnFilters = (state = null) => {
@@ -1002,20 +3044,26 @@ const buildResultTableParams = (overrides = {}) => {
 };
 
 const fetchResultTable = async (filename, options = {}) => {
+  const jobId = options.jobId || selectedJobId.value;
+  if (!jobId) throw new Error("未选择任务");
   const params = buildResultTableParams(options);
   const r = await fetch(
-    `/api/jobs/${selectedJobId.value}/results/${encodeURIComponent(filename)}?${params}`,
+    `/api/jobs/${encodeURIComponent(jobId)}/results/${encodeURIComponent(filename)}?${params}`,
     { credentials: "include", signal: options.signal },
   );
+  const data = await readJsonResponse(r, {});
   if (!r.ok) {
-    const err = await r.json().catch(() => ({}));
-    throw new Error(err.detail || "加载表格失败");
+    throw new ApiRequestError(apiErrorMessage(r, data, "加载表格失败"), {
+      status: r.status,
+      authExpired: r.status === 401,
+    });
   }
-  return await r.json();
+  return data;
 };
 
 const loadResultTable = async ({ resetOffset = false, filename = resultTab.value, viewState = null } = {}) => {
-  if (!selectedJobId.value || !filename?.endsWith(".csv")) return;
+  const jobId = selectedJobId.value;
+  if (!jobId || !filename?.endsWith(".csv")) return;
   if (resetOffset) {
     if (viewState) viewState = { ...viewState, tableOffset: 0 };
     else tableOffset.value = 0;
@@ -1031,15 +3079,18 @@ const loadResultTable = async ({ resetOffset = false, filename = resultTab.value
     resultTable.value = emptyResultTableForTab(filename);
   }
   try {
-    const data = await fetchResultTable(filename, { signal: controller.signal, viewState });
+    const data = await fetchResultTable(filename, { jobId, signal: controller.signal, viewState });
     if (resultTableController !== controller) return;
+    if (selectedJobId.value !== jobId) return;
     if (resultTableFile.value !== filename) return;
     if (resultTab.value !== filename) return;
     resultTable.value = data;
     tableLimit.value = data.limit || tableLimit.value;
     tableOffset.value = data.offset || 0;
   } catch (e) {
-    if (e.name !== "AbortError") resultTableError.value = e.message || "加载表格失败";
+    if (e.name !== "AbortError" && selectedJobId.value === jobId) {
+      resultTableError.value = normalizeApiError(e, "加载表格失败");
+    }
   } finally {
     if (resultTableController === controller) {
       resultTableController = null;
@@ -1062,7 +3113,7 @@ const activateCsvTab = async (filename, { updateRoute = true, savePrevious = tru
   resultTableError.value = "";
 
   try {
-    const data = await fetchResultTable(filename, { signal: controller.signal, viewState: state });
+    const data = await fetchResultTable(filename, { jobId, signal: controller.signal, viewState: state });
     if (resultTableController !== controller) return;
     if (selectedJobId.value !== jobId) return;
     applyResultViewState(state);
@@ -1084,7 +3135,7 @@ const activateCsvTab = async (filename, { updateRoute = true, savePrevious = tru
     resultTableFile.value = filename;
     resultTable.value = emptyResultTableForTab(filename);
     resultTableLoading.value = false;
-    resultTableError.value = e.message || "加载表格失败";
+    resultTableError.value = normalizeApiError(e, "加载表格失败");
     showColumnMenu.value = false;
     skipNextResultTabWatch();
     resultTab.value = filename;
@@ -1290,6 +3341,20 @@ const normalizeChartRows = (rows, fields, sourceConfig, metricDef) => {
     .filter(row => row.label);
 };
 
+const isCommunicationChartRow = (row, sourceConfig) => {
+  if (!row) return false;
+  if (CHART_COMMUNICATION_SOURCE_FILES.has(sourceConfig?.file)) return true;
+  const raw = row.raw || row;
+  const family = String(raw.family ?? raw.type ?? "").trim().toLowerCase();
+  if (CHART_COMMUNICATION_FAMILIES.has(family)) return true;
+  const nameField = row.nameField || sourceConfig?.nameField;
+  const label = String(row.label ?? raw[nameField] ?? raw.kernel_name ?? raw.op_name ?? raw.type ?? "").trim();
+  return CHART_COMMUNICATION_NAME_RE.test(label);
+};
+
+const filterChartCommunicationRows = (rows, sourceConfig) =>
+  (rows || []).filter(row => !isCommunicationChartRow(row, sourceConfig));
+
 const sortChartRows = (rows, metricDef) => {
   const metricValue = row => metricDef.signed ? Math.abs(row.value) : row.value;
   return [...rows]
@@ -1372,6 +3437,20 @@ const destroyChartInstances = () => {
   if (ktPieChartInstB.value) { ktPieChartInstB.value.destroy(); ktPieChartInstB.value = null; }
 };
 
+let chartBuildToken = 0;
+const scheduleBuildChart = async () => {
+  const token = ++chartBuildToken;
+  await nextTick();
+  await new Promise(resolve => {
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(resolve);
+    else setTimeout(resolve, 0);
+  });
+  if (token !== chartBuildToken) return;
+  if (resultTab.value === "chart" && selectedJob.value?.status === "done") {
+    await buildChart();
+  }
+};
+
 const buildPie = (canvas, rows, title, metricDef) => {
   const pairs = (rows || []).filter(row => row.displayValue > 0);
   if (!pairs.length || !canvas) return null;
@@ -1449,7 +3528,11 @@ const drillDownChart = async row => {
 
 const buildChart = async () => {
   await nextTick();
-  if (!ktChart.value || !selectedJob.value?.result_files) return;
+  const jobId = selectedJobId.value;
+  if (!ktChart.value || !selectedJob.value?.result_files) {
+    chartLoading.value = false;
+    return;
+  }
   const sourceConfig = resolveChartSource();
   if (!sourceConfig) {
     chartError.value = "没有可用的图表数据";
@@ -1467,20 +3550,25 @@ const buildChart = async () => {
       chartTables.value = {
         ...chartTables.value,
         [sourceConfig.file]: await fetchResultTable(sourceConfig.file, {
+          jobId,
           limit: CHART_FETCH_LIMIT,
           offset: 0,
           ignoreViewState: true,
         }),
       };
+      if (selectedJobId.value !== jobId) return;
     } catch (e) {
-      chartError.value = e.message || "加载图表数据失败";
+      chartError.value = normalizeApiError(e, "加载图表数据失败");
       chartLoading.value = false;
       return;
     }
   }
   const table = chartTables.value[sourceConfig.file];
   const fields = table?.fields || selectedJob.value.result_files[sourceConfig.file]?.fields || [];
-  const rows = normalizeChartRows(table?.rows || [], fields, sourceConfig, metricDef);
+  const rows = filterChartCommunicationRows(
+    normalizeChartRows(table?.rows || [], fields, sourceConfig, metricDef),
+    sourceConfig
+  );
   destroyChartInstances();
 
   chartSummaryCards.value = buildChartSummary(rows, table, sourceConfig);
@@ -1571,6 +3659,7 @@ const setUploadFiles = files => {
     id: `${Date.now()}-${index}-${file.name}`,
     file,
     name: file.name,
+    meta: uploadFileMeta(file),
     status: "ready",
     progress: 0,
     error: "",
@@ -1910,6 +3999,10 @@ const toggleHistoryBulkMode = () => {
 };
 
 const toggleHistorySelection = job => {
+  if (job.is_owner === false) {
+    showToast("只能批量操作自己创建的任务", "error");
+    return;
+  }
   const idx = historySelection.value.indexOf(job.id);
   if (idx >= 0) historySelection.value.splice(idx, 1);
   else historySelection.value.push(job.id);
@@ -1937,6 +4030,13 @@ const toggleSelectLoadedHistoryJobs = () => {
 const clearHistorySelection = () => {
   historySelection.value = [];
 };
+
+document.addEventListener("click", event => {
+  if (!historyBulkMode.value) return;
+  if (event.target?.closest?.(".sidebar")) return;
+  historyBulkMode.value = false;
+  clearHistorySelection();
+});
 
 const openBulkMoveProject = () => {
   if (!historySelection.value.length) return;
@@ -2080,6 +4180,32 @@ const deleteProject = async (projectId) => {
   await loadProjects();
   await refreshSidebarData();
   showToast("项目已删除，可在 10 天内找回", "success");
+};
+
+const shareProject = async (project) => {
+  if (!project?.id || project.is_public) return;
+  if (!await askConfirm("确定将该项目转为共享项目？", {
+    title: "转为共享项目",
+    confirmText: "转为共享",
+  })) return;
+  const r = await fetch(`/api/projects/${project.id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({
+      name: project.name,
+      description: project.description || "",
+      is_public: true,
+    }),
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    showToast("转为共享失败: " + (err.detail || err.message || `HTTP ${r.status}`), "error");
+    return;
+  }
+  await loadProjects();
+  await refreshSidebarData();
+  showToast("项目已转为共享", "success");
 };
 
 const setSort = col => {
@@ -2253,11 +4379,230 @@ const downloadTraceFile = (slot) => {
   a.click();
 };
 
+const downloadReport = () => {
+  if (!selectedJobId.value) return;
+  const a = document.createElement("a");
+  a.href = `/api/jobs/${selectedJobId.value}/report.md`;
+  a.click();
+};
+
+const shareJob = async () => {
+  if (!selectedJobId.value) return;
+  const r = await fetch(`/api/jobs/${selectedJobId.value}/share`, {
+    method: "POST",
+    credentials: "include",
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    showToast("生成分享链接失败: " + (err.detail || err.message || `HTTP ${r.status}`), "error");
+    return;
+  }
+  const data = await r.json();
+  const url = data.url || `${window.location.origin}${window.location.pathname}#/job/${selectedJobId.value}`;
+  await copyTextToClipboard(url);
+  if (data.changed) {
+    await loadProjects();
+    await refreshSidebarData();
+    await loadJob(selectedJobId.value);
+  }
+  showToast(data.changed ? "已转为共享并复制链接" : "已复制分享链接", "success");
+};
+
+const togglePinJob = async () => {
+  if (!selectedJobId.value || !selectedJob.value) return;
+  const nextPinned = !selectedJob.value.is_pinned;
+  const r = await fetch(`/api/jobs/${selectedJobId.value}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ is_pinned: nextPinned }),
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    showToast("置顶失败: " + (err.detail || err.message || `HTTP ${r.status}`), "error");
+    return;
+  }
+  selectedJob.value = await r.json();
+  await refreshSidebarData();
+  showToast(nextPinned ? "任务已置顶" : "已取消置顶", "success");
+};
+
 const escapeHtml = value => String(value ?? "")
   .replace(/&/g, "&amp;")
   .replace(/</g, "&lt;")
   .replace(/>/g, "&gt;")
   .replace(/"/g, "&quot;");
+
+const safeMarkdownUrl = value => {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (/^(https?:|mailto:|#)/i.test(raw)) return raw.replace(/"/g, "%22");
+  return "";
+};
+
+const renderInlineMarkdown = text => {
+  const tokens = [];
+  const stash = html => {
+    const key = `\u0000MD${tokens.length}\u0000`;
+    tokens.push(html);
+    return key;
+  };
+  let value = String(text ?? "");
+  value = value.replace(/`([^`]+)`/g, (_, code) => stash(`<code>${escapeHtml(code)}</code>`));
+  value = value.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => {
+    const safeUrl = safeMarkdownUrl(url);
+    const safeLabel = escapeHtml(label);
+    return safeUrl
+      ? stash(`<a href="${escapeHtml(safeUrl)}" target="_blank" rel="noopener noreferrer">${safeLabel}</a>`)
+      : safeLabel;
+  });
+  value = escapeHtml(value);
+  value = value
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/__([^_]+)__/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>")
+    .replace(/(^|[\s([{])_([^_\n]+?)_(?=$|[\s)\]},.!?:;])/g, "$1<em>$2</em>");
+  tokens.forEach((html, index) => {
+    value = value.replaceAll(`\u0000MD${index}\u0000`, html);
+  });
+  return value;
+};
+
+const parseMarkdownCells = line => {
+  let value = line.trim();
+  if (value.startsWith("|")) value = value.slice(1);
+  if (value.endsWith("|")) value = value.slice(0, -1);
+  return value.split("|").map(cell => cell.trim());
+};
+
+const isMarkdownTableSep = line => {
+  const cells = parseMarkdownCells(line);
+  return cells.length > 1 && cells.every(cell => /^:?-{3,}:?$/.test(cell));
+};
+
+function renderMarkdown(markdown) {
+  const lines = String(markdown || "").replace(/\r\n/g, "\n").split("\n");
+  const html = [];
+  let i = 0;
+  const isTableStartAt = index => index + 1 < lines.length && isMarkdownTableSep(lines[index + 1]);
+  const isHorizontalRule = line => /^[-*_]\s*[-*_]\s*[-*_][\s\-*_]*$/.test(line.trim());
+  const isListStart = line => /^\s*[-*+]\s+/.test(line) || /^\s*\d+\.\s+/.test(line);
+  const isBlockStartAt = index => {
+    const line = lines[index] || "";
+    return !line.trim()
+      || /^```/.test(line.trim())
+      || /^#{1,6}\s+/.test(line)
+      || /^>\s?/.test(line)
+      || isHorizontalRule(line)
+      || isListStart(line)
+      || isTableStartAt(index);
+  };
+  const renderListItem = parts =>
+    parts.map(part => renderInlineMarkdown(part.trim())).join("<br>");
+
+  while (i < lines.length) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    if (!trimmed) {
+      i += 1;
+      continue;
+    }
+
+    const fence = trimmed.match(/^```(\w+)?/);
+    if (fence) {
+      const lang = fence[1] ? ` data-lang="${escapeHtml(fence[1])}"` : "";
+      i += 1;
+      const code = [];
+      while (i < lines.length && !lines[i].trim().startsWith("```")) {
+        code.push(lines[i]);
+        i += 1;
+      }
+      if (i < lines.length) i += 1;
+      html.push(`<pre class="md-code"${lang}><code>${escapeHtml(code.join("\n"))}</code></pre>`);
+      continue;
+    }
+
+    const heading = line.match(/^(#{1,6})\s+(.+)$/);
+    if (heading) {
+      const level = heading[1].length;
+      html.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
+      i += 1;
+      continue;
+    }
+
+    if (isHorizontalRule(line)) {
+      html.push("<hr>");
+      i += 1;
+      continue;
+    }
+
+    if (i + 1 < lines.length && isMarkdownTableSep(lines[i + 1])) {
+      const headers = parseMarkdownCells(line);
+      i += 2;
+      const rows = [];
+      while (i < lines.length && lines[i].includes("|") && lines[i].trim()) {
+        rows.push(parseMarkdownCells(lines[i]));
+        i += 1;
+      }
+      html.push(
+        `<div class="md-table-wrap"><table><thead><tr>${headers.map(cell => `<th>${renderInlineMarkdown(cell)}</th>`).join("")}</tr></thead>`
+        + `<tbody>${rows.map(row => `<tr>${headers.map((_, index) => `<td>${renderInlineMarkdown(row[index] || "")}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`
+      );
+      continue;
+    }
+
+    if (/^\s*[-*+]\s+/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) {
+        const parts = [lines[i].replace(/^\s*[-*+]\s+/, "")];
+        i += 1;
+        while (i < lines.length && !isBlockStartAt(i)) {
+          parts.push(lines[i]);
+          i += 1;
+        }
+        items.push(parts);
+        while (i < lines.length && !lines[i].trim()) i += 1;
+      }
+      html.push(`<ul>${items.map(item => `<li>${renderListItem(item)}</li>`).join("")}</ul>`);
+      continue;
+    }
+
+    if (/^\s*\d+\.\s+/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
+        const parts = [lines[i].replace(/^\s*\d+\.\s+/, "")];
+        i += 1;
+        while (i < lines.length && !isBlockStartAt(i)) {
+          parts.push(lines[i]);
+          i += 1;
+        }
+        items.push(parts);
+        while (i < lines.length && !lines[i].trim()) i += 1;
+      }
+      html.push(`<ol>${items.map(item => `<li>${renderListItem(item)}</li>`).join("")}</ol>`);
+      continue;
+    }
+
+    if (/^>\s?/.test(line)) {
+      const quote = [];
+      while (i < lines.length && /^>\s?/.test(lines[i])) {
+        quote.push(lines[i].replace(/^>\s?/, ""));
+        i += 1;
+      }
+      html.push(`<blockquote>${quote.map(part => `<p>${renderInlineMarkdown(part)}</p>`).join("")}</blockquote>`);
+      continue;
+    }
+
+    const para = [line];
+    i += 1;
+    while (i < lines.length && !isBlockStartAt(i)) {
+      para.push(lines[i]);
+      i += 1;
+    }
+    html.push(`<p>${renderInlineMarkdown(para.join(" "))}</p>`);
+  }
+  return html.join("\n");
+}
 
 const perfettoButtonLabel = (slot) => {
   const prefix = selectedJob.value?.mode === "compare" ? `Perfetto ${slot.toUpperCase()}` : "Perfetto";
@@ -2558,44 +4903,88 @@ const viewTritonCode = async (codePath) => {
   });
 };
 
-const copyTritonCode = async () => {
-  if (!tritonCodeContent.value) return;
+const copyTextToClipboard = async (text) => {
   try {
-    await navigator.clipboard.writeText(tritonCodeContent.value);
-    showToast("已复制到剪贴板", "success");
+    await navigator.clipboard.writeText(text);
   } catch (e) {
     const textarea = document.createElement("textarea");
-    textarea.value = tritonCodeContent.value;
+    textarea.value = text;
     document.body.appendChild(textarea);
     textarea.select();
     document.execCommand("copy");
     document.body.removeChild(textarea);
-    showToast("已复制到剪贴板", "success");
   }
+};
+
+const copyTritonCode = async () => {
+  if (!tritonCodeContent.value) return;
+  await copyTextToClipboard(tritonCodeContent.value);
+  showToast("已复制到剪贴板", "success");
 };
 
 const copyErrorModal = async () => {
   if (!errorModalMsg.value) return;
-  try {
-    await navigator.clipboard.writeText(errorModalMsg.value);
-    showToast("已复制到剪贴板", "success");
-  } catch (e) {
-    const textarea = document.createElement("textarea");
-    textarea.value = errorModalMsg.value;
-    document.body.appendChild(textarea);
-    textarea.select();
-    document.execCommand("copy");
-    document.body.removeChild(textarea);
-    showToast("已复制到剪贴板", "success");
-  }
+  await copyTextToClipboard(errorModalMsg.value);
+  showToast("已复制到剪贴板", "success");
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Compare
 // ══════════════════════════════════════════════════════════════════════════════
 
+const clearBatchCompareSelection = () => {
+  batchBaselineId.value = "";
+  batchCandidateIds.value = [];
+  batchSelectionDetails.value = {};
+  batchCompareLabelPrefix.value = "";
+};
+
+const setBatchCompareMode = enabled => {
+  batchCompareMode.value = enabled;
+  if (enabled) {
+    compareSelection.value = [];
+    compareSelectionDetails.value = {};
+    compareLabel.value = "";
+  } else {
+    clearBatchCompareSelection();
+  }
+};
+
+const isCompareJobSelected = job => {
+  if (!job) return false;
+  if (!batchCompareMode.value) return compareSelection.value.includes(job.id);
+  return batchBaselineId.value === job.id || batchCandidateIds.value.includes(job.id);
+};
+
+const compareJobRoleLabel = job => {
+  if (!batchCompareMode.value || !job) return "";
+  if (batchBaselineId.value === job.id) return "基线";
+  if (batchCandidateIds.value.includes(job.id)) return "候选";
+  return "";
+};
+
+const toggleBatchCompareSelect = job => {
+  const details = { ...batchSelectionDetails.value };
+  details[job.id] = job;
+  if (!batchBaselineId.value) {
+    batchBaselineId.value = job.id;
+    batchCandidateIds.value = batchCandidateIds.value.filter(id => id !== job.id);
+  } else if (batchBaselineId.value === job.id) {
+    batchBaselineId.value = "";
+  } else if (batchCandidateIds.value.includes(job.id)) {
+    batchCandidateIds.value = batchCandidateIds.value.filter(id => id !== job.id);
+  } else {
+    batchCandidateIds.value.push(job.id);
+  }
+  batchSelectionDetails.value = details;
+};
+
 const toggleCompareSelect = job => {
   if (!job.file_a_exists) return;
+  if (batchCompareMode.value) {
+    toggleBatchCompareSelect(job);
+    return;
+  }
   const idx = compareSelection.value.indexOf(job.id);
   const details = { ...compareSelectionDetails.value };
   if (idx >= 0) {
@@ -2617,6 +5006,14 @@ const removeCompareSelection = (id) => {
   const details = { ...compareSelectionDetails.value };
   delete details[id];
   compareSelectionDetails.value = details;
+};
+
+const removeBatchBaseline = () => {
+  batchBaselineId.value = "";
+};
+
+const removeBatchCandidate = id => {
+  batchCandidateIds.value = batchCandidateIds.value.filter(selectedId => selectedId !== id);
 };
 
 const submitCompare = async () => {
@@ -2644,9 +5041,74 @@ const submitCompare = async () => {
   router.push({ path: `/job/${job.id}` });
 };
 
+const submitBatchCompare = async () => {
+  if (!batchBaselineId.value || !batchCandidateIds.value.length || batchCompareLoading.value) return;
+  batchCompareLoading.value = true;
+  try {
+    const r = await fetch("/api/jobs/batch-compare", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({
+        baseline_job_id: batchBaselineId.value,
+        candidate_job_ids: batchCandidateIds.value,
+        label_prefix: batchCompareLabelPrefix.value,
+        project_id: compareProjectId.value || null,
+      }),
+    });
+    const payload = await r.json();
+    if (!r.ok) {
+      showToast("批量对比失败: " + (payload.detail || "服务器错误"), "error");
+      return;
+    }
+    const jobs = payload.data || [];
+    showToast(`已创建 ${payload.count || jobs.length} 个对比任务`, "success");
+    clearBatchCompareSelection();
+    compareProjectId.value = "";
+    sidebarTab.value = "jobs";
+    await refreshSidebarData();
+    if (jobs[0]?.id) router.push({ path: `/job/${jobs[0].id}` });
+  } catch (e) {
+    showToast("批量对比失败: 网络或服务器错误", "error");
+  } finally {
+    batchCompareLoading.value = false;
+  }
+};
+
 const openCompareSource = source => {
   if (!source?.id) return;
   router.push({ path: `/job/${source.id}` });
+};
+
+const analyzeCompareTraceSlot = async slot => {
+  const normalizedSlot = String(slot || "").trim().toLowerCase();
+  if (!["a", "b"].includes(normalizedSlot)) return;
+  if (singleTraceAnalyzeLoadingSlot.value) return;
+  if (!selectedJobId.value || selectedJob.value?.mode !== "compare") {
+    showToast("当前任务不是对比任务", "error");
+    return;
+  }
+  singleTraceAnalyzeLoadingSlot.value = normalizedSlot;
+  try {
+    const r = await fetch(`/api/jobs/${selectedJobId.value}/analyze-trace-slot`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ slot: normalizedSlot }),
+    });
+    const job = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      showToast(`单独分析 ${normalizedSlot.toUpperCase()} 失败: ` + (job.detail || "服务器错误"), "error");
+      return;
+    }
+    showToast(`已创建 ${normalizedSlot.toUpperCase()} trace 单独分析任务`, "success");
+    await refreshSidebarData();
+    router.push({ path: `/job/${job.id}` });
+  } catch (e) {
+    showToast(`单独分析 ${normalizedSlot.toUpperCase()} 失败: 网络错误`, "error");
+  } finally {
+    singleTraceAnalyzeLoadingSlot.value = "";
+  }
 };
 
 const rerunCompareSwapped = async () => {
@@ -2677,6 +5139,67 @@ const rerunCompareSwapped = async () => {
   }
 };
 
+const openStepReanalysisModal = () => {
+  if (!selectedJobId.value || !selectedJob.value) {
+    showToast("未选中任务", "error");
+    return;
+  }
+  if (["pending", "running"].includes(selectedJob.value.status)) {
+    showToast("任务仍在分析中，完成后再指定 Step 重分析", "error");
+    return;
+  }
+  stepReanalysisLabel.value = "";
+  stepReanalysisFilterA.value = selectedJob.value.step_filter_a || "";
+  stepReanalysisFilterB.value = selectedJob.value.mode === "compare" ? (selectedJob.value.step_filter_b || "") : "";
+  showStepReanalysisModal.value = true;
+};
+
+const closeStepReanalysisModal = () => {
+  if (stepReanalysisLoading.value) return;
+  showStepReanalysisModal.value = false;
+};
+
+const confirmStepReanalysis = async () => {
+  if (!selectedJobId.value || !selectedJob.value || stepReanalysisLoading.value) return;
+  const filterA = stepReanalysisFilterA.value.trim();
+  const filterB = selectedJob.value.mode === "compare" ? stepReanalysisFilterB.value.trim() : "";
+  if (selectedJob.value.mode === "single" && !filterA) {
+    showToast("请指定要分析的 step", "error");
+    return;
+  }
+  if (selectedJob.value.mode === "compare" && !filterA && !filterB) {
+    showToast("请至少指定 A 或 B 的 step；留空的一侧会使用全部 step", "error");
+    return;
+  }
+
+  stepReanalysisLoading.value = true;
+  try {
+    const r = await fetch(`/api/jobs/${selectedJobId.value}/reanalyze-steps`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({
+        label: stepReanalysisLabel.value.trim(),
+        step_filter_a: filterA,
+        step_filter_b: filterB,
+      }),
+    });
+    const payload = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      showToast("指定 Step 重分析失败: " + (payload.detail || "服务器错误"), "error");
+      return;
+    }
+    showStepReanalysisModal.value = false;
+    showToast("已创建指定 Step 重分析任务", "success");
+    await refreshSidebarData();
+    router.push({ path: `/job/${payload.id}` });
+  } catch (e) {
+    showToast("指定 Step 重分析失败: 网络错误", "error");
+  } finally {
+    stepReanalysisLoading.value = false;
+  }
+};
+
 // ══════════════════════════════════════════════════════════════════════════════
 // Projects
 // ══════════════════════════════════════════════════════════════════════════════
@@ -2690,6 +5213,7 @@ const createProject = async () => {
     body: JSON.stringify({
       name: newProjectName.value,
       description: newProjectDesc.value,
+      is_public: newProjectShared.value,
     }),
   });
   if (!r.ok) {
@@ -2700,6 +5224,7 @@ const createProject = async () => {
   showNewProject.value = false;
   newProjectName.value = "";
   newProjectDesc.value = "";
+  newProjectShared.value = false;
   await loadProjects();
   await refreshSidebarData();
   showToast("项目已创建", "success");
@@ -2869,7 +5394,10 @@ const Home = {
           <input type="file" ref="fileInputA" accept=".json,.json.gz,.gz,.zip,.tar.gz,.tgz" multiple @change="onFileChange" hidden />
           <div @click="$refs.fileInputA.click()" class="upload-inner">
             <div class="upload-icon">📂</div>
-            <div class="upload-label">{{ fileAName || '选择文件' }}</div>
+            <div class="upload-label">
+              <span>{{ fileAName || '选择文件' }}</span>
+              <small v-if="uploadQueue.length===1">{{ uploadQueue[0].meta }}</small>
+            </div>
           </div>
           <button v-if="fileAName" class="upload-clear" @click.stop="clearFile">✕</button>
         </div>
@@ -2877,7 +5405,7 @@ const Home = {
           <label>项目</label>
           <select v-model="form.projectId" class="input">
             <option value="">未分组</option>
-            <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
+            <option v-for="p in projects" :key="p.id" :value="p.id">{{ projectOptionLabel(p) }}</option>
           </select>
         </div>
         <div class="form-row">
@@ -2895,7 +5423,10 @@ const Home = {
             <input type="file" ref="quickFileInputA" accept=".json,.json.gz,.gz,.zip,.tar.gz,.tgz" @change="onQuickFileChange('a', $event)" hidden />
             <div @click="$refs.quickFileInputA.click()" class="upload-inner">
               <span class="trace-slot">A</span>
-              <div class="upload-label">{{ quickFileAName || '选择 A trace' }}</div>
+              <div class="upload-label">
+                <span>{{ quickFileAName || '选择 A trace' }}</span>
+                <small v-if="quickFileA">{{ uploadFileMeta(quickFileA) }}</small>
+              </div>
             </div>
             <button v-if="quickFileAName" class="upload-clear" @click.stop="clearQuickCompareFile('a')">✕</button>
           </div>
@@ -2903,7 +5434,10 @@ const Home = {
             <input type="file" ref="quickFileInputB" accept=".json,.json.gz,.gz,.zip,.tar.gz,.tgz" @change="onQuickFileChange('b', $event)" hidden />
             <div @click="$refs.quickFileInputB.click()" class="upload-inner">
               <span class="trace-slot">B</span>
-              <div class="upload-label">{{ quickFileBName || '选择 B trace' }}</div>
+              <div class="upload-label">
+                <span>{{ quickFileBName || '选择 B trace' }}</span>
+                <small v-if="quickFileB">{{ uploadFileMeta(quickFileB) }}</small>
+              </div>
             </div>
             <button v-if="quickFileBName" class="upload-clear" @click.stop="clearQuickCompareFile('b')">✕</button>
           </div>
@@ -2912,7 +5446,7 @@ const Home = {
           <label>项目</label>
           <select v-model="form.projectId" class="input">
             <option value="">未分组</option>
-            <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
+            <option v-for="p in projects" :key="p.id" :value="p.id">{{ projectOptionLabel(p) }}</option>
           </select>
         </div>
         <div class="form-row">
@@ -2926,7 +5460,10 @@ const Home = {
 
       <div v-if="quickUploadMode==='single' && uploadQueue.length" class="upload-queue">
         <div v-for="item in uploadQueue" :key="item.id" class="upload-queue-item">
-          <span class="upload-queue-name" :title="item.name">{{ item.name }}</span>
+          <span class="upload-queue-main">
+            <span class="upload-queue-name" :title="item.name">{{ item.name }}</span>
+            <span class="upload-queue-meta">{{ item.meta }}</span>
+          </span>
           <span :class="['upload-queue-status', 'queue-' + item.status]">
             <template v-if="item.status==='ready'">待提交</template>
             <template v-else-if="item.status==='uploading'">上传中 {{ item.progress }}%</template>
@@ -2936,8 +5473,8 @@ const Home = {
         </div>
       </div>
       <div v-if="quickUploadMode==='compare' && (quickFileAName || quickFileBName)" class="quick-compare-summary">
-        <span :class="['quick-file-chip', quickFileAName ? 'ready' : '']">A {{ quickFileAName || '未选择' }}</span>
-        <span :class="['quick-file-chip', quickFileBName ? 'ready' : '']">B {{ quickFileBName || '未选择' }}</span>
+        <span :class="['quick-file-chip', quickFileAName ? 'ready' : '']">A {{ quickFileAName || '未选择' }} <small v-if="quickFileA">{{ uploadFileMeta(quickFileA) }}</small></span>
+        <span :class="['quick-file-chip', quickFileBName ? 'ready' : '']">B {{ quickFileBName || '未选择' }} <small v-if="quickFileB">{{ uploadFileMeta(quickFileB) }}</small></span>
       </div>
       <div v-if="submitting && uploadProgress < 100" class="upload-progress">
         <div class="upload-progress-label">总进度 {{ uploadProgress }}%</div>
@@ -2950,20 +5487,49 @@ const Home = {
     <!-- Empty state -->
     <div v-if="!selectedJob" class="empty-main">
       <div class="empty-main-icon">📊</div>
-      <div class="empty-main-title">选择左侧历史记录查看结果，或上传文件开始分析</div>
+      <div class="empty-main-title">上传 trace 开始分析，或从左侧历史记录继续</div>
+      <div class="empty-action-grid">
+        <button class="empty-action-card" type="button" @click="openSingleUploadPicker">
+          <strong>上传单文件/批量</strong>
+          <span>分析一个或多个 trace，自动进入任务队列</span>
+        </button>
+        <button class="empty-action-card" type="button" @click="setQuickUploadMode('compare')">
+          <strong>上传两个 trace 快速对比</strong>
+          <span>直接生成 A/B 对比任务</span>
+        </button>
+        <button class="empty-action-card" type="button" @click="sidebarTab='jobs'">
+          <strong>{{ historyGroupsTotal ? '查看历史与共享项目' : '等待历史记录' }}</strong>
+          <span>{{ historyGroupsTotal ? '左侧可搜索、置顶和批量管理任务' : '提交成功后会在左侧出现' }}</span>
+        </button>
+        <button class="empty-action-card" type="button" @click="showGuide=true">
+          <strong>打开使用指南</strong>
+          <span>查看上传、对比、AI 和社区说明</span>
+        </button>
+        <button class="empty-action-card" type="button" @click="$router.push('/feedback')">
+          <strong>进入灵感社区</strong>
+          <span>提建议、看讨论、@ 同事一起完善工具</span>
+        </button>
+      </div>
       <div class="empty-main-tips">
-        <div class="empty-tip-item">详细使用指南见右上角「使用指南」</div>
-        <div class="empty-tip-item">建议上传的 trace 文件中开启了 triton code 保存功能</div>
+        <div class="empty-tip-item">支持 .json.gz、.gz、.json.zip、.zip、.json、.tar.gz、.tgz，默认下载为 .json.gz</div>
+        <div class="empty-tip-item">建议 trace 中开启 triton code 保存功能，后续可直接查看和运行 Triton kernel</div>
       </div>
     </div>
   `,
   setup() {
     const fileInputA = ref(null);
+    const openSingleUploadPicker = async () => {
+      setQuickUploadMode("single");
+      await nextTick();
+      fileInputA.value?.click();
+    };
     return {
       fileInputA, fileAName, fileA, quickUploadMode,
       quickFileA, quickFileB, quickFileAName, quickFileBName,
       uploadQueue, submitting, uploadProgress,
-      form, projects, selectedJob,
+      form, projects, projectOptionLabel, selectedJob,
+      historyGroupsTotal, sidebarTab, showGuide, uploadFileMeta,
+      openSingleUploadPicker,
       setQuickUploadMode,
       onDrop, onFileChange, clearFile, submitJob,
       onQuickDrop, onQuickFileChange, clearQuickCompareFile, submitQuickCompare,
@@ -2988,19 +5554,32 @@ const JobDetail = {
     <!-- Result panel -->
     <section v-if="!jobLoading && selectedJob" class="card result-card">
       <div class="result-header">
-        <div>
+        <div class="result-title-row">
           <span class="job-status lg" :class="'status-'+selectedJob.status">
             {{ statusIcon(selectedJob.status) }}
           </span>
           <span class="result-label">{{ selectedJob.label }}</span>
+          <span v-if="selectedJob.is_pinned" class="job-pin-badge">置顶</span>
           <span class="job-mode-badge" :class="'mode-'+selectedJob.mode">
             {{ selectedJob.mode==='compare'?'对比':'单文件' }}
           </span>
+          <span v-if="jobStepFilterLabel" class="job-step-badge">{{ jobStepFilterLabel }}</span>
         </div>
-        <div class="result-actions">
-          <button class="btn btn-sm btn-outline" @click="editLabel">重命名</button>
-          <button class="btn btn-sm btn-outline" @click="moveProject">移动项目</button>
-          <button class="btn btn-sm btn-danger" @click="deleteJob">删除任务</button>
+        <div class="result-actions action-menu-wrap" @click.stop>
+          <button class="action-icon-btn" type="button" title="更多任务操作"
+                  aria-label="更多任务操作"
+                  @click="toggleActionMenu('job')">...</button>
+          <div v-if="openActionMenu==='job'" class="action-menu">
+            <button type="button" @click="shareJob(); closeActionMenu()">复制分享链接</button>
+            <button type="button" @click="downloadReport(); closeActionMenu()">导出报告</button>
+            <button v-if="selectedJob.is_owner !== false" type="button" @click="togglePinJob(); closeActionMenu()">
+              {{ selectedJob.is_pinned ? '取消置顶' : '置顶' }}
+            </button>
+            <button v-if="selectedJob.is_owner !== false" type="button" @click="editLabel(); closeActionMenu()">重命名</button>
+            <button v-if="selectedJob.is_owner !== false" type="button" @click="moveProject(); closeActionMenu()">移动项目</button>
+            <button type="button" @click="openStepReanalysisModal(); closeActionMenu()">指定 Step 重分析</button>
+            <button v-if="selectedJob.is_owner !== false" type="button" class="danger" @click="deleteJob(); closeActionMenu()">删除任务</button>
+          </div>
         </div>
       </div>
 
@@ -3011,11 +5590,21 @@ const JobDetail = {
           <span class="trace-file-name" :title="selectedJob.file_a_name">📄 {{ selectedJob.file_a_name }}</span>
           <span v-if="!selectedJob.file_a_exists" class="tag-deleted">已删除</span>
           <div v-else class="trace-file-actions">
-            <button v-if="allowFileDownload" class="btn btn-xs btn-outline" @click="downloadTraceFile('a')">下载</button>
             <button v-if="allowFileDownload" class="btn btn-xs btn-perfetto"
                     :disabled="perfettoOpening.a"
                     @click="openInPerfetto('a')">{{ perfettoButtonLabel('a') }}</button>
-            <button class="btn btn-xs btn-danger" @click="deleteFile('a')">删除文件</button>
+            <div v-if="allowFileDownload || selectedJob.is_owner !== false"
+                 class="action-menu-wrap trace-action-menu" @click.stop>
+              <button class="action-icon-btn action-icon-btn-xs" type="button"
+                      title="更多文件操作" aria-label="更多文件操作"
+                      @click="toggleActionMenu('file-a')">...</button>
+              <div v-if="openActionMenu==='file-a'" class="action-menu action-menu-sm">
+                <button v-if="allowFileDownload" type="button"
+                        @click="downloadTraceFile('a'); closeActionMenu()">下载</button>
+                <button v-if="selectedJob.is_owner !== false" type="button" class="danger"
+                        @click="deleteFile('a'); closeActionMenu()">删除文件</button>
+              </div>
+            </div>
           </div>
         </div>
         <div v-if="selectedJob.file_b_name" class="trace-file-row">
@@ -3023,11 +5612,21 @@ const JobDetail = {
           <span class="trace-file-name" :title="selectedJob.file_b_name">📄 {{ selectedJob.file_b_name }}</span>
           <span v-if="!selectedJob.file_b_exists" class="tag-deleted">已删除</span>
           <div v-else class="trace-file-actions">
-            <button v-if="allowFileDownload" class="btn btn-xs btn-outline" @click="downloadTraceFile('b')">下载</button>
             <button v-if="allowFileDownload" class="btn btn-xs btn-perfetto"
                     :disabled="perfettoOpening.b"
                     @click="openInPerfetto('b')">{{ perfettoButtonLabel('b') }}</button>
-            <button class="btn btn-xs btn-danger" @click="deleteFile('b')">删除文件</button>
+            <div v-if="allowFileDownload || selectedJob.is_owner !== false"
+                 class="action-menu-wrap trace-action-menu" @click.stop>
+              <button class="action-icon-btn action-icon-btn-xs" type="button"
+                      title="更多文件操作" aria-label="更多文件操作"
+                      @click="toggleActionMenu('file-b')">...</button>
+              <div v-if="openActionMenu==='file-b'" class="action-menu action-menu-sm">
+                <button v-if="allowFileDownload" type="button"
+                        @click="downloadTraceFile('b'); closeActionMenu()">下载</button>
+                <button v-if="selectedJob.is_owner !== false" type="button" class="danger"
+                        @click="deleteFile('b'); closeActionMenu()">删除文件</button>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -3052,14 +5651,21 @@ const JobDetail = {
               </div>
             </div>
             <span v-if="selectedJob.compare_sources[slot] && !selectedJob.compare_sources[slot].file_a_exists" class="tag-deleted">源文件已删除</span>
-            <button v-if="selectedJob.compare_sources[slot]" class="btn btn-xs btn-outline"
-                    @click="openCompareSource(selectedJob.compare_sources[slot])">查看源任务</button>
+            <div class="compare-source-actions">
+              <button class="btn btn-xs btn-outline"
+                      :disabled="singleTraceAnalyzeLoadingSlot === slot"
+                      @click="analyzeCompareTraceSlot(slot)">
+                {{ singleTraceAnalyzeLoadingSlot === slot ? '提交中...' : '单独分析 ' + slot.toUpperCase() }}
+              </button>
+              <button v-if="selectedJob.compare_sources[slot]" class="btn btn-xs btn-outline"
+                      @click="openCompareSource(selectedJob.compare_sources[slot])">查看源任务</button>
+            </div>
           </div>
         </div>
       </div>
 
       <div v-if="selectedJob.status==='running' || selectedJob.status==='pending'" class="loading">
-        <span class="spinner"></span> 分析中...
+        <span class="spinner"></span> {{ selectedJob.console_out || '分析中...' }}
       </div>
       <div v-else-if="selectedJob.status==='error'" class="error-box">
         {{ selectedJob.error_msg }}
@@ -3076,9 +5682,9 @@ const JobDetail = {
           </button>
           <span class="result-tabs-spacer"></span>
           <button class="tab reading-toggle"
-                  :title="isReadingMode ? '退出阅读模式' : '进入阅读模式'"
+                  :title="isReadingMode ? '退出全屏' : '进入全屏'"
                   @click="toggleReadingMode">
-            {{ isReadingMode ? '退出阅读' : '阅读模式' }}
+            {{ isReadingMode ? '退出全屏' : '全屏' }}
           </button>
         </div>
 
@@ -3188,31 +5794,187 @@ const JobDetail = {
         </div>
 
         <!-- CSV table tabs -->
-        <div v-if="resultTab!=='console' && resultTab!=='chart'" class="table-wrap">
-          <div class="table-toolbar">
-            <input v-model="tableSearch" class="input input-sm" placeholder="全局搜索..." />
-            <span v-if="hasColFilters" class="filter-active-tip">
-              列筛选已启用
-              <button class="btn-clear-filter" @click="clearColFilters()">✕ 清除</button>
-            </span>
-            <span v-if="isKernelTypeTab" class="filter-active-tip">点击类型行下钻到相关 Kernel</span>
-            <div class="column-menu-wrap">
-              <button class="btn btn-sm btn-outline" @click="showColumnMenu=!showColumnMenu">
-                列{{ hiddenColumnCount ? ' (' + hiddenColumnCount + ' 已隐藏)' : '' }}
-              </button>
-              <div v-if="showColumnMenu" class="column-menu">
-                <div class="column-menu-actions">
-                  <button class="btn btn-xs btn-outline" @click="resetVisibleColumns">全部列</button>
-                  <button class="btn btn-xs btn-outline" @click="applyCoreColumnPreset">核心列</button>
-                </div>
-                <label v-for="f in currentTable.fields" :key="f" class="column-menu-item">
-                  <input type="checkbox" :checked="isColumnVisible(f)" @change="toggleColumnVisibility(f)" />
-                  <span>{{ f }}</span>
-                </label>
+        <div v-if="resultTab==='ai'" class="ai-analysis-wrap">
+          <div class="ai-analysis-head">
+            <div class="ai-analysis-title-block">
+              <div class="ai-analysis-title">Claude Code AI 分析</div>
+              <div class="ai-analysis-sub">
+                {{ selectedJob.mode === 'compare' ? '使用对比 skill 分析 A/B trace' : '使用单 trace skill 分析当前 trace' }}
               </div>
             </div>
-            <button class="btn btn-sm btn-outline" @click="downloadCsv(resultTab)">下载当前页 CSV</button>
-            <button v-if="isTritonStepTab && allowCodeExecution" class="btn btn-sm btn-outline" @click="clearInductorCache()">清除 Cache</button>
+            <div class="ai-analysis-actions">
+              <span :class="['ai-status-badge', 'status-' + (aiAnalysisMeta.status || 'not_started')]">
+                {{ aiAnalysisStatusText(aiAnalysisMeta.status) }}
+              </span>
+              <button class="btn btn-sm btn-outline"
+                      :disabled="aiAnalysisLoading"
+                      @click="refreshAiAnalysis()">
+                {{ aiAnalysisLoading ? '刷新中...' : '刷新' }}
+              </button>
+              <button v-if="aiAnalysisContent" class="btn btn-sm btn-outline" @click="copyAiAnalysisReport">
+                复制
+              </button>
+              <button v-if="aiAnalysisContent" class="btn btn-sm btn-outline" @click="downloadAiAnalysisReport">
+                下载 Markdown
+              </button>
+              <button class="btn btn-sm btn-primary"
+                      :disabled="!claudeAnalysisEnabled || aiAnalysisStarting || isAiAnalysisActive(aiAnalysisMeta.status)"
+                      @click="openAiPromptModal(aiAnalysisMeta.report_exists || aiAnalysisMeta.status==='done')">
+                {{ aiAnalysisStarting ? '提交中...' : (aiAnalysisMeta.report_exists ? '重新分析' : '开始分析') }}
+              </button>
+            </div>
+          </div>
+
+          <div v-if="aiAnalysisSelectedVersion || aiAnalysisMeta.started_at || isAiAnalysisActive(aiAnalysisMeta.status)" class="ai-meta-row">
+            <label v-if="aiAnalysisVersions.length > 1" class="ai-version-picker">
+              <span>历史版本</span>
+              <select v-model="aiAnalysisSelectedVersionId"
+                      class="input input-sm ai-version-select"
+                      @change="changeAiAnalysisVersion">
+                <option v-for="version in aiAnalysisVersions"
+                        :key="version.id"
+                        :value="version.id">
+                  {{ aiAnalysisVersionLabel(version) }}
+                </option>
+              </select>
+            </label>
+            <div v-else-if="aiAnalysisSelectedVersion" class="ai-version-static">
+              <span>历史版本</span>
+              <strong>最新版本</strong>
+            </div>
+            <div v-if="aiAnalysisSelectedVersion" class="ai-version-info">
+              <span>生成时间 <strong>{{ fmtDateTime(aiAnalysisSelectedVersion.generated_at || aiAnalysisSelectedVersion.finished_at) || '-' }}</strong></span>
+              <span>触发人 <strong>{{ aiAnalysisVersionTrigger }}</strong></span>
+              <span>模型 <strong>{{ aiAnalysisVersionModel }}</strong></span>
+            </div>
+            <div v-else class="ai-version-info ai-version-info-muted">报告生成后会显示版本信息</div>
+            <div v-if="aiAnalysisMeta.started_at || isAiAnalysisActive(aiAnalysisMeta.status)" class="ai-duration-meta">
+              <span>{{ isAiAnalysisActive(aiAnalysisMeta.status) ? '已耗时' : '总耗时' }}</span>
+              <strong>{{ aiAnalysisElapsedText }}</strong>
+            </div>
+          </div>
+          <div v-if="aiAnalysisSelectedVersion?.user_prompt" class="ai-version-prompt">
+            <strong>本版本补充 Prompt</strong>
+            <pre :title="aiAnalysisSelectedVersion.user_prompt">{{ aiAnalysisSelectedVersion.user_prompt }}</pre>
+          </div>
+
+          <div v-if="!claudeAnalysisEnabled && !aiAnalysisMeta.report_exists" class="info-box">
+            AI 分析未启用。服务端设置 TRACE_ENABLE_CLAUDE_ANALYSIS=1 后可使用。
+          </div>
+          <div v-if="aiDiagnosticsError" class="error-box mb-2">{{ aiDiagnosticsError }}</div>
+          <div v-if="aiDiagnosticsResult && !aiDiagnosticsResult.ok" class="ai-diagnostics-panel">
+            <div class="ai-diagnostics-head">
+              <div>
+                <strong>AI 环境诊断</strong>
+                <span :class="['ai-diagnostic-overall', aiDiagnosticsResult.ok ? 'ok' : 'error']">
+                  {{ aiDiagnosticsResult.ok ? '通过' : '未通过' }}
+                </span>
+              </div>
+              <button class="btn btn-xs btn-outline" @click="copyAiDiagnostics">复制诊断</button>
+            </div>
+            <div class="ai-diagnostic-meta">
+              <span>skills: {{ aiDiagnosticsResult.skills_dir || '-' }}</span>
+              <span>耗时 {{ aiDiagnosticsResult.duration_ms }} ms</span>
+            </div>
+            <div class="ai-diagnostic-checks">
+              <div v-for="check in aiDiagnosticsResult.checks || []"
+                   :key="check.name"
+                   :class="['ai-diagnostic-check', 'status-' + check.status]">
+                <div class="ai-diagnostic-check-main">
+                  <span class="ai-diagnostic-status">{{ aiDiagnosticStatusText(check.status) }}</span>
+                  <strong>{{ check.label || check.name }}</strong>
+                  <span>{{ check.detail }}</span>
+                </div>
+                <pre v-if="check.stdout_tail || check.stderr_tail" class="ai-diagnostic-output">{{ [check.stdout_tail ? 'stdout:\\n' + check.stdout_tail : '', check.stderr_tail ? 'stderr:\\n' + check.stderr_tail : ''].filter(Boolean).join('\\n\\n') }}</pre>
+              </div>
+            </div>
+          </div>
+          <div v-if="aiAnalysisError" class="error-box mb-2">{{ aiAnalysisError }}</div>
+          <div v-if="isAiAnalysisActive(aiAnalysisMeta.status)" class="ai-analysis-running">
+            <span class="spinner-small"></span>
+            {{ aiAnalysisMeta.status === 'queued'
+              ? 'AI 分析已进入队列，开始后会自动更新状态。'
+              : aiAnalysisMeta.phase === 'diagnosing'
+              ? '正在进行 AI 环境诊断，诊断通过后会自动开始分析。'
+              : 'Claude Code 正在分析 trace，完成后这里会自动刷新。' }}
+          </div>
+          <div v-if="aiAnalysisContent" class="ai-analysis-report markdown-body" v-html="aiAnalysisHtml"></div>
+          <div v-if="aiAnalysisVisibleArtifacts.length"
+               :class="['ai-artifacts-panel', { collapsed: !aiArtifactsExpanded }]">
+            <button type="button"
+                    class="ai-artifacts-toggle"
+                    :aria-expanded="String(aiArtifactsExpanded)"
+                    @click="aiArtifactsExpanded = !aiArtifactsExpanded">
+              <div>
+                <strong>分析产物</strong>
+                <span>{{ aiAnalysisVisibleArtifacts.length }} 个文本文件</span>
+              </div>
+              <span class="ai-artifacts-summary">{{ aiArtifactSummary }}</span>
+              <span class="ai-artifacts-toggle-label">{{ aiArtifactsExpanded ? '收起' : '展开' }}</span>
+            </button>
+            <div v-if="aiArtifactsExpanded" class="ai-artifact-list">
+              <div v-for="artifact in aiAnalysisVisibleArtifacts"
+                   :key="artifact.path"
+                   class="ai-artifact-card">
+                <div class="ai-artifact-head">
+                  <div class="ai-artifact-title">{{ artifact.path }}</div>
+                  <div class="ai-artifact-meta">
+                    <span>{{ fmtBytes(artifact.size) }}</span>
+                    <span v-if="artifact.truncated">已截断</span>
+                    <button v-if="artifact.content"
+                            class="btn btn-xs btn-outline"
+                            @click="copyAiAnalysisArtifact(artifact)">
+                      复制
+                    </button>
+                  </div>
+                </div>
+                <pre class="ai-artifact-content">{{ artifact.content || '(空文件)' }}</pre>
+              </div>
+            </div>
+          </div>
+          <div v-if="!aiAnalysisContent && !aiAnalysisVisibleArtifacts.length && !isAiAnalysisActive(aiAnalysisMeta.status)" class="ai-analysis-empty">
+            点击“开始分析”后，会调用服务端 Claude Code 和自定义 skill 生成报告。
+          </div>
+        </div>
+
+        <!-- CSV table tabs -->
+        <div v-if="resultTab!=='console' && resultTab!=='chart' && resultTab!=='ai'" class="table-wrap">
+          <div class="table-toolbar">
+            <div class="table-toolbar-main">
+              <input v-model="tableSearch" class="input input-sm table-search-input" placeholder="全局搜索..." />
+              <span v-if="hasColFilters" class="filter-active-tip">
+                列筛选已启用
+                <button class="btn-clear-filter" @click="clearColFilters()">✕ 清除</button>
+              </span>
+              <span v-if="isKernelTypeTab" class="filter-active-tip">点击类型行下钻到相关 Kernel</span>
+            </div>
+            <div class="table-toolbar-actions">
+              <div class="column-menu-wrap" @click.stop>
+                <button class="btn btn-sm btn-outline" @click="showColumnMenu=!showColumnMenu">
+                  列{{ hiddenColumnCount ? ' (' + hiddenColumnCount + ' 已隐藏)' : '' }}
+                </button>
+                <div v-if="showColumnMenu" class="column-menu">
+                  <div class="column-menu-actions">
+                    <button class="btn btn-xs btn-outline" @click="resetVisibleColumns">全部列</button>
+                    <button class="btn btn-xs btn-outline" @click="applyCoreColumnPreset">核心列</button>
+                  </div>
+                  <label v-for="f in currentTable.fields" :key="f" class="column-menu-item">
+                    <input type="checkbox" :checked="isColumnVisible(f)" @change="toggleColumnVisibility(f)" />
+                    <span>{{ f }}</span>
+                  </label>
+                </div>
+              </div>
+              <div class="action-menu-wrap table-more-menu" @click.stop>
+                <button class="action-icon-btn" type="button" title="更多表格操作"
+                        aria-label="更多表格操作"
+                        @click="toggleActionMenu('table')">...</button>
+                <div v-if="openActionMenu==='table'" class="action-menu">
+                  <button type="button" @click="downloadCsv(resultTab); closeActionMenu()">下载当前页 CSV</button>
+                  <button v-if="isTritonStepTab && allowCodeExecution" type="button"
+                          @click="clearInductorCache(); closeActionMenu()">清除 Cache</button>
+                </div>
+              </div>
+            </div>
           </div>
           <div v-if="resultTableError" class="error-box mb-2">{{ resultTableError }}</div>
           <div class="table-scroll">
@@ -3359,8 +6121,9 @@ const JobDetail = {
     return {
       ktChart: ktChartRef, ktPieChart: ktPieChartRef, ktPieChartB: ktPieChartBRef,
       selectedJob, selectedJobId, jobLoading, resultTab, availableTabs, currentTable,
+      jobStepFilterLabel,
       isReadingMode, toggleReadingMode,
-      compareRerunLoading,
+      compareRerunLoading, openStepReanalysisModal,
       consoleSearch, consoleHideWrote, consoleSections, consoleWroteCount,
       consoleSearchMatchCount, scrollConsoleSection,
       chartSource, chartMetric, chartTopN, chartTopNOptions, chartSourceOptions,
@@ -3373,14 +6136,27 @@ const JobDetail = {
       resultTableLoading, resultTableError, preparingResultTab, prevTablePage, nextTablePage,
       hasColFilters, colSums, isKernelTypeTab, canDrillKernelTypeRow, drillDownKernelType,
       isTritonStepTab, tritonStatus, allowFileDownload, allowCodeExecution,
+      claudeAnalysisEnabled, aiAnalysisMeta, aiAnalysisLoading, aiAnalysisStarting,
+      aiAnalysisError, aiAnalysisContent, aiAnalysisArtifacts, aiAnalysisVisibleArtifacts,
+      aiAnalysisVersions, aiAnalysisSelectedVersionId, aiAnalysisSelectedVersion,
+      showAiPromptModal, aiAnalysisPrompt, aiPromptForce,
+      aiAnalysisVersionTrigger, aiAnalysisVersionModel, aiAnalysisVersionLabel,
+      aiArtifactsExpanded, aiArtifactSummary, aiAnalysisHtml, aiAnalysisStatusText,
+      isAiAnalysisActive, aiAnalysisElapsedText,
+      aiDiagnosticsLoading, aiDiagnosticsError, aiDiagnosticsResult, aiDiagnosticStatusText,
+      refreshAiAnalysis, startAiAnalysis, openAiPromptModal, closeAiPromptModal, confirmAiPromptModal,
+      copyAiAnalysisReport,
+      downloadAiAnalysisReport, changeAiAnalysisVersion, copyAiAnalysisArtifact,
+      runAiDiagnostics, copyAiDiagnostics,
+      openActionMenu, toggleActionMenu, closeActionMenu,
       switchTab,
       statusIcon,
-      editLabel, moveProject, deleteJob, deleteFile,
-      openCompareSource, rerunCompareSwapped,
-      downloadTraceFile, openInPerfetto, perfettoOpening, perfettoButtonLabel,
+      shareJob, togglePinJob, editLabel, moveProject, deleteJob, deleteFile,
+      openCompareSource, rerunCompareSwapped, singleTraceAnalyzeLoadingSlot, analyzeCompareTraceSlot,
+      downloadTraceFile, downloadReport, openInPerfetto, perfettoOpening, perfettoButtonLabel,
       setSort, startResize, downloadCsv,
       viewTritonCode, runSingleTriton, clearInductorCache,
-      fmtDate, fmtSum, deltaCellClass, clearColFilters,
+      fmtDate, fmtDateTime, fmtSum, fmtBytes, deltaCellClass, clearColFilters,
       isColumnVisible, resetVisibleColumns, applyCoreColumnPreset, toggleColumnVisibility,
       formatConsole,
     };
@@ -3395,10 +6171,113 @@ const router = createRouter({
   history: createWebHashHistory(),
   routes: [
     { path: "/", component: Home },
+    { path: "/feedback/:postId?", name: "feedback", component: Home },
     { path: "/job/:id", component: JobDetail },
     { path: "/job/:id/:tab", component: JobDetail },
   ],
 });
+
+const resetJobRuntimeState = () => {
+  isReadingMode.value = false;
+  if (ktChartInst.value)     { ktChartInst.value.destroy();     ktChartInst.value = null; }
+  if (ktPieChartInst.value)  { ktPieChartInst.value.destroy();  ktPieChartInst.value = null; }
+  if (ktPieChartInstB.value) { ktPieChartInstB.value.destroy(); ktPieChartInstB.value = null; }
+  stopAiAnalysisPolling();
+  cancelResultTableRequest();
+  clearAiDiagnostics();
+};
+
+const clearSelectedJobRoute = () => {
+  saveResultViewState();
+  resetJobRuntimeState();
+  clearInterval(pollTimer);
+  pollTimer = null;
+  selectedJobId.value = null;
+  selectedJob.value = null;
+  jobLoading.value = false;
+  resultTab.value = DEFAULT_RESULT_TAB;
+  resultTableFile.value = "";
+  activeResultStateJobId = null;
+};
+
+const loadJobRoute = async to => {
+  const newJobId = to.params?.id || null;
+  if (!newJobId) return true;
+
+  saveResultViewState();
+  resetJobRuntimeState();
+
+  selectedJobId.value = newJobId;
+  selectedJob.value = null;
+  jobLoading.value = true;
+  resultTableFile.value = "";
+
+  let loaded;
+  try {
+    loaded = await loadJob(newJobId);
+  } catch (e) {
+    jobLoading.value = false;
+    const message = normalizeApiError(e, "加载任务失败");
+    if (!e?.authExpired) showToast(message, "error");
+    return false;
+  }
+
+  if (loaded === "stale") {
+    jobLoading.value = false;
+    return false;
+  }
+  if (!loaded) {
+    selectedJobId.value = null;
+    clearAiDiagnostics();
+    jobLoading.value = false;
+    return { path: "/" };
+  }
+
+  const requestedTab = to.params?.tab || "";
+  const validTabs = availableTabs.value.map(t => t.key);
+  const targetTab = resolveResultTab(newJobId, requestedTab, validTabs);
+  activeResultStateJobId = newJobId;
+  if (targetTab.endsWith(".csv")) {
+    await activateCsvTab(targetTab, { updateRoute: false, savePrevious: false });
+  } else {
+    skipNextResultTabWatch();
+    resultTab.value = targetTab;
+    restoreResultViewState(newJobId, targetTab);
+    rememberResultTabSelection(newJobId, targetTab);
+  }
+  if (targetTab === "chart" && selectedJob.value.status === "done") {
+    scheduleBuildChart();
+  }
+  if (targetTab === "ai" && selectedJob.value.status === "done") {
+    refreshAiAnalysis({ silent: true });
+  }
+  if (selectedJob.value.status === "pending" || selectedJob.value.status === "running") {
+    startPoll();
+  }
+  sidebarTab.value = "jobs";
+  jobLoading.value = false;
+  return true;
+};
+
+const resumeCurrentRouteAfterLogin = async () => {
+  const route = router.currentRoute.value;
+  if (route.name === "feedback") {
+    await openFeedbackRoute(route);
+    return;
+  }
+  if (route.params?.id) {
+    const result = await loadJobRoute(route);
+    if (result && result !== true) await router.replace(result);
+  }
+};
+
+const retryInitializeApp = async () => {
+  authInitError.value = "";
+  authChecked.value = false;
+  appInitialized = false;
+  const ready = await initializeAppData();
+  if (ready) await resumeCurrentRouteAfterLogin();
+};
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Navigation guard
@@ -3407,39 +6286,42 @@ const router = createRouter({
 router.beforeEach(async (to, from) => {
   // Ensure config/data is loaded on first navigation
   if (!appInitialized) {
-    await loadConfig();
-    await loadProjects();
-    await refreshSidebarData();
-    appInitialized = true;
+    const ready = await initializeAppData();
+    if (!ready) {
+      if (authInitError.value) return false;
+      return;
+    }
+  }
+
+  if (authRequired.value && !currentUser.value) return;
+
+  if (to.name === "feedback") {
+    await openFeedbackRoute(to);
+    return;
+  }
+  if (showFeedbackBoard.value) {
+    showFeedbackBoard.value = false;
+    selectedFeedbackPostId.value = "";
+    selectedFeedbackMessageId.value = "";
+    cancelFeedbackEdit();
+    closeFeedbackMention();
+    destroyFeedbackMarkdownEditors();
   }
 
   const newJobId = to.params?.id || null;
 
   if (!newJobId) {
     // Navigated to home -- clean up
-    saveResultViewState();
-    isReadingMode.value = false;
-    if (ktChartInst.value)     { ktChartInst.value.destroy();     ktChartInst.value = null; }
-    if (ktPieChartInst.value)  { ktPieChartInst.value.destroy();  ktPieChartInst.value = null; }
-    if (ktPieChartInstB.value) { ktPieChartInstB.value.destroy(); ktPieChartInstB.value = null; }
-    clearInterval(pollTimer);
-    pollTimer = null;
-    cancelResultTableRequest();
-    selectedJobId.value = null;
-    selectedJob.value = null;
-    jobLoading.value = false;
-    resultTab.value = "console";
-    resultTableFile.value = "";
-    activeResultStateJobId = null;
+    clearSelectedJobRoute();
     return;
   }
 
-  const tab = to.params?.tab || resultTab.value || "console";
+  const requestedTabForSameJob = to.params?.tab || "";
 
   // Same job, just switch tab
   if (newJobId === selectedJobId.value) {
     const validTabs = availableTabs.value.map(t => t.key);
-    const targetTab = validTabs.includes(tab) ? tab : "console";
+    const targetTab = resolveResultTab(newJobId, requestedTabForSameJob, validTabs);
     if (targetTab !== resultTab.value) {
       if (targetTab.endsWith(".csv")) {
         await activateCsvTab(targetTab, { updateRoute: false });
@@ -3452,45 +6334,8 @@ router.beforeEach(async (to, from) => {
   }
 
   // Different job -- full load
-  saveResultViewState();
-  isReadingMode.value = false;
-  if (ktChartInst.value)     { ktChartInst.value.destroy();     ktChartInst.value = null; }
-  if (ktPieChartInst.value)  { ktPieChartInst.value.destroy();  ktPieChartInst.value = null; }
-  if (ktPieChartInstB.value) { ktPieChartInstB.value.destroy(); ktPieChartInstB.value = null; }
-  cancelResultTableRequest();
-
-  selectedJobId.value = newJobId;
-  selectedJob.value = null;
-  jobLoading.value = true;
-  resultTableFile.value = "";
-  const loaded = await loadJob(newJobId);
-
-  if (!loaded) {
-    selectedJobId.value = null;
-    jobLoading.value = false;
-    return { path: "/" };
-  }
-
-  const requestedTab = to.params?.tab || rememberedResultTab(newJobId);
-  const validTabs = availableTabs.value.map(t => t.key);
-  const targetTab = validTabs.includes(requestedTab) ? requestedTab : "console";
-  activeResultStateJobId = newJobId;
-  if (targetTab.endsWith(".csv")) {
-    await activateCsvTab(targetTab, { updateRoute: false, savePrevious: false });
-  } else {
-    skipNextResultTabWatch();
-    resultTab.value = targetTab;
-    restoreResultViewState(newJobId, targetTab);
-    rememberResultTabSelection(newJobId, targetTab);
-  }
-  if (targetTab === "chart" && selectedJob.value.status === "done") {
-    nextTick(() => buildChart());
-  }
-  if (selectedJob.value.status === "pending" || selectedJob.value.status === "running") {
-    startPoll();
-  }
-  sidebarTab.value = "jobs";
-  jobLoading.value = false;
+  const result = await loadJobRoute(to);
+  if (result !== true) return result;
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -3502,6 +6347,7 @@ const App = {
     let historySearchTimer = null;
     let compareSearchTimer = null;
     let resultTableTimer = null;
+    const isFeedbackRoute = computed(() => router.currentRoute.value.name === "feedback");
 
     // Watchers that need to live at the root level
     watch(resultTab, (v, previousTab) => {
@@ -3512,14 +6358,15 @@ const App = {
       showColumnMenu.value = false;
       if (v?.endsWith(".csv")) loadResultTable();
       if (v === "chart" && selectedJob.value?.status === "done") {
-        nextTick(() => buildChart());
+        scheduleBuildChart();
+      }
+      if (v === "ai" && selectedJob.value?.status === "done") {
+        refreshAiAnalysis({ silent: true });
       }
     });
 
     watch(selectedJob, v => {
-      if (v?.status === "done") nextTick(() => {
-        if (resultTab.value === "chart") buildChart();
-      });
+      if (v?.status === "done" && resultTab.value === "chart") scheduleBuildChart();
     }, { deep: true });
 
     watch(filterProject, () => {
@@ -3569,6 +6416,15 @@ const App = {
       }
     });
 
+    watch([batchBaselineId, batchCandidateIds], () => {
+      if (!batchCompareMode.value || !batchBaselineId.value || !batchCandidateIds.value.length) return;
+      const jobs = [selectedBatchBaseline.value, ...selectedBatchCandidates.value].filter(Boolean);
+      const firstProject = jobs[0]?.project_id || "";
+      compareProjectId.value = jobs.length && jobs.every(job => (job.project_id || "") === firstProject)
+        ? firstProject
+        : "";
+    }, { deep: true });
+
     watch(sidebarWidth, value => localStorage.setItem("tpa-sidebar-width", String(value)));
     watch(sidebarCollapsed, value => localStorage.setItem("tpa-sidebar-collapsed", String(value)));
     watch(sidebarTab, value => localStorage.setItem("tpa-sidebar-tab", value));
@@ -3611,14 +6467,28 @@ const App = {
       visibleColumns.value = valid.length ? valid : [...fields];
     });
 
+    watch([showFeedbackComposer, selectedFeedbackPostId], () => {
+      refreshFeedbackMarkdownEditors();
+    });
+    watch(() => feedbackEditing.value.id, () => {
+      refreshFeedbackMarkdownEditors();
+    });
+    onBeforeUnmount(() => {
+      destroyFeedbackMarkdownEditors();
+    });
+
     // Return everything the root template (index.html) needs
     return {
       // Layout/theme
-      isDark, toggleTheme, sidebarWidth, sidebarCollapsed, appVersion,
+      isDark, toggleTheme, sidebarWidth, sidebarCollapsed, appVersion, isFeedbackRoute,
       toggleSidebar, startSidebarResize,
+      authRequired, authChecked, authInitError, currentUser, isAdmin, loginForm, loginRememberUsername, loginLoading, loginError,
+      loginCaptchaRequired, loginCaptchaImage,
+      retryInitializeApp, submitLogin, refreshLoginCaptcha, logout,
 
       // Sidebar data
       projects,
+      selectedFilterProject, projectOptionLabel,
       historyGroupsTotal, historyGroupsLimit, historyGroupsOffset, historyGroupsLoading,
       historySearch, filterProject, sidebarTab, selectedJobId, selectedJob,
       collapsedGroups, groupedJobs, loadedHistoryJobIds,
@@ -3629,32 +6499,65 @@ const App = {
 
       // Compare
       compareSelection, selectedCompareJobs, compareLabel, compareProjectId,
+      batchCompareMode, batchBaselineId, selectedBatchBaseline, selectedBatchCandidates,
+      batchCandidateIds, batchCompareLabelPrefix, batchCompareLoading,
       compareJobs, compareJobsTotal, compareJobsLimit, compareJobsOffset, compareJobsLoading, compareSearch,
-      toggleCompareSelect, removeCompareSelection, submitCompare,
+      setBatchCompareMode, isCompareJobSelected, compareJobRoleLabel,
+      toggleCompareSelect, removeCompareSelection, removeBatchBaseline, removeBatchCandidate,
+      submitCompare, submitBatchCompare,
       prevComparePage, nextComparePage,
 
       // Modals
-      showNewProject, newProjectName, newProjectDesc,
+      showNewProject, newProjectName, newProjectDesc, newProjectShared,
       showRenameProject, renameProjectName, openRenameModal,
-      confirmRenameProject, deleteProject,
+      confirmRenameProject, deleteProject, shareProject,
       showMoveProject, moveProjectTarget, confirmMoveProject,
       showBulkMoveProject, bulkMoveProjectTarget, confirmBulkMoveProject,
       showRenameJob, renameJobName, confirmRenameJob,
       showDeletedProjects, deletedProjects, loadDeletedProjects,
       isDeletedOver10Days, restoreProject, permanentlyDeleteProject,
+      showFeedbackBoard, showFeedbackComposer, feedbackItems, feedbackTotal, feedbackLoading,
+      feedbackSort, feedbackSortOptions,
+      feedbackSubmitting, feedbackForm, feedbackPostEditorMode, feedbackReplies, feedbackEditing,
+      feedbackMarkdownEditorEnabled, feedbackHasMore,
+      feedbackEmailDiagLoading, feedbackEmailDiagResult, runFeedbackEmailDiagnostics,
+      feedbackEmojiOptions, feedbackReactionOptions, feedbackReactionPickerId, feedbackEmojiPickerTarget,
+      feedbackUserInitial, setFeedbackTextTarget, insertFeedbackEmoji, insertFeedbackSnippet,
+      insertFeedbackList, insertFeedbackTaskList, insertFeedbackQuote, insertFeedbackCodeBlock, insertFeedbackCode,
+      feedbackMention, handleFeedbackMentionInput, handleFeedbackMentionKeydown, selectFeedbackMention,
+      selectedFeedbackPostId, selectedFeedbackMessageId, selectedFeedbackPost, feedbackDetailLoading,
+      feedbackPostTitle, feedbackPostExcerpt, feedbackPostReplyCount, feedbackPostActivity,
+      feedbackEditedText, feedbackReactionSummary, feedbackReactionItem, canEditFeedbackMessage,
+      feedbackMessageHtml,
+      openFeedbackBoard, refreshFeedbackBoard, loadFeedback, setFeedbackSort, setFeedbackFiles, clearFeedbackForm,
+      toggleFeedbackReply, feedbackReplyEditorMode, setFeedbackPostEditorMode,
+      setFeedbackReplyEditorMode, feedbackPostPreviewHtml, feedbackReplyPreviewHtml,
+      selectFeedbackPost, closeFeedbackPost,
+      openFeedbackComposer, closeFeedbackComposer, closeFeedbackBoard, submitFeedback,
+      startFeedbackEdit, cancelFeedbackEdit, saveFeedbackEdit, toggleFeedbackReaction, toggleFeedbackReactionPicker,
+      toggleFeedbackEmojiPicker,
+      deleteFeedbackPost, deleteFeedbackReply,
       showStorageManager, storageSummary, storageSelection, storageJobsWithTrace,
       openStorageManager, toggleStorageSelection, toggleAllStorageSelection,
       deleteSelectedStorageFiles, fmtBytes,
+      showAdminUsage, adminUsageLoading, adminUsageError, adminUsageDays,
+      adminUsage, adminUsageCards, openAdminUsage, loadAdminUsage,
       showTritonCode, tritonCodeContent, tritonCodeFilename,
       tritonCodeEditing, tritonCodeEditContent,
       runCustomTriton, editTritonCode, cancelEditTritonCode,
       customRunStatus, allowCodeExecution,
       showGuide, showErrorModal, errorModalMsg, errorModalTitle,
       copyTritonCode, copyErrorModal,
+      showAiPromptModal, aiAnalysisPrompt, aiPromptForce,
+      openAiPromptModal, closeAiPromptModal, confirmAiPromptModal,
+      showStepReanalysisModal, stepReanalysisLoading, stepReanalysisLabel,
+      stepReanalysisFilterA, stepReanalysisFilterB,
+      openStepReanalysisModal, closeStepReanalysisModal, confirmStepReanalysis,
       toasts, showConfirmModal, confirmModal, resolveConfirm,
+      openActionMenu, toggleActionMenu, closeActionMenu,
 
       // Misc
-      fmtDate, statusIcon, toggleGroup, createProject,
+      fmtDate, fmtDateTime, fmtCount, statusIcon, toggleGroup, createProject,
     };
   },
 };

@@ -1,8 +1,11 @@
 import csv
+import gzip
 import json
 import os
 import shutil
 import sys
+
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -12,8 +15,11 @@ from trace_analyzer import (
     classify_kernel,
     safe_float,
     parse_trace,
+    parse_step_filter,
+    filter_parsed_steps,
     compute_avgs,
     write_avg_csv,
+    write_single,
     write_comparison,
     write_triton_code_file,
 )
@@ -111,6 +117,70 @@ class TestParseTrace:
         result = parse_trace(sample_trace_file_gz)
         assert result["step_durations"][0] == 100.0
 
+    def test_gzip_trace_streams_without_json_load(self, sample_trace_file_gz, monkeypatch):
+        def fail_json_load(*args, **kwargs):
+            raise AssertionError("json.load should not be used for trace parsing")
+
+        monkeypatch.setenv("TRACE_FAST_TRACE_JSON_BYTES", "0")
+        monkeypatch.setattr(json, "load", fail_json_load)
+
+        result = parse_trace(sample_trace_file_gz)
+
+        assert result["step_durations"][0] == 100.0
+
+    def test_small_plain_trace_uses_fast_path(self, sample_trace_file, monkeypatch):
+        import trace_analyzer.core as core
+
+        monkeypatch.setenv("TRACE_FAST_TRACE_JSON_BYTES", "999999")
+
+        def fail_iter_trace_events(_trace_file):
+            raise AssertionError("streaming parser should not be used for small traces")
+
+        monkeypatch.setattr(core, "_iter_trace_events", fail_iter_trace_events)
+
+        result = parse_trace(sample_trace_file)
+
+        assert result["step_durations"][0] == 100.0
+
+    def test_gzip_fast_path_falls_back_when_decompressed_size_exceeds_limit(self, tmp_path, monkeypatch):
+        trace_path = tmp_path / "trace.json.gz"
+        payload = (
+            b'{"traceEvents":['
+            + b" " * 512
+            + b'{"name":"ProfilerStep#0","cat":"user_annotation","ts":0,"dur":1000},'
+            + b'{"name":"gemm_kernel","cat":"kernel","ts":100,"dur":200,"args":{}}'
+            + b"]}"
+        )
+        with gzip.open(trace_path, "wb") as f:
+            f.write(payload)
+
+        monkeypatch.setenv("TRACE_FAST_TRACE_JSON_BYTES", "128")
+
+        result = parse_trace(trace_path)
+
+        assert result["step_durations"][0] == 1.0
+        assert result["step_to_kernels"][0]["gemm_kernel"]["count"] == 1
+
+    def test_streaming_trace_reads_event_stream_once(self, sample_trace_file_gz, sample_trace_data, monkeypatch):
+        import trace_analyzer.core as core
+
+        monkeypatch.setenv("TRACE_FAST_TRACE_JSON_BYTES", "0")
+        events = sample_trace_data["traceEvents"]
+
+        calls = 0
+
+        def fake_iter_trace_events(_trace_file):
+            nonlocal calls
+            calls += 1
+            yield from events
+
+        monkeypatch.setattr(core, "_iter_trace_events", fake_iter_trace_events)
+
+        result = parse_trace(sample_trace_file_gz)
+
+        assert result["step_durations"][0] == 100.0
+        assert calls == 1
+
     def test_tar_gzip_trace(self, sample_trace_file_tar_gz):
         result = parse_trace(sample_trace_file_tar_gz)
         assert result["step_durations"][0] == 100.0
@@ -184,6 +254,24 @@ class TestParseTrace:
 
 
 class TestComputeAvgs:
+    def test_parse_step_filter(self):
+        assert parse_step_filter("0, 2-4，ProfilerStep#6;step_8") == (0, 2, 3, 4, 6, 8)
+
+    def test_filter_parsed_steps_limits_averages(self, sample_trace_file):
+        parsed = parse_trace(sample_trace_file)
+        filtered = filter_parsed_steps(parsed, "2")
+        avgs = compute_avgs(filtered)
+
+        assert avgs["all_steps"] == [2]
+        assert "triton_elemwise_kernel" in avgs["avg_kernels"]
+        assert "triton_matmul_kernel" not in avgs["avg_kernels"]
+
+    def test_filter_parsed_steps_reports_missing_steps(self, sample_trace_file):
+        parsed = parse_trace(sample_trace_file)
+
+        with pytest.raises(ValueError, match="Selected step"):
+            filter_parsed_steps(parsed, "99")
+
     def test_compute_avgs(self, sample_trace_file):
         result = parse_trace(sample_trace_file)
         avgs = compute_avgs(result)
@@ -248,6 +336,92 @@ class TestComputeAvgs:
         avgs = compute_avgs(parse_trace(str(trace_path)))
 
         assert avgs["avg_triton"]["triton_poi_fused_add"]["avg_io_eff"] is None
+
+    def test_triton_metadata_keeps_stable_match_fingerprints(self, tmp_path):
+        trace_path = tmp_path / "trace.json"
+        trace_path.write_text(json.dumps({
+            "traceEvents": [
+                {"name": "ProfilerStep#0", "cat": "user_annotation", "ts": 1000, "dur": 1000},
+                {
+                    "name": "triton_poi_fused_add_46",
+                    "cat": "kernel",
+                    "ts": 1100,
+                    "dur": 100,
+                    "args": {
+                        "kernel kwargs": "M=128, N=256",
+                        "triton output code": "def kernel():\n    return 1\n",
+                    },
+                },
+            ],
+        }))
+
+        avgs = compute_avgs(parse_trace(str(trace_path)))
+        triton = avgs["avg_triton"]["triton_poi_fused_add_46"]
+
+        assert triton["triton_normalized_name"] == "triton_poi_fused_add"
+        assert triton["triton_code_hash"]
+        assert triton["triton_code_hashes"] == [triton["triton_code_hash"]]
+        assert triton["triton_code_signature_hash"]
+        assert triton["triton_code_signature_hashes"] == [triton["triton_code_signature_hash"]]
+        assert triton["triton_tiling_hash"]
+        assert triton["triton_tiling_hashes"] == [triton["triton_tiling_hash"]]
+
+    def test_parse_trace_drops_triton_code_by_default_but_keeps_hashes(self, tmp_path):
+        trace_path = tmp_path / "trace.json"
+        trace_path.write_text(json.dumps({
+            "traceEvents": [
+                {"name": "ProfilerStep#0", "cat": "user_annotation", "ts": 1000, "dur": 1000},
+                {
+                    "name": "triton_poi_fused_add_46",
+                    "cat": "kernel",
+                    "ts": 1100,
+                    "dur": 100,
+                    "args": {"triton output code": "def kernel():\n    return 1\n"},
+                },
+            ],
+        }))
+
+        parsed = parse_trace(str(trace_path))
+        kernel = parsed["step_to_triton"][0][0]
+        avgs = compute_avgs(parsed)
+
+        assert kernel["triton_output_code"] is None
+        assert kernel["triton_code_hash"]
+        assert avgs["avg_triton"]["triton_poi_fused_add_46"]["triton_code_hash"]
+
+    def test_parse_trace_can_keep_triton_code_for_exports(self, tmp_path):
+        trace_path = tmp_path / "trace.json"
+        code = "def kernel():\n    return 1\n"
+        trace_path.write_text(json.dumps({
+            "traceEvents": [
+                {"name": "ProfilerStep#0", "cat": "user_annotation", "ts": 1000, "dur": 1000},
+                {
+                    "name": "triton_poi_fused_add_46",
+                    "cat": "kernel",
+                    "ts": 1100,
+                    "dur": 100,
+                    "args": {"triton output code": code},
+                },
+            ],
+        }))
+
+        parsed = parse_trace(str(trace_path), keep_triton_code=True)
+
+        assert parsed["step_to_triton"][0][0]["triton_output_code"] == code
+
+    def test_parse_trace_reports_progress_counts(self, tmp_path):
+        trace_path = tmp_path / "trace.json"
+        trace_path.write_text(json.dumps({
+            "traceEvents": [
+                {"name": "ProfilerStep#0", "cat": "user_annotation", "ts": 1000, "dur": 1000},
+                {"name": "gemm_cuda_kernel", "cat": "kernel", "ts": 1100, "dur": 100, "args": {}},
+            ],
+        }))
+        progress = []
+
+        parse_trace(str(trace_path), progress_callback=lambda events, records: progress.append((events, records)))
+
+        assert progress[-1] == (2, 1)
 
     def test_collective_kernel_is_excluded_from_compute_duration(self, tmp_path):
         trace_path = tmp_path / "trace.json"
@@ -380,3 +554,230 @@ class TestEndToEnd:
         assert rows[0]["kernel_name"] == "gemm_kernel_a"
         assert rows[0]["family"] == "gemm"
         assert rows[0]["delta_dur_ms"] == "3"
+
+    def test_triton_compare_matches_different_suffixes_by_code_hash(self, temp_output_dir):
+        data_a = {
+            "KERNEL_TYPES": [],
+            "kt_avgs": {"other": (0, 0), "collective": (0, 0)},
+            "avg_kernels": {},
+            "kernel_families": {},
+            "avg_triton": {
+                "triton_poi_fused_add_46": {
+                    "avg_count": 1,
+                    "avg_dur_ms": 10,
+                    "avg_io_gb": 1,
+                    "avg_io_eff": 100,
+                    "triton_code_hash": "abc123",
+                    "triton_normalized_name": "triton_poi_fused_add",
+                },
+            },
+            "avg_aten": {},
+            "avg_cncl": {},
+        }
+        data_b = {
+            "KERNEL_TYPES": [],
+            "kt_avgs": {"other": (0, 0), "collective": (0, 0)},
+            "avg_kernels": {},
+            "kernel_families": {},
+            "avg_triton": {
+                "triton_poi_fused_add_55": {
+                    "avg_count": 1,
+                    "avg_dur_ms": 13,
+                    "avg_io_gb": 1,
+                    "avg_io_eff": 100,
+                    "triton_code_hash": "abc123",
+                    "triton_normalized_name": "triton_poi_fused_add",
+                },
+            },
+            "avg_aten": {},
+            "avg_cncl": {},
+        }
+        args = type("Args", (), {"output_dir": temp_output_dir})
+
+        write_comparison(data_a, data_b, args)
+
+        with open(os.path.join(temp_output_dir, "triton_kernels_cmp.csv")) as f:
+            rows = list(csv.DictReader(f))
+
+        assert len(rows) == 1
+        assert rows[0]["kernel_name"] == "triton_poi_fused_add"
+        assert rows[0]["kernel_name_A"] == "triton_poi_fused_add_46"
+        assert rows[0]["kernel_name_B"] == "triton_poi_fused_add_55"
+        assert rows[0]["match_method"] == "code_hash"
+        assert rows[0]["delta_dur_ms"] == "3"
+
+    def test_triton_compare_matches_by_code_hash_intersection(self, temp_output_dir):
+        data_a = {
+            "KERNEL_TYPES": [],
+            "kt_avgs": {"other": (0, 0), "collective": (0, 0)},
+            "avg_kernels": {},
+            "kernel_families": {},
+            "avg_triton": {
+                "triton_poi_fused_add_46": {
+                    "avg_count": 1,
+                    "avg_dur_ms": 10,
+                    "avg_io_gb": 1,
+                    "avg_io_eff": 100,
+                    "triton_code_hashes": ["a_only", "shared"],
+                    "triton_normalized_name": "triton_poi_fused_add",
+                },
+            },
+            "avg_aten": {},
+            "avg_cncl": {},
+        }
+        data_b = {
+            "KERNEL_TYPES": [],
+            "kt_avgs": {"other": (0, 0), "collective": (0, 0)},
+            "avg_kernels": {},
+            "kernel_families": {},
+            "avg_triton": {
+                "triton_poi_fused_add_55": {
+                    "avg_count": 1,
+                    "avg_dur_ms": 13,
+                    "avg_io_gb": 1,
+                    "avg_io_eff": 100,
+                    "triton_code_hashes": ["b_only", "shared"],
+                    "triton_normalized_name": "triton_poi_fused_add",
+                },
+            },
+            "avg_aten": {},
+            "avg_cncl": {},
+        }
+        args = type("Args", (), {"output_dir": temp_output_dir})
+
+        write_comparison(data_a, data_b, args)
+
+        with open(os.path.join(temp_output_dir, "triton_kernels_cmp.csv")) as f:
+            rows = list(csv.DictReader(f))
+
+        assert len(rows) == 1
+        assert rows[0]["match_method"] == "code_hash"
+        assert rows[0]["kernel_name_A"] == "triton_poi_fused_add_46"
+        assert rows[0]["kernel_name_B"] == "triton_poi_fused_add_55"
+
+    def test_triton_compare_matches_by_code_signature(self, tmp_path, temp_output_dir):
+        trace_a = tmp_path / "trace_a.json"
+        trace_b = tmp_path / "trace_b.json"
+        trace_a.write_text(json.dumps({
+            "traceEvents": [
+                {"name": "ProfilerStep#0", "cat": "user_annotation", "ts": 1000, "dur": 1000},
+                {
+                    "name": "triton_poi_fused_add_46",
+                    "cat": "kernel",
+                    "ts": 1100,
+                    "dur": 10000,
+                    "args": {
+                        "triton output code": "# generated for A\n"
+                                              "def triton_poi_fused_add_46(x):\n"
+                                              "    return x + 1\n",
+                    },
+                },
+            ],
+        }))
+        trace_b.write_text(json.dumps({
+            "traceEvents": [
+                {"name": "ProfilerStep#0", "cat": "user_annotation", "ts": 1000, "dur": 1000},
+                {
+                    "name": "triton_poi_fused_add_55",
+                    "cat": "kernel",
+                    "ts": 1100,
+                    "dur": 13000,
+                    "args": {
+                        "triton output code": "# generated for B\n"
+                                              "def triton_poi_fused_add_55(x):\n"
+                                              "    return x + 1\n",
+                    },
+                },
+            ],
+        }))
+        args = type("Args", (), {"output_dir": temp_output_dir})
+
+        write_comparison(compute_avgs(parse_trace(str(trace_a))), compute_avgs(parse_trace(str(trace_b))), args)
+
+        with open(os.path.join(temp_output_dir, "triton_kernels_cmp.csv")) as f:
+            rows = list(csv.DictReader(f))
+
+        assert len(rows) == 1
+        assert rows[0]["match_method"] == "code_signature"
+        assert rows[0]["kernel_name"] == "triton_poi_fused_add"
+        assert rows[0]["delta_dur_ms"] == "3"
+
+    def test_triton_compare_matches_orderless_tiling_kwargs(self, tmp_path, temp_output_dir):
+        trace_a = tmp_path / "trace_a.json"
+        trace_b = tmp_path / "trace_b.json"
+        trace_a.write_text(json.dumps({
+            "traceEvents": [
+                {"name": "ProfilerStep#0", "cat": "user_annotation", "ts": 1000, "dur": 1000},
+                {
+                    "name": "triton_poi_fused_add_46",
+                    "cat": "kernel",
+                    "ts": 1100,
+                    "dur": 10000,
+                    "args": {"kernel kwargs": "M=128, N=256"},
+                },
+            ],
+        }))
+        trace_b.write_text(json.dumps({
+            "traceEvents": [
+                {"name": "ProfilerStep#0", "cat": "user_annotation", "ts": 1000, "dur": 1000},
+                {
+                    "name": "triton_poi_fused_add_55",
+                    "cat": "kernel",
+                    "ts": 1100,
+                    "dur": 13000,
+                    "args": {"kernel kwargs": "N=256,M=128"},
+                },
+            ],
+        }))
+        args = type("Args", (), {"output_dir": temp_output_dir})
+
+        write_comparison(compute_avgs(parse_trace(str(trace_a))), compute_avgs(parse_trace(str(trace_b))), args)
+
+        with open(os.path.join(temp_output_dir, "triton_kernels_cmp.csv")) as f:
+            rows = list(csv.DictReader(f))
+
+        assert len(rows) == 1
+        assert rows[0]["match_method"] == "normalized_name_tiling"
+        assert rows[0]["kernel_name"] == "triton_poi_fused_add"
+
+    def test_single_csv_outputs_do_not_include_percentage_columns(self, temp_output_dir):
+        data = {
+            "all_steps": [],
+            "step_to_triton": {},
+            "avg_kernels": {
+                "gemm_kernel": {"avg_count": 10, "avg_dur_ms": 20},
+            },
+            "kernel_families": {"gemm_kernel": "gemm"},
+            "avg_triton": {
+                "triton_poi_kernel": {
+                    "avg_count": 5,
+                    "avg_dur_ms": 3,
+                    "avg_io_gb": 1,
+                    "avg_io_eff": 9,
+                },
+            },
+            "avg_aten": {
+                "aten::mm": {"avg_count": 2, "avg_dur_ms": 4},
+            },
+            "avg_cncl": {},
+            "KERNEL_TYPES": ["gemm"],
+            "kt_avgs": {"gemm": (10, 20), "other": (0, 0), "collective": (0, 0)},
+        }
+        args = type("Args", (), {
+            "output_dir": temp_output_dir,
+            "save_triton_csv": False,
+            "save_triton_code": False,
+        })
+
+        write_single(data, args)
+
+        for name in [
+            "all_kernels_avg.csv",
+            "triton_kernels_avg.csv",
+            "aten_ops_avg.csv",
+            "kernel_types_avg.csv",
+            "cncl_ops_avg.csv",
+        ]:
+            with open(os.path.join(temp_output_dir, name)) as f:
+                fields = next(csv.reader(f))
+            assert not any("pct" in field.lower() or "percent" in field.lower() for field in fields)

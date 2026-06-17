@@ -4,13 +4,15 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>torch profiler analyzer</title>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.2.86" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.css" />
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
   <script src="https://unpkg.com/vue-router@4/dist/vue-router.global.prod.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-  <link rel="stylesheet" href="/static/style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js"></script>
+  <link rel="stylesheet" href="/static/style.css?v=0.2.86" />
   <script>
     // Apply saved theme or system preference before page paint to avoid flash
     (function() {
@@ -26,68 +28,141 @@
 </head>
 <body>
   <div id="app">
+    <div v-if="authInitError" class="auth-page">
+      <section class="auth-brand-panel">
+        <div class="auth-chip-board" aria-hidden="true">
+          <div class="auth-chip-core">MLU</div>
+          <span class="trace-pin pin-a"></span>
+          <span class="trace-pin pin-b"></span>
+          <span class="trace-pin pin-c"></span>
+          <span class="trace-pin pin-d"></span>
+        </div>
+        <div class="auth-brand-mark">
+          <div class="auth-cambricon-logo">Cambricon</div>
+          <div class="auth-cambricon-cn">寒　武　纪</div>
+        </div>
+      </section>
+      <section class="auth-form-panel">
+        <div class="auth-form-card">
+          <div class="auth-product-lockup">
+            <span class="auth-product-eyebrow">Performance Workbench</span>
+            <div class="auth-product-name">Torch Profiler Analyzer</div>
+          </div>
+          <h1 class="auth-heading">服务暂时不可用</h1>
+          <div class="auth-error">{{ authInitError }}</div>
+          <button class="auth-submit" type="button" @click="retryInitializeApp">重试初始化</button>
+        </div>
+      </section>
+    </div>
+
+    <div v-else-if="!authChecked" class="auth-page">
+      <section class="auth-brand-panel">
+        <div class="auth-chip-board" aria-hidden="true">
+          <div class="auth-chip-core">MLU</div>
+          <span class="trace-pin pin-a"></span>
+          <span class="trace-pin pin-b"></span>
+          <span class="trace-pin pin-c"></span>
+          <span class="trace-pin pin-d"></span>
+        </div>
+        <div class="auth-brand-mark">
+          <div class="auth-cambricon-logo">Cambricon</div>
+          <div class="auth-cambricon-cn">寒　武　纪</div>
+        </div>
+      </section>
+      <section class="auth-form-panel">
+        <div class="auth-form-card">
+          <div class="auth-product-lockup">
+            <span class="auth-product-eyebrow">Performance Workbench</span>
+            <div class="auth-product-name">Torch Profiler Analyzer</div>
+          </div>
+          <div class="auth-subtitle">正在初始化...</div>
+        </div>
+      </section>
+    </div>
+
+    <div v-else-if="authRequired && !currentUser" class="auth-page">
+      <section class="auth-brand-panel">
+        <div class="auth-chip-board" aria-hidden="true">
+          <div class="auth-chip-core">MLU</div>
+          <span class="trace-pin pin-a"></span>
+          <span class="trace-pin pin-b"></span>
+          <span class="trace-pin pin-c"></span>
+          <span class="trace-pin pin-d"></span>
+        </div>
+        <div class="auth-brand-mark">
+          <div class="auth-cambricon-logo">Cambricon</div>
+          <div class="auth-cambricon-cn">寒　武　纪</div>
+        </div>
+      </section>
+      <section class="auth-form-panel">
+        <form class="auth-form-card" method="post" action="/api/login" autocomplete="on" @submit.prevent="submitLogin">
+          <div class="auth-product-lockup">
+            <span class="auth-product-eyebrow">Performance Workbench</span>
+            <div class="auth-product-name">Torch Profiler Analyzer</div>
+          </div>
+          <h1 class="auth-heading">登录工作台</h1>
+          <label class="auth-field" for="ldap-username">
+            <span class="auth-field-label">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="7" r="4"/></svg>
+              用户名
+            </span>
+            <input id="ldap-username" name="username" v-model="loginForm.username" class="auth-input" placeholder="请输入用户名" autocomplete="username" autofocus />
+          </label>
+          <label class="auth-field" for="ldap-password">
+            <span class="auth-field-label">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+              密码
+            </span>
+            <input id="ldap-password" name="password" v-model="loginForm.password" class="auth-input" type="password" placeholder="请输入密码" autocomplete="current-password" />
+          </label>
+          <label v-if="loginCaptchaRequired" class="auth-field" for="login-captcha">
+            <span class="auth-field-label">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 4v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V7l7-4z"/><path d="M9 12l2 2 4-5"/></svg>
+              验证码
+            </span>
+            <div class="auth-captcha-row">
+              <input id="login-captcha" name="captcha" v-model="loginForm.captcha" class="auth-input auth-captcha-input" placeholder="请输入验证码" autocomplete="off" maxlength="8" />
+              <button class="auth-captcha-image" type="button" @click="refreshLoginCaptcha" aria-label="刷新验证码" title="刷新验证码">
+                <img v-if="loginCaptchaImage" :src="loginCaptchaImage" alt="验证码" />
+                <span v-else>刷新</span>
+              </button>
+            </div>
+          </label>
+          <label class="auth-remember-row">
+            <input type="checkbox" v-model="loginRememberUsername" />
+            <span>记住用户名</span>
+          </label>
+          <div v-if="loginError" class="auth-error">{{ loginError }}</div>
+          <button class="auth-submit" type="submit" :disabled="loginLoading">
+            {{ loginLoading ? '登录中...' : '登录' }}
+          </button>
+        </form>
+      </section>
+    </div>
+
     <!-- ── Header ── -->
-    <header class="header">
+    <header v-if="authChecked && (!authRequired || currentUser)" class="header">
       <div class="header-brand" @click="$router.push('/')" style="cursor:pointer" title="返回上传页面">
-        <svg class="header-logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-          <defs>
-            <linearGradient id="lgBg" x1="0%" y1="0%" x2="0%" y2="100%">
-              <stop offset="0%" stop-color="#1e1b4b"/>
-              <stop offset="100%" stop-color="#0f172a"/>
-            </linearGradient>
-            <linearGradient id="lgHandle" x1="0%" y1="0%" x2="100%" y2="0%">
-              <stop offset="0%" stop-color="#475569"/>
-              <stop offset="50%" stop-color="#64748b"/>
-              <stop offset="100%" stop-color="#334155"/>
-            </linearGradient>
-            <linearGradient id="lgFlame1" x1="0%" y1="100%" x2="0%" y2="0%">
-              <stop offset="0%" stop-color="#f97316"/>
-              <stop offset="100%" stop-color="#fb923c"/>
-            </linearGradient>
-            <linearGradient id="lgFlame2" x1="0%" y1="100%" x2="0%" y2="0%">
-              <stop offset="0%" stop-color="#f97316"/>
-              <stop offset="60%" stop-color="#fbbf24"/>
-              <stop offset="100%" stop-color="#fde047"/>
-            </linearGradient>
-            <linearGradient id="lgFlame3" x1="0%" y1="100%" x2="0%" y2="0%">
-              <stop offset="0%" stop-color="#ef4444"/>
-              <stop offset="50%" stop-color="#f97316"/>
-              <stop offset="100%" stop-color="#fbbf24"/>
-            </linearGradient>
-            <linearGradient id="lgFlame4" x1="0%" y1="100%" x2="0%" y2="0%">
-              <stop offset="0%" stop-color="#dc2626"/>
-              <stop offset="40%" stop-color="#ef4444"/>
-              <stop offset="100%" stop-color="#fbbf24"/>
-            </linearGradient>
-            <filter id="lgFlameGlow">
-              <feGaussianBlur stdDeviation="1.2" result="blur"/>
-              <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
-            </filter>
-          </defs>
-          <rect width="32" height="32" rx="8" fill="url(#lgBg)"/>
-          <!-- torch handle -->
-          <rect x="13" y="25" width="6" height="5" rx="1.5" fill="url(#lgHandle)"/>
-          <rect x="11" y="27" width="10" height="3" rx="1.5" fill="#334155"/>
-          <!-- flame as performance bars -->
-          <!-- bar 1 (left, shortest) -->
-          <rect x="6" y="17" width="5" height="9" rx="2" fill="url(#lgFlame1)" opacity=".85"/>
-          <!-- bar 2 -->
-          <rect x="13.5" y="10" width="5" height="16" rx="2" fill="url(#lgFlame2)" filter="url(#lgFlameGlow)"/>
-          <!-- bar 3 (tallest, center) -->
-          <rect x="21" y="5" width="5" height="21" rx="2" fill="url(#lgFlame3)" filter="url(#lgFlameGlow)"/>
-          <!-- highlight dot at flame tip -->
-          <circle cx="23.5" cy="5" r="2" fill="#fde047" opacity=".95"/>
-          <circle cx="15.5" cy="10" r="1.5" fill="#fde047" opacity=".7"/>
-          <circle cx="8.5" cy="17" r="1.2" fill="#fbbf24" opacity=".7"/>
-        </svg>
+        <img class="header-logo" src="/static/favicon.svg?v=0.2.86" alt="" />
         <span class="header-title">Torch Profiler Analyzer</span>
         <span class="header-version">v{{ appVersion }}</span>
       </div>
       <div class="header-actions">
-        <button class="btn btn-sm btn-outline" @click="openStorageManager">存储</button>
-        <button class="btn btn-sm btn-outline" @click="showGuide=true">使用指南</button>
-        <button class="btn btn-sm btn-outline" @click="showDeletedProjects=true; loadDeletedProjects()">找回项目</button>
+        <span v-if="authRequired && currentUser" class="header-user">{{ currentUser.display_name || currentUser.username }}</span>
         <button class="btn btn-sm btn-primary" @click="showNewProject=true">+ 新建项目</button>
+        <button class="btn btn-sm btn-outline" @click="$router.push('/feedback')">灵感社区</button>
+        <div class="action-menu-wrap header-more-menu" @click.stop>
+          <button class="action-icon-btn" type="button" title="更多入口"
+                  aria-label="更多入口"
+                  @click="toggleActionMenu('header')">...</button>
+          <div v-if="openActionMenu==='header'" class="action-menu">
+            <button v-if="isAdmin || !authRequired" type="button" @click="openAdminUsage(); closeActionMenu()">使用统计</button>
+            <button type="button" @click="openStorageManager(); closeActionMenu()">存储</button>
+            <button type="button" @click="showGuide=true; closeActionMenu()">使用指南</button>
+            <button type="button" @click="showDeletedProjects=true; loadDeletedProjects(); closeActionMenu()">找回项目</button>
+            <button v-if="authRequired" type="button" @click="logout(); closeActionMenu()">退出登录</button>
+          </div>
+        </div>
         <button class="theme-toggle" @click="toggleTheme" :title="isDark ? '切换到浅色模式' : '切换到深色模式'">
           <svg class="icon-sun" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
           <svg class="icon-moon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
@@ -95,7 +170,7 @@
       </div>
     </header>
 
-    <div class="layout">
+    <div v-if="authChecked && (!authRequired || currentUser) && !isFeedbackRoute" class="layout">
       <!-- ── Sidebar ── -->
       <aside class="sidebar"
              :class="{ 'sidebar-collapsed': sidebarCollapsed }"
@@ -116,20 +191,27 @@
             <select v-model="filterProject" class="input input-sm w-full">
               <option value="">全部项目</option>
               <option value="__none__">未分组</option>
-              <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
+              <option v-for="p in projects" :key="p.id" :value="p.id">{{ projectOptionLabel(p) }}</option>
             </select>
             <input v-model="historySearch" class="input input-sm mt-1" placeholder="搜索任务、文件或项目..." />
-            <div v-if="filterProject && filterProject !== '__none__'" class="project-actions">
-              <button class="btn btn-xs btn-outline mt-1 w-full" @click="openRenameModal(projects.find(p => p.id === filterProject))">重命名</button>
-              <button class="btn btn-xs btn-danger mt-1 w-full" @click="deleteProject(filterProject)">删除项目</button>
+            <div v-if="selectedFilterProject" class="project-actions">
+              <div class="project-action-meta">
+                <span :class="['project-scope-badge', selectedFilterProject.is_public ? 'shared' : 'personal']">
+                  {{ selectedFilterProject.is_public ? '共享项目' : '个人项目' }}
+                </span>
+              </div>
+              <template v-if="selectedFilterProject.is_owner">
+                <button class="btn btn-xs btn-outline mt-1 w-full" @click="openRenameModal(selectedFilterProject)">重命名</button>
+                <button v-if="!selectedFilterProject.is_public" class="btn btn-xs btn-outline mt-1 w-full" @click="shareProject(selectedFilterProject)">转为共享</button>
+                <button class="btn btn-xs btn-danger mt-1 w-full" @click="deleteProject(filterProject)">删除项目</button>
+              </template>
             </div>
           </div>
-          <div class="bulk-toolbar">
+          <div v-if="historyGroupsTotal > 0 || historyBulkMode" class="bulk-toolbar">
             <button :class="['btn', 'btn-xs', historyBulkMode ? 'btn-primary' : 'btn-outline']" @click="toggleHistoryBulkMode">
               {{ historyBulkMode ? '退出多选' : '多选' }}
             </button>
             <template v-if="historyBulkMode">
-              <button class="btn btn-xs btn-outline" @click="toggleSelectLoadedHistoryJobs" :disabled="loadedHistoryJobIds.length===0">选择已加载</button>
               <button class="btn btn-xs btn-outline" @click="clearHistorySelection" :disabled="historySelection.length===0">清空</button>
             </template>
           </div>
@@ -159,6 +241,7 @@
                   <input v-if="historyBulkMode" type="checkbox" :checked="historySelection.includes(job.id)" readonly />
                   <span class="job-status" :class="'status-'+job.status">{{ statusIcon(job.status) }}</span>
                   <span class="job-label">{{ job.label || job.id.slice(0,8) }}</span>
+                  <span v-if="job.is_pinned" class="job-pin-badge">置顶</span>
                   <span class="job-mode-badge" :class="'mode-'+job.mode">{{ job.mode==='compare'?'对比':'单文件' }}</span>
                 </div>
                 <div class="job-item-meta">{{ fmtDate(job.created_at) }}</div>
@@ -188,26 +271,44 @@
             <select v-model="filterProject" class="input input-sm w-full">
               <option value="">全部项目</option>
               <option value="__none__">未分组</option>
-              <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
+              <option v-for="p in projects" :key="p.id" :value="p.id">{{ projectOptionLabel(p) }}</option>
             </select>
             <input v-model="compareSearch" class="input input-sm mt-1" placeholder="搜索任务、文件或项目..." />
           </div>
-          <p class="tip-text">选择两个单文件历史记录进行对比</p>
-          <div v-if="selectedCompareJobs.length" class="selected-compare-list">
+          <div class="upload-mode-toggle compare-mode-toggle">
+            <button :class="['mode-toggle-btn', !batchCompareMode?'active':'']"
+                    type="button" @click="setBatchCompareMode(false)">两两对比</button>
+            <button :class="['mode-toggle-btn', batchCompareMode?'active':'']"
+                    type="button" @click="setBatchCompareMode(true)">批量基线</button>
+          </div>
+          <p class="tip-text">{{ batchCompareMode ? '先选择一个基线，再选择多个候选进行批量对比' : '选择两个单文件历史记录进行对比' }}</p>
+          <div v-if="!batchCompareMode && selectedCompareJobs.length" class="selected-compare-list">
             <div v-for="job in selectedCompareJobs" :key="job.id" class="selected-compare-item">
               <span>{{ job.label || job.id.slice(0,8) }}</span>
               <button class="selected-compare-remove" @click.stop="removeCompareSelection(job.id)" title="移除">✕</button>
             </div>
           </div>
+          <div v-if="batchCompareMode && (selectedBatchBaseline || selectedBatchCandidates.length)" class="selected-compare-list">
+            <div v-if="selectedBatchBaseline" class="selected-compare-item baseline">
+              <span><b>基线</b> {{ selectedBatchBaseline.label || selectedBatchBaseline.id.slice(0,8) }}</span>
+              <button class="selected-compare-remove" @click.stop="removeBatchBaseline" title="移除">✕</button>
+            </div>
+            <div v-for="job in selectedBatchCandidates" :key="job.id" class="selected-compare-item">
+              <span><b>候选</b> {{ job.label || job.id.slice(0,8) }}</span>
+              <button class="selected-compare-remove" @click.stop="removeBatchCandidate(job.id)" title="移除">✕</button>
+            </div>
+          </div>
           <div v-if="compareJobsLoading" class="sidebar-loading">加载中...</div>
           <div v-for="job in compareJobs" :key="job.id"
-               :class="['job-item', compareSelection.includes(job.id)?'compare-selected':'',
+               :class="['job-item', isCompareJobSelected(job)?'compare-selected':'',
+                        batchCompareMode && batchBaselineId===job.id ? 'compare-baseline' : '',
                         !job.file_a_exists ? 'file-deleted' : '']"
                @click="toggleCompareSelect(job)">
             <div class="job-item-top">
-              <input type="checkbox" :checked="compareSelection.includes(job.id)"
+              <input type="checkbox" :checked="isCompareJobSelected(job)"
                      :disabled="!job.file_a_exists" class="mr-1" readonly />
               <span class="job-label">{{ job.label || job.id.slice(0,8) }}</span>
+              <span v-if="compareJobRoleLabel(job)" class="compare-role-badge">{{ compareJobRoleLabel(job) }}</span>
             </div>
             <div class="job-item-meta">
               <span v-if="job.project_id" class="tag-project">
@@ -224,7 +325,7 @@
             <button class="btn btn-xs btn-outline" @click="nextComparePage" :disabled="compareJobsOffset + compareJobsLimit >= compareJobsTotal">下一页</button>
           </div>
 
-          <div v-if="compareSelection.length===2" class="compare-form">
+          <div v-if="!batchCompareMode && compareSelection.length===2" class="compare-form">
             <div class="form-row">
               <label>别名</label>
               <input v-model="compareLabel" class="input" placeholder="可选" />
@@ -233,10 +334,29 @@
               <label>项目</label>
               <select v-model="compareProjectId" class="input">
                 <option value="">未分组</option>
-                <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
+                <option v-for="p in projects" :key="p.id" :value="p.id">{{ projectOptionLabel(p) }}</option>
               </select>
             </div>
             <button class="btn btn-primary w-full mt-2" @click="submitCompare">发起对比</button>
+          </div>
+          <div v-else-if="batchCompareMode && selectedBatchBaseline && batchCandidateIds.length" class="compare-form">
+            <div class="form-row">
+              <label>别名前缀</label>
+              <input v-model="batchCompareLabelPrefix" class="input" placeholder="可选，用于标记本批次" />
+            </div>
+            <div class="form-row">
+              <label>项目</label>
+              <select v-model="compareProjectId" class="input">
+                <option value="">未分组</option>
+                <option v-for="p in projects" :key="p.id" :value="p.id">{{ projectOptionLabel(p) }}</option>
+              </select>
+            </div>
+            <button class="btn btn-primary w-full mt-2" @click="submitBatchCompare" :disabled="batchCompareLoading">
+              {{ batchCompareLoading ? '创建中...' : '创建 ' + batchCandidateIds.length + ' 个对比' }}
+            </button>
+          </div>
+          <div v-else-if="batchCompareMode" class="tip-text mt-2">
+            {{ selectedBatchBaseline ? '已选 ' + batchCandidateIds.length + ' 个候选' : '请选择基线任务' }}
           </div>
           <div v-else class="tip-text mt-2">已选 {{ compareSelection.length }}/2</div>
         </div>
@@ -257,7 +377,7 @@
         <div class="modal-title">移动到项目</div>
         <select v-model="moveProjectTarget" class="input w-full">
           <option value="">未分组</option>
-          <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
+          <option v-for="p in projects" :key="p.id" :value="p.id">{{ projectOptionLabel(p) }}</option>
         </select>
         <div class="modal-actions">
           <button class="btn btn-outline" @click="showMoveProject=false">取消</button>
@@ -272,7 +392,7 @@
         <div class="modal-title">批量移动到项目</div>
         <select v-model="bulkMoveProjectTarget" class="input w-full">
           <option value="">未分组</option>
-          <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
+          <option v-for="p in projects" :key="p.id" :value="p.id">{{ projectOptionLabel(p) }}</option>
         </select>
         <div class="modal-actions">
           <button class="btn btn-outline" @click="showBulkMoveProject=false">取消</button>
@@ -299,6 +419,10 @@
         <div class="modal-title">新建项目</div>
         <input v-model="newProjectName" class="input w-full" placeholder="项目名称" />
         <input v-model="newProjectDesc" class="input w-full mt-2" placeholder="描述（可选）" />
+        <label class="check-row mt-2">
+          <input type="checkbox" v-model="newProjectShared" />
+          <span>共享项目</span>
+        </label>
         <div class="modal-actions">
           <button class="btn btn-outline" @click="showNewProject=false">取消</button>
           <button class="btn btn-primary" @click="createProject">创建</button>
@@ -340,6 +464,581 @@
         </div>
         <div class="modal-actions">
           <button class="btn btn-outline" @click="showDeletedProjects=false">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Feedback board page ── -->
+    <div v-if="authChecked && (!authRequired || currentUser) && isFeedbackRoute" class="layout feedback-page-layout">
+      <main class="main feedback-page-main">
+      <section v-if="showFeedbackBoard" class="feedback-page-card">
+        <div class="modal-title feedback-title">
+          <span>{{ selectedFeedbackPost ? '帖子详情' : '改进意见帖子' }}</span>
+          <div class="feedback-title-actions">
+            <button v-if="selectedFeedbackPost" class="btn btn-xs btn-outline" @click="closeFeedbackPost()">返回列表</button>
+            <button v-if="!selectedFeedbackPost" class="btn btn-xs btn-primary" @click="openFeedbackComposer()">发帖</button>
+            <button
+              v-if="isAdmin || !authRequired"
+              class="btn btn-xs btn-outline"
+              :disabled="feedbackEmailDiagLoading"
+              @click="runFeedbackEmailDiagnostics()"
+            >
+              {{ feedbackEmailDiagLoading ? '诊断中...' : '邮件诊断' }}
+            </button>
+            <button
+              class="btn btn-xs btn-outline"
+              :disabled="feedbackLoading || feedbackDetailLoading"
+              @click="refreshFeedbackBoard()"
+            >
+              {{ (feedbackLoading || feedbackDetailLoading) ? '刷新中...' : '刷新' }}
+            </button>
+          </div>
+        </div>
+
+        <div v-if="feedbackEmailDiagResult" :class="['feedback-email-diag', feedbackEmailDiagResult.ok ? 'ok' : 'fail']">
+          <div class="feedback-email-diag-head">
+            <strong>{{ feedbackEmailDiagResult.ok ? '邮件环境正常' : '邮件环境异常' }}</strong>
+            <span v-if="feedbackEmailDiagResult.transport">通道：{{ feedbackEmailDiagResult.transport }}</span>
+            <span v-if="feedbackEmailDiagResult.smtp_host">SMTP：{{ feedbackEmailDiagResult.smtp_host }}:{{ feedbackEmailDiagResult.smtp_port }}</span>
+          </div>
+          <div class="feedback-email-diag-checks">
+            <div
+              v-for="check in (feedbackEmailDiagResult.checks || [])"
+              :key="check.label"
+              :class="['feedback-email-diag-check', check.status]"
+            >
+              <span class="diag-status">{{ check.status === 'ok' ? 'OK' : (check.status === 'warn' ? 'WARN' : 'FAIL') }}</span>
+              <strong>{{ check.label }}</strong>
+              <span>{{ check.detail }}</span>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="!selectedFeedbackPost" class="feedback-board-shell feedback-board-list-mode">
+          <section class="feedback-thread-list feedback-thread-list-full">
+            <div class="feedback-list-toolbar">
+              <span class="feedback-list-toolbar-label">排序</span>
+              <div class="feedback-sort-tabs">
+                <button
+                  v-for="option in feedbackSortOptions"
+                  :key="option.key"
+                  type="button"
+                  :class="['feedback-sort-tab', feedbackSort===option.key ? 'active' : '']"
+                  :disabled="feedbackLoading"
+                  @click="setFeedbackSort(option.key)"
+                >
+                  {{ option.label }}
+                </button>
+              </div>
+            </div>
+            <div class="feedback-list feedback-post-list">
+              <div v-if="feedbackLoading && !feedbackItems.length" class="empty-tip">加载中...</div>
+              <div v-else-if="!feedbackItems.length" class="empty-tip">暂无帖子</div>
+              <div
+                v-for="item in feedbackItems"
+                :key="item.id"
+                class="feedback-post-card"
+                role="button"
+                tabindex="0"
+                @click="$router.push({ name: 'feedback', params: { postId: item.id } })"
+                @keyup.enter="$router.push({ name: 'feedback', params: { postId: item.id } })"
+              >
+                <div class="feedback-issue-icon">●</div>
+                <div class="feedback-issue-main">
+                  <div class="feedback-post-card-head">
+                    <div class="feedback-post-mainline">
+                      <strong>{{ feedbackPostTitle(item) }}</strong>
+                      <span v-if="item.attachments.length" class="feedback-issue-label">有图片</span>
+                      <span v-if="item.edited_at" class="feedback-issue-label subtle">已编辑</span>
+                    </div>
+                    <div class="feedback-post-card-stats">
+                      <span class="feedback-reply-pill">{{ feedbackPostReplyCount(item) }} 条交流</span>
+                      <button v-if="isAdmin" type="button" class="btn btn-xs btn-danger feedback-admin-delete" @click.stop="deleteFeedbackPost(item)">删除</button>
+                    </div>
+                  </div>
+                  <div class="feedback-post-excerpt">{{ feedbackPostExcerpt(item) }}</div>
+                  <div class="feedback-post-meta">
+                    <span class="feedback-avatar feedback-avatar-sm">{{ feedbackUserInitial(item.user_display) }}</span>
+                    <span>{{ item.user_display }}</span>
+                    <span>发布于 {{ fmtDate(item.created_at) }}</span>
+                    <span>最近更新 {{ fmtDate(feedbackPostActivity(item)) }}</span>
+                    <span v-if="feedbackReactionSummary(item).length" class="feedback-reaction-mini">
+                      <span v-for="reaction in feedbackReactionSummary(item).slice(0, 3)" :key="reaction.emoji">{{ reaction.emoji }} {{ reaction.count }}</span>
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <button v-if="feedbackHasMore" class="btn btn-sm btn-outline w-full" :disabled="feedbackLoading" @click="loadFeedback()">
+                {{ feedbackLoading ? '加载中...' : '加载更多' }}
+              </button>
+            </div>
+          </section>
+        </div>
+
+        <section v-else class="feedback-thread-detail feedback-thread-detail-full">
+          <div class="feedback-detail-head">
+            <div class="feedback-detail-title">
+              <span class="feedback-avatar">{{ feedbackUserInitial(selectedFeedbackPost.user_display) }}</span>
+              <div>
+                <h3>{{ feedbackPostTitle(selectedFeedbackPost) }}</h3>
+                <div class="feedback-post-meta">
+                  <span>{{ selectedFeedbackPost.user_display }}</span>
+                  <span>发布于 {{ fmtDate(selectedFeedbackPost.created_at) }}</span>
+                  <span v-if="feedbackPostReplyCount(selectedFeedbackPost)">最近 {{ fmtDate(feedbackPostActivity(selectedFeedbackPost)) }}</span>
+                </div>
+              </div>
+            </div>
+            <div v-if="canEditFeedbackMessage(selectedFeedbackPost) || isAdmin" class="feedback-detail-actions">
+              <button v-if="canEditFeedbackMessage(selectedFeedbackPost)" type="button" class="btn btn-xs btn-outline" @click="startFeedbackEdit(selectedFeedbackPost)">编辑</button>
+              <button v-if="isAdmin" type="button" class="btn btn-xs btn-danger" @click="deleteFeedbackPost(selectedFeedbackPost)">删除帖子</button>
+            </div>
+          </div>
+
+          <div class="feedback-detail-scroll">
+            <article
+              :id="'feedback-message-' + selectedFeedbackPost.id"
+              :class="['feedback-card feedback-original-post', selectedFeedbackMessageId===selectedFeedbackPost.id ? 'feedback-message-target' : '']"
+            >
+              <div v-if="feedbackEditing.id===selectedFeedbackPost.id" class="feedback-edit-box">
+                <div class="feedback-mention-host feedback-easymde-host feedback-edit-editor-host" @click.stop>
+                  <textarea
+                    :id="'feedback-edit-' + selectedFeedbackPost.id"
+                    v-model="feedbackEditing.body"
+                    class="feedback-textarea feedback-edit-textarea"
+                    maxlength="2000"
+                    @input="handleFeedbackMentionInput($event, 'edit:' + selectedFeedbackPost.id)"
+                    @keydown="handleFeedbackMentionKeydown($event, 'edit:' + selectedFeedbackPost.id)"
+                    @focus="setFeedbackTextTarget($event, 'edit:' + selectedFeedbackPost.id)"
+                    @click="setFeedbackTextTarget($event, 'edit:' + selectedFeedbackPost.id)"
+                  ></textarea>
+                  <div v-if="feedbackMention.visible && feedbackMention.target===('edit:' + selectedFeedbackPost.id)" class="mention-candidate-box">
+                    <div v-if="feedbackMention.loading" class="mention-candidate-empty">搜索中...</div>
+                    <div v-else-if="!feedbackMention.candidates.length" class="mention-candidate-empty">无匹配人员</div>
+                    <button
+                      v-for="(candidate, index) in feedbackMention.candidates"
+                      :key="candidate.username"
+                      type="button"
+                      :class="['mention-candidate-item', index===feedbackMention.activeIndex ? 'active' : '']"
+                      @mousedown.prevent="selectFeedbackMention(candidate, 'edit:' + selectedFeedbackPost.id)"
+                    >
+                      <span class="mention-candidate-main">{{ candidate.display_name || candidate.username }}</span>
+                      <span class="mention-candidate-meta">@{{ candidate.username }} · {{ candidate.email }}</span>
+                    </button>
+                  </div>
+                </div>
+                <div class="feedback-edit-actions">
+                  <button class="btn btn-xs btn-outline" :disabled="feedbackEditing.saving" @click="cancelFeedbackEdit()">取消</button>
+                  <button class="btn btn-xs btn-primary" :disabled="feedbackEditing.saving" @click="saveFeedbackEdit(selectedFeedbackPost)">
+                    {{ feedbackEditing.saving ? '保存中...' : '保存编辑' }}
+                  </button>
+                </div>
+              </div>
+              <template v-else>
+                <div v-if="selectedFeedbackPost.body" class="feedback-body feedback-message-markdown markdown-body" v-html="feedbackMessageHtml(selectedFeedbackPost)"></div>
+                <div class="feedback-card-foot">
+                  <span v-if="feedbackEditedText(selectedFeedbackPost)" class="feedback-edited">{{ feedbackEditedText(selectedFeedbackPost) }} · {{ fmtDate(selectedFeedbackPost.edited_at) }}</span>
+                </div>
+              </template>
+              <div v-if="selectedFeedbackPost.attachments.length" class="feedback-image-grid">
+                <a v-for="img in selectedFeedbackPost.attachments" :key="img.id" :href="img.url" target="_blank" rel="noopener" class="feedback-image">
+                  <img :src="img.url" :alt="img.filename || 'feedback image'" />
+                </a>
+              </div>
+              <div v-if="feedbackReactionSummary(selectedFeedbackPost).length" class="feedback-reaction-bar feedback-github-reactions">
+                <button
+                  v-for="reaction in feedbackReactionSummary(selectedFeedbackPost)"
+                  :key="reaction.emoji"
+                  type="button"
+                  :class="['feedback-reaction-btn feedback-github-reaction-pill', reaction.reacted ? 'active' : '']"
+                  @click="toggleFeedbackReaction(selectedFeedbackPost, reaction.emoji)"
+                >
+                  <span>{{ reaction.emoji }}</span>
+                  <b>{{ reaction.count }}</b>
+                </button>
+              </div>
+            </article>
+
+            <div class="feedback-conversation-title">
+              <span>帖子交流</span>
+              <span>{{ feedbackPostReplyCount(selectedFeedbackPost) }} 条</span>
+            </div>
+
+            <div v-if="feedbackDetailLoading" class="empty-tip">刷新帖子中...</div>
+            <div v-else-if="!selectedFeedbackPost.replies.length" class="empty-tip">还没有交流，来补充第一条</div>
+            <div v-else class="feedback-replies feedback-thread-replies">
+              <div
+                v-for="reply in selectedFeedbackPost.replies"
+                :key="reply.id"
+                :id="'feedback-message-' + reply.id"
+                :class="['feedback-reply feedback-github-message', selectedFeedbackMessageId===reply.id ? 'feedback-message-target' : '']"
+              >
+                <span class="feedback-avatar feedback-comment-avatar feedback-message-avatar">{{ feedbackUserInitial(reply.user_display) }}</span>
+                <article class="feedback-message-card">
+                  <div class="feedback-message-card-head">
+                    <div class="feedback-message-author-line">
+                      <strong>{{ reply.user_display }}</strong>
+                      <span>{{ fmtDate(reply.created_at) }}</span>
+                      <span v-if="feedbackEditedText(reply)" class="feedback-edited">{{ feedbackEditedText(reply) }}</span>
+                    </div>
+                    <div class="feedback-message-head-actions">
+                      <span class="feedback-role-pill">{{ reply.user_token && reply.user_token===selectedFeedbackPost.user_token ? '作者' : '参与者' }}</span>
+                      <button v-if="canEditFeedbackMessage(reply)" type="button" class="btn btn-xs btn-outline" @click="startFeedbackEdit(reply)">编辑</button>
+                      <button v-if="isAdmin" type="button" class="btn btn-xs btn-danger" @click="deleteFeedbackReply(reply)">删除</button>
+                    </div>
+                  </div>
+                  <div class="feedback-message-card-body">
+                    <div v-if="feedbackEditing.id===reply.id" class="feedback-edit-box">
+                      <div class="feedback-mention-host feedback-easymde-host feedback-edit-editor-host" @click.stop>
+                        <textarea
+                          :id="'feedback-edit-' + reply.id"
+                          v-model="feedbackEditing.body"
+                          class="feedback-textarea feedback-edit-textarea"
+                          maxlength="2000"
+                          @input="handleFeedbackMentionInput($event, 'edit:' + reply.id)"
+                          @keydown="handleFeedbackMentionKeydown($event, 'edit:' + reply.id)"
+                          @focus="setFeedbackTextTarget($event, 'edit:' + reply.id)"
+                          @click="setFeedbackTextTarget($event, 'edit:' + reply.id)"
+                        ></textarea>
+                        <div v-if="feedbackMention.visible && feedbackMention.target===('edit:' + reply.id)" class="mention-candidate-box">
+                          <div v-if="feedbackMention.loading" class="mention-candidate-empty">搜索中...</div>
+                          <div v-else-if="!feedbackMention.candidates.length" class="mention-candidate-empty">无匹配人员</div>
+                          <button
+                            v-for="(candidate, index) in feedbackMention.candidates"
+                            :key="candidate.username"
+                            type="button"
+                            :class="['mention-candidate-item', index===feedbackMention.activeIndex ? 'active' : '']"
+                            @mousedown.prevent="selectFeedbackMention(candidate, 'edit:' + reply.id)"
+                          >
+                            <span class="mention-candidate-main">{{ candidate.display_name || candidate.username }}</span>
+                            <span class="mention-candidate-meta">@{{ candidate.username }} · {{ candidate.email }}</span>
+                          </button>
+                        </div>
+                      </div>
+                      <div class="feedback-edit-actions">
+                        <button class="btn btn-xs btn-outline" :disabled="feedbackEditing.saving" @click="cancelFeedbackEdit()">取消</button>
+                        <button class="btn btn-xs btn-primary" :disabled="feedbackEditing.saving" @click="saveFeedbackEdit(reply)">
+                          {{ feedbackEditing.saving ? '保存中...' : '保存编辑' }}
+                        </button>
+                      </div>
+                    </div>
+                    <template v-else>
+                      <div v-if="reply.body" class="feedback-body feedback-message-markdown markdown-body" v-html="feedbackMessageHtml(reply)"></div>
+                    </template>
+                    <div v-if="reply.attachments.length" class="feedback-image-grid compact">
+                      <a v-for="img in reply.attachments" :key="img.id" :href="img.url" target="_blank" rel="noopener" class="feedback-image">
+                        <img :src="img.url" :alt="img.filename || 'feedback image'" />
+                      </a>
+                    </div>
+                    <div v-if="feedbackReactionSummary(reply).length" class="feedback-reaction-bar feedback-github-reactions">
+                      <button
+                        v-for="reaction in feedbackReactionSummary(reply)"
+                        :key="reaction.emoji"
+                        type="button"
+                        :class="['feedback-reaction-btn feedback-github-reaction-pill', reaction.reacted ? 'active' : '']"
+                        @click="toggleFeedbackReaction(reply, reaction.emoji)"
+                      >
+                        <span>{{ reaction.emoji }}</span>
+                        <b>{{ reaction.count }}</b>
+                      </button>
+                    </div>
+                  </div>
+                </article>
+              </div>
+            </div>
+            <div
+              v-if="feedbackReplies[selectedFeedbackPost.id]"
+              class="feedback-reply-form feedback-thread-reply-form feedback-github-comment"
+            >
+              <span class="feedback-avatar feedback-comment-avatar">{{ feedbackUserInitial(currentUser?.display_name || currentUser?.username || '用户') }}</span>
+              <div class="feedback-github-editor">
+                <div v-if="!feedbackMarkdownEditorEnabled" class="feedback-editor-header">
+                  <div class="feedback-editor-tabs">
+                    <button
+                      type="button"
+                      :class="['feedback-editor-tab', feedbackReplyEditorMode(selectedFeedbackPost.id)==='write' ? 'active' : '']"
+                      @click="setFeedbackReplyEditorMode(selectedFeedbackPost.id, 'write')"
+                    >Write</button>
+                    <button
+                      type="button"
+                      :class="['feedback-editor-tab', feedbackReplyEditorMode(selectedFeedbackPost.id)==='preview' ? 'active' : '']"
+                      @click="setFeedbackReplyEditorMode(selectedFeedbackPost.id, 'preview')"
+                    >Preview</button>
+                  </div>
+                  <div v-if="feedbackReplyEditorMode(selectedFeedbackPost.id)==='write'" class="feedback-editor-toolbar" aria-label="回复工具栏">
+                    <button type="button" title="标题" @mousedown.prevent="insertFeedbackSnippet('### ', '', '标题', selectedFeedbackPost.id)">H</button>
+                    <button type="button" title="加粗" @mousedown.prevent="insertFeedbackSnippet('**', '**', '加粗文本', selectedFeedbackPost.id)"><strong>B</strong></button>
+                    <button type="button" title="斜体" @mousedown.prevent="insertFeedbackSnippet('*', '*', '斜体文本', selectedFeedbackPost.id)"><em>I</em></button>
+                    <span class="feedback-editor-separator"></span>
+                    <button type="button" title="引用：支持多行" @mousedown.prevent="insertFeedbackQuote(selectedFeedbackPost.id)">❝</button>
+                    <button type="button" title="代码：选中多行时自动转代码块" @mousedown.prevent="insertFeedbackCode(selectedFeedbackPost.id)">〈〉</button>
+                    <button type="button" class="feedback-editor-codeblock-btn" title="代码块" @mousedown.prevent="insertFeedbackCodeBlock(selectedFeedbackPost.id)">```</button>
+                    <button type="button" title="链接" @mousedown.prevent="insertFeedbackSnippet('[', '](url)', '链接文本', selectedFeedbackPost.id)">🔗</button>
+                    <span class="feedback-editor-separator"></span>
+                    <button type="button" title="无序列表：支持多行" @mousedown.prevent="insertFeedbackList(false, selectedFeedbackPost.id)">•</button>
+                    <button type="button" title="有序列表：支持多行" @mousedown.prevent="insertFeedbackList(true, selectedFeedbackPost.id)">1.</button>
+                    <button type="button" title="任务列表：支持多行" @mousedown.prevent="insertFeedbackTaskList(selectedFeedbackPost.id)">☑</button>
+                    <span class="feedback-editor-separator"></span>
+                    <button type="button" title="@ 提及" @mousedown.prevent="insertFeedbackSnippet('@', '', '', selectedFeedbackPost.id)">@</button>
+                    <label class="feedback-editor-file-btn" title="添加图片">
+                      📎
+                      <input class="hidden-file-input" type="file" accept="image/*" multiple @change="setFeedbackFiles($event, selectedFeedbackPost.id)" />
+                    </label>
+                  </div>
+                </div>
+                <div v-if="!feedbackMarkdownEditorEnabled && feedbackReplyEditorMode(selectedFeedbackPost.id)==='preview'" class="feedback-markdown-preview markdown-body">
+                  <div v-if="(feedbackReplies[selectedFeedbackPost.id].body || '').trim()" v-html="feedbackReplyPreviewHtml(selectedFeedbackPost.id)"></div>
+                  <div v-else class="feedback-preview-empty">暂无内容可预览</div>
+                </div>
+                <div v-else class="feedback-mention-host feedback-easymde-host feedback-reply-editor-host" @click.stop>
+                  <textarea
+                    :id="'feedback-reply-editor-' + selectedFeedbackPost.id"
+                    v-model="feedbackReplies[selectedFeedbackPost.id].body"
+                    class="feedback-textarea feedback-reply-textarea feedback-github-textarea"
+                    placeholder="Use Markdown to format your comment. 可 @英文名 通知对方..."
+                    maxlength="2000"
+                    @input="handleFeedbackMentionInput($event, selectedFeedbackPost.id)"
+                    @keydown="handleFeedbackMentionKeydown($event, selectedFeedbackPost.id)"
+                    @focus="setFeedbackTextTarget($event, selectedFeedbackPost.id)"
+                    @click="setFeedbackTextTarget($event, selectedFeedbackPost.id)"
+                  ></textarea>
+                  <div v-if="feedbackMention.visible && feedbackMention.target===selectedFeedbackPost.id" class="mention-candidate-box">
+                    <div v-if="feedbackMention.loading" class="mention-candidate-empty">搜索中...</div>
+                    <div v-else-if="!feedbackMention.candidates.length" class="mention-candidate-empty">无匹配人员</div>
+                    <button
+                      v-for="(candidate, index) in feedbackMention.candidates"
+                      :key="candidate.username"
+                      type="button"
+                      :class="['mention-candidate-item', index===feedbackMention.activeIndex ? 'active' : '']"
+                      @mousedown.prevent="selectFeedbackMention(candidate, selectedFeedbackPost.id)"
+                    >
+                      <span class="mention-candidate-main">{{ candidate.display_name || candidate.username }}</span>
+                      <span class="mention-candidate-meta">@{{ candidate.username }} · {{ candidate.email }}</span>
+                    </button>
+                  </div>
+                </div>
+                <div v-if="feedbackReplies[selectedFeedbackPost.id].previews.length" class="feedback-preview-grid compact feedback-editor-previews">
+                  <div v-for="img in feedbackReplies[selectedFeedbackPost.id].previews" :key="img.url" class="feedback-preview">
+                    <img :src="img.url" :alt="img.name" />
+                  </div>
+                </div>
+                <div class="feedback-composer-actions feedback-editor-footer">
+                  <label class="btn btn-xs btn-outline feedback-inline-file-btn">
+                    添加图片
+                    <input class="hidden-file-input" type="file" accept="image/*" multiple @change="setFeedbackFiles($event, selectedFeedbackPost.id)" />
+                  </label>
+                  <span class="feedback-upload-hint">Paste, drop, or click to add images</span>
+                  <span class="flex-spacer"></span>
+                  <button class="btn btn-xs btn-outline" @click="clearFeedbackForm(selectedFeedbackPost.id)" :disabled="feedbackReplies[selectedFeedbackPost.id].submitting">清空</button>
+                  <button class="btn btn-xs btn-primary" @click="submitFeedback(selectedFeedbackPost.id)" :disabled="feedbackReplies[selectedFeedbackPost.id].submitting">
+                    {{ feedbackReplies[selectedFeedbackPost.id].submitting ? '发送中...' : '发送交流' }}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <div class="modal-actions feedback-page-actions">
+          <button class="btn btn-outline" @click="closeFeedbackBoard()">返回首页</button>
+        </div>
+      </section>
+      <section v-else class="feedback-page-card">
+        <div class="empty-tip">加载留言板...</div>
+      </section>
+      </main>
+    </div>
+
+    <div v-if="showFeedbackComposer" class="modal-mask modal-mask-front" @click.self="closeFeedbackComposer()">
+      <div class="modal feedback-compose-modal">
+        <div class="modal-title feedback-title">
+          <span>发布新帖</span>
+          <button class="btn btn-xs btn-outline" @click="closeFeedbackComposer()">关闭</button>
+        </div>
+        <div class="feedback-composer feedback-composer-dialog">
+          <div class="feedback-github-editor feedback-post-editor">
+            <div v-if="!feedbackMarkdownEditorEnabled" class="feedback-editor-header">
+              <div class="feedback-editor-tabs">
+                <button
+                  type="button"
+                  :class="['feedback-editor-tab', feedbackPostEditorMode==='write' ? 'active' : '']"
+                  @click="setFeedbackPostEditorMode('write')"
+                >Write</button>
+                <button
+                  type="button"
+                  :class="['feedback-editor-tab', feedbackPostEditorMode==='preview' ? 'active' : '']"
+                  @click="setFeedbackPostEditorMode('preview')"
+                >Preview</button>
+              </div>
+              <div v-if="feedbackPostEditorMode==='write'" class="feedback-editor-toolbar feedback-compose-toolbar" aria-label="发帖工具栏">
+                <button type="button" title="标题" @mousedown.prevent="insertFeedbackSnippet('### ', '', '标题', 'post')">H</button>
+                <button type="button" title="加粗" @mousedown.prevent="insertFeedbackSnippet('**', '**', '加粗文本', 'post')"><strong>B</strong></button>
+                <button type="button" title="斜体" @mousedown.prevent="insertFeedbackSnippet('*', '*', '斜体文本', 'post')"><em>I</em></button>
+                <span class="feedback-editor-separator"></span>
+                <button type="button" title="引用：支持多行" @mousedown.prevent="insertFeedbackQuote('post')">❝</button>
+                <button type="button" title="代码：选中多行时自动转代码块" @mousedown.prevent="insertFeedbackCode('post')">〈〉</button>
+                <button type="button" class="feedback-editor-codeblock-btn" title="代码块" @mousedown.prevent="insertFeedbackCodeBlock('post')">```</button>
+                <button type="button" title="链接" @mousedown.prevent="insertFeedbackSnippet('[', '](url)', '链接文本', 'post')">🔗</button>
+                <span class="feedback-editor-separator"></span>
+                <button type="button" title="无序列表：支持多行" @mousedown.prevent="insertFeedbackList(false, 'post')">•</button>
+                <button type="button" title="有序列表：支持多行" @mousedown.prevent="insertFeedbackList(true, 'post')">1.</button>
+                <button type="button" title="任务列表：支持多行" @mousedown.prevent="insertFeedbackTaskList('post')">☑</button>
+                <span class="feedback-editor-separator"></span>
+                <button type="button" title="@ 提及" @mousedown.prevent="insertFeedbackSnippet('@', '', '', 'post')">@</button>
+              </div>
+            </div>
+            <div v-if="!feedbackMarkdownEditorEnabled && feedbackPostEditorMode==='preview'" class="feedback-markdown-preview markdown-body">
+              <div v-if="(feedbackForm.body || '').trim()" v-html="feedbackPostPreviewHtml"></div>
+              <div v-else class="feedback-preview-empty">暂无内容可预览</div>
+            </div>
+            <div v-else class="feedback-mention-host feedback-easymde-host" @click.stop>
+              <textarea
+                id="feedback-compose-post-textarea"
+                v-model="feedbackForm.body"
+                class="feedback-textarea feedback-github-textarea"
+                placeholder="Use Markdown to format your post. 可 @英文名 通知对方..."
+                maxlength="2000"
+                @input="handleFeedbackMentionInput($event, 'post')"
+                @keydown="handleFeedbackMentionKeydown($event, 'post')"
+                @focus="setFeedbackTextTarget($event, 'post')"
+                @click="setFeedbackTextTarget($event, 'post')"
+              ></textarea>
+              <div v-if="feedbackMention.visible && feedbackMention.target==='post'" class="mention-candidate-box">
+                <div v-if="feedbackMention.loading" class="mention-candidate-empty">搜索中...</div>
+                <div v-else-if="!feedbackMention.candidates.length" class="mention-candidate-empty">无匹配人员</div>
+                <button
+                  v-for="(candidate, index) in feedbackMention.candidates"
+                  :key="candidate.username"
+                  type="button"
+                  :class="['mention-candidate-item', index===feedbackMention.activeIndex ? 'active' : '']"
+                  @mousedown.prevent="selectFeedbackMention(candidate, 'post')"
+                >
+                  <span class="mention-candidate-main">{{ candidate.display_name || candidate.username }}</span>
+                  <span class="mention-candidate-meta">@{{ candidate.username }} · {{ candidate.email }}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+          <div class="feedback-emoji-bar" aria-label="常用表情">
+            <button
+              v-for="emoji in feedbackEmojiOptions"
+              :key="emoji"
+              type="button"
+              class="feedback-emoji-btn"
+              @mousedown.prevent="insertFeedbackEmoji(emoji, 'post')"
+            >{{ emoji }}</button>
+          </div>
+          <div v-if="feedbackForm.previews.length" class="feedback-preview-grid">
+            <div v-for="img in feedbackForm.previews" :key="img.url" class="feedback-preview">
+              <img :src="img.url" :alt="img.name" />
+            </div>
+          </div>
+          <div class="feedback-composer-actions">
+            <label class="btn btn-sm btn-outline">
+              添加图片
+              <input class="hidden-file-input" type="file" accept="image/*" multiple @change="setFeedbackFiles($event)" />
+            </label>
+            <span class="feedback-hint">最多 4 张，每张 8MB</span>
+            <span class="flex-spacer"></span>
+            <button class="btn btn-sm btn-outline" @click="clearFeedbackForm()" :disabled="feedbackSubmitting">清空</button>
+            <button class="btn btn-sm btn-primary" @click="submitFeedback()" :disabled="feedbackSubmitting">
+              {{ feedbackSubmitting ? '发布中...' : '发布帖子' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Admin usage modal ── -->
+    <div v-if="showAdminUsage" class="modal-mask" @click.self="showAdminUsage=false">
+      <div class="modal modal-wide admin-usage-modal">
+        <div class="modal-title admin-usage-title">
+          <span>使用统计</span>
+          <div class="admin-usage-actions">
+            <select v-model.number="adminUsageDays" class="input input-sm admin-usage-range" @change="loadAdminUsage()">
+              <option :value="7">近 7 天</option>
+              <option :value="14">近 14 天</option>
+              <option :value="30">近 30 天</option>
+              <option :value="90">近 90 天</option>
+            </select>
+            <button class="btn btn-xs btn-outline" :disabled="adminUsageLoading" @click="loadAdminUsage()">
+              {{ adminUsageLoading ? '刷新中...' : '刷新' }}
+            </button>
+          </div>
+        </div>
+
+        <div v-if="adminUsageError" class="error-box">{{ adminUsageError }}</div>
+        <div v-if="adminUsageLoading && !adminUsage.daily.length" class="empty-tip">加载使用统计中...</div>
+        <template v-else>
+          <div class="admin-usage-card-grid">
+            <div v-for="card in adminUsageCards" :key="card.label" class="admin-usage-card">
+              <span>{{ card.label }}</span>
+              <strong>{{ fmtCount(card.value) }}</strong>
+              <small>{{ card.hint }}</small>
+            </div>
+          </div>
+
+          <div class="admin-usage-columns">
+            <section class="admin-usage-panel admin-usage-daily-panel">
+              <div class="admin-usage-panel-head">
+                <strong>逐日趋势</strong>
+                <span>数据从启用统计后开始累计</span>
+              </div>
+              <div class="admin-usage-table-wrap">
+                <table class="admin-usage-table">
+                  <thead>
+                    <tr>
+                      <th>日期</th>
+                      <th>日活</th>
+                      <th>请求</th>
+                      <th>上传</th>
+                      <th>对比</th>
+                      <th>AI</th>
+                      <th>留言</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="row in adminUsage.daily" :key="row.day">
+                      <td>{{ row.day }}</td>
+                      <td>{{ fmtCount(row.dau) }}</td>
+                      <td>{{ fmtCount(row.requests) }}</td>
+                      <td>{{ fmtCount(row.upload_jobs) }}</td>
+                      <td>{{ fmtCount(row.compare_jobs) }}</td>
+                      <td>{{ fmtCount(row.ai_runs) }}</td>
+                      <td>{{ fmtCount(row.feedback_messages) }}</td>
+                    </tr>
+                    <tr v-if="!adminUsage.daily.length">
+                      <td colspan="7" class="empty-tip">暂无统计数据</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="admin-usage-panel admin-usage-user-panel">
+              <div class="admin-usage-panel-head">
+                <strong>今日活跃用户</strong>
+                <span>按请求量排序</span>
+              </div>
+              <div class="admin-usage-user-list">
+                <div v-if="!adminUsage.top_users_today.length" class="empty-tip">今天还没有访问记录</div>
+                <div v-for="user in adminUsage.top_users_today" :key="user.user_token" class="admin-usage-user">
+                  <div>
+                    <strong>{{ user.display_name || user.user_token }}</strong>
+                    <span>{{ user.user_token }}</span>
+                  </div>
+                  <div class="admin-usage-user-meta">
+                    <b>{{ fmtCount(user.request_count) }}</b>
+                    <small>{{ fmtDateTime(user.last_seen_at) || '-' }}</small>
+                  </div>
+                </div>
+              </div>
+            </section>
+          </div>
+        </template>
+
+        <div class="modal-actions">
+          <span class="admin-usage-footnote">近 7 日累计请求 {{ fmtCount(adminUsage.seven_days.requests) }} 次，总计活跃用户 {{ fmtCount(adminUsage.all_time.active_users) }} 人</span>
+          <button class="btn btn-outline" @click="showAdminUsage=false">关闭</button>
         </div>
       </div>
     </div>
@@ -434,6 +1133,76 @@
       </div>
     </div>
 
+    <!-- ── AI prompt modal ── -->
+    <div v-if="showAiPromptModal" class="modal-mask" @click.self="closeAiPromptModal">
+      <div class="modal ai-prompt-modal">
+        <div class="modal-title">{{ aiPromptForce ? '重新 AI 分析' : '开始 AI 分析' }}</div>
+        <div class="ai-prompt-modal-desc">
+          可补充希望 Claude Code 重点关注的方向，也可以留空直接开始。
+        </div>
+        <label class="ai-prompt-modal-label" for="ai-analysis-prompt-modal">补充 Prompt（可选）</label>
+        <textarea id="ai-analysis-prompt-modal"
+                  v-model="aiAnalysisPrompt"
+                  class="ai-prompt-modal-input"
+                  rows="6"
+                  maxlength="20000"
+                  placeholder="例如：重点关注通信开销、某类 kernel、A/B 差异原因..."
+                  @keydown.ctrl.enter.prevent="confirmAiPromptModal"
+                  @keydown.meta.enter.prevent="confirmAiPromptModal"
+                  @keydown.esc.prevent="closeAiPromptModal"></textarea>
+        <div class="ai-prompt-modal-meta">
+          <span>Ctrl/⌘ + Enter 开始分析</span>
+          <span>{{ aiAnalysisPrompt.length }}/20000</span>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-outline" @click="closeAiPromptModal" :disabled="aiAnalysisStarting">取消</button>
+          <button class="btn btn-primary" @click="confirmAiPromptModal" :disabled="aiAnalysisStarting">
+            {{ aiAnalysisStarting ? '提交中...' : '开始分析' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Step reanalysis modal ── -->
+    <div v-if="showStepReanalysisModal" class="modal-mask" @click.self="closeStepReanalysisModal">
+      <div class="modal step-reanalysis-modal">
+        <div class="modal-title">指定 Step 重分析</div>
+        <div class="step-reanalysis-desc">
+          会基于当前任务创建一个新的历史条目；原任务保持不变。支持单个 step、逗号分隔或范围，例如 0、0,2,5、1-4。
+        </div>
+        <label class="step-reanalysis-label" for="step-reanalysis-label">新任务别名（可选）</label>
+        <input id="step-reanalysis-label"
+               v-model="stepReanalysisLabel"
+               class="input step-reanalysis-input"
+               placeholder="留空则自动生成名称" />
+        <div class="step-reanalysis-grid">
+          <label class="step-reanalysis-field" for="step-reanalysis-a">
+            <span>{{ selectedJob?.mode === 'compare' ? 'A Trace Step' : 'Trace Step' }}</span>
+            <input id="step-reanalysis-a"
+                   v-model="stepReanalysisFilterA"
+                   class="input step-reanalysis-input"
+                   placeholder="例如 0 或 1-4" />
+          </label>
+          <label v-if="selectedJob?.mode === 'compare'" class="step-reanalysis-field" for="step-reanalysis-b">
+            <span>B Trace Step</span>
+            <input id="step-reanalysis-b"
+                   v-model="stepReanalysisFilterB"
+                   class="input step-reanalysis-input"
+                   placeholder="留空表示全部 step" />
+          </label>
+        </div>
+        <div class="step-reanalysis-note">
+          对比任务中 A/B 可以选择不同 step；只填写一侧时，另一侧使用完整 trace 重新计算。
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-outline" @click="closeStepReanalysisModal" :disabled="stepReanalysisLoading">取消</button>
+          <button class="btn btn-primary" @click="confirmStepReanalysis" :disabled="stepReanalysisLoading">
+            {{ stepReanalysisLoading ? '提交中...' : '创建新任务' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- ── Generic confirm modal ── -->
     <div v-if="showConfirmModal" class="modal-mask" @click.self="resolveConfirm(false)">
       <div class="modal">
@@ -453,90 +1222,47 @@
         <div class="modal-title">使用指南</div>
         <div class="guide-content">
           <section class="guide-section">
-            <h3>1. 提交分析</h3>
+            <h3>1. 上传与快速对比</h3>
             <ul>
-              <li>在主区域上传区拖拽或点击上传一个或多个 <code>.json</code> / <code>.json.gz</code> 文件（PyTorch Profiler 导出的 Chrome Trace 格式）</li>
-              <li>选择所属项目（可选），填写别名（可选）</li>
-              <li>勾选 <strong>Triton CSV 详情</strong>：输出逐 step 的 Triton kernel 详情表格</li>
-              <li>勾选 <strong>Triton 代码保存</strong>：保存每个 Triton kernel 的生成源码，可在结果中查看和执行</li>
-              <li>点击"提交分析"，后台异步处理，实时显示上传进度和运行状态</li>
+              <li>首页默认支持 <strong>单文件/批量</strong> 和 <strong>快速对比</strong> 两种入口；常用格式包括 <code>.json</code>、<code>.json.gz</code>、<code>.gz</code>、<code>.json.zip</code>、<code>.zip</code>、<code>.tar.gz</code>、<code>.tgz</code></li>
+              <li>上传时选择项目和别名即可；如果只想看指定 step，先完成原始分析，再用任务右上角 <strong>指定 Step 重分析</strong> 生成新条目</li>
+              <li>两个新 trace 直接用 <strong>快速对比</strong>；已有历史任务则在左侧 <strong>对比</strong> 页签选择 A/B</li>
             </ul>
           </section>
           <section class="guide-section">
-            <h3>2. 查看结果</h3>
+            <h3>2. 结果优先看什么</h3>
             <ul>
-              <li><strong>控制台</strong>：原始文本输出，含 Per-Step 摘要、Top 10 热点 kernel、Kernel 类型分布</li>
-              <li><strong>图表</strong>：Kernel 类型耗时柱状图（横向）和占比饼图，collective 类型不计入 compute 分析</li>
-              <li><strong>CSV 表格</strong>：按页加载，支持搜索、列排序、列宽拖拽、列显隐、超长内容截断并 hover 显示全文</li>
-              <li>会按任务记住上次打开的结果页签，以及各表格的搜索、排序、列宽、列筛选和列显隐</li>
-              <li><strong>下载当前页 CSV</strong>：表格右上角可下载当前分页中的 CSV 内容</li>
+              <li><strong>性能总览</strong> 是默认页：先看总耗时、Top 回退/改善、占比和 Delta 图，通信类 kernel/op 默认不计入计算统计</li>
+              <li><strong>AI 分析</strong> 适合快速得到 Markdown 报告；<strong>控制台</strong> 适合核对脚本原始摘要和生成文件</li>
+              <li><strong>Kernel 类型</strong>、<strong>所有 Kernel</strong>、<strong>Triton</strong>、<strong>ATen Ops</strong>、<strong>CNCL Ops</strong> 用于下钻；图表和类型行可点击跳到相关表格</li>
+              <li>CSV 表格支持搜索、筛选、排序、列显隐、分页大小调整、显示全部和下载当前页</li>
             </ul>
           </section>
           <section class="guide-section">
-            <h3>3. 侧栏与历史管理</h3>
+            <h3>3. AI 分析</h3>
             <ul>
-              <li>左侧侧栏可<strong>拖拽调整宽度</strong>，点击箭头按钮可<strong>折叠/展开</strong></li>
-              <li>侧栏包含两个标签页：<strong>历史</strong>（单文件任务）和<strong>对比</strong>（对比任务）</li>
-              <li>历史按<strong>项目分组</strong>显示，点击项目标题可折叠/展开该组</li>
-              <li>顶部可<strong>选择项目过滤器</strong>，筛选特定项目的历史记录</li>
-              <li>支持按<strong>任务、文件或项目</strong>搜索历史记录</li>
-              <li>展开项目后按需加载任务，较大的项目可继续点击“加载更多”</li>
-              <li>进入<strong>多选</strong>后，可批量移动任务、删除任务或删除原始文件</li>
-              <li>支持<strong>分页浏览</strong>，底部有分页控件</li>
-              <li>点击任务行可查看分析详情</li>
+              <li>服务端开启 Claude Code 后会出现 <strong>AI 分析</strong> 页签；开始时可填写可选补充 Prompt</li>
+              <li>系统会先做环境诊断，诊断通过才调用单 trace 或对比 trace skill 生成报告</li>
+              <li>报告支持 Markdown 渲染、复制、下载和历史版本切换；页面会显示生成时间、触发人、模型和耗时</li>
+              <li>AI 分析耗时较长，可以切走页面；完成后会通过浏览器通知或邮件提醒</li>
             </ul>
           </section>
           <section class="guide-section">
-            <h3>4. 项目管理</h3>
+            <h3>4. 历史、项目和文件</h3>
             <ul>
-              <li>点击"+ 新建项目"创建项目，用于归类管理分析任务</li>
-              <li>支持<strong>重命名项目</strong>、<strong>移动任务</strong>到其他项目</li>
-              <li><strong>删除项目</strong>：项目及其下的所有任务保存到回收站（10 天内可恢复）</li>
-              <li><strong>找回项目</strong>：在"找回项目"中可恢复近 10 天内删除的项目，任务会一起恢复</li>
-              <li>超过 10 天的已删除项目会显示"已过期"标签，只能永久删除</li>
+              <li>左侧历史按项目分组，支持搜索、分页、置顶、多选、批量移动、删除任务和删除原始文件</li>
+              <li>登录模式下有个人项目和共享项目；共享项目便于团队查看和复用 trace 做对比</li>
+              <li>删除任务会一起清理 trace、压缩副本、结果 CSV、AI 产物和 Triton 代码；删除项目会先进回收站</li>
+              <li>Perfetto 按钮可打开 trace；下载默认提供压缩后的 <code>.json.gz</code></li>
             </ul>
           </section>
           <section class="guide-section">
-            <h3>5. 历史对比</h3>
+            <h3>5. 灵感社区</h3>
             <ul>
-              <li>在侧栏"对比"标签页选择两个已完成的单文件任务</li>
-              <li>候选任务支持独立搜索和分页，已选任务会固定显示在列表上方</li>
-              <li>可选填别名和所属项目</li>
-              <li>点击"发起对比"，系统直接复用已有数据，无需重新上传文件</li>
-              <li>对比结果页会显示 A/B 来源任务，可跳回源任务，也可交换 A/B 重新发起对比</li>
-              <li>对比结果含 Kernel 对比、Triton 对比、Aten 对比、类型对比、CNCL 对比等多个维度</li>
-              <li>源文件被删除后对应任务将标记"已删除"标签，无法参与对比</li>
-            </ul>
-          </section>
-          <section class="guide-section">
-            <h3>6. 文件操作</h3>
-            <ul>
-              <li><strong>下载</strong>：可下载原始 trace 文件（受服务器 <code>--no-download</code> 参数控制）</li>
-              <li><strong>Perfetto</strong>：点击"Perfetto ↗"按钮在 Perfetto UI 中打开 trace 文件进行深入分析</li>
-              <li><strong>删除文件</strong>：删除原始 trace 文件后，对应任务会标记"已删除"，无法再参与对比</li>
-              <li>删除前会提示受影响的历史对比数量，便于确认清理范围</li>
-            </ul>
-          </section>
-          <section class="guide-section">
-            <h3>7. 运行 Triton 代码</h3>
-            <ul>
-              <li>在 <strong>Triton</strong> 或 <strong>Triton Step N</strong> 表格中，每行有"运行"按钮</li>
-              <li>点击运行后会执行对应的 Triton kernel 代码，弹出执行结果</li>
-              <li>效率值会显示在行内（单位 GB/s），旁边有 ↻ 按钮可重新运行</li>
-              <li><strong>清除 Cache</strong>：在 Triton Step N 表格右上角有"清除 Cache"按钮，可清除 <code>/tmp/torchinductor_*</code> 缓存目录，重新运行以获得准确性能数据</li>
-            </ul>
-            <p class="guide-note">
-              <strong>注意</strong>：此功能依赖 MLU（寒武纪）硬件环境。需要已安装 <code>torch_mlu</code> 驱动并有物理 MLU 加速卡。
-              在非 MLU 环境下执行会报 ImportError，这是正常现象，不代表程序出错。
-            </p>
-          </section>
-          <section class="guide-section">
-            <h3>8. 其他功能</h3>
-            <ul>
-              <li><strong>深色/浅色模式</strong>：右上角切换按钮，自动记忆偏好</li>
-              <li><strong>存储管理</strong>：查看原始 trace / 结果文件占用，并集中清理原始文件</li>
-              <li><strong>侧栏可拖拽调整宽度</strong>，可折叠以扩大主区域可视范围</li>
-              <li>点击标题栏可返回上传页面</li>
+              <li>右上角或首页卡片进入 <strong>灵感社区</strong>，用于提建议、贴问题和交流使用经验</li>
+              <li>帖子和回复支持图片、Markdown、Emoji、表情反应、作者编辑和 <code>@英文名</code> 候选</li>
+              <li>新帖子或回复会邮件通知管理员；被 @ 的同事也会收到直达帖子/回复的链接</li>
+              <li>管理员可删除帖子/回复，并使用邮件诊断检查通知链路</li>
             </ul>
           </section>
         </div>
@@ -553,6 +1279,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=6"></script>
+  <script src="/static/app.js?v=0.2.86"></script>
 </body>
 </html>

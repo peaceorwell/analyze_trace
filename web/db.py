@@ -1,12 +1,23 @@
 import aiosqlite
 import os
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "storage", "jobs.db")
+DEFAULT_STORAGE_DIR = os.path.join(os.path.dirname(__file__), "storage")
+DB_PATH = os.environ.get(
+    "TRACE_DB_PATH",
+    os.path.join(os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR), "jobs.db"),
+)
+DB_TIMEOUT_SECONDS = float(os.environ.get("TRACE_DB_TIMEOUT_SECONDS", "30"))
+DB_BUSY_TIMEOUT_MS = max(1000, int(DB_TIMEOUT_SECONDS * 1000))
+
+
+async def configure_connection(db):
+    await db.execute(f"PRAGMA busy_timeout={DB_BUSY_TIMEOUT_MS}")
 
 
 async def get_db():
-    db = await aiosqlite.connect(DB_PATH)
+    db = await aiosqlite.connect(DB_PATH, timeout=DB_TIMEOUT_SECONDS)
     db.row_factory = aiosqlite.Row
+    await configure_connection(db)
     return db
 
 
@@ -33,7 +44,10 @@ async def add_column_if_missing(db, table_name, column_name, column_def):
 
 async def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(DB_PATH, timeout=DB_TIMEOUT_SECONDS) as db:
+        await configure_connection(db)
+        await db.execute("PRAGMA journal_mode=WAL")
+        await db.execute("PRAGMA synchronous=NORMAL")
         await db.executescript("""
             CREATE TABLE IF NOT EXISTS users (
                 user_token  TEXT PRIMARY KEY,
@@ -65,6 +79,7 @@ async def init_db():
                 user_token       TEXT REFERENCES users(user_token) ON DELETE CASCADE,
                 created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
                 label            TEXT DEFAULT '',
+                is_pinned        INTEGER DEFAULT 0,
                 mode             TEXT CHECK(mode IN ('single','compare')) NOT NULL,
 
                 file_a_name      TEXT,
@@ -78,6 +93,9 @@ async def init_db():
 
                 source_job_a     TEXT REFERENCES jobs(id) ON DELETE SET NULL,
                 source_job_b     TEXT REFERENCES jobs(id) ON DELETE SET NULL,
+
+                step_filter_a    TEXT DEFAULT '',
+                step_filter_b    TEXT DEFAULT '',
 
                 save_triton_csv  INTEGER DEFAULT 0,
                 save_triton_code INTEGER DEFAULT 0,
@@ -116,6 +134,49 @@ async def init_db():
                 detail_json   TEXT DEFAULT '{}'
             );
 
+            CREATE TABLE IF NOT EXISTS usage_daily (
+                day           TEXT NOT NULL,
+                user_token    TEXT NOT NULL,
+                display_name  TEXT DEFAULT '',
+                request_count INTEGER DEFAULT 0,
+                last_path     TEXT DEFAULT '',
+                last_method   TEXT DEFAULT '',
+                last_status   INTEGER DEFAULT 0,
+                created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+                last_seen_at  TEXT DEFAULT '',
+                PRIMARY KEY(day, user_token)
+            );
+
+            CREATE TABLE IF NOT EXISTS feedback_messages (
+                id           TEXT PRIMARY KEY,
+                parent_id    TEXT REFERENCES feedback_messages(id) ON DELETE CASCADE,
+                user_token   TEXT DEFAULT '',
+                user_display TEXT DEFAULT '',
+                body         TEXT DEFAULT '',
+                created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+                edited_at    DATETIME DEFAULT NULL,
+                edit_count   INTEGER DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS feedback_attachments (
+                id           TEXT PRIMARY KEY,
+                message_id   TEXT REFERENCES feedback_messages(id) ON DELETE CASCADE,
+                filename     TEXT DEFAULT '',
+                stored_path  TEXT NOT NULL,
+                content_type TEXT DEFAULT '',
+                size_bytes   INTEGER DEFAULT 0,
+                created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS feedback_reactions (
+                message_id   TEXT REFERENCES feedback_messages(id) ON DELETE CASCADE,
+                user_token   TEXT DEFAULT '',
+                emoji        TEXT NOT NULL,
+                created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(message_id, user_token, emoji)
+            );
+
             CREATE TABLE IF NOT EXISTS schema_migrations (
                 version     INTEGER PRIMARY KEY,
                 applied_at  DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -133,7 +194,12 @@ async def init_db():
         await add_column_if_missing(db, "jobs", "owned_bytes", "INTEGER")
         await add_column_if_missing(db, "jobs", "result_bytes", "INTEGER")
         await add_column_if_missing(db, "jobs", "original_trace_bytes", "INTEGER")
+        await add_column_if_missing(db, "jobs", "is_pinned", "INTEGER DEFAULT 0")
+        await add_column_if_missing(db, "jobs", "step_filter_a", "TEXT DEFAULT ''")
+        await add_column_if_missing(db, "jobs", "step_filter_b", "TEXT DEFAULT ''")
         await add_column_if_missing(db, "folders", "password_hash", "TEXT DEFAULT NULL")
+        await add_column_if_missing(db, "feedback_messages", "edited_at", "DATETIME DEFAULT NULL")
+        await add_column_if_missing(db, "feedback_messages", "edit_count", "INTEGER DEFAULT 0")
 
         await db.executescript("""
             CREATE TABLE IF NOT EXISTS deleted_jobs (
@@ -142,6 +208,7 @@ async def init_db():
                 user_token       TEXT,
                 created_at       DATETIME,
                 label            TEXT DEFAULT '',
+                is_pinned        INTEGER DEFAULT 0,
                 mode             TEXT,
 
                 file_a_name      TEXT,
@@ -155,6 +222,9 @@ async def init_db():
 
                 source_job_a     TEXT,
                 source_job_b     TEXT,
+
+                step_filter_a    TEXT DEFAULT '',
+                step_filter_b    TEXT DEFAULT '',
 
                 save_triton_csv  INTEGER DEFAULT 0,
                 save_triton_code INTEGER DEFAULT 0,
@@ -174,6 +244,7 @@ async def init_db():
             CREATE INDEX IF NOT EXISTS idx_jobs_user ON jobs(user_token);
             CREATE INDEX IF NOT EXISTS idx_jobs_project_created ON jobs(project_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_jobs_mode_status_created ON jobs(mode, status, created_at);
+            CREATE INDEX IF NOT EXISTS idx_jobs_pinned_created ON jobs(is_pinned, created_at);
             CREATE INDEX IF NOT EXISTS idx_jobs_source_a ON jobs(source_job_a);
             CREATE INDEX IF NOT EXISTS idx_jobs_source_b ON jobs(source_job_b);
             CREATE INDEX IF NOT EXISTS idx_folders_user ON folders(user_token);
@@ -181,7 +252,15 @@ async def init_db():
             CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at);
             CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action);
             CREATE INDEX IF NOT EXISTS idx_audit_logs_resource ON audit_logs(resource_type, resource_id);
+            CREATE INDEX IF NOT EXISTS idx_usage_daily_day ON usage_daily(day);
+            CREATE INDEX IF NOT EXISTS idx_usage_daily_user ON usage_daily(user_token);
+            CREATE INDEX IF NOT EXISTS idx_feedback_messages_parent_created ON feedback_messages(parent_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_feedback_attachments_message ON feedback_attachments(message_id);
+            CREATE INDEX IF NOT EXISTS idx_feedback_reactions_message ON feedback_reactions(message_id);
         """)
+        await add_column_if_missing(db, "deleted_jobs", "is_pinned", "INTEGER DEFAULT 0")
+        await add_column_if_missing(db, "deleted_jobs", "step_filter_a", "TEXT DEFAULT ''")
+        await add_column_if_missing(db, "deleted_jobs", "step_filter_b", "TEXT DEFAULT ''")
         await db.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(1)")
 
         await db.commit()

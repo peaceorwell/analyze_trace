@@ -1,53 +1,273 @@
 import argparse
 import asyncio
+import base64
 import contextlib
 import csv
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import gzip
+import html
 import io
 import json
 import logging
 import os
+import re
+import secrets
 import shlex
 import shutil
+import smtplib
+import socket
+import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 import types
 import uuid
 import zipfile
 import zlib
 from contextlib import asynccontextmanager
+from email.message import EmailMessage
 from typing import Optional
+from urllib.parse import quote
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import aiofiles
-from fastapi import FastAPI, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.sessions import SessionMiddleware
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from trace_analyzer import compute_avgs, extract_kernel_family, parse_trace, run_triton_code_and_get_efficiency  # noqa: E402
+from trace_analyzer import (  # noqa: E402
+    compute_avgs,
+    extract_kernel_family,
+    filter_parsed_steps,
+    parse_step_filter,
+    parse_trace,
+    run_triton_code_and_get_efficiency,
+)
 
 from db import get_db, init_db, row_to_dict  # noqa: E402
+import auth as ldap_auth  # noqa: E402
 
-STORAGE_DIR = os.path.join(os.path.dirname(__file__), "storage")
-APP_VERSION = "0.1.8"
-BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(os.path.dirname(__file__), "backups"))
+WEB_DIR = os.path.dirname(__file__)
+PROJECT_ROOT = os.path.dirname(WEB_DIR)
+PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
+DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
+STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
+APP_VERSION = "0.2.86"
+INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
+BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
+MAX_BATCH_COMPARE_JOBS = 50
+FEEDBACK_DIRNAME = "feedback"
+FEEDBACK_MAX_IMAGES = 4
+FEEDBACK_MAX_IMAGE_BYTES = 8 * 1024 * 1024
+FEEDBACK_MENTION_TOKEN_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,62}$")
+FEEDBACK_MENTION_RE = re.compile(r"(?<![A-Za-z0-9_.%-])@([A-Za-z][A-Za-z0-9_.-]{0,62})(?=$|[^A-Za-z0-9_.-])")
+FEEDBACK_REACTION_EMOJIS = {
+    "👍", "👎", "😄", "🎉", "🚀", "❤️", "👀", "💡", "✅", "🙏",
+    "🔥", "🤔", "😕", "👏", "🙌", "💯", "🧠", "🛠️", "📌", "❓",
+}
+AI_ANALYSIS_DIRNAME = "ai_analysis"
+AI_ANALYSIS_STATUS_FILE = "ai_analysis_status.json"
+AI_ANALYSIS_REPORT_FILE = "ai_analysis.md"
+AI_ANALYSIS_VERSIONS_DIR = "versions"
+AI_ANALYSIS_VERSION_META_FILE = "metadata.json"
+AI_ANALYSIS_VERSION_REPORT_FILE = "report.md"
+AI_ANALYSIS_USER_PROMPT_MAX_CHARS = 20000
+AI_ANALYSIS_ARTIFACT_MAX_BYTES = 256 * 1024
+AI_ANALYSIS_ARTIFACT_MAX_TOTAL_BYTES = 1024 * 1024
+AI_ANALYSIS_ARTIFACT_EXTENSIONS = {
+    ".csv", ".json", ".log", ".md", ".text", ".tsv", ".txt", ".yaml", ".yml",
+}
+AI_ANALYSIS_INTERNAL_FILES = {
+    AI_ANALYSIS_STATUS_FILE,
+    AI_ANALYSIS_VERSION_META_FILE,
+    "ai_diagnostics.json",
+    "claude_tool_probe.txt",
+    "command.json",
+}
+AI_ANALYSIS_VERSION_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,96}$")
+AI_ANALYSIS_FAILURE_PATTERNS = (
+    "all tool calls are being denied",
+    "cannot proceed because the execution environment has restricted permissions",
+    "claude did not create the bash probe file",
+    "eacces - cannot create",
+    "error: tool denied",
+    "permission denied for all files outside",
+    "tool permissions may be denied",
+)
 
 # Configured at startup via CLI; read-only after that
+AUTH_MODE = os.environ.get("AUTH_MODE", "none").strip().lower()
+AUTH_ENABLED = AUTH_MODE == "ldap"
+SESSION_SECRET = os.environ.get("SESSION_SECRET", "dev-only-change-me")
+SESSION_COOKIE_SECURE = os.environ.get("SESSION_COOKIE_SECURE", "0") == "1"
 ALLOW_FILE_DOWNLOAD = os.environ.get("TRACE_NO_DOWNLOAD", "") == ""
 ALLOW_CODE_EXECUTION = os.environ.get("TRACE_ENABLE_CODE_EXEC", "") == "1"
 ANALYSIS_CONCURRENCY = max(1, int(os.environ.get("TRACE_ANALYSIS_CONCURRENCY", "1")))
+UPLOAD_CONCURRENCY = max(1, int(os.environ.get("TRACE_UPLOAD_CONCURRENCY", "3")))
+MAX_UPLOAD_BYTES = max(0, int(os.environ.get("TRACE_MAX_UPLOAD_BYTES", "0")))
+MIN_STORAGE_FREE_BYTES = max(0, int(os.environ.get("TRACE_MIN_STORAGE_FREE_BYTES", "0")))
+MAX_TRACE_JSON_BYTES = max(
+    0,
+    int(os.environ.get("TRACE_MAX_TRACE_JSON_BYTES", "0")),
+)
+STRICT_GZIP_SIZE_CHECK = os.environ.get("TRACE_STRICT_GZIP_SIZE_CHECK", "") == "1"
+CLAUDE_ANALYSIS_ENABLED = os.environ.get("TRACE_ENABLE_CLAUDE_ANALYSIS", "") == "1"
+AI_ANALYSIS_CONCURRENCY = max(1, int(os.environ.get("TRACE_AI_ANALYSIS_CONCURRENCY", "1")))
+CLAUDE_ANALYSIS_COMMAND = os.environ.get("TRACE_CLAUDE_COMMAND", "claude")
+CLAUDE_ANALYSIS_COMMAND_TEMPLATE = os.environ.get("TRACE_CLAUDE_COMMAND_TEMPLATE", "")
+DEFAULT_CLAUDE_ANALYSIS_EXTRA_ARGS = "--dangerously-skip-permissions"
+CLAUDE_ANALYSIS_EXTRA_ARGS = os.environ.get("TRACE_CLAUDE_EXTRA_ARGS", DEFAULT_CLAUDE_ANALYSIS_EXTRA_ARGS)
+TRACE_CLAUDE_CUSTOM_HEADERS = os.environ.get("TRACE_CLAUDE_CUSTOM_HEADERS", "").strip()
+CLAUDE_CUSTOM_HEADERS = (
+    TRACE_CLAUDE_CUSTOM_HEADERS
+    or os.environ.get("ANTHROPIC_CUSTOM_HEADERS", "").strip()
+    or "x-project: torch_mlu"
+)
+CLAUDE_ANALYSIS_TIMEOUT_SECONDS = max(30, int(os.environ.get("TRACE_CLAUDE_TIMEOUT_SECONDS", "1800")))
+CLAUDE_DIAGNOSTIC_TIMEOUT_SECONDS = max(5, int(os.environ.get("TRACE_CLAUDE_DIAGNOSTIC_TIMEOUT_SECONDS", "60")))
+CLAUDE_ANALYSIS_SKILLS_DIR = os.environ.get("TRACE_CLAUDE_SKILLS_DIR", PROJECT_CLAUDE_SKILLS_DIR)
+CLAUDE_SINGLE_TRACE_SKILL = os.environ.get("TRACE_CLAUDE_SINGLE_SKILL", "e2e-profiling-analyzer")
+CLAUDE_COMPARE_TRACE_SKILL = os.environ.get("TRACE_CLAUDE_COMPARE_SKILL", "e2e-profiling-comparator")
+CLAUDE_ANALYSIS_MODEL = (
+    os.environ.get("TRACE_CLAUDE_MODEL")
+    or os.environ.get("ANTHROPIC_MODEL")
+    or "Claude Code default"
+).strip()
+
+
+def _parse_user_list_env(value: str) -> set[str]:
+    return {
+        item.strip().lower()
+        for item in (value or "").replace(";", ",").split(",")
+        if item.strip()
+    }
+
+
+def _truthy_env(value: str, default: bool = False) -> bool:
+    if value is None or value == "":
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name, "")
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _normalize_email(value: str, domain: str = "cambricon.com") -> str:
+    token = (value or "").strip().strip("<>,;")
+    if not token:
+        return ""
+    if "@" not in token:
+        token = f"{token}@{domain}"
+    token = token.lower()
+    if not re.fullmatch(r"[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}", token):
+        return ""
+    return token
+
+
+def _parse_email_list_env(value: str, domain: str = "cambricon.com") -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in (value or "").replace(";", ",").split(","):
+        email = _normalize_email(item, domain)
+        if email and email not in seen:
+            seen.add(email)
+            result.append(email)
+    return result
+
+
+ADMIN_USERS = _parse_user_list_env(os.environ.get("TRACE_ADMIN_USERS", ""))
+FEEDBACK_MENTION_DOMAIN = os.environ.get("TRACE_FEEDBACK_MENTION_DOMAIN", "cambricon.com").strip().lower() or "cambricon.com"
+FEEDBACK_NOTIFICATION_ADMIN_EMAILS = _parse_email_list_env(
+    os.environ.get("TRACE_FEEDBACK_ADMIN_EMAILS", os.environ.get("TRACE_FEEDBACK_ADMIN_EMAIL", "zhouyusong@cambricon.com")),
+    FEEDBACK_MENTION_DOMAIN,
+)
+FEEDBACK_EMAIL_NOTIFICATIONS_ENABLED = not _truthy_env(os.environ.get("TRACE_DISABLE_FEEDBACK_EMAIL", ""), False)
+PUBLIC_BASE_URL = os.environ.get("TRACE_PUBLIC_BASE_URL", "").strip().rstrip("/")
+SMTP_HOST = os.environ.get("TRACE_SMTP_HOST", os.environ.get("SMTP_HOST", "")).strip()
+SMTP_PORT = _int_env("TRACE_SMTP_PORT", _int_env("SMTP_PORT", 25))
+SMTP_USERNAME = os.environ.get("TRACE_SMTP_USERNAME", os.environ.get("SMTP_USERNAME", "")).strip()
+SMTP_PASSWORD = os.environ.get("TRACE_SMTP_PASSWORD", os.environ.get("SMTP_PASSWORD", ""))
+SMTP_FROM_RAW = (
+    os.environ.get("TRACE_SMTP_FROM", "")
+    or SMTP_USERNAME
+    or f"trace-analyzer@{FEEDBACK_MENTION_DOMAIN}"
+).strip()
+SMTP_FROM = _normalize_email(SMTP_FROM_RAW, FEEDBACK_MENTION_DOMAIN) or f"trace-analyzer@{FEEDBACK_MENTION_DOMAIN}"
+SMTP_USE_SSL = _truthy_env(os.environ.get("TRACE_SMTP_SSL", os.environ.get("SMTP_SSL", "")), False)
+SMTP_USE_STARTTLS = _truthy_env(os.environ.get("TRACE_SMTP_STARTTLS", os.environ.get("SMTP_STARTTLS", "")), False)
+SMTP_TIMEOUT_SECONDS = max(1, _int_env("TRACE_SMTP_TIMEOUT_SECONDS", _int_env("SMTP_TIMEOUT_SECONDS", 10)))
+SENDMAIL_COMMAND = os.environ.get("TRACE_SENDMAIL_COMMAND", "").strip()
+SENDMAIL_AUTODETECT = _truthy_env(os.environ.get("TRACE_ENABLE_SENDMAIL_AUTODETECT", ""), False)
+if not SENDMAIL_COMMAND and SENDMAIL_AUTODETECT:
+    for _sendmail_candidate in ("/usr/sbin/sendmail", "/usr/lib/sendmail"):
+        if os.path.exists(_sendmail_candidate) and os.access(_sendmail_candidate, os.X_OK):
+            SENDMAIL_COMMAND = _sendmail_candidate
+            break
+LOG_TIMEZONE_NAME = os.environ.get("TRACE_LOG_TIMEZONE", os.environ.get("TZ", "Asia/Shanghai")).strip()
+USAGE_TIMEZONE_NAME = os.environ.get("TRACE_USAGE_TIMEZONE", LOG_TIMEZONE_NAME).strip()
 analysis_queue: asyncio.Queue[str] = asyncio.Queue()
+analysis_queue_loop: Optional[asyncio.AbstractEventLoop] = None
 analysis_workers: list[asyncio.Task] = []
+upload_semaphore = asyncio.Semaphore(UPLOAD_CONCURRENCY)
+ai_analysis_queue: asyncio.Queue[tuple[str, dict]] = asyncio.Queue()
+ai_analysis_queue_loop: Optional[asyncio.AbstractEventLoop] = None
+ai_analysis_workers: list[asyncio.Task] = []
+ai_analysis_tasks: dict[str, asyncio.Task] = {}
+ai_analysis_queued_jobs: set[str] = set()
+ai_analysis_locks: dict[str, asyncio.Lock] = {}
+ai_analysis_start_lock = asyncio.Lock()
 APP_STARTED_AT = time.time()
 HTTP_METRICS: dict[tuple[str, str, int], dict[str, float]] = {}
+LOGIN_CAPTCHA_THRESHOLD = max(1, int(os.environ.get("LOGIN_CAPTCHA_THRESHOLD", "5")))
+LOGIN_CAPTCHA_TTL_SECONDS = max(60, int(os.environ.get("LOGIN_CAPTCHA_TTL_SECONDS", "300")))
+LOGIN_FAILURE_TTL_SECONDS = max(60, int(os.environ.get("LOGIN_FAILURE_TTL_SECONDS", "900")))
+LOGIN_FAILURES: dict[str, dict[str, float]] = {}
+LOGIN_CAPTCHA_CHALLENGES: dict[str, dict[str, float | str]] = {}
+CAPTCHA_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+
+def _resolve_log_timezone(name: str):
+    value = (name or "").strip()
+    if not value or value.lower() in {"local", "system"}:
+        return datetime.now().astimezone().tzinfo or timezone.utc
+    if value.upper() == "UTC":
+        return timezone.utc
+    try:
+        return ZoneInfo(value)
+    except ZoneInfoNotFoundError:
+        fallback = (
+            timezone(timedelta(hours=8), name="CST")
+            if value in {"Asia/Shanghai", "Asia/Chongqing", "PRC", "CST"}
+            else datetime.now().astimezone().tzinfo or timezone.utc
+        )
+        logging.getLogger("analyze_trace.web").warning(
+            "log_timezone_invalid",
+            extra={"event": "log_timezone_invalid", "timezone": value},
+        )
+        return fallback
+
+
+USAGE_TZINFO = _resolve_log_timezone(USAGE_TIMEZONE_NAME)
 
 
 class JsonLogFormatter(logging.Formatter):
+    def __init__(self, tzinfo=None):
+        super().__init__()
+        self.tzinfo = tzinfo or timezone.utc
+
     def format(self, record):
         payload = {
-            "time": datetime.fromtimestamp(record.created, timezone.utc).isoformat(),
+            "time": datetime.fromtimestamp(record.created, self.tzinfo).isoformat(),
             "level": record.levelname.lower(),
             "message": record.getMessage(),
         }
@@ -74,19 +294,25 @@ def configure_logging():
     logger.handlers.clear()
     logger.propagate = False
 
-    formatter = JsonLogFormatter()
+    formatter = JsonLogFormatter(_resolve_log_timezone(LOG_TIMEZONE_NAME))
     stream_handler = logging.StreamHandler()
     stream_handler.setFormatter(formatter)
     logger.addHandler(stream_handler)
 
     log_file = os.environ.get("TRACE_LOG_FILE")
     if log_file:
-        log_dir = os.path.dirname(log_file)
-        if log_dir:
-            os.makedirs(log_dir, exist_ok=True)
-        file_handler = logging.FileHandler(log_file)
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
+        try:
+            log_dir = os.path.dirname(log_file)
+            if log_dir:
+                os.makedirs(log_dir, exist_ok=True)
+            file_handler = logging.FileHandler(log_file)
+            file_handler.setFormatter(formatter)
+            logger.addHandler(file_handler)
+        except OSError as e:
+            logger.warning(
+                "log_file_unavailable",
+                extra={"event": "log_file_unavailable", "path": log_file, "error": str(e)},
+            )
     return logger
 
 
@@ -94,6 +320,9 @@ logger = configure_logging()
 
 
 def request_user(request: Request) -> str:
+    session_user = getattr(request.state, "user", None) or {}
+    if session_user.get("username"):
+        return session_user["username"]
     return (
         request.headers.get("X-Remote-User")
         or request.headers.get("X-Forwarded-User")
@@ -109,11 +338,414 @@ def request_ip(request: Request) -> str:
     return request.client.host if request.client else ""
 
 
+def _login_username_key(username: str) -> str:
+    return (username or "").strip().lower()
+
+
+def _login_failure_key(request: Request, username: str) -> str:
+    return f"{request_ip(request)}:{_login_username_key(username)}"
+
+
+def _prune_login_state(now: Optional[float] = None):
+    now = now or time.time()
+    for key, state in list(LOGIN_FAILURES.items()):
+        if now - float(state.get("updated_at", 0)) > LOGIN_FAILURE_TTL_SECONDS:
+            LOGIN_FAILURES.pop(key, None)
+    for key, state in list(LOGIN_CAPTCHA_CHALLENGES.items()):
+        if now > float(state.get("expires_at", 0)):
+            LOGIN_CAPTCHA_CHALLENGES.pop(key, None)
+
+
+def _login_failure_count(key: str) -> int:
+    _prune_login_state()
+    state = LOGIN_FAILURES.get(key) or {}
+    return int(state.get("count", 0))
+
+
+def _record_login_failure(key: str) -> int:
+    _prune_login_state()
+    state = LOGIN_FAILURES.get(key) or {}
+    count = int(state.get("count", 0)) + 1
+    LOGIN_FAILURES[key] = {"count": count, "updated_at": time.time()}
+    return count
+
+
+def _clear_login_failure(key: str):
+    LOGIN_FAILURES.pop(key, None)
+
+
+def _captcha_required_for(request: Request, username: str) -> bool:
+    return _login_failure_count(_login_failure_key(request, username)) >= LOGIN_CAPTCHA_THRESHOLD
+
+
+def _clear_login_captcha(request: Request):
+    captcha_id = request.session.pop("login_captcha_id", None)
+    request.session.pop("login_captcha_user", None)
+    if captcha_id:
+        LOGIN_CAPTCHA_CHALLENGES.pop(captcha_id, None)
+
+
+def _captcha_svg_data_url(code: str) -> str:
+    lines = []
+    for idx in range(5):
+        y = 8 + idx * 7 + secrets.randbelow(5)
+        lines.append(
+            f'<path d="M8 {y} C 42 {secrets.randbelow(42)}, '
+            f'88 {secrets.randbelow(42)}, 142 {y + secrets.randbelow(9) - 4}" />'
+        )
+    chars = []
+    for idx, char in enumerate(code):
+        x = 18 + idx * 24 + secrets.randbelow(4)
+        y = 30 + secrets.randbelow(8)
+        angle = secrets.randbelow(19) - 9
+        chars.append(
+            f'<text x="{x}" y="{y}" transform="rotate({angle} {x} {y})">'
+            f'{html.escape(char)}</text>'
+        )
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="150" height="44" viewBox="0 0 150 44">'
+        '<rect width="150" height="44" rx="8" fill="#eef2ff"/>'
+        '<g fill="none" stroke="#c7d2fe" stroke-width="1.2" stroke-linecap="round">'
+        + "".join(lines)
+        + '</g><g font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="24" '
+        'font-weight="800" fill="#4f46e5">'
+        + "".join(chars)
+        + "</g></svg>"
+    )
+    encoded = base64.b64encode(svg.encode("utf-8")).decode("ascii")
+    return f"data:image/svg+xml;base64,{encoded}"
+
+
+def _issue_login_captcha(request: Request, username: str) -> dict:
+    _clear_login_captcha(request)
+    code = "".join(CAPTCHA_ALPHABET[secrets.randbelow(len(CAPTCHA_ALPHABET))] for _ in range(5))
+    captcha_id = secrets.token_urlsafe(24)
+    username_key = _login_username_key(username)
+    LOGIN_CAPTCHA_CHALLENGES[captcha_id] = {
+        "answer": code,
+        "username": username_key,
+        "expires_at": time.time() + LOGIN_CAPTCHA_TTL_SECONDS,
+    }
+    request.session["login_captcha_id"] = captcha_id
+    request.session["login_captcha_user"] = username_key
+    return {
+        "captcha_required": True,
+        "captcha_image": _captcha_svg_data_url(code),
+        "captcha_ttl_seconds": LOGIN_CAPTCHA_TTL_SECONDS,
+    }
+
+
+def _verify_login_captcha(request: Request, username: str, answer: str) -> bool:
+    _prune_login_state()
+    captcha_id = request.session.get("login_captcha_id")
+    challenge = LOGIN_CAPTCHA_CHALLENGES.get(captcha_id or "")
+    if not captcha_id or not challenge:
+        return False
+    if challenge.get("username") != _login_username_key(username):
+        return False
+    if time.time() > float(challenge.get("expires_at", 0)):
+        _clear_login_captcha(request)
+        return False
+    expected = str(challenge.get("answer") or "")
+    actual = (answer or "").strip().upper()
+    if not actual or not secrets.compare_digest(actual, expected):
+        return False
+    _clear_login_captcha(request)
+    return True
+
+
+def _login_error_response(
+    request: Request,
+    username: str,
+    detail: str,
+    status_code: int = 401,
+    include_captcha: bool = False,
+) -> JSONResponse:
+    payload = {"detail": detail, "captcha_required": bool(include_captcha)}
+    if include_captcha:
+        payload.update(_issue_login_captcha(request, username))
+    return JSONResponse(payload, status_code=status_code)
+
+
+def _auth_public_path(path: str) -> bool:
+    return (
+        path == "/"
+        or path.startswith("/static/")
+        or path in {
+            "/healthz",
+            "/readyz",
+            "/metrics",
+            "/api/config",
+            "/api/login",
+            "/api/login-captcha",
+            "/api/logout",
+            "/api/me",
+        }
+    )
+
+
+def current_user(request: Request) -> dict:
+    return getattr(request.state, "user", None) or {}
+
+
+def current_user_token(request: Request) -> Optional[str]:
+    if not AUTH_ENABLED:
+        return None
+    username = current_user(request).get("username")
+    if not username:
+        raise HTTPException(401, "Authentication required")
+    return username
+
+
+def is_admin_user(user_token: str) -> bool:
+    return (user_token or "").strip().lower() in ADMIN_USERS
+
+
+def admin_identity_candidates(request: Request) -> list[str]:
+    user = current_user(request)
+    candidates = [
+        user.get("username"),
+        user.get("email"),
+        user.get("display_name"),
+    ]
+    if not user.get("username"):
+        candidates.append(request_user(request))
+
+    seen = set()
+    identities = []
+    for candidate in candidates:
+        token = (candidate or "").strip()
+        key = token.lower()
+        if token and key not in seen:
+            seen.add(key)
+            identities.append(token)
+    return identities
+
+
+def request_admin_identity(request: Request) -> Optional[str]:
+    user = current_user(request)
+    if AUTH_ENABLED and not user.get("username"):
+        return None
+    for token in admin_identity_candidates(request):
+        if is_admin_user(token):
+            return token
+    return None
+
+
+def request_is_admin(request: Request) -> bool:
+    return request_admin_identity(request) is not None
+
+
+def require_admin(request: Request) -> str:
+    if AUTH_ENABLED:
+        current_user_token(request)
+    admin_identity = request_admin_identity(request)
+    if not admin_identity:
+        raise HTTPException(403, "需要管理员权限")
+    user = current_user(request)
+    return user.get("username") or admin_identity
+
+
+def _owner_clause(request: Request, alias: str = "") -> tuple[str, list[str]]:
+    token = current_user_token(request)
+    if not token:
+        return "", []
+    prefix = f"{alias}." if alias else ""
+    return f"{prefix}user_token = ?", [token]
+
+
+def _project_access_clause(request: Request, alias: str = "") -> tuple[str, list[str]]:
+    token = current_user_token(request)
+    if not token:
+        return "", []
+    prefix = f"{alias}." if alias else ""
+    return f"({prefix}user_token = ? OR {prefix}is_public = 1)", [token]
+
+
+def _job_access_clause(request: Request, alias: str = "") -> tuple[str, list[str]]:
+    token = current_user_token(request)
+    if not token:
+        return "", []
+    prefix = f"{alias}." if alias else ""
+    project_id = f"{prefix}project_id"
+    return (
+        f"({prefix}user_token = ? OR EXISTS ("
+        f"SELECT 1 FROM projects p_access "
+        f"WHERE p_access.id = {project_id} AND p_access.is_public = 1"
+        f"))",
+        [token],
+    )
+
+
+def _project_response(row: dict, request: Request) -> dict:
+    data = dict(row)
+    data["is_public"] = 1 if data.get("is_public") else 0
+    token = current_user_token(request)
+    data["is_owner"] = True if not token else data.get("user_token") == token
+    data["visibility"] = "shared" if data["is_public"] else "personal"
+    return data
+
+
+def _job_response(row: dict, request: Request) -> dict:
+    data = dict(row)
+    token = current_user_token(request)
+    data["is_owner"] = True if not token else data.get("user_token") == token
+    data["is_pinned"] = 1 if data.get("is_pinned") else 0
+    return data
+
+
+async def ensure_user_row(db, request: Request) -> Optional[str]:
+    token = current_user_token(request)
+    if token:
+        await db.execute("INSERT OR IGNORE INTO users(user_token) VALUES(?)", (token,))
+    return token
+
+
+async def load_owned_job(db, request: Request, job_id: str, columns: str = "*") -> Optional[dict]:
+    owner_sql, owner_params = _owner_clause(request)
+    clauses = ["id=?"]
+    params = [job_id]
+    if owner_sql:
+        clauses.append(owner_sql)
+        params.extend(owner_params)
+    row = await row_to_dict(
+        await (await db.execute(f"SELECT {columns} FROM jobs WHERE {' AND '.join(clauses)}", params)).fetchone()
+    )
+    return row
+
+
+async def load_accessible_job(db, request: Request, job_id: str, columns: str = "*") -> Optional[dict]:
+    access_sql, access_params = _job_access_clause(request)
+    clauses = ["id=?"]
+    params = [job_id]
+    if access_sql:
+        clauses.append(access_sql)
+        params.extend(access_params)
+    row = await row_to_dict(
+        await (await db.execute(f"SELECT {columns} FROM jobs WHERE {' AND '.join(clauses)}", params)).fetchone()
+    )
+    return row
+
+
+async def load_owned_project(db, request: Request, project_id: Optional[str]) -> Optional[dict]:
+    if not project_id:
+        return None
+    owner_sql, owner_params = _owner_clause(request)
+    clauses = ["id=?"]
+    params = [project_id]
+    if owner_sql:
+        clauses.append(owner_sql)
+        params.extend(owner_params)
+    return await row_to_dict(
+        await (await db.execute(f"SELECT * FROM projects WHERE {' AND '.join(clauses)}", params)).fetchone()
+    )
+
+
+async def load_accessible_project(db, request: Request, project_id: Optional[str]) -> Optional[dict]:
+    if not project_id:
+        return None
+    access_sql, access_params = _project_access_clause(request)
+    clauses = ["id=?"]
+    params = [project_id]
+    if access_sql:
+        clauses.append(access_sql)
+        params.extend(access_params)
+    return await row_to_dict(
+        await (await db.execute(f"SELECT * FROM projects WHERE {' AND '.join(clauses)}", params)).fetchone()
+    )
+
+
+async def validate_project_access(db, request: Request, project_id: Optional[str]):
+    if not project_id:
+        return
+    if not await load_accessible_project(db, request, project_id):
+        raise HTTPException(404, "Project not found")
+
+
 def _record_http_metric(method: str, path: str, status: int, duration: float):
     key = (method, path, status)
     item = HTTP_METRICS.setdefault(key, {"count": 0.0, "sum": 0.0})
     item["count"] += 1
     item["sum"] += duration
+
+
+def _usage_day(dt: Optional[datetime] = None) -> str:
+    value = dt or datetime.now(USAGE_TZINFO)
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=USAGE_TZINFO)
+    return value.astimezone(USAGE_TZINFO).date().isoformat()
+
+
+def _usage_sqlite_day_expr(column: str) -> str:
+    # The deployment target uses Asia/Shanghai. Keep historical DB timestamps comparable
+    # to the daily usage buckets even when SQLite stores CURRENT_TIMESTAMP in UTC.
+    if USAGE_TIMEZONE_NAME in {"Asia/Shanghai", "Asia/Chongqing", "PRC", "CST"}:
+        return f"date({column}, '+8 hours')"
+    return f"date({column}, 'localtime')"
+
+
+def _usage_identity(request: Request) -> Optional[tuple[str, str]]:
+    user = current_user(request)
+    token = (user.get("username") or "").strip()
+    display = (user.get("display_name") or token).strip()
+    if not token:
+        token = (
+            request.headers.get("X-Remote-User")
+            or request.headers.get("X-Forwarded-User")
+            or request.headers.get("X-User")
+            or ""
+        ).strip()
+        display = token
+    if not token and not AUTH_ENABLED:
+        token = "local"
+        display = "local"
+    if not token:
+        return None
+    return token, display or token
+
+
+def _should_record_usage(request: Request) -> bool:
+    path = request.url.path
+    if path.startswith("/static/"):
+        return False
+    if path in {"/healthz", "/readyz", "/metrics"}:
+        return False
+    if path.startswith("/api/admin/usage"):
+        return False
+    return True
+
+
+async def record_usage_daily(request: Request, status_code: int):
+    if not _should_record_usage(request):
+        return
+    identity = _usage_identity(request)
+    if not identity:
+        return
+    token, display = identity
+    day = _usage_day()
+    now = datetime.now(timezone.utc).isoformat()
+    path = request.url.path[:240]
+    method = request.method[:16]
+    db = await get_db()
+    try:
+        await db.execute(
+            """
+            INSERT INTO usage_daily(day, user_token, display_name, request_count,
+                                    last_path, last_method, last_status, last_seen_at)
+            VALUES(?,?,?,?,?,?,?,?)
+            ON CONFLICT(day, user_token) DO UPDATE SET
+                display_name=excluded.display_name,
+                request_count=usage_daily.request_count + 1,
+                last_path=excluded.last_path,
+                last_method=excluded.last_method,
+                last_status=excluded.last_status,
+                last_seen_at=excluded.last_seen_at
+            """,
+            (day, token, display, 1, path, method, int(status_code or 0), now),
+        )
+        await db.commit()
+    finally:
+        await db.close()
 
 
 async def write_audit(
@@ -146,17 +778,32 @@ async def write_audit(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
-    await mark_interrupted_jobs()
+    await recover_interrupted_jobs()
+    mark_interrupted_ai_analysis()
     await refresh_storage_cache_for_all_jobs()
     await enqueue_pending_jobs()
     start_analysis_workers()
+    start_ai_analysis_workers()
     try:
         yield
     finally:
+        await stop_ai_analysis_workers()
         await stop_analysis_workers()
 
 app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    try:
+        request.state.user = request.session.get("user")
+    except AssertionError:
+        request.state.user = None
+
+    if AUTH_ENABLED and not _auth_public_path(request.url.path) and not request.state.user:
+        return JSONResponse({"detail": "Authentication required"}, status_code=401)
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -204,28 +851,100 @@ async def request_logging_middleware(request: Request, call_next):
                 "duration_ms": round(duration_ms, 3),
             },
         )
+        try:
+            await record_usage_daily(request, status_code)
+        except Exception as e:
+            logger.warning(
+                "usage_record_failed",
+                extra={
+                    "event": "usage_record_failed",
+                    "request_id": request_id,
+                    "user": request_user(request),
+                    "path": request.url.path,
+                    "error": str(e),
+                },
+            )
 
 
-async def mark_interrupted_jobs():
-    """Fail jobs that were actively running when the previous process exited."""
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=SESSION_SECRET,
+    same_site="lax",
+    https_only=SESSION_COOKIE_SECURE,
+)
+
+
+async def recover_interrupted_jobs():
+    """Requeue analysis jobs interrupted by a previous process restart."""
     db = await get_db()
     try:
-        await db.execute("""
+        cursor = await db.execute("""
             UPDATE jobs
-            SET status='error',
-                error_msg='Server restarted before this analysis completed'
+            SET status='pending',
+                error_msg=''
             WHERE status='running'
-        """)
+               OR (status='error' AND error_msg=?)
+        """, (INTERRUPTED_ANALYSIS_ERROR,))
+        if cursor.rowcount:
+            logger.info(
+                "analysis_jobs_recovered",
+                extra={"event": "analysis_jobs_recovered", "count": cursor.rowcount},
+            )
         await db.commit()
     finally:
         await db.close()
 
 
+def mark_interrupted_ai_analysis():
+    """Fail AI analysis status files left in queued/running after a restart."""
+    if not os.path.isdir(STORAGE_DIR):
+        return
+    for jid in os.listdir(STORAGE_DIR):
+        status_path = ai_analysis_status_path(jid)
+        if not os.path.exists(status_path):
+            continue
+        status = _read_ai_analysis_status(jid)
+        if status.get("status") not in {"queued", "running"}:
+            continue
+        _write_ai_analysis_status(jid, {
+            **status,
+            "status": "error",
+            "progress": 100,
+            "error": "Server restarted before this AI analysis completed",
+            "finished_at": _utc_now_iso(),
+            "updated_at": _utc_now_iso(),
+        })
+
+
+def _get_analysis_queue() -> asyncio.Queue[str]:
+    global analysis_queue, analysis_queue_loop
+    loop = asyncio.get_running_loop()
+    if analysis_queue_loop is not loop:
+        analysis_queue = asyncio.Queue()
+        analysis_queue_loop = loop
+        analysis_workers.clear()
+    return analysis_queue
+
+
+def _get_ai_analysis_queue() -> asyncio.Queue[tuple[str, dict]]:
+    global ai_analysis_queue, ai_analysis_queue_loop
+    loop = asyncio.get_running_loop()
+    if ai_analysis_queue_loop is not loop:
+        ai_analysis_queue = asyncio.Queue()
+        ai_analysis_queue_loop = loop
+        ai_analysis_workers.clear()
+        ai_analysis_tasks.clear()
+        ai_analysis_queued_jobs.clear()
+        ai_analysis_locks.clear()
+    return ai_analysis_queue
+
+
 async def enqueue_pending_jobs():
-    while not analysis_queue.empty():
+    queue = _get_analysis_queue()
+    while not queue.empty():
         try:
-            analysis_queue.get_nowait()
-            analysis_queue.task_done()
+            queue.get_nowait()
+            queue.task_done()
         except asyncio.QueueEmpty:
             break
     db = await get_db()
@@ -236,33 +955,100 @@ async def enqueue_pending_jobs():
     finally:
         await db.close()
     for row in rows:
-        await analysis_queue.put(row["id"])
+        await queue.put(row["id"])
 
 
 def start_analysis_workers():
+    queue = _get_analysis_queue()
     for index in range(ANALYSIS_CONCURRENCY):
-        analysis_workers.append(asyncio.create_task(_analysis_worker(index)))
+        analysis_workers.append(asyncio.create_task(_analysis_worker(index, queue)))
+
+
+def start_ai_analysis_workers():
+    if not CLAUDE_ANALYSIS_ENABLED:
+        return
+    queue = _get_ai_analysis_queue()
+    ai_analysis_workers[:] = [task for task in ai_analysis_workers if not task.done()]
+    for index in range(len(ai_analysis_workers), AI_ANALYSIS_CONCURRENCY):
+        ai_analysis_workers.append(asyncio.create_task(_ai_analysis_worker(index, queue)))
 
 
 async def stop_analysis_workers():
+    global analysis_queue_loop
     for task in analysis_workers:
         task.cancel()
     if analysis_workers:
         await asyncio.gather(*analysis_workers, return_exceptions=True)
     analysis_workers.clear()
+    analysis_queue_loop = None
+
+
+async def stop_ai_analysis_workers():
+    global ai_analysis_queue_loop
+    for task in ai_analysis_workers:
+        task.cancel()
+    if ai_analysis_workers:
+        await asyncio.gather(*ai_analysis_workers, return_exceptions=True)
+    ai_analysis_workers.clear()
+    ai_analysis_tasks.clear()
+    ai_analysis_queued_jobs.clear()
+    while not ai_analysis_queue.empty():
+        try:
+            ai_analysis_queue.get_nowait()
+            ai_analysis_queue.task_done()
+        except asyncio.QueueEmpty:
+            break
+    ai_analysis_queue_loop = None
 
 
 async def enqueue_analysis_job(job_id: str):
-    await analysis_queue.put(job_id)
+    await _get_analysis_queue().put(job_id)
 
 
-async def _analysis_worker(index: int):
+async def enqueue_ai_analysis_job(job_id: str, context: Optional[dict] = None):
+    queue = _get_ai_analysis_queue()
+    ai_analysis_queued_jobs.add(job_id)
+    await queue.put((job_id, dict(context or {})))
+
+
+async def _analysis_worker(index: int, queue: asyncio.Queue[str]):
     while True:
-        job_id = await analysis_queue.get()
+        job_id = await queue.get()
         try:
             await run_analysis(job_id)
         finally:
-            analysis_queue.task_done()
+            queue.task_done()
+
+
+async def _ai_analysis_worker(index: int, queue: asyncio.Queue[tuple[str, dict]]):
+    while True:
+        job_id, context = await queue.get()
+        ai_analysis_queued_jobs.discard(job_id)
+        task = asyncio.current_task()
+        lock = ai_analysis_locks.setdefault(job_id, asyncio.Lock())
+        try:
+            async with lock:
+                if task is not None:
+                    ai_analysis_tasks[job_id] = task
+                try:
+                    await _run_ai_analysis_task(job_id, context)
+                finally:
+                    if task is not None and ai_analysis_tasks.get(job_id) is task:
+                        ai_analysis_tasks.pop(job_id, None)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.exception(
+                "ai_analysis_worker_failed",
+                extra={
+                    "event": "ai_analysis_worker_failed",
+                    "job_id": job_id,
+                    "worker": index,
+                    "error": str(e),
+                },
+            )
+        finally:
+            queue.task_done()
 
 
 def job_dir(job_id: str) -> str:
@@ -271,6 +1057,67 @@ def job_dir(job_id: str) -> str:
 
 def result_dir(job_id: str) -> str:
     return os.path.join(job_dir(job_id), "results")
+
+
+def ai_analysis_dir(job_id: str) -> str:
+    return os.path.join(result_dir(job_id), AI_ANALYSIS_DIRNAME)
+
+
+def ai_analysis_status_path(job_id: str) -> str:
+    return os.path.join(ai_analysis_dir(job_id), AI_ANALYSIS_STATUS_FILE)
+
+
+def ai_analysis_report_path(job_id: str) -> str:
+    return os.path.join(ai_analysis_dir(job_id), AI_ANALYSIS_REPORT_FILE)
+
+
+def ai_analysis_versions_dir(job_id: str) -> str:
+    return os.path.join(ai_analysis_dir(job_id), AI_ANALYSIS_VERSIONS_DIR)
+
+
+def ai_analysis_version_dir(job_id: str, version_id: str) -> str:
+    return os.path.join(ai_analysis_versions_dir(job_id), version_id)
+
+
+def ai_analysis_version_report_path(job_id: str, version_id: str) -> str:
+    return os.path.join(ai_analysis_version_dir(job_id, version_id), AI_ANALYSIS_VERSION_REPORT_FILE)
+
+
+def ai_analysis_version_meta_path(job_id: str, version_id: str) -> str:
+    return os.path.join(ai_analysis_version_dir(job_id, version_id), AI_ANALYSIS_VERSION_META_FILE)
+
+
+def feedback_dir() -> str:
+    return os.path.join(STORAGE_DIR, FEEDBACK_DIRNAME)
+
+
+def feedback_message_dir(message_id: str) -> str:
+    return os.path.join(feedback_dir(), message_id)
+
+
+def _safe_feedback_storage_path(path: str) -> Optional[str]:
+    if not path:
+        return None
+    root = os.path.abspath(feedback_dir())
+    full = os.path.abspath(path)
+    try:
+        if os.path.commonpath([root, full]) != root:
+            return None
+    except ValueError:
+        return None
+    return full
+
+
+def _remove_feedback_storage(paths: list[str], message_ids: list[str]):
+    for path in paths:
+        full = _safe_feedback_storage_path(path)
+        if full and os.path.isfile(full):
+            with contextlib.suppress(OSError):
+                os.remove(full)
+    for message_id in message_ids:
+        full = _safe_feedback_storage_path(feedback_message_dir(message_id))
+        if full and os.path.isdir(full):
+            shutil.rmtree(full, ignore_errors=True)
 
 
 def require_code_execution_enabled():
@@ -285,6 +1132,10 @@ def _text_or_empty(value: Optional[str]) -> str:
 
 def _format_command(command: list[str]) -> str:
     return " ".join(shlex.quote(str(part)) for part in command)
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _format_triton_execution_error(
@@ -324,9 +1175,40 @@ def _format_triton_execution_error(
 
 async def save_upload(upload: UploadFile, dest: str):
     os.makedirs(os.path.dirname(dest), exist_ok=True)
+    written = 0
     async with aiofiles.open(dest, "wb") as f:
         while chunk := await upload.read(1 << 20):  # 1 MB chunks
+            written += len(chunk)
+            if MAX_UPLOAD_BYTES and written > MAX_UPLOAD_BYTES:
+                raise HTTPException(413, f"上传文件超过限制: {MAX_UPLOAD_BYTES} bytes")
             await f.write(chunk)
+
+
+def _storage_disk_path() -> str:
+    if os.path.exists(STORAGE_DIR):
+        return STORAGE_DIR
+    parent = os.path.dirname(STORAGE_DIR) or "."
+    return parent if os.path.exists(parent) else "."
+
+
+def _ensure_storage_capacity():
+    if not MIN_STORAGE_FREE_BYTES:
+        return
+    disk = shutil.disk_usage(_storage_disk_path())
+    if disk.free < MIN_STORAGE_FREE_BYTES:
+        raise HTTPException(
+            507,
+            f"存储空间不足，当前可用 {disk.free} bytes，低于保留阈值 {MIN_STORAGE_FREE_BYTES} bytes",
+        )
+
+
+def _format_size(num_bytes: int) -> str:
+    value = float(max(0, num_bytes))
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if value < 1024 or unit == "TiB":
+            return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
+        value /= 1024
+    return f"{num_bytes} B"
 
 
 def _extract_gz_to_json(gz_path: str, dest_path: str):
@@ -401,6 +1283,8 @@ async def save_and_extract(upload: UploadFile, dest_json: str, gzip_path: list):
         await save_upload(upload, gzip_path[0])
         try:
             is_tar_archive = await asyncio.to_thread(_is_tar_archive, gzip_path[0])
+            if not is_tar_archive:
+                return
             await asyncio.to_thread(_extract_gz_to_json, gzip_path[0], dest_json)
             if is_tar_archive:
                 await asyncio.to_thread(_compress_json_to_gz, dest_json, gzip_path[0])
@@ -449,15 +1333,106 @@ def _content_disposition(filename: str, disposition: str = "attachment") -> str:
     return f'{disposition}; filename="{filename}"'
 
 
+def _app_base_url(request: Request) -> str:
+    if PUBLIC_BASE_URL:
+        return PUBLIC_BASE_URL
+    host = request.headers.get("X-Forwarded-Host") or request.headers.get("Host")
+    proto = request.headers.get("X-Forwarded-Proto") or request.url.scheme
+    if host:
+        return f"{proto}://{host}"
+    return str(request.base_url).rstrip("/")
+
+
+def _job_share_url(request: Request, jid: str) -> str:
+    return f"{_app_base_url(request)}/#/job/{jid}"
+
+
+def _markdown_cell(value, max_len: int = 160) -> str:
+    text = str(value if value is not None else "").replace("\n", " ").replace("\r", " ")
+    if len(text) > max_len:
+        text = text[:max_len - 3] + "..."
+    return text.replace("|", "\\|")
+
+
+def _markdown_table(fields: list[str], rows: list[dict]) -> str:
+    if not fields:
+        return "_无数据_"
+    lines = [
+        "| " + " | ".join(_markdown_cell(field, 80) for field in fields) + " |",
+        "| " + " | ".join("---" for _ in fields) + " |",
+    ]
+    for row in rows:
+        lines.append("| " + " | ".join(_markdown_cell(row.get(field)) for field in fields) + " |")
+    return "\n".join(lines)
+
+
+def _report_csv_sections(jid: str, mode: str) -> list[str]:
+    title_by_file = {
+        "kernel_types_avg.csv": "Kernel 类型汇总",
+        "kernel_types_cmp.csv": "Kernel 类型对比",
+        "all_kernels_avg.csv": "热点 Kernel",
+        "all_kernels_cmp.csv": "Kernel 对比",
+        "triton_kernels_avg.csv": "Triton Kernel",
+        "triton_kernels_cmp.csv": "Triton Kernel 对比",
+        "aten_ops_avg.csv": "Aten Ops",
+        "aten_ops_cmp.csv": "Aten Ops 对比",
+        "cncl_ops_avg.csv": "CNCL Ops",
+        "cncl_ops_cmp.csv": "CNCL Ops 对比",
+    }
+    preferred = (
+        ["kernel_types_cmp.csv", "all_kernels_cmp.csv", "triton_kernels_cmp.csv", "aten_ops_cmp.csv", "cncl_ops_cmp.csv"]
+        if mode == "compare"
+        else ["kernel_types_avg.csv", "all_kernels_avg.csv", "triton_kernels_avg.csv", "aten_ops_avg.csv", "cncl_ops_avg.csv"]
+    )
+    sections = []
+    for filename in preferred:
+        path = os.path.join(result_dir(jid), filename)
+        if not os.path.exists(path):
+            continue
+        page = read_csv_page(path, limit=10, offset=0)
+        sections.append(f"### {title_by_file.get(filename, filename)}\n\n{_markdown_table(page['fields'], page['rows'])}")
+    return sections
+
+
+def _console_excerpt(console_out: str, max_lines: int = 120) -> str:
+    lines = (console_out or "").splitlines()
+    if not lines:
+        return "无控制台输出。"
+    suffix = ""
+    if len(lines) > max_lines:
+        suffix = f"\n... 省略 {len(lines) - max_lines} 行"
+    return "\n".join(lines[:max_lines]) + suffix
+
+
 def csv_to_rows(path: str) -> dict:
     """Read a CSV file and return {fields, rows}."""
     if not os.path.exists(path):
         return {"fields": [], "rows": []}
     with open(path, newline="") as f:
         reader = csv.DictReader(f)
-        fields = _augment_result_csv_fields(os.path.basename(path), reader.fieldnames or [])
-        rows = [_augment_result_csv_row(os.path.basename(path), row) for row in reader]
+        fields = _result_csv_fields(os.path.basename(path), reader.fieldnames or [])
+        rows = [_result_csv_row(os.path.basename(path), row) for row in reader]
         return {"fields": fields, "rows": rows}
+
+
+def _is_percent_csv_field(field: str) -> bool:
+    name = (field or "").strip().lower()
+    return (
+        name == "pct"
+        or name.startswith("pct_")
+        or name.endswith("_pct")
+        or "_pct_" in name
+        or "percent" in name
+        or "percentage" in name
+    )
+
+
+def _filter_result_csv_fields(fields: list[str]) -> list[str]:
+    return [field for field in fields if not _is_percent_csv_field(field)]
+
+
+def _filter_result_csv_row(row: dict) -> dict:
+    return {field: value for field, value in row.items() if not _is_percent_csv_field(field)}
 
 
 def _augment_result_csv_fields(filename: str, fields: list[str]) -> list[str]:
@@ -472,6 +1447,14 @@ def _augment_result_csv_row(filename: str, row: dict) -> dict:
         row = dict(row)
         row["family"] = extract_kernel_family(row["kernel_name"])
     return row
+
+
+def _result_csv_fields(filename: str, fields: list[str]) -> list[str]:
+    return _filter_result_csv_fields(_augment_result_csv_fields(filename, fields))
+
+
+def _result_csv_row(filename: str, row: dict) -> dict:
+    return _filter_result_csv_row(_augment_result_csv_row(filename, row))
 
 
 def _ordered_result_csv_names(rdir: str) -> list[str]:
@@ -523,12 +1506,1452 @@ def collect_result_files(jid: str) -> dict:
         fields = []
         with open(full, newline="") as f:
             reader = csv.reader(f)
-            fields = _augment_result_csv_fields(name, next(reader, []) or [])
+            fields = _result_csv_fields(name, next(reader, []) or [])
         files[name] = {
             "fields": fields,
             "size": _path_size(full),
         }
     return files
+
+
+def _read_ai_analysis_status(jid: str) -> dict:
+    path = ai_analysis_status_path(jid)
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _write_ai_analysis_status(jid: str, status: dict):
+    os.makedirs(ai_analysis_dir(jid), exist_ok=True)
+    path = ai_analysis_status_path(jid)
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w") as f:
+        json.dump(status, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, path)
+
+
+def _normalize_ai_user_prompt(value) -> str:
+    text = str(value or "").strip()
+    if len(text) > AI_ANALYSIS_USER_PROMPT_MAX_CHARS:
+        text = text[:AI_ANALYSIS_USER_PROMPT_MAX_CHARS].rstrip()
+    return text
+
+
+def _ai_backend_model_name() -> str:
+    return CLAUDE_ANALYSIS_MODEL or "Claude Code default"
+
+
+def _new_ai_analysis_version_id(generated_at: str = "") -> str:
+    dt = _parse_iso_datetime(generated_at) if generated_at else None
+    stamp = (dt or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%SZ")
+    return f"{stamp}-{secrets.token_hex(4)}"
+
+
+def _safe_ai_analysis_version_id(version_id: str) -> str:
+    value = (version_id or "").strip()
+    if not value or not AI_ANALYSIS_VERSION_ID_RE.match(value):
+        return ""
+    return value
+
+
+def _write_ai_version_metadata(path: str, metadata: dict) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(metadata, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, path)
+
+
+def _ai_version_report_path_from_metadata(jid: str, metadata: dict) -> str:
+    analysis_root = os.path.abspath(ai_analysis_dir(jid))
+    rel_path = metadata.get("report_path") or ""
+    if not rel_path and metadata.get("id") == "current":
+        return ai_analysis_report_path(jid)
+    if not rel_path and metadata.get("id"):
+        rel_path = os.path.join(
+            AI_ANALYSIS_VERSIONS_DIR,
+            metadata["id"],
+            AI_ANALYSIS_VERSION_REPORT_FILE,
+        )
+    full = os.path.abspath(os.path.join(analysis_root, rel_path))
+    try:
+        if os.path.commonpath([analysis_root, full]) != analysis_root:
+            return ""
+    except ValueError:
+        return ""
+    return full
+
+
+def _save_ai_analysis_version(
+    jid: str,
+    content: str,
+    status: dict,
+    job: Optional[dict] = None,
+    notification_context: Optional[dict] = None,
+) -> dict:
+    normalized_content = _normalize_ai_report_markdown(content or "")
+    if not normalized_content.strip():
+        return {}
+
+    context = notification_context or {}
+    job = job or {}
+    generated_at = status.get("finished_at") or status.get("updated_at") or _utc_now_iso()
+    for _ in range(5):
+        version_id = _new_ai_analysis_version_id(generated_at)
+        version_dir = ai_analysis_version_dir(jid, version_id)
+        try:
+            os.makedirs(version_dir, exist_ok=False)
+            break
+        except FileExistsError:
+            continue
+    else:
+        version_id = f"{_new_ai_analysis_version_id(generated_at)}-{secrets.token_hex(2)}"
+        version_dir = ai_analysis_version_dir(jid, version_id)
+        os.makedirs(version_dir, exist_ok=False)
+
+    report_path = ai_analysis_version_report_path(jid, version_id)
+    _write_ai_report(report_path, normalized_content)
+    timing = _ai_analysis_timing(status)
+    metadata = {
+        "id": version_id,
+        "job_id": jid,
+        "status": status.get("status", ""),
+        "error": status.get("error", ""),
+        "mode": status.get("mode") or job.get("mode") or "",
+        "skill": status.get("skill", ""),
+        "model": status.get("model") or _ai_backend_model_name(),
+        "user_prompt": status.get("user_prompt") or context.get("user_prompt") or "",
+        "generated_at": generated_at,
+        "started_at": status.get("started_at", ""),
+        "finished_at": status.get("finished_at", generated_at),
+        "updated_at": status.get("updated_at", generated_at),
+        "duration_ms": timing.get("duration_ms") or timing.get("elapsed_ms") or status.get("duration_ms"),
+        "trigger_user_token": status.get("trigger_user_token") or context.get("trigger_user_token") or "",
+        "trigger_user_display": context.get("trigger_user_display") or status.get("trigger_user_display") or "",
+        "trigger_user_email": context.get("trigger_user_email") or status.get("trigger_user_email") or "",
+        "owner_user_token": status.get("owner_user_token") or context.get("owner_user_token") or job.get("user_token") or "",
+        "report_path": os.path.join(
+            AI_ANALYSIS_VERSIONS_DIR,
+            version_id,
+            AI_ANALYSIS_VERSION_REPORT_FILE,
+        ),
+        "report_exists": True,
+    }
+    _write_ai_version_metadata(ai_analysis_version_meta_path(jid, version_id), metadata)
+    logger.info(
+        "ai_analysis_version_saved",
+        extra={
+            "event": "ai_analysis_version_saved",
+            "job_id": jid,
+            "version_id": version_id,
+            "status": metadata["status"],
+            "model": metadata["model"],
+        },
+    )
+    return metadata
+
+
+def _legacy_ai_analysis_version(jid: str, status: dict) -> dict:
+    report_path = ai_analysis_report_path(jid)
+    generated_at = (
+        status.get("finished_at")
+        or status.get("updated_at")
+        or datetime.fromtimestamp(os.path.getmtime(report_path), timezone.utc).isoformat()
+    )
+    timing = _ai_analysis_timing({
+        "started_at": status.get("started_at", ""),
+        "finished_at": status.get("finished_at") or generated_at,
+    })
+    return {
+        "id": "current",
+        "job_id": jid,
+        "status": status.get("status") or "done",
+        "error": status.get("error", ""),
+        "mode": status.get("mode", ""),
+        "skill": status.get("skill", ""),
+        "model": status.get("model") or "未知",
+        "user_prompt": status.get("user_prompt", ""),
+        "generated_at": generated_at,
+        "started_at": status.get("started_at", ""),
+        "finished_at": status.get("finished_at") or generated_at,
+        "updated_at": status.get("updated_at") or generated_at,
+        "duration_ms": timing.get("duration_ms") or timing.get("elapsed_ms"),
+        "trigger_user_token": status.get("trigger_user_token", ""),
+        "trigger_user_display": status.get("trigger_user_display", ""),
+        "trigger_user_email": status.get("trigger_user_email", ""),
+        "owner_user_token": status.get("owner_user_token", ""),
+        "report_path": AI_ANALYSIS_REPORT_FILE,
+        "report_exists": True,
+        "legacy": True,
+    }
+
+
+def _collect_ai_analysis_versions(jid: str, status: Optional[dict] = None) -> list[dict]:
+    status = status or _read_ai_analysis_status(jid)
+    versions: list[dict] = []
+    versions_root = ai_analysis_versions_dir(jid)
+    if os.path.isdir(versions_root):
+        for version_id in sorted(os.listdir(versions_root)):
+            if not _safe_ai_analysis_version_id(version_id):
+                continue
+            meta_path = ai_analysis_version_meta_path(jid, version_id)
+            if not os.path.isfile(meta_path):
+                continue
+            try:
+                with open(meta_path, encoding="utf-8") as f:
+                    metadata = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(metadata, dict):
+                continue
+            metadata["id"] = version_id
+            report_path = _ai_version_report_path_from_metadata(jid, metadata)
+            metadata["report_exists"] = bool(report_path and os.path.exists(report_path))
+            metadata.setdefault("model", "未知")
+            metadata.setdefault("generated_at", metadata.get("finished_at") or metadata.get("updated_at") or "")
+            versions.append(metadata)
+
+    if not versions and os.path.exists(ai_analysis_report_path(jid)):
+        versions.append(_legacy_ai_analysis_version(jid, status))
+
+    def sort_key(item: dict) -> tuple[datetime, str]:
+        dt = _parse_iso_datetime(item.get("generated_at") or item.get("finished_at") or "")
+        return (dt or datetime.fromtimestamp(0, timezone.utc), item.get("id", ""))
+
+    versions.sort(key=sort_key, reverse=True)
+    return versions
+
+
+def _select_ai_analysis_version(jid: str, version_id: str = "", status: Optional[dict] = None) -> Optional[dict]:
+    versions = _collect_ai_analysis_versions(jid, status)
+    if not versions:
+        return None
+    if not version_id:
+        return versions[0]
+    safe_id = _safe_ai_analysis_version_id(version_id)
+    if not safe_id:
+        return None
+    return next((item for item in versions if item.get("id") == safe_id), None)
+
+
+def _ensure_current_ai_report_versioned(jid: str, status: Optional[dict] = None) -> None:
+    versions_root = ai_analysis_versions_dir(jid)
+    if os.path.isdir(versions_root):
+        for version_id in os.listdir(versions_root):
+            if _safe_ai_analysis_version_id(version_id) and os.path.isfile(ai_analysis_version_meta_path(jid, version_id)):
+                return
+    content = _read_text_file(ai_analysis_report_path(jid))
+    if not content.strip():
+        return
+    status = status or _read_ai_analysis_status(jid) or {"status": "done"}
+    _save_ai_analysis_version(jid, content, status)
+
+
+def _find_latest_ai_report(analysis_dir: str) -> Optional[str]:
+    candidates = []
+    for root, dirs, files in os.walk(analysis_dir):
+        dirs[:] = [
+            name for name in dirs
+            if not name.startswith(".") and name != AI_ANALYSIS_VERSIONS_DIR
+        ]
+        for filename in files:
+            if not filename.lower().endswith(".md") or filename == AI_ANALYSIS_REPORT_FILE:
+                continue
+            path = os.path.join(root, filename)
+            priority = 1 if filename == "report.md" else 0
+            candidates.append((priority, os.path.getmtime(path), path))
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    return candidates[0][2]
+
+
+def _read_text_file(path: str) -> str:
+    if not os.path.exists(path):
+        return ""
+    with open(path, encoding="utf-8", errors="replace") as f:
+        return f.read()
+
+
+def _detect_ai_analysis_failure(content: str) -> str:
+    lowered = (content or "").lower()
+    for pattern in AI_ANALYSIS_FAILURE_PATTERNS:
+        if pattern in lowered:
+            return pattern
+    return ""
+
+
+def _ai_artifact_priority(path: str) -> tuple[int, str]:
+    basename = os.path.basename(path)
+    if path == AI_ANALYSIS_REPORT_FILE:
+        return (0, path)
+    if basename == "report.md":
+        return (1, path)
+    if basename == "stdout.txt":
+        return (2, path)
+    if basename == "stderr.txt":
+        return (3, path)
+    if basename.lower().endswith(".md"):
+        return (4, path)
+    return (5, path)
+
+
+def _collect_ai_analysis_artifacts(jid: str) -> list[dict]:
+    analysis_dir = ai_analysis_dir(jid)
+    if not os.path.isdir(analysis_dir):
+        return []
+
+    root_abs = os.path.abspath(analysis_dir)
+    artifacts = []
+    total_read = 0
+    for root, dirs, files in os.walk(root_abs):
+        dirs[:] = [
+            name for name in dirs
+            if not name.startswith(".") and not (root == root_abs and name == AI_ANALYSIS_VERSIONS_DIR)
+        ]
+        for filename in sorted(files):
+            if filename.startswith(".") or filename.endswith(".tmp"):
+                continue
+            if filename in AI_ANALYSIS_INTERNAL_FILES:
+                continue
+            ext = os.path.splitext(filename)[1].lower()
+            if ext not in AI_ANALYSIS_ARTIFACT_EXTENSIONS:
+                continue
+
+            full = os.path.abspath(os.path.join(root, filename))
+            try:
+                if os.path.commonpath([root_abs, full]) != root_abs:
+                    continue
+            except ValueError:
+                continue
+            rel_path = os.path.relpath(full, root_abs)
+            size = _path_size(full)
+            remaining = max(0, AI_ANALYSIS_ARTIFACT_MAX_TOTAL_BYTES - total_read)
+            read_limit = min(size, AI_ANALYSIS_ARTIFACT_MAX_BYTES, remaining)
+            content = ""
+            truncated = size > read_limit
+            if read_limit > 0:
+                with open(full, "rb") as f:
+                    data = f.read(read_limit)
+                total_read += len(data)
+                content = data.decode("utf-8", errors="replace")
+            artifacts.append({
+                "path": rel_path,
+                "name": filename,
+                "size": size,
+                "mtime": datetime.fromtimestamp(os.path.getmtime(full), timezone.utc).isoformat(),
+                "truncated": truncated,
+                "content": content,
+            })
+
+    artifacts.sort(key=lambda item: _ai_artifact_priority(item["path"]))
+    return artifacts
+
+
+def _parse_iso_datetime(value: str) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        normalized = str(value).replace("Z", "+00:00")
+        dt = datetime.fromisoformat(normalized)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
+def _ai_analysis_progress(status: dict) -> int:
+    explicit = status.get("progress")
+    try:
+        if explicit is not None:
+            return max(0, min(100, int(explicit)))
+    except (TypeError, ValueError):
+        pass
+    state = status.get("status")
+    phase = status.get("phase")
+    if state == "done":
+        return 100
+    if state == "error":
+        return 100
+    if state == "queued":
+        return 5
+    if state == "running":
+        return {"queued": 5, "diagnosing": 20, "analyzing": 55}.get(phase, 35)
+    return 0
+
+
+def _ai_analysis_timing(status: dict) -> dict:
+    started = _parse_iso_datetime(status.get("started_at") or "")
+    if not started:
+        return {"elapsed_ms": 0}
+    finished = _parse_iso_datetime(status.get("finished_at") or "")
+    end = finished or datetime.now(timezone.utc)
+    elapsed_ms = max(0, int((end - started).total_seconds() * 1000))
+    timing = {"elapsed_ms": elapsed_ms}
+    if finished:
+        timing["duration_ms"] = elapsed_ms
+    return timing
+
+
+def collect_ai_analysis(jid: str) -> dict:
+    status = _read_ai_analysis_status(jid)
+    report_path = ai_analysis_report_path(jid)
+    report_exists = os.path.exists(report_path)
+    if not status and report_exists:
+        status = {"status": "done", "updated_at": datetime.fromtimestamp(os.path.getmtime(report_path), timezone.utc).isoformat()}
+    if not status:
+        status = {"status": "not_started"}
+    if status.get("status") == "running" and jid not in ai_analysis_tasks:
+        status = {
+            **status,
+            "status": "error",
+            "error": "Server restarted before this AI analysis completed",
+        }
+    timing = _ai_analysis_timing(status)
+    versions = _collect_ai_analysis_versions(jid, status)
+    selected_version = versions[0] if versions else None
+    report_exists = report_exists or bool(selected_version and selected_version.get("report_exists"))
+    return {
+        "enabled": CLAUDE_ANALYSIS_ENABLED,
+        "status": status.get("status", "not_started"),
+        "error": status.get("error", ""),
+        "mode": status.get("mode", ""),
+        "skill": status.get("skill", ""),
+        "model": status.get("model") or _ai_backend_model_name(),
+        "phase": status.get("phase", ""),
+        "progress": _ai_analysis_progress(status),
+        "diagnostics": status.get("diagnostics"),
+        "started_at": status.get("started_at", ""),
+        "finished_at": status.get("finished_at", ""),
+        "updated_at": status.get("updated_at", ""),
+        **timing,
+        "report_exists": report_exists,
+        "generated_at": selected_version.get("generated_at", "") if selected_version else "",
+        "latest_version_id": selected_version.get("id", "") if selected_version else "",
+        "selected_version_id": selected_version.get("id", "") if selected_version else "",
+        "selected_version": selected_version,
+        "versions": versions,
+    }
+
+
+_AI_FINDING_BULLET_RE = re.compile(
+    r"^\s{0,3}[-*+]\s+(?:\*\*)?(结论|证据|建议)(?:\*\*)?\s*[:：]\s*(.*?)\s*$"
+)
+
+
+def _format_ai_finding_blocks(items: list[tuple[str, str]]) -> Optional[list[str]]:
+    if len(items) < 3:
+        return None
+    entries: list[dict[str, list[str]]] = []
+    current: dict[str, list[str]] = {}
+    for label, text in items:
+        if label == "结论" and current:
+            entries.append(current)
+            current = {}
+        current.setdefault(label, []).append(text)
+    if current:
+        entries.append(current)
+
+    meaningful = [
+        entry for entry in entries
+        if entry.get("结论") and (entry.get("证据") or entry.get("建议"))
+    ]
+    if not meaningful:
+        return None
+
+    lines: list[str] = []
+    for idx, entry in enumerate(entries, 1):
+        conclusion = (entry.get("结论") or ["关键问题"])[0].strip()
+        title = re.sub(r"[。；;，,.\s]+$", "", conclusion)
+        if len(title) > 52:
+            title = title[:52].rstrip() + "..."
+        lines.extend([f"### 发现 {idx}：{title or '关键问题'}", ""])
+        for label in ("结论", "证据", "建议"):
+            values = [value.strip() for value in entry.get(label, []) if value.strip()]
+            if not values:
+                continue
+            if len(values) == 1:
+                lines.append(f"**{label}：** {values[0]}")
+            else:
+                lines.append(f"**{label}：**")
+                lines.extend(f"- {value}" for value in values)
+            lines.append("")
+    while lines and not lines[-1]:
+        lines.pop()
+    return lines
+
+
+def _normalize_ai_report_markdown(content: str) -> str:
+    if not content:
+        return ""
+    source = str(content).replace("\r\n", "\n").replace("\r", "\n")
+    lines = source.split("\n")
+    output: list[str] = []
+    in_fence = False
+    i = 0
+    while i < len(lines):
+        stripped = lines[i].strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            output.append(lines[i])
+            i += 1
+            continue
+        if in_fence:
+            output.append(lines[i])
+            i += 1
+            continue
+
+        match = _AI_FINDING_BULLET_RE.match(lines[i])
+        if not match:
+            output.append(lines[i])
+            i += 1
+            continue
+
+        start = i
+        items: list[tuple[str, str]] = []
+        while i < len(lines):
+            bullet = _AI_FINDING_BULLET_RE.match(lines[i])
+            if bullet:
+                items.append((bullet.group(1), bullet.group(2).strip()))
+                i += 1
+                continue
+            if not lines[i].strip() and i + 1 < len(lines) and _AI_FINDING_BULLET_RE.match(lines[i + 1]):
+                i += 1
+                continue
+            break
+
+        formatted = _format_ai_finding_blocks(items)
+        if not formatted:
+            output.extend(lines[start:i])
+            continue
+        if output and output[-1].strip():
+            output.append("")
+        output.extend(formatted)
+        if i < len(lines) and lines[i].strip():
+            output.append("")
+
+    normalized = "\n".join(output).rstrip()
+    return normalized + ("\n" if source.endswith("\n") else "")
+
+
+def _read_ai_analysis_report(jid: str, version_id: str = "") -> str:
+    version = _select_ai_analysis_version(jid, version_id)
+    if not version:
+        return ""
+    path = _ai_version_report_path_from_metadata(jid, version)
+    if not path:
+        return ""
+    return _normalize_ai_report_markdown(_read_text_file(path))
+
+
+class _SafeFormatDict(dict):
+    def __missing__(self, key):
+        return "{" + key + "}"
+
+
+def _build_claude_command(prompt: str, values: dict) -> list[str]:
+    values = {
+        **values,
+        "prompt": prompt,
+        "single_skill": CLAUDE_SINGLE_TRACE_SKILL,
+        "compare_skill": CLAUDE_COMPARE_TRACE_SKILL,
+    }
+    if CLAUDE_ANALYSIS_COMMAND_TEMPLATE.strip():
+        raw_parts = shlex.split(CLAUDE_ANALYSIS_COMMAND_TEMPLATE)
+        command = [part.format_map(_SafeFormatDict(values)) for part in raw_parts]
+        if "{prompt}" not in CLAUDE_ANALYSIS_COMMAND_TEMPLATE:
+            command.append(prompt)
+        return _normalize_claude_command(command)
+
+    command = shlex.split(CLAUDE_ANALYSIS_COMMAND) or ["claude"]
+    if CLAUDE_ANALYSIS_EXTRA_ARGS.strip():
+        command.extend(
+            part.format_map(_SafeFormatDict(values))
+            for part in shlex.split(CLAUDE_ANALYSIS_EXTRA_ARGS)
+        )
+    command.extend(["-p", prompt])
+    return _normalize_claude_command(command)
+
+
+def _normalize_claude_command(command: list[str]) -> list[str]:
+    normalized = []
+    has_skip_permissions = "--dangerously-skip-permissions" in command
+    i = 0
+    while i < len(command):
+        part = command[i]
+        if part == "--permission-mode" and i + 1 < len(command) and command[i + 1] == "bypassPermissions":
+            if not has_skip_permissions:
+                normalized.append("--dangerously-skip-permissions")
+                has_skip_permissions = True
+            i += 2
+            continue
+        if part == "--permission-mode=bypassPermissions":
+            if not has_skip_permissions:
+                normalized.append("--dangerously-skip-permissions")
+                has_skip_permissions = True
+            i += 1
+            continue
+        normalized.append(part)
+        i += 1
+    return normalized
+
+
+def _validate_claude_command(command: list[str]) -> None:
+    executable = command[0] if command else ""
+    if not executable:
+        raise RuntimeError("Claude analysis command is empty. Check TRACE_CLAUDE_COMMAND_TEMPLATE.")
+    if os.path.sep in executable or (os.path.altsep and os.path.altsep in executable):
+        if not os.path.exists(executable):
+            raise RuntimeError(
+                f"Claude Code command not found: {executable}. "
+                "Install Claude Code on the deployment host or set TRACE_CLAUDE_COMMAND to a valid absolute path."
+            )
+        if not os.access(executable, os.X_OK):
+            raise RuntimeError(f"Claude Code command is not executable: {executable}")
+        return
+    if shutil.which(executable):
+        return
+    raise RuntimeError(
+        f"Claude Code command not found: {executable}. "
+        "Install Claude Code on the deployment host, add it to the service PATH, "
+        "or set TRACE_CLAUDE_COMMAND / TRACE_CLAUDE_COMMAND_TEMPLATE to the absolute command path."
+    )
+
+
+def _resolve_claude_skills_dir() -> str:
+    skills_dir = (CLAUDE_ANALYSIS_SKILLS_DIR or "").strip()
+    if not skills_dir:
+        return ""
+    return os.path.abspath(os.path.expanduser(skills_dir))
+
+
+def _validate_claude_skill(skill: str, skills_dir: str) -> None:
+    if not skills_dir:
+        return
+    if not os.path.isdir(skills_dir):
+        raise RuntimeError(
+            f"Claude skills directory not found: {skills_dir}. "
+            "Set TRACE_CLAUDE_SKILLS_DIR to the directory containing e2e-profiling-analyzer "
+            "and e2e-profiling-comparator."
+        )
+    skill_file = os.path.join(skills_dir, skill, "SKILL.md")
+    if not os.path.isfile(skill_file):
+        raise RuntimeError(
+            f"Claude skill not found: {skill} in {skills_dir}. "
+            "Check TRACE_CLAUDE_SINGLE_SKILL / TRACE_CLAUDE_COMPARE_SKILL and the skills directory."
+        )
+
+
+def _mount_claude_skills_for_analysis(analysis_dir: str, skills_dir: str) -> None:
+    if not skills_dir:
+        return
+    claude_dir = os.path.join(analysis_dir, ".claude")
+    target = os.path.join(claude_dir, "skills")
+    if os.path.islink(target):
+        os.unlink(target)
+    if os.path.exists(target):
+        return
+    os.makedirs(claude_dir, exist_ok=True)
+    shutil.copytree(skills_dir, target, dirs_exist_ok=True)
+
+
+def _write_claude_env_settings(claude_dir: str, custom_headers: str) -> None:
+    if not custom_headers:
+        return
+    settings_path = os.path.join(claude_dir, "settings.local.json")
+    settings: dict = {}
+    if os.path.exists(settings_path):
+        try:
+            with open(settings_path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                settings = loaded
+        except Exception:
+            settings = {}
+    env_settings = settings.get("env")
+    if not isinstance(env_settings, dict):
+        env_settings = {}
+    env_settings["ANTHROPIC_CUSTOM_HEADERS"] = custom_headers
+    settings["env"] = env_settings
+    with open(settings_path, "w", encoding="utf-8") as f:
+        json.dump(settings, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+
+
+def _build_claude_env(base_env: dict, analysis_dir: str, extra: Optional[dict] = None) -> dict:
+    env = base_env.copy()
+    if extra:
+        env.update(extra)
+    claude_dir = os.path.join(analysis_dir, ".claude")
+    os.makedirs(claude_dir, exist_ok=True)
+    env.setdefault("CLAUDE_PROJECT_DIR", analysis_dir)
+    env.setdefault("CLAUDE_CODE_PROJECT_DIR", analysis_dir)
+    env.setdefault("TRACE_CLAUDE_PROJECT_DIR", analysis_dir)
+    if TRACE_CLAUDE_CUSTOM_HEADERS:
+        env["ANTHROPIC_CUSTOM_HEADERS"] = TRACE_CLAUDE_CUSTOM_HEADERS
+    elif CLAUDE_CUSTOM_HEADERS:
+        env.setdefault("ANTHROPIC_CUSTOM_HEADERS", CLAUDE_CUSTOM_HEADERS)
+    custom_headers = str(env.get("ANTHROPIC_CUSTOM_HEADERS", "")).strip()
+    if custom_headers:
+        env["ANTHROPIC_CUSTOM_HEADERS"] = custom_headers
+        _write_claude_env_settings(claude_dir, custom_headers)
+    return env
+
+
+def _tail_text(text: str, limit: int = 4000) -> str:
+    if len(text) <= limit:
+        return text
+    return text[-limit:]
+
+
+def _diagnostic_check(name: str, label: str, status: str, detail: str = "", **extra) -> dict:
+    return {
+        "name": name,
+        "label": label,
+        "status": status,
+        "detail": detail,
+        **extra,
+    }
+
+
+async def _run_claude_diagnostic_prompt(
+    name: str,
+    label: str,
+    prompt: str,
+    cwd: str,
+    env: dict,
+    values: dict,
+) -> dict:
+    started = time.time()
+    command = _build_claude_command(prompt, values)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *command,
+            cwd=cwd,
+            env=env,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(),
+                timeout=CLAUDE_DIAGNOSTIC_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            stdout, stderr = await proc.communicate()
+            stdout_text = stdout.decode("utf-8", errors="replace")
+            stderr_text = stderr.decode("utf-8", errors="replace")
+            return _diagnostic_check(
+                name,
+                label,
+                "error",
+                f"Timed out after {CLAUDE_DIAGNOSTIC_TIMEOUT_SECONDS}s",
+                exit_code=None,
+                duration_ms=round((time.time() - started) * 1000, 3),
+                command=_format_command(command),
+                stdout_tail=_tail_text(stdout_text),
+                stderr_tail=_tail_text(stderr_text),
+            )
+
+        stdout_text = stdout.decode("utf-8", errors="replace")
+        stderr_text = stderr.decode("utf-8", errors="replace")
+        ok = proc.returncode == 0
+        return _diagnostic_check(
+            name,
+            label,
+            "ok" if ok else "error",
+            "Command completed" if ok else f"Command exited with code {proc.returncode}",
+            exit_code=proc.returncode,
+            duration_ms=round((time.time() - started) * 1000, 3),
+            command=_format_command(command),
+            stdout_tail=_tail_text(stdout_text),
+            stderr_tail=_tail_text(stderr_text),
+        )
+    except FileNotFoundError as e:
+        executable = command[0] if command else str(e)
+        return _diagnostic_check(
+            name,
+            label,
+            "error",
+            f"Claude Code command not found: {executable}",
+            exit_code=None,
+            duration_ms=round((time.time() - started) * 1000, 3),
+            command=_format_command(command),
+            stdout_tail="",
+            stderr_tail="",
+        )
+    except Exception as e:
+        return _diagnostic_check(
+            name,
+            label,
+            "error",
+            str(e),
+            exit_code=None,
+            duration_ms=round((time.time() - started) * 1000, 3),
+            command=_format_command(command),
+            stdout_tail="",
+            stderr_tail="",
+        )
+
+
+async def _run_claude_tool_probe(cwd: str, env: dict, values: dict) -> dict:
+    probe_file = "claude_tool_probe.txt"
+    probe_path = os.path.join(cwd, probe_file)
+    probe_token = secrets.token_hex(16)
+    probe_env = {**env, "TRACE_AI_TOOL_PROBE_TOKEN": probe_token}
+    with contextlib.suppress(FileNotFoundError):
+        os.remove(probe_path)
+    probe_python = (
+        "import os; "
+        f"open({probe_file!r}, 'w', encoding='utf-8').write(os.environ['TRACE_AI_TOOL_PROBE_TOKEN'])"
+    )
+    probe_command = f"python3 -c {shlex.quote(probe_python)}"
+    prompt = (
+        "这是一个 Claude Code 工具权限诊断，请不要使用任何 skill。\n"
+        "环境变量 TRACE_AI_TOOL_PROBE_TOKEN 中有一个服务端随机 token，提示词里没有该 token 的值。\n"
+        "请必须调用 Bash 工具，在当前工作目录执行下面这条命令，把 token 写入探针文件。\n"
+        "命令执行成功后只回复一行 OK；如果不能调用 Bash 工具，请回复 ERROR: tool denied。\n\n"
+        f"{probe_command}"
+    )
+    check = await _run_claude_diagnostic_prompt(
+        "tool_probe",
+        "工具权限探针",
+        prompt,
+        cwd,
+        probe_env,
+        values,
+    )
+    probe_ok = False
+    try:
+        with open(probe_path, encoding="utf-8") as f:
+            probe_ok = secrets.compare_digest(f.read().strip(), probe_token)
+    except OSError:
+        probe_ok = False
+    if check.get("status") == "ok" and probe_ok:
+        return {
+            **check,
+            "detail": "Command completed and Bash probe file was created with the expected token",
+            "probe_path": probe_path,
+        }
+    hint = (
+        "Claude did not create the Bash probe file. Tool permissions may be denied; "
+        "keep TRACE_CLAUDE_EXTRA_ARGS='--dangerously-skip-permissions' for server-side analysis, "
+        "or use TRACE_CLAUDE_COMMAND_TEMPLATE with equivalent non-interactive permissions."
+    )
+    return {
+        **check,
+        "status": "error",
+        "detail": f"{check.get('detail') or 'Command completed'}; {hint}",
+        "probe_path": probe_path,
+    }
+
+
+async def _run_ai_diagnostics_payload(
+    *,
+    analysis_dir: Optional[str] = None,
+    job_id: str = "diagnostic",
+    mode: str = "diagnostic",
+    skill: Optional[str] = None,
+    result_dir_path: str = "",
+    report_path: str = "",
+) -> dict:
+    started = time.time()
+    started_at = _utc_now_iso()
+    skills_dir = _resolve_claude_skills_dir()
+    smoke_skill = skill or CLAUDE_SINGLE_TRACE_SKILL
+    values = {
+        "job_id": job_id,
+        "mode": mode,
+        "skill": smoke_skill,
+        "skills_dir": skills_dir,
+        "trace_a": "",
+        "trace_b": "",
+        "results_dir": result_dir_path,
+        "analysis_dir": analysis_dir or "",
+        "report_path": report_path,
+    }
+    checks: list[dict] = []
+
+    base_prompt = "请不要使用任何 skill，不要调用工具，只回复一行 OK。"
+    base_command = _build_claude_command(base_prompt, values)
+    command_ok = False
+    try:
+        _validate_claude_command(base_command)
+        command_ok = True
+        checks.append(_diagnostic_check(
+            "command",
+            "Claude 命令",
+            "ok",
+            f"Resolved command: {_format_command(base_command)}",
+            command=_format_command(base_command),
+        ))
+    except Exception as e:
+        checks.append(_diagnostic_check(
+            "command",
+            "Claude 命令",
+            "error",
+            str(e),
+            command=_format_command(base_command),
+        ))
+
+    skills_ok = True
+    if skills_dir:
+        if os.path.isdir(skills_dir):
+            checks.append(_diagnostic_check("skills_dir", "Skills 目录", "ok", skills_dir))
+        else:
+            skills_ok = False
+            checks.append(_diagnostic_check("skills_dir", "Skills 目录", "error", f"Directory not found: {skills_dir}"))
+    else:
+        checks.append(_diagnostic_check("skills_dir", "Skills 目录", "skipped", "TRACE_CLAUDE_SKILLS_DIR is empty"))
+
+    for name, label, skill_name in (
+        ("single_skill", "单 trace skill", CLAUDE_SINGLE_TRACE_SKILL),
+        ("compare_skill", "对比 skill", CLAUDE_COMPARE_TRACE_SKILL),
+    ):
+        try:
+            _validate_claude_skill(skill_name, skills_dir)
+            checks.append(_diagnostic_check(name, label, "ok", f"{skill_name}"))
+        except Exception as e:
+            skills_ok = False
+            checks.append(_diagnostic_check(name, label, "error", str(e)))
+
+    async def run_in_dir(tmp_dir: str) -> None:
+        nonlocal skills_ok
+        env = _build_claude_env(os.environ, tmp_dir, {
+            "TRACE_AI_JOB_ID": job_id,
+            "TRACE_AI_MODE": mode,
+            "TRACE_AI_SKILL": smoke_skill,
+            "TRACE_AI_TRACE_A": "",
+            "TRACE_AI_TRACE_B": "",
+            "TRACE_AI_RESULT_DIR": result_dir_path or tmp_dir,
+            "TRACE_AI_ANALYSIS_DIR": tmp_dir,
+            "TRACE_AI_REPORT_PATH": report_path or os.path.join(tmp_dir, "diagnostic.md"),
+        })
+        if skills_dir:
+            env["TRACE_CLAUDE_SKILLS_DIR"] = skills_dir
+        if skills_ok:
+            try:
+                _mount_claude_skills_for_analysis(tmp_dir, skills_dir)
+            except Exception as e:
+                skills_ok = False
+                checks.append(_diagnostic_check("skills_mount", "Skills 挂载", "error", str(e)))
+            else:
+                checks.append(_diagnostic_check(
+                    "skills_mount",
+                    "Skills 挂载",
+                    "ok",
+                    os.path.join(tmp_dir, ".claude", "skills"),
+                ))
+
+        base_smoke_ok = False
+        if command_ok:
+            base_smoke = await _run_claude_diagnostic_prompt(
+                "base_smoke",
+                "基础 Claude 调用",
+                base_prompt,
+                tmp_dir,
+                env,
+                values,
+            )
+            base_smoke_ok = base_smoke.get("status") == "ok"
+            checks.append(base_smoke)
+        else:
+            checks.append(_diagnostic_check("base_smoke", "基础 Claude 调用", "skipped", "Claude command is invalid"))
+
+        tool_probe_ok = False
+        if command_ok and base_smoke_ok:
+            tool_probe = await _run_claude_tool_probe(tmp_dir, env, values)
+            tool_probe_ok = tool_probe.get("status") == "ok"
+            checks.append(tool_probe)
+        else:
+            reason = "基础 Claude 调用失败" if not base_smoke_ok else "Claude command is invalid"
+            checks.append(_diagnostic_check("tool_probe", "工具权限探针", "skipped", reason))
+
+        if command_ok and skills_ok and base_smoke_ok and tool_probe_ok:
+            skill_values = {**values, "skill": smoke_skill, "analysis_dir": tmp_dir, "results_dir": result_dir_path or tmp_dir}
+            skill_prompt = (
+                f"请使用 Claude Code skill `{smoke_skill}`，automatic-final 模式。"
+                "这是环境诊断，不要读取 trace，不要运行重型分析脚本；如果 skill 可用，只回复一行 OK。"
+            )
+            checks.append(await _run_claude_diagnostic_prompt(
+                "skill_smoke",
+                "AI skill 调用",
+                skill_prompt,
+                tmp_dir,
+                env,
+                skill_values,
+            ))
+        else:
+            if not base_smoke_ok:
+                reason = "基础 Claude 调用失败"
+            elif not tool_probe_ok:
+                reason = "工具权限探针失败"
+            else:
+                reason = "skills check failed"
+            checks.append(_diagnostic_check("skill_smoke", "AI skill 调用", "skipped", reason))
+
+    if analysis_dir:
+        os.makedirs(analysis_dir, exist_ok=True)
+        await run_in_dir(analysis_dir)
+    else:
+        with tempfile.TemporaryDirectory(prefix="analyze_trace_ai_diag_") as tmp_dir:
+            await run_in_dir(tmp_dir)
+
+    ok = all(check["status"] in {"ok", "skipped"} for check in checks) and any(
+        check["name"] == "base_smoke" and check["status"] == "ok" for check in checks
+    ) and any(
+        check["name"] == "tool_probe" and check["status"] == "ok" for check in checks
+    )
+    finished_at = _utc_now_iso()
+    return {
+        "ok": ok,
+        "enabled": CLAUDE_ANALYSIS_ENABLED,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "duration_ms": round((time.time() - started) * 1000, 3),
+        "timeout_seconds": CLAUDE_DIAGNOSTIC_TIMEOUT_SECONDS,
+        "skills_dir": skills_dir,
+        "single_skill": CLAUDE_SINGLE_TRACE_SKILL,
+        "compare_skill": CLAUDE_COMPARE_TRACE_SKILL,
+        "checks": checks,
+    }
+
+
+def _format_ai_diagnostics_markdown(payload: dict) -> str:
+    lines = [
+        "# AI 环境诊断未通过" if not payload.get("ok") else "# AI 环境诊断通过",
+        "",
+        f"- 诊断结果: {'通过' if payload.get('ok') else '未通过'}",
+        f"- Skills 目录: `{payload.get('skills_dir') or '-'}`",
+        f"- 单 trace skill: `{payload.get('single_skill') or '-'}`",
+        f"- 对比 skill: `{payload.get('compare_skill') or '-'}`",
+        f"- 耗时: `{payload.get('duration_ms', '-')}` ms",
+        "",
+        "## 检查明细",
+        "",
+        "| 状态 | 检查项 | 说明 |",
+        "|---|---|---|",
+    ]
+    status_labels = {"ok": "OK", "error": "失败", "skipped": "跳过"}
+    for check in payload.get("checks") or []:
+        status = status_labels.get(check.get("status"), check.get("status") or "")
+        label = str(check.get("label") or check.get("name") or "").replace("|", "\\|")
+        detail = str(check.get("detail") or "").replace("\n", "<br>").replace("|", "\\|")
+        lines.append(f"| {status} | {label} | {detail} |")
+    for check in payload.get("checks") or []:
+        if not (check.get("command") or check.get("stdout_tail") or check.get("stderr_tail")):
+            continue
+        lines.extend([
+            "",
+            f"### {check.get('label') or check.get('name')}",
+            "",
+        ])
+        if check.get("command"):
+            lines.extend(["命令:", "", "```text", check["command"], "```"])
+        if check.get("stdout_tail"):
+            lines.extend(["stdout:", "", "```text", check["stdout_tail"], "```"])
+        if check.get("stderr_tail"):
+            lines.extend(["stderr:", "", "```text", check["stderr_tail"], "```"])
+    lines.extend([
+        "",
+        "## 处理建议",
+        "",
+        "- 确认服务进程使用的 `TRACE_CLAUDE_COMMAND` 指向可执行的 Claude Code。",
+        "- 确认 `TRACE_CLAUDE_EXTRA_ARGS` 包含 `--dangerously-skip-permissions`，并在修改后重启服务。",
+        "- 确认服务运行用户对 storage、AI 分析目录和 `.claude` 临时目录有写权限。",
+        "- 修复后重新点击“重新分析”，系统会再次自动诊断并继续生成报告。",
+    ])
+    return "\n".join(lines) + "\n"
+
+
+async def _source_trace_for_ai(db, source_id: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    if not source_id:
+        return None, None
+    source = await row_to_dict(
+        await (await db.execute(
+            "SELECT file_a_name, file_a_path, file_a_gzip_path FROM jobs WHERE id=?",
+            (source_id,),
+        )).fetchone()
+    )
+    if not source:
+        return None, None
+    path = source.get("file_a_gzip_path") or source.get("file_a_path")
+    return path, source.get("file_a_name")
+
+
+async def _resolve_ai_trace_inputs(job: dict) -> dict:
+    db = await get_db()
+    try:
+        trace_a = job.get("file_a_gzip_path") or job.get("file_a_path")
+        name_a = job.get("file_a_name")
+        trace_b = job.get("file_b_gzip_path") or job.get("file_b_path")
+        name_b = job.get("file_b_name")
+
+        if not trace_a:
+            trace_a, source_name = await _source_trace_for_ai(db, job.get("source_job_a"))
+            name_a = name_a or source_name
+        if job.get("mode") == "compare" and not trace_b:
+            trace_b, source_name = await _source_trace_for_ai(db, job.get("source_job_b"))
+            name_b = name_b or source_name
+    finally:
+        await db.close()
+
+    if not trace_a or not os.path.exists(trace_a):
+        raise ValueError(f"Trace A file not found: {trace_a or '<empty>'}")
+    if job.get("mode") == "compare" and (not trace_b or not os.path.exists(trace_b)):
+        raise ValueError(f"Trace B file not found: {trace_b or '<empty>'}")
+
+    return {
+        "trace_a": trace_a,
+        "trace_b": trace_b if job.get("mode") == "compare" else "",
+        "name_a": name_a or os.path.basename(trace_a),
+        "name_b": name_b or (os.path.basename(trace_b) if trace_b else ""),
+    }
+
+
+def _render_claude_prompt(
+    job: dict,
+    trace_inputs: dict,
+    skill: str,
+    report_path: str,
+    skills_dir: str = "",
+    user_prompt: str = "",
+) -> str:
+    rdir = result_dir(job["id"])
+    mode_text = "双 trace 对比" if job.get("mode") == "compare" else "单 trace 分析"
+    lines = [
+        f"请使用 Claude Code skill `{skill}` 执行一次{mode_text}，不要向用户追问。",
+        "如果 skill 文档区分交互模式和自动模式，请选择 automatic-final / 自动最终报告模式。",
+        "分析完成后，必须生成一份用户可直接阅读的最终 Markdown 报告。",
+        f"请把同一份最终报告写入 `{report_path}` 和当前工作目录的 `report.md`，并把最终报告内容输出到 stdout。",
+        "最终报告中不要包含 Claude 执行过程、工具权限解释、原始 prompt、命令行流水或无关调试日志。",
+        "如果工具权限、文件权限或输入文件导致无法分析，请明确写成失败报告，不要伪造成性能结论。",
+        "",
+        "任务信息:",
+        f"- job_id: {job['id']}",
+        f"- label: {job.get('label') or job['id']}",
+        f"- mode: {job.get('mode')}",
+        f"- results_dir: {rdir}",
+        f"- final_report_path: {report_path}",
+        "",
+        "Trace 输入:",
+        f"- A name: {trace_inputs['name_a']}",
+        f"- A path: {trace_inputs['trace_a']}",
+    ]
+    if job.get("mode") == "compare":
+        lines.extend([
+            f"- B name: {trace_inputs['name_b']}",
+            f"- B path: {trace_inputs['trace_b']}",
+            "",
+            "对比约定: A 为 baseline，B 为 current，Delta = B - A。",
+        ])
+    lines.extend([
+        "",
+        "报告要求:",
+        "- 先给出 3-6 个关键发现，说明主要性能热点、回退或改善点。",
+        "- `## 结论概览` 不要输出平铺的 `- 结论` / `- 证据` / `- 建议` 同级列表。",
+        "- 每个关键发现请使用 `### 发现 N：一句话标题`，下面分别写 `**结论：** ...`、`**证据：** ...`、`**建议：** ...`。",
+        "- 尽量引用现有 CSV / console 摘要 / trace 中的可验证数字。",
+        "- 对不确定结论明确写出依据和不确定性。",
+        "- 最后给出可执行优化建议，按收益和排查成本排序。",
+    ])
+    if skills_dir:
+        lines.extend([
+            "",
+            f"自定义 skills 目录提示: {skills_dir}",
+            f"当前工作目录已挂载 `.claude/skills`，其中应包含 `{skill}`。",
+        ])
+    user_prompt = _normalize_ai_user_prompt(user_prompt)
+    if user_prompt:
+        lines.extend([
+            "",
+            "用户补充 Prompt:",
+            "```text",
+            user_prompt,
+            "```",
+            "请将用户补充 Prompt 纳入分析；如果它与上面的报告格式要求冲突，以上面的报告格式要求为准。",
+        ])
+    return "\n".join(lines)
+
+
+def _write_ai_report(path: str, content: str):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        f.write(content.rstrip() + "\n")
+    os.replace(tmp_path, path)
+
+
+def _track_ai_analysis_task(jid: str, task: asyncio.Task):
+    ai_analysis_tasks[jid] = task
+
+    def _done(done_task: asyncio.Task):
+        ai_analysis_tasks.pop(jid, None)
+        with contextlib.suppress(asyncio.CancelledError):
+            exc = done_task.exception()
+            if exc:
+                logger.error(
+                    "ai_analysis_task_failed",
+                    extra={"event": "ai_analysis_task_failed", "job_id": jid},
+                    exc_info=(type(exc), exc, exc.__traceback__),
+                )
+
+    task.add_done_callback(_done)
+
+
+async def _run_ai_analysis_task(jid: str, notification_context: Optional[dict] = None):
+    analysis_dir = ai_analysis_dir(jid)
+    report_path = ai_analysis_report_path(jid)
+    os.makedirs(analysis_dir, exist_ok=True)
+    previous_status = _read_ai_analysis_status(jid)
+    user_prompt = _normalize_ai_user_prompt(
+        previous_status.get("user_prompt") or (notification_context or {}).get("user_prompt") or ""
+    )
+    with contextlib.suppress(OSError):
+        os.remove(report_path)
+    stdout_text = ""
+    stderr_text = ""
+    job = None
+
+    try:
+        db = await get_db()
+        try:
+            job = await row_to_dict(
+                await (await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))).fetchone()
+            )
+        finally:
+            await db.close()
+
+        if not job:
+            raise ValueError("Job not found")
+        if job.get("status") != "done":
+            raise ValueError("Job is not completed")
+
+        trace_inputs = await _resolve_ai_trace_inputs(job)
+        skill = CLAUDE_COMPARE_TRACE_SKILL if job.get("mode") == "compare" else CLAUDE_SINGLE_TRACE_SKILL
+        skills_dir = _resolve_claude_skills_dir()
+        status = {
+            "status": "running",
+            "phase": "diagnosing",
+            "progress": 20,
+            "mode": job.get("mode"),
+            "skill": skill,
+            "model": _ai_backend_model_name(),
+            "user_prompt": user_prompt,
+            "skills_dir": skills_dir,
+            "trigger_user_token": previous_status.get("trigger_user_token") or (notification_context or {}).get("trigger_user_token") or "",
+            "trigger_user_display": previous_status.get("trigger_user_display") or (notification_context or {}).get("trigger_user_display") or "",
+            "trigger_user_email": previous_status.get("trigger_user_email") or (notification_context or {}).get("trigger_user_email") or "",
+            "owner_user_token": previous_status.get("owner_user_token") or (notification_context or {}).get("owner_user_token") or job.get("user_token") or "",
+            "started_at": _utc_now_iso(),
+            "updated_at": _utc_now_iso(),
+        }
+        _write_ai_analysis_status(jid, status)
+
+        diagnostics = await _run_ai_diagnostics_payload(
+            analysis_dir=analysis_dir,
+            job_id=jid,
+            mode=job.get("mode") or "",
+            skill=skill,
+            result_dir_path=result_dir(jid),
+            report_path=report_path,
+        )
+        with open(os.path.join(analysis_dir, "ai_diagnostics.json"), "w", encoding="utf-8") as f:
+            json.dump(diagnostics, f, ensure_ascii=False, indent=2)
+        if not diagnostics.get("ok"):
+            content = _format_ai_diagnostics_markdown(diagnostics)
+            _write_ai_report(report_path, content)
+            final_status = {
+                **status,
+                "status": "error",
+                "phase": "diagnostics_failed",
+                "progress": 100,
+                "error": "AI environment diagnostics failed",
+                "diagnostics": diagnostics,
+                "finished_at": _utc_now_iso(),
+                "updated_at": _utc_now_iso(),
+            }
+            version_meta = _save_ai_analysis_version(jid, content, final_status, job, notification_context)
+            if version_meta:
+                final_status["latest_version_id"] = version_meta["id"]
+            _write_ai_analysis_status(jid, final_status)
+            return
+
+        status = {
+            **status,
+            "phase": "analyzing",
+            "progress": 55,
+            "diagnostics": diagnostics,
+            "updated_at": _utc_now_iso(),
+        }
+        _write_ai_analysis_status(jid, status)
+
+        prompt = _render_claude_prompt(job, trace_inputs, skill, report_path, skills_dir, user_prompt)
+        command = _build_claude_command(prompt, {
+            "job_id": jid,
+            "mode": job.get("mode") or "",
+            "skill": skill,
+            "skills_dir": skills_dir,
+            "trace_a": trace_inputs["trace_a"],
+            "trace_b": trace_inputs["trace_b"],
+            "results_dir": result_dir(jid),
+            "analysis_dir": analysis_dir,
+            "report_path": report_path,
+        })
+
+        with open(os.path.join(analysis_dir, "command.json"), "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "command": command,
+                    "display_command": _format_command(command),
+                    "skill": skill,
+                    "skills_dir": skills_dir,
+                    "trace_a": trace_inputs["trace_a"],
+                    "trace_b": trace_inputs["trace_b"],
+                },
+                f,
+                ensure_ascii=False,
+                indent=2,
+            )
+
+        _validate_claude_command(command)
+
+        env = _build_claude_env(os.environ, analysis_dir, {
+            "TRACE_AI_JOB_ID": jid,
+            "TRACE_AI_MODE": job.get("mode") or "",
+            "TRACE_AI_SKILL": skill,
+            "TRACE_AI_TRACE_A": trace_inputs["trace_a"],
+            "TRACE_AI_TRACE_B": trace_inputs["trace_b"],
+            "TRACE_AI_RESULT_DIR": result_dir(jid),
+            "TRACE_AI_ANALYSIS_DIR": analysis_dir,
+            "TRACE_AI_REPORT_PATH": report_path,
+        })
+        if skills_dir:
+            env["TRACE_CLAUDE_SKILLS_DIR"] = skills_dir
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *command,
+                cwd=analysis_dir,
+                env=env,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError as e:
+            executable = command[0] if command else str(e)
+            raise RuntimeError(
+                f"Claude Code command not found: {executable}. "
+                "Install Claude Code on the deployment host, add it to the service PATH, "
+                "or set TRACE_CLAUDE_COMMAND / TRACE_CLAUDE_COMMAND_TEMPLATE to the absolute command path."
+            ) from e
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(),
+                timeout=CLAUDE_ANALYSIS_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            stdout, stderr = await proc.communicate()
+            stdout_text = stdout.decode("utf-8", errors="replace")
+            stderr_text = stderr.decode("utf-8", errors="replace")
+            raise RuntimeError(f"Claude analysis timed out after {CLAUDE_ANALYSIS_TIMEOUT_SECONDS}s")
+
+        stdout_text = stdout.decode("utf-8", errors="replace")
+        stderr_text = stderr.decode("utf-8", errors="replace")
+        _write_ai_report(os.path.join(analysis_dir, "stdout.txt"), stdout_text or "")
+        _write_ai_report(os.path.join(analysis_dir, "stderr.txt"), stderr_text or "")
+
+        if proc.returncode != 0:
+            tail = stderr_text[-2000:] or stdout_text[-2000:] or "no output"
+            raise RuntimeError(f"Claude analysis failed with exit code {proc.returncode}: {tail}")
+
+        content = _read_text_file(report_path).strip()
+        if not content:
+            candidate_report = _find_latest_ai_report(analysis_dir)
+            if candidate_report:
+                content = _read_text_file(candidate_report).strip()
+            else:
+                content = stdout_text.strip()
+        failure_pattern = _detect_ai_analysis_failure("\n".join([content, stdout_text]))
+        if failure_pattern:
+            raise RuntimeError(
+                "Claude produced a failure report instead of a usable analysis "
+                f"(matched: {failure_pattern})"
+            )
+        if not content:
+            content = "Claude command completed, but no report content was produced."
+        content = _normalize_ai_report_markdown(content)
+        _write_ai_report(report_path, content)
+        final_status = {
+            **status,
+            "status": "done",
+            "progress": 100,
+            "finished_at": _utc_now_iso(),
+            "updated_at": _utc_now_iso(),
+        }
+        version_meta = _save_ai_analysis_version(jid, content, final_status, job, notification_context)
+        if version_meta:
+            final_status["latest_version_id"] = version_meta["id"]
+        _write_ai_analysis_status(jid, final_status)
+    except Exception as e:
+        error_report = [
+            "# AI 分析失败",
+            "",
+            f"- 任务 ID: `{jid}`",
+            f"- 错误: `{e}`",
+        ]
+        if stdout_text.strip():
+            error_report.extend(["", "## stdout", "", "```text", stdout_text[-4000:], "```"])
+        if stderr_text.strip():
+            error_report.extend(["", "## stderr", "", "```text", stderr_text[-4000:], "```"])
+        content = "\n".join(error_report)
+        _write_ai_report(report_path, content)
+        status = _read_ai_analysis_status(jid)
+        final_status = {
+            **status,
+            "status": "error",
+            "progress": 100,
+            "error": str(e),
+            "finished_at": _utc_now_iso(),
+            "updated_at": _utc_now_iso(),
+        }
+        version_meta = _save_ai_analysis_version(jid, content, final_status, job, notification_context)
+        if version_meta:
+            final_status["latest_version_id"] = version_meta["id"]
+        _write_ai_analysis_status(jid, final_status)
+        logger.exception(
+            "ai_analysis_failed",
+            extra={"event": "ai_analysis_failed", "job_id": jid, "error": str(e)},
+        )
+    finally:
+        try:
+            final_status = _read_ai_analysis_status(jid)
+            if final_status.get("status") in {"done", "error"}:
+                await _send_ai_analysis_completion_notification(
+                    jid,
+                    job or {},
+                    final_status,
+                    notification_context or {},
+                )
+        except Exception as notify_exc:
+            logger.warning(
+                "ai_analysis_email_notify_failed",
+                extra={
+                    "event": "ai_analysis_email_notify_failed",
+                    "job_id": jid,
+                    "error": str(notify_exc),
+                },
+                exc_info=True,
+            )
 
 
 def _csv_filter_match(row: dict, q: Optional[str], filters: dict, filter_ops: dict) -> bool:
@@ -594,14 +3017,16 @@ def read_csv_page(
     with open(path, newline="") as f:
         filename = os.path.basename(path)
         reader = csv.DictReader(f)
-        fields = _augment_result_csv_fields(filename, reader.fieldnames or [])
+        fields = _result_csv_fields(filename, reader.fieldnames or [])
+        filters = {key: value for key, value in filters.items() if key in fields}
+        filter_ops = {key: value for key, value in filter_ops.items() if key in fields}
         rows = []
         total = 0
         filtered_total = 0
         requires_materialize = bool(q or filters or sort_col)
         if requires_materialize:
             for row in reader:
-                row = _augment_result_csv_row(filename, row)
+                row = _result_csv_row(filename, row)
                 total += 1
                 if _csv_filter_match(row, q, filters, filter_ops):
                     rows.append(row)
@@ -615,7 +3040,7 @@ def read_csv_page(
         else:
             page_rows = []
             for row in reader:
-                row = _augment_result_csv_row(filename, row)
+                row = _result_csv_row(filename, row)
                 if total >= offset and len(page_rows) < limit:
                     page_rows.append(row)
                 total += 1
@@ -750,22 +3175,24 @@ def _cached_storage_value(job: dict, key: str, stats: Optional[dict] = None) -> 
     return int((stats or _job_storage_stats(job))[key])
 
 
-async def _compare_dependents(db, source_job_id: str):
+async def _compare_dependents(db, request: Request, source_job_id: str):
+    access_sql, access_params = _job_access_clause(request)
+    access_filter = f" AND {access_sql}" if access_sql else ""
     rows = await (
         await db.execute(
-            """
+            f"""
             SELECT id, label, created_at, project_id
             FROM jobs
-            WHERE mode='compare' AND (source_job_a=? OR source_job_b=?)
+            WHERE mode='compare' AND (source_job_a=? OR source_job_b=?){access_filter}
             ORDER BY created_at DESC
             """,
-            (source_job_id, source_job_id),
+            (source_job_id, source_job_id, *access_params),
         )
     ).fetchall()
     return [dict(row) for row in rows]
 
 
-async def _compare_source_summaries(job: dict):
+async def _compare_source_summaries(request: Request, job: dict):
     source_ids = [job.get("source_job_a"), job.get("source_job_b")]
     source_ids = [jid for jid in source_ids if jid]
     if not source_ids:
@@ -774,6 +3201,8 @@ async def _compare_source_summaries(job: dict):
     db = await get_db()
     try:
         placeholders = ",".join("?" * len(source_ids))
+        access_sql, access_params = _job_access_clause(request, "j")
+        access_filter = f" AND {access_sql}" if access_sql else ""
         rows = await (
             await db.execute(
                 f"""
@@ -782,9 +3211,9 @@ async def _compare_source_summaries(job: dict):
                        j.file_a_path, j.file_a_gzip_path
                 FROM jobs j
                 LEFT JOIN projects p ON p.id = j.project_id
-                WHERE j.id IN ({placeholders})
+                WHERE j.id IN ({placeholders}){access_filter}
                 """,
-                tuple(source_ids),
+                (*source_ids, *access_params),
             )
         ).fetchall()
     finally:
@@ -916,35 +3345,167 @@ def _iter_gzip_encoded(chunks):
         yield tail
 
 
+def _largest_archive_json_size(path: str) -> Optional[int]:
+    lower = path.lower()
+    if lower.endswith(".zip"):
+        with zipfile.ZipFile(path) as archive:
+            sizes = [
+                info.file_size
+                for info in archive.infolist()
+                if not info.is_dir() and info.filename.lower().endswith(".json")
+            ]
+        if not sizes:
+            raise ValueError("Archive does not contain a JSON trace")
+        return max(sizes)
+    if lower.endswith((".tar.gz", ".tgz")) or (lower.endswith(".gz") and _is_tar_archive(path)):
+        with tarfile.open(path, "r:*") as tar:
+            sizes = [
+                member.size
+                for member in tar.getmembers()
+                if member.isfile() and member.name.lower().endswith(".json")
+            ]
+        if not sizes:
+            raise ValueError("Archive does not contain a JSON trace")
+        return max(sizes)
+    if not lower.endswith(".gz"):
+        return os.path.getsize(path)
+    return None
+
+
+def _assert_trace_json_size_supported(path: str, slot: str = "trace") -> None:
+    if not MAX_TRACE_JSON_BYTES:
+        return
+    label = f"Trace {slot.upper()}" if slot else "Trace"
+    try:
+        known_size = _largest_archive_json_size(path)
+        if known_size is not None:
+            if known_size > MAX_TRACE_JSON_BYTES:
+                raise ValueError(
+                    f"{label} 解压后 JSON 大小 {_format_size(known_size)} 超过当前分析上限 "
+                    f"{_format_size(MAX_TRACE_JSON_BYTES)}。为了避免服务内存耗尽，已停止分析；"
+                    "可缩短 profiler 采样窗口、指定 step 重新导出，或在确认机器内存足够后设置 "
+                    "TRACE_MAX_TRACE_JSON_BYTES 调大/设为 0 关闭保护。"
+                )
+            return
+
+        # Plain gzip does not expose a reliable uncompressed size for >4GiB
+        # files.  The parser handles gzip traces in a streaming-safe way, so
+        # avoid a full pre-scan by default; otherwise large traces are
+        # decompressed twice before producing any result.
+        if not STRICT_GZIP_SIZE_CHECK:
+            return
+
+        total = 0
+        for chunk in _iter_json_chunks(path):
+            total += len(chunk)
+            if total > MAX_TRACE_JSON_BYTES:
+                raise ValueError(
+                    f"{label} 解压后 JSON 大小超过当前分析上限 {_format_size(MAX_TRACE_JSON_BYTES)}。"
+                    "为了避免服务内存耗尽，已停止分析；可缩短 profiler 采样窗口、指定 step 重新导出，"
+                    "或在确认机器内存足够后设置 TRACE_MAX_TRACE_JSON_BYTES 调大/设为 0 关闭保护。"
+                )
+    except ValueError:
+        raise
+    except Exception as e:
+        raise ValueError(f"{label} 文件预检失败: {e}") from e
+
+
 # ── Synchronous analysis (runs in thread pool, must not await) ────────────────
 
-def _run_sync_analysis(job, rdir, path_a, path_b, name_a, name_b):
+def _format_elapsed(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    minutes, sec = divmod(seconds, 60)
+    if minutes:
+        return f"{minutes}分{sec}秒"
+    return f"{sec}秒"
+
+
+async def _write_analysis_progress(job_id: str, message: str) -> None:
+    progress_db = None
+    try:
+        progress_db = await get_db()
+        await progress_db.execute(
+            "UPDATE jobs SET console_out=? WHERE id=? AND status='running'",
+            (message, job_id),
+        )
+        await progress_db.commit()
+    except Exception:
+        logger.debug(
+            "analysis_progress_update_failed",
+            extra={"event": "analysis_progress_update_failed", "job_id": job_id},
+            exc_info=True,
+        )
+    finally:
+        if progress_db is not None:
+            await progress_db.close()
+
+
+def _run_sync_analysis(job, rdir, path_a, path_b, name_a, name_b, progress_callback=None):
     """All blocking I/O lives here so the event loop stays free."""
-    from trace_analyzer import (compute_avgs, parse_trace,
-                                print_step_summary, print_kernel_type_breakdown, print_top_kernels,
+    from trace_analyzer import (print_step_summary, print_kernel_type_breakdown, print_top_kernels,
                                 write_single, print_comparison, write_comparison)
+
+    def stage(message: str):
+        if progress_callback:
+            progress_callback(message)
+
+    def compute_trace(path, step_filter, slot):
+        trace_label = os.path.basename(path)
+
+        def parse_progress(events_seen, records_seen):
+            stage(
+                f"解析 Trace {slot.upper()}: {trace_label} · "
+                f"已读 {events_seen:,} events · 命中 {records_seen:,} 条"
+            )
+
+        stage(f"预检 Trace {slot.upper()}")
+        _assert_trace_json_size_supported(path, slot)
+        stage(f"解析 Trace {slot.upper()}: {trace_label}")
+        keep_triton_code = bool(job["save_triton_csv"] or job["save_triton_code"])
+        parsed = parse_trace(
+            path,
+            keep_triton_code=keep_triton_code,
+            progress_callback=parse_progress,
+        )
+        steps = parse_step_filter(step_filter)
+        if steps:
+            stage(f"筛选 Trace {slot.upper()} step: {step_filter}")
+            parsed = filter_parsed_steps(parsed, steps)
+        stage(f"聚合 Trace {slot.upper()} 指标")
+        return compute_avgs(parsed)
 
     buf = io.StringIO()
     perfetto_context = {}
     with contextlib.redirect_stdout(buf):
         if job["mode"] == "single":
-            data = compute_avgs(parse_trace(path_a))
+            step_filter_a = (job.get("step_filter_a") or "").strip()
+            if step_filter_a:
+                print(f"Step filter A: {step_filter_a}")
+            data = compute_trace(path_a, step_filter_a, "a")
             fake_args = types.SimpleNamespace(
                 output_dir=rdir,
                 save_triton_csv=bool(job["save_triton_csv"]),
                 save_triton_code=bool(job["save_triton_code"]),
             )
+            stage("生成单 trace 结果")
             print_step_summary(data)
             print_kernel_type_breakdown(data)
             print_top_kernels(data)
             write_single(data, fake_args)
             perfetto_context["a"] = _perfetto_context(data)
         else:
-            data_a = compute_avgs(parse_trace(path_a))
-            data_b = compute_avgs(parse_trace(path_b))
+            step_filter_a = (job.get("step_filter_a") or "").strip()
+            step_filter_b = (job.get("step_filter_b") or "").strip()
+            if step_filter_a:
+                print(f"Step filter A: {step_filter_a}")
+            if step_filter_b:
+                print(f"Step filter B: {step_filter_b}")
+            data_a = compute_trace(path_a, step_filter_a, "a")
+            data_b = compute_trace(path_b, step_filter_b, "b")
             fake_args = types.SimpleNamespace(output_dir=rdir)
             label_a = name_a or os.path.basename(path_a)
             label_b = name_b or os.path.basename(path_b)
+            stage("生成对比结果")
             print_comparison(data_a, data_b, label_a, label_b)
             print_top_kernels(data_a, label=label_a)
             print_top_kernels(data_b, label=label_b)
@@ -964,39 +3525,83 @@ def _run_sync_analysis(job, rdir, path_a, path_b, name_a, name_b):
 
 async def run_analysis(job_id: str):
     db = await get_db()
+    progress_task = None
+    progress_state = None
     try:
+        claim = await db.execute(
+            """
+            UPDATE jobs
+            SET status='running',
+                error_msg='',
+                console_out='准备分析任务 · 已用 0秒'
+            WHERE id=? AND status='pending'
+            """,
+            (job_id,),
+        )
+        await db.commit()
+        if claim.rowcount != 1:
+            return
+
         cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (job_id,))
         job = await row_to_dict(await cursor.fetchone())
-        if not job or job["status"] != "pending":
+        if not job:
             return
 
         logger.info("analysis_started", extra={"event": "analysis_started", "job_id": job_id, "mode": job["mode"]})
-        await db.execute("UPDATE jobs SET status='running', error_msg='' WHERE id=?", (job_id,))
-        await db.commit()
+        loop = asyncio.get_running_loop()
+        progress_started_at = time.perf_counter()
+        progress_state = {"message": "准备分析任务", "done": False}
+
+        def set_progress(message: str) -> None:
+            # Called from the analysis worker thread; keep it non-blocking so
+            # SQLite/file I/O can never stall trace parsing.
+            loop.call_soon_threadsafe(progress_state.__setitem__, "message", message)
+
+        async def progress_heartbeat():
+            while not progress_state["done"]:
+                elapsed = _format_elapsed(time.perf_counter() - progress_started_at)
+                await _write_analysis_progress(job_id, f"{progress_state['message']} · 已用 {elapsed}")
+                await asyncio.sleep(5)
+
+        progress_task = asyncio.create_task(progress_heartbeat())
+        set_progress("准备分析任务")
 
         rdir = result_dir(job_id)
         os.makedirs(rdir, exist_ok=True)
 
         # Resolve source paths for compare-from-history (needs DB, must happen before thread)
-        if job["mode"] == "compare" and not job["file_a_path"]:
+        if job["mode"] == "compare" and not _primary_trace_path(job, "a"):
             cursor_a = await db.execute("SELECT * FROM jobs WHERE id=?", (job["source_job_a"],))
             src_a = await row_to_dict(await cursor_a.fetchone())
             cursor_b = await db.execute("SELECT * FROM jobs WHERE id=?", (job["source_job_b"],))
             src_b = await row_to_dict(await cursor_b.fetchone())
-            path_a = src_a.get("file_a_gzip_path") or src_a["file_a_path"]
-            path_b = src_b.get("file_a_gzip_path") or src_b["file_a_path"]
+            if not src_a or not src_b:
+                raise FileNotFoundError("Source job not found")
+            path_a = _primary_trace_path(src_a)
+            path_b = _primary_trace_path(src_b)
+            if not path_a or not os.path.exists(path_a):
+                raise FileNotFoundError("Trace file A not found")
+            if not path_b or not os.path.exists(path_b):
+                raise FileNotFoundError("Trace file B not found")
             name_a = src_a.get("file_a_name") or os.path.basename(path_a)
             name_b = src_b.get("file_a_name") or os.path.basename(path_b)
         else:
-            path_a = job["file_a_path"]
-            path_b = job["file_b_path"]
+            path_a = _primary_trace_path(job, "a")
+            path_b = _primary_trace_path(job, "b") if job["mode"] == "compare" else None
+            if not path_a or not os.path.exists(path_a):
+                raise FileNotFoundError("Trace file A not found")
+            if job["mode"] == "compare" and (not path_b or not os.path.exists(path_b)):
+                raise FileNotFoundError("Trace file B not found")
             name_a = job["file_a_name"]
             name_b = job["file_b_name"]
 
         # Run all blocking analysis in a thread pool so the event loop stays responsive
         console_out = await asyncio.to_thread(
-            _run_sync_analysis, job, rdir, path_a, path_b, name_a, name_b
+            _run_sync_analysis,
+            job, rdir, path_a, path_b, name_a, name_b,
+            set_progress,
         )
+        set_progress("压缩并整理 trace 文件")
 
         # Post-analysis: keep only .json.gz files to save storage space
         for slot in ("a", "b"):
@@ -1033,6 +3638,12 @@ async def run_analysis(job_id: str):
         await db.commit()
         logger.exception("analysis_failed", extra={"event": "analysis_failed", "job_id": job_id})
     finally:
+        if progress_state is not None:
+            progress_state["done"] = True
+        if progress_task is not None:
+            progress_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await progress_task
         await db.close()
 
 
@@ -1062,6 +3673,32 @@ async def _job_status_counts() -> dict[str, int]:
         await db.close()
 
 
+def _probe_writable_dir(path: str) -> str:
+    try:
+        os.makedirs(path, exist_ok=True)
+        probe_path = os.path.join(path, f".readyz-{uuid.uuid4().hex}")
+        with open(probe_path, "w") as f:
+            f.write("ok")
+        os.remove(probe_path)
+        return "ok"
+    except Exception as e:
+        return f"error: {e}"
+
+
+def _probe_writable_file(path: str) -> str:
+    if not path:
+        return "disabled"
+    try:
+        log_dir = os.path.dirname(path)
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
+        with open(path, "a"):
+            pass
+        return "ok"
+    except Exception as e:
+        return f"error: {e}"
+
+
 # ── Routes: index / config ────────────────────────────────────────────────────
 
 @app.get("/healthz")
@@ -1072,6 +3709,11 @@ async def healthz():
 @app.get("/readyz")
 async def readyz():
     checks = {}
+    paths = {
+        "storage": STORAGE_DIR,
+        "backup": BACKUP_DIR,
+        "log_file": os.environ.get("TRACE_LOG_FILE", ""),
+    }
     db = None
     try:
         db = await get_db()
@@ -1083,19 +3725,13 @@ async def readyz():
         if db is not None:
             await db.close()
 
-    try:
-        os.makedirs(STORAGE_DIR, exist_ok=True)
-        probe_path = os.path.join(STORAGE_DIR, f".readyz-{uuid.uuid4().hex}")
-        with open(probe_path, "w") as f:
-            f.write("ok")
-        os.remove(probe_path)
-        checks["storage"] = "ok"
-    except Exception as e:
-        checks["storage"] = f"error: {e}"
+    checks["storage"] = _probe_writable_dir(STORAGE_DIR)
+    checks["backup"] = _probe_writable_dir(BACKUP_DIR)
+    checks["log_file"] = _probe_writable_file(os.environ.get("TRACE_LOG_FILE", ""))
 
-    ready = all(value == "ok" for value in checks.values())
+    ready = all(value in ("ok", "disabled") for value in checks.values())
     return JSONResponse(
-        {"status": "ok" if ready else "error", "checks": checks, "version": APP_VERSION},
+        {"status": "ok" if ready else "error", "checks": checks, "paths": paths, "version": APP_VERSION},
         status_code=200 if ready else 503,
     )
 
@@ -1150,6 +3786,12 @@ async def metrics():
         "# HELP analyze_trace_analysis_queue_size Pending analysis queue size in memory.",
         "# TYPE analyze_trace_analysis_queue_size gauge",
         f"analyze_trace_analysis_queue_size {analysis_queue.qsize()}",
+        "# HELP analyze_trace_ai_analysis_queue_size Pending Claude AI analysis queue size in memory.",
+        "# TYPE analyze_trace_ai_analysis_queue_size gauge",
+        f"analyze_trace_ai_analysis_queue_size {ai_analysis_queue.qsize()}",
+        "# HELP analyze_trace_ai_analysis_active Active Claude AI analysis tasks in memory.",
+        "# TYPE analyze_trace_ai_analysis_active gauge",
+        f"analyze_trace_ai_analysis_active {len(ai_analysis_tasks)}",
         "# HELP analyze_trace_storage_free_bytes Free bytes on the storage filesystem.",
         "# TYPE analyze_trace_storage_free_bytes gauge",
         f"analyze_trace_storage_free_bytes {disk.free}",
@@ -1175,13 +3817,126 @@ async def index():
 async def get_config():
     return {
         "version": APP_VERSION,
+        "auth_mode": AUTH_MODE,
+        "auth_required": AUTH_ENABLED,
         "allow_file_download": ALLOW_FILE_DOWNLOAD,
         "allow_code_execution": ALLOW_CODE_EXECUTION,
+        "claude_analysis_enabled": CLAUDE_ANALYSIS_ENABLED,
     }
+
+
+@app.get("/api/email/diagnostics")
+async def email_diagnostics(request: Request):
+    if AUTH_ENABLED:
+        require_admin(request)
+    return await asyncio.to_thread(_run_email_diagnostics_payload)
+
+
+@app.get("/api/me")
+async def get_me(request: Request):
+    user = current_user(request)
+    return {
+        "authenticated": bool(user),
+        "auth_mode": AUTH_MODE,
+        "user": user or None,
+        "is_admin": request_is_admin(request),
+    }
+
+
+@app.get("/api/login-captcha")
+async def get_login_captcha(request: Request, username: str = ""):
+    if not AUTH_ENABLED or not _captcha_required_for(request, username):
+        _clear_login_captcha(request)
+        return {"captcha_required": False}
+    return _issue_login_captcha(request, username)
+
+
+@app.post("/api/login")
+async def login(request: Request, body: dict):
+    if not AUTH_ENABLED:
+        return {
+            "authenticated": True,
+            "auth_mode": AUTH_MODE,
+            "user": None,
+            "is_admin": request_is_admin(request),
+        }
+    username = (body.get("username") or "").strip()
+    password = body.get("password") or ""
+    failure_key = _login_failure_key(request, username)
+    if _captcha_required_for(request, username):
+        captcha = body.get("captcha") or ""
+        if not _verify_login_captcha(request, username, captcha):
+            logger.info(
+                "login_captcha_failed",
+                extra={"event": "login_captcha_failed", "username": username, "ip": request_ip(request)},
+            )
+            return _login_error_response(
+                request, username, "验证码错误或已过期", status_code=400, include_captcha=True
+            )
+    try:
+        user = await asyncio.to_thread(ldap_auth.authenticate, username, password)
+    except ldap_auth.AuthError as e:
+        failed_count = _record_login_failure(failure_key)
+        captcha_required = failed_count >= LOGIN_CAPTCHA_THRESHOLD
+        logger.info(
+            "login_failed",
+            extra={
+                "event": "login_failed",
+                "username": username,
+                "ip": request_ip(request),
+                "failed_count": failed_count,
+                "captcha_required": captcha_required,
+            },
+        )
+        return _login_error_response(request, username, str(e), status_code=401, include_captcha=captcha_required)
+    _clear_login_failure(failure_key)
+    _clear_login_captcha(request)
+    request.session["user"] = {
+        "username": user["username"],
+        "display_name": user.get("display_name") or user["username"],
+        "email": user.get("email") or "",
+    }
+    request.state.user = request.session["user"]
+    db = await get_db()
+    try:
+        await ensure_user_row(db, request)
+        await write_audit(
+            db, request, "auth.login",
+            resource_type="user", resource_id=user["username"],
+            details={"display_name": user.get("display_name"), "email": user.get("email")},
+        )
+        await db.commit()
+    finally:
+        await db.close()
+    logger.info("login_success", extra={"event": "login_success", "username": user["username"]})
+    return {
+        "authenticated": True,
+        "auth_mode": AUTH_MODE,
+        "user": request.session["user"],
+        "is_admin": request_is_admin(request),
+    }
+
+
+@app.post("/api/logout")
+async def logout(request: Request):
+    user = request.session.get("user") or {}
+    if user.get("username"):
+        db = await get_db()
+        try:
+            await write_audit(
+                db, request, "auth.logout",
+                resource_type="user", resource_id=user["username"],
+            )
+            await db.commit()
+        finally:
+            await db.close()
+    request.session.clear()
+    return {"ok": True}
 
 
 @app.get("/api/audit-logs")
 async def list_audit_logs(
+    request: Request,
     action: Optional[str] = None,
     resource_type: Optional[str] = None,
     resource_id: Optional[str] = None,
@@ -1192,6 +3947,10 @@ async def list_audit_logs(
     offset = max(0, offset)
     clauses = []
     params = []
+    owner = current_user_token(request)
+    if owner:
+        clauses.append("user = ?")
+        params.append(owner)
     if action:
         clauses.append("action = ?")
         params.append(action)
@@ -1230,74 +3989,1590 @@ async def list_audit_logs(
     }
 
 
+@app.get("/api/admin/usage")
+async def admin_usage_stats(request: Request, days: int = 14):
+    if AUTH_ENABLED:
+        require_admin(request)
+    days = max(1, min(int(days or 14), 90))
+    today_date = datetime.now(USAGE_TZINFO).date()
+    start_date = today_date - timedelta(days=days - 1)
+    seven_start_date = today_date - timedelta(days=6)
+    today = today_date.isoformat()
+    start_day = start_date.isoformat()
+    seven_start_day = seven_start_date.isoformat()
+    audit_day_expr = _usage_sqlite_day_expr("created_at")
+    business_actions = (
+        "job.create",
+        "job.compare_create",
+        "job.batch_compare_create",
+        "job.ai_analysis_start",
+        "feedback.create",
+    )
+
+    db = await get_db()
+    try:
+        usage_rows = await (
+            await db.execute(
+                """
+                SELECT day,
+                       COUNT(*) AS dau,
+                       COALESCE(SUM(request_count), 0) AS requests,
+                       MAX(last_seen_at) AS last_seen_at
+                FROM usage_daily
+                WHERE day >= ?
+                GROUP BY day
+                """,
+                (start_day,),
+            )
+        ).fetchall()
+        audit_rows = await (
+            await db.execute(
+                f"""
+                SELECT {audit_day_expr} AS day,
+                       SUM(CASE WHEN action='job.create' THEN 1 ELSE 0 END) AS upload_jobs,
+                       SUM(CASE WHEN action IN ('job.compare_create','job.batch_compare_create') THEN 1 ELSE 0 END) AS compare_jobs,
+                       SUM(CASE WHEN action='job.ai_analysis_start' THEN 1 ELSE 0 END) AS ai_runs,
+                       SUM(CASE WHEN action='feedback.create' THEN 1 ELSE 0 END) AS feedback_messages
+                FROM audit_logs
+                WHERE {audit_day_expr} >= ?
+                  AND action IN ({','.join('?' for _ in business_actions)})
+                GROUP BY day
+                """,
+                (start_day, *business_actions),
+            )
+        ).fetchall()
+        top_users_today = await (
+            await db.execute(
+                """
+                SELECT user_token, display_name, request_count, last_seen_at, last_path
+                FROM usage_daily
+                WHERE day=?
+                ORDER BY request_count DESC, last_seen_at DESC
+                LIMIT 10
+                """,
+                (today,),
+            )
+        ).fetchall()
+        seven_usage = await (
+            await db.execute(
+                """
+                SELECT COUNT(DISTINCT user_token) AS active_users,
+                       COALESCE(SUM(request_count), 0) AS requests
+                FROM usage_daily
+                WHERE day >= ?
+                """,
+                (seven_start_day,),
+            )
+        ).fetchone()
+        total_usage = await (
+            await db.execute(
+                """
+                SELECT COUNT(DISTINCT user_token) AS users,
+                       COALESCE(SUM(request_count), 0) AS requests
+                FROM usage_daily
+                """
+            )
+        ).fetchone()
+    finally:
+        await db.close()
+
+    by_day = {}
+    for i in range(days):
+        day = (start_date + timedelta(days=i)).isoformat()
+        by_day[day] = {
+            "day": day,
+            "dau": 0,
+            "requests": 0,
+            "upload_jobs": 0,
+            "compare_jobs": 0,
+            "ai_runs": 0,
+            "feedback_messages": 0,
+            "last_seen_at": "",
+        }
+    for row in usage_rows:
+        day = row["day"]
+        if day in by_day:
+            by_day[day].update({
+                "dau": int(row["dau"] or 0),
+                "requests": int(row["requests"] or 0),
+                "last_seen_at": row["last_seen_at"] or "",
+            })
+    for row in audit_rows:
+        day = row["day"]
+        if day in by_day:
+            by_day[day].update({
+                "upload_jobs": int(row["upload_jobs"] or 0),
+                "compare_jobs": int(row["compare_jobs"] or 0),
+                "ai_runs": int(row["ai_runs"] or 0),
+                "feedback_messages": int(row["feedback_messages"] or 0),
+            })
+    seven_rows = [item for item in by_day.values() if item["day"] >= seven_start_day]
+    seven_summary = {
+        "active_users": int(seven_usage["active_users"] or 0) if seven_usage else 0,
+        "requests": int(seven_usage["requests"] or 0) if seven_usage else 0,
+        "upload_jobs": sum(item["upload_jobs"] for item in seven_rows),
+        "compare_jobs": sum(item["compare_jobs"] for item in seven_rows),
+        "ai_runs": sum(item["ai_runs"] for item in seven_rows),
+        "feedback_messages": sum(item["feedback_messages"] for item in seven_rows),
+    }
+    return {
+        "timezone": USAGE_TIMEZONE_NAME or "local",
+        "days": days,
+        "today": dict(by_day.get(today, {"day": today})),
+        "seven_days": seven_summary,
+        "all_time": {
+            "active_users": int(total_usage["users"] or 0) if total_usage else 0,
+            "requests": int(total_usage["requests"] or 0) if total_usage else 0,
+        },
+        "daily": list(reversed(list(by_day.values()))),
+        "top_users_today": [dict(row) for row in top_users_today],
+    }
+
+
+# ── Routes: feedback board ───────────────────────────────────────────────────
+
+def _feedback_author(request: Request) -> tuple[str, str]:
+    user = current_user(request)
+    token = user.get("username") or request_user(request)
+    display = user.get("display_name") or token
+    return token, display
+
+
+def _detect_image_type(data: bytes, content_type: str = "") -> tuple[str, str]:
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png", ".png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg", ".jpg"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif", ".gif"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp", ".webp"
+    raise HTTPException(400, "只支持 PNG、JPEG、GIF 或 WebP 图片")
+
+
+async def _read_feedback_image(upload: UploadFile) -> tuple[bytes, str, str]:
+    data = await upload.read(FEEDBACK_MAX_IMAGE_BYTES + 1)
+    if len(data) > FEEDBACK_MAX_IMAGE_BYTES:
+        raise HTTPException(413, f"图片不能超过 {FEEDBACK_MAX_IMAGE_BYTES // 1024 // 1024}MB")
+    if not data:
+        raise HTTPException(400, "图片内容为空")
+    content_type, ext = _detect_image_type(data, (upload.content_type or "").lower())
+    return data, content_type, ext
+
+
+def _feedback_attachment_response(row: dict) -> dict:
+    return {
+        "id": row["id"],
+        "filename": row.get("filename") or "",
+        "content_type": row.get("content_type") or "",
+        "size_bytes": row.get("size_bytes") or 0,
+        "url": f"/api/feedback/images/{row['id']}",
+    }
+
+
+def _feedback_message_response(
+    row: dict,
+    attachments_by_message: dict,
+    reactions_by_message: Optional[dict] = None,
+    replies: Optional[list] = None,
+    reply_count: Optional[int] = None,
+    last_activity_at: Optional[str] = None,
+) -> dict:
+    normalized_replies = replies or []
+    reactions_by_message = reactions_by_message or {}
+    return {
+        "id": row["id"],
+        "parent_id": row.get("parent_id"),
+        "user_token": row.get("user_token") or "",
+        "user_display": row.get("user_display") or row.get("user_token") or "local",
+        "body": row.get("body") or "",
+        "created_at": row.get("created_at") or "",
+        "updated_at": row.get("updated_at") or "",
+        "edited_at": row.get("edited_at") or "",
+        "edit_count": int(row.get("edit_count") or 0),
+        "attachments": attachments_by_message.get(row["id"], []),
+        "reactions": reactions_by_message.get(row["id"], []),
+        "replies": normalized_replies,
+        "reply_count": reply_count if reply_count is not None else len(normalized_replies),
+        "last_activity_at": last_activity_at or row.get("last_activity_at") or row.get("updated_at") or row.get("created_at") or "",
+    }
+
+
+def _feedback_title(body: str, fallback: str = "无标题留言") -> str:
+    first_line = " ".join((body or "").strip().splitlines()).strip()
+    if not first_line:
+        return fallback
+    return first_line[:60] + ("..." if len(first_line) > 60 else "")
+
+
+def _feedback_body_preview(body: str, max_len: int = 240) -> str:
+    text = " ".join((body or "").strip().split())
+    return text[:max_len] + ("..." if len(text) > max_len else "")
+
+
+def _feedback_mentioned_emails(body: str) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for match in FEEDBACK_MENTION_RE.finditer(body or ""):
+        email = _normalize_email(match.group(1), FEEDBACK_MENTION_DOMAIN)
+        if email and email not in seen:
+            seen.add(email)
+            result.append(email)
+    return result
+
+
+def _feedback_notification_recipients(body: str) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for email in [*FEEDBACK_NOTIFICATION_ADMIN_EMAILS, *_feedback_mentioned_emails(body)]:
+        normalized = _normalize_email(email, FEEDBACK_MENTION_DOMAIN)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            result.append(normalized)
+    return result
+
+
+def _feedback_notification_subject(payload: dict) -> str:
+    kind = "回复" if payload.get("parent_id") else "新帖子"
+    title = payload.get("post_title") or _feedback_title(payload.get("body", ""))
+    return f"[Torch Profiler Analyzer] 留言板{kind}: {title}"
+
+
+def _feedback_message_url(payload: dict) -> str:
+    if not PUBLIC_BASE_URL:
+        return ""
+    post_id = str(payload.get("post_id") or payload.get("message_id") or "").strip()
+    message_id = str(payload.get("message_id") or "").strip()
+    if not post_id:
+        return PUBLIC_BASE_URL
+    url = f"{PUBLIC_BASE_URL}/#/feedback/{quote(post_id, safe='')}"
+    if message_id and message_id != post_id:
+        url += f"?message={quote(message_id, safe='')}"
+    return url
+
+
+def _feedback_notification_body(payload: dict) -> str:
+    kind = "回复" if payload.get("parent_id") else "新帖子"
+    lines = [
+        f"留言板有一条{kind}",
+        "",
+        f"作者: {payload.get('author') or 'local'}",
+        f"时间: {payload.get('created_at') or _utc_now_iso()}",
+        f"帖子: {payload.get('post_title') or _feedback_title(payload.get('body', ''))}",
+        "",
+        "内容:",
+        payload.get("body") or "(仅图片)",
+    ]
+    mentions = payload.get("mentioned_emails") or []
+    if mentions:
+        lines.extend(["", "提及:", ", ".join(mentions)])
+    if PUBLIC_BASE_URL:
+        lines.extend(["", f"打开留言: {_feedback_message_url(payload)}"])
+    else:
+        lines.extend(["", "请打开 Torch Profiler Analyzer 右上角的“灵感社区”查看详情。"])
+    return "\n".join(lines)
+
+
+def _feedback_email_transport() -> str:
+    if SMTP_HOST:
+        return "smtp"
+    if SENDMAIL_COMMAND:
+        return "sendmail"
+    return ""
+
+
+def _email_notification_status(recipients: list[str], disabled_detail: str) -> dict:
+    if not FEEDBACK_EMAIL_NOTIFICATIONS_ENABLED:
+        return {"status": "disabled", "detail": disabled_detail}
+    if not recipients:
+        return {"status": "no_recipients", "detail": "没有可通知的收件人"}
+    transport = _feedback_email_transport()
+    if not transport:
+        return {
+            "status": "missing_transport",
+            "detail": "未配置 TRACE_SMTP_HOST 或 TRACE_SENDMAIL_COMMAND，邮件未发送",
+            "recipients": recipients,
+        }
+    return {"status": "ready", "detail": "邮件通知可发送", "transport": transport, "recipients": recipients}
+
+
+def _feedback_notification_status(recipients: list[str]) -> dict:
+    return _email_notification_status(recipients, "留言板邮件通知已关闭")
+
+
+def _email_error_message(exc: Exception) -> str:
+    if isinstance(exc, socket.gaierror):
+        host = SMTP_HOST or "未配置"
+        return f"SMTP 主机无法解析: {host}。请确认 TRACE_SMTP_HOST 是 IT 提供的真实 SMTP 地址，并检查服务器 DNS。原始错误: {exc}"
+    if isinstance(exc, (socket.timeout, TimeoutError)):
+        return f"连接邮件服务器超时: {SMTP_HOST}:{SMTP_PORT}。请确认服务器网络和 SMTP 端口可达。"
+    if isinstance(exc, ConnectionRefusedError):
+        return f"邮件服务器拒绝连接: {SMTP_HOST}:{SMTP_PORT}。请确认 SMTP 端口、SSL/STARTTLS 配置是否正确。"
+    if isinstance(exc, smtplib.SMTPAuthenticationError):
+        return "SMTP 认证失败。请确认 TRACE_SMTP_USERNAME / TRACE_SMTP_PASSWORD 是否正确。"
+    if isinstance(exc, smtplib.SMTPRecipientsRefused):
+        return "SMTP 拒收所有收件人。请确认收件人邮箱或 SMTP 中继策略。"
+    if isinstance(exc, smtplib.SMTPSenderRefused):
+        return "SMTP 拒收发件人。请确认 TRACE_SMTP_FROM 是否被允许发信。"
+    if isinstance(exc, smtplib.SMTPException):
+        return f"SMTP 发送失败: {exc}"
+    if isinstance(exc, subprocess.CalledProcessError):
+        stderr = (exc.stderr or b"").decode("utf-8", errors="replace").strip()
+        stdout = (exc.stdout or b"").decode("utf-8", errors="replace").strip()
+        detail = stderr or stdout or str(exc)
+        return detail[:500]
+    return str(exc)[:500]
+
+
+def _email_diag_check(status: str, label: str, detail: str = "", **extra) -> dict:
+    return {"status": status, "label": label, "detail": detail, **extra}
+
+
+def _run_email_diagnostics_payload() -> dict:
+    checks: list[dict] = []
+    transport = _feedback_email_transport()
+    checks.append(_email_diag_check(
+        "ok" if FEEDBACK_EMAIL_NOTIFICATIONS_ENABLED else "fail",
+        "邮件通知开关",
+        "已启用" if FEEDBACK_EMAIL_NOTIFICATIONS_ENABLED else "已通过 TRACE_DISABLE_FEEDBACK_EMAIL 关闭",
+    ))
+    checks.append(_email_diag_check(
+        "ok" if FEEDBACK_NOTIFICATION_ADMIN_EMAILS else "warn",
+        "默认管理员收件人",
+        ", ".join(FEEDBACK_NOTIFICATION_ADMIN_EMAILS) if FEEDBACK_NOTIFICATION_ADMIN_EMAILS else "未配置 TRACE_FEEDBACK_ADMIN_EMAILS",
+    ))
+
+    if SMTP_HOST:
+        checks.append(_email_diag_check("ok", "邮件通道", f"SMTP {SMTP_HOST}:{SMTP_PORT}"))
+        try:
+            addr_infos = socket.getaddrinfo(SMTP_HOST, SMTP_PORT, type=socket.SOCK_STREAM)
+            addresses = sorted({info[4][0] for info in addr_infos})
+            checks.append(_email_diag_check("ok", "SMTP DNS 解析", ", ".join(addresses[:6]) or "解析成功"))
+        except Exception as exc:
+            checks.append(_email_diag_check("fail", "SMTP DNS 解析", _email_error_message(exc)))
+            return {
+                "ok": False,
+                "transport": "smtp",
+                "smtp_host": SMTP_HOST,
+                "smtp_port": SMTP_PORT,
+                "checks": checks,
+            }
+
+        try:
+            with socket.create_connection((SMTP_HOST, SMTP_PORT), timeout=min(SMTP_TIMEOUT_SECONDS, 8)):
+                pass
+            checks.append(_email_diag_check("ok", "SMTP TCP 连通性", f"{SMTP_HOST}:{SMTP_PORT} 可连接"))
+        except Exception as exc:
+            checks.append(_email_diag_check("fail", "SMTP TCP 连通性", _email_error_message(exc)))
+    elif SENDMAIL_COMMAND:
+        exists = os.path.exists(SENDMAIL_COMMAND)
+        executable = os.access(SENDMAIL_COMMAND, os.X_OK)
+        checks.append(_email_diag_check(
+            "ok" if exists and executable else "fail",
+            "sendmail 命令",
+            SENDMAIL_COMMAND if exists and executable else f"{SENDMAIL_COMMAND} 不存在或不可执行",
+        ))
+        checks.append(_email_diag_check(
+            "warn",
+            "sendmail 投递能力",
+            "只能确认命令存在，仍需在服务器上确认该 sendmail 能外发到公司邮箱。",
+        ))
+    else:
+        checks.append(_email_diag_check(
+            "fail",
+            "邮件通道",
+            "未配置 TRACE_SMTP_HOST 或 TRACE_SENDMAIL_COMMAND",
+        ))
+
+    return {
+        "ok": all(item["status"] != "fail" for item in checks),
+        "transport": transport,
+        "smtp_host": SMTP_HOST,
+        "smtp_port": SMTP_PORT,
+        "smtp_ssl": SMTP_USE_SSL,
+        "smtp_starttls": SMTP_USE_STARTTLS,
+        "smtp_from": SMTP_FROM,
+        "sendmail_command": SENDMAIL_COMMAND,
+        "checks": checks,
+    }
+
+
+def _send_email_sync(to_addrs: list[str], subject: str, body: str):
+    if not FEEDBACK_EMAIL_NOTIFICATIONS_ENABLED:
+        logger.info("feedback_email_disabled", extra={"event": "feedback_email_disabled"})
+        return
+    recipients = []
+    seen = set()
+    for addr in to_addrs:
+        email = _normalize_email(addr, FEEDBACK_MENTION_DOMAIN)
+        if email and email not in seen:
+            seen.add(email)
+            recipients.append(email)
+    if not recipients:
+        return
+    if not SMTP_HOST and not SENDMAIL_COMMAND:
+        logger.warning(
+            "feedback_email_smtp_missing",
+            extra={"event": "feedback_email_smtp_missing", "recipients": recipients},
+        )
+        return
+
+    message = EmailMessage()
+    message["From"] = SMTP_FROM
+    message["To"] = ", ".join(recipients)
+    message["Subject"] = subject
+    message.set_content(body, charset="utf-8")
+
+    if SMTP_HOST:
+        smtp_cls = smtplib.SMTP_SSL if SMTP_USE_SSL else smtplib.SMTP
+        with smtp_cls(SMTP_HOST, SMTP_PORT, timeout=SMTP_TIMEOUT_SECONDS) as smtp:
+            if SMTP_USE_STARTTLS and not SMTP_USE_SSL:
+                smtp.starttls()
+            if SMTP_USERNAME:
+                smtp.login(SMTP_USERNAME, SMTP_PASSWORD)
+            smtp.send_message(message)
+        return
+
+    subprocess.run(
+        [SENDMAIL_COMMAND, "-t", "-i"],
+        input=message.as_bytes(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=SMTP_TIMEOUT_SECONDS,
+        check=True,
+    )
+
+
+async def _send_feedback_email_notification(payload: dict):
+    recipients = payload.get("recipients") or []
+    status = _feedback_notification_status(recipients)
+    if status["status"] != "ready":
+        logger.warning(
+            "feedback_email_not_sent",
+            extra={"event": "feedback_email_not_sent", **status},
+        )
+        return status
+    try:
+        await asyncio.to_thread(
+            _send_email_sync,
+            recipients,
+            _feedback_notification_subject(payload),
+            _feedback_notification_body(payload),
+        )
+        sent_status = {
+            **status,
+            "status": "sent",
+            "detail": "邮件通知已发送",
+        }
+        logger.info(
+            "feedback_email_sent",
+            extra={
+                "event": "feedback_email_sent",
+                "message_id": payload.get("message_id"),
+                "recipients": recipients,
+                "transport": status.get("transport", ""),
+            },
+        )
+        return sent_status
+    except Exception as exc:
+        error = _email_error_message(exc)
+        logger.warning(
+            "feedback_email_failed",
+            extra={
+                "event": "feedback_email_failed",
+                "message_id": payload.get("message_id"),
+                "error": error,
+                "recipients": recipients,
+                "transport": status.get("transport", ""),
+            },
+            exc_info=True,
+        )
+        return {
+            **status,
+            "status": "failed",
+            "detail": f"邮件通知发送失败: {error}",
+            "error": error,
+        }
+
+
+def _dedupe_emails(values: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        email = _normalize_email(value, FEEDBACK_MENTION_DOMAIN)
+        if email and email not in seen:
+            seen.add(email)
+            result.append(email)
+    return result
+
+
+def _dedupe_identity_values(values) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        token = str(value or "").strip()
+        key = token.lower()
+        if token and key not in seen:
+            seen.add(key)
+            result.append(token)
+    return result
+
+
+async def _compare_source_owner_tokens(job: dict) -> list[str]:
+    if (job or {}).get("mode") != "compare":
+        return []
+    source_ids = _dedupe_identity_values([job.get("source_job_a"), job.get("source_job_b")])
+    if not source_ids:
+        return []
+
+    placeholders = ",".join("?" * len(source_ids))
+    db = await get_db()
+    try:
+        rows = await (
+            await db.execute(
+                f"SELECT user_token FROM jobs WHERE id IN ({placeholders})",
+                source_ids,
+            )
+        ).fetchall()
+    finally:
+        await db.close()
+    return _dedupe_identity_values([row["user_token"] for row in rows if row["user_token"]])
+
+
+def _job_ai_analysis_url(jid: str) -> str:
+    if not PUBLIC_BASE_URL:
+        return ""
+    return f"{PUBLIC_BASE_URL}/#/job/{quote(jid, safe='')}/ai"
+
+
+def _job_ai_report_url(jid: str) -> str:
+    if not PUBLIC_BASE_URL:
+        return ""
+    return f"{PUBLIC_BASE_URL}/api/jobs/{quote(jid, safe='')}/ai-analysis/report.md"
+
+
+def _format_duration_ms_brief(value) -> str:
+    try:
+        ms = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    if ms < 1000:
+        return f"{int(ms)} ms"
+    seconds = int(round(ms / 1000))
+    hours, rem = divmod(seconds, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}小时{minutes}分{secs}秒"
+    if minutes:
+        return f"{minutes}分{secs}秒"
+    return f"{secs}秒"
+
+
+def _ai_analysis_notification_recipients(payload: dict) -> list[str]:
+    values = [payload.get("trigger_user_email", ""), payload.get("owner_user_email", "")]
+    values.extend(payload.get("owner_user_emails") or [])
+    for key in ("trigger_user_token", "owner_user_token"):
+        token = str(payload.get(key) or "").strip()
+        if token and token.lower() not in {"local", "anonymous"}:
+            values.append(token)
+    for token in payload.get("owner_user_tokens") or []:
+        token = str(token or "").strip()
+        if token and token.lower() not in {"local", "anonymous"}:
+            values.append(token)
+    return _dedupe_emails(values)
+
+
+def _ai_analysis_notification_subject(payload: dict) -> str:
+    status_text = "完成" if payload.get("status") == "done" else "失败"
+    label = payload.get("job_label") or payload.get("job_id") or "AI 分析"
+    return f"[Torch Profiler Analyzer] AI分析{status_text}: {label}"
+
+
+def _ai_analysis_notification_body(payload: dict) -> str:
+    status_text = "完成" if payload.get("status") == "done" else "失败"
+    mode_text = "对比" if payload.get("job_mode") == "compare" else "单 trace"
+    ai_url = payload.get("ai_url") or ""
+    report_url = payload.get("report_url") or ""
+    owner_tokens = _dedupe_identity_values(payload.get("owner_user_tokens") or [payload.get("owner_user_token")])
+    owner_text = ", ".join(owner_tokens) if owner_tokens else "local"
+    lines = [
+        f"AI 分析{status_text}",
+        "",
+        f"任务: {payload.get('job_label') or payload.get('job_id') or ''}",
+        f"任务 ID: {payload.get('job_id') or ''}",
+        f"类型: {mode_text}",
+        f"Skill: {payload.get('skill') or ''}",
+        f"触发人: {payload.get('trigger_user_display') or payload.get('trigger_user_token') or 'local'}",
+        f"任务所属人: {owner_text}",
+        f"状态: {payload.get('status') or ''}",
+        f"开始时间: {payload.get('started_at') or ''}",
+        f"结束时间: {payload.get('finished_at') or ''}",
+        f"总耗时: {_format_duration_ms_brief(payload.get('duration_ms'))}",
+    ]
+    if payload.get("error"):
+        lines.extend(["", "错误:", str(payload.get("error"))])
+    if ai_url:
+        lines.extend(["", f"打开 AI 分析结果: {ai_url}"])
+    else:
+        lines.extend(["", "打开应用的对应任务 AI 分析页查看结果；建议配置 TRACE_PUBLIC_BASE_URL 后生成邮件直达链接。"])
+    if report_url and payload.get("report_exists"):
+        lines.append(f"下载 Markdown 报告: {report_url}")
+    if PUBLIC_BASE_URL:
+        lines.append(f"打开应用: {PUBLIC_BASE_URL}")
+    return "\n".join(lines)
+
+
+async def _send_ai_analysis_email_notification(payload: dict) -> dict:
+    recipients = _ai_analysis_notification_recipients(payload)
+    status = _email_notification_status(recipients, "AI 分析邮件通知已关闭")
+    if status["status"] != "ready":
+        logger.warning(
+            "ai_analysis_email_not_sent",
+            extra={
+                "event": "ai_analysis_email_not_sent",
+                "job_id": payload.get("job_id"),
+                **status,
+            },
+        )
+        return status
+    try:
+        await asyncio.to_thread(
+            _send_email_sync,
+            recipients,
+            _ai_analysis_notification_subject(payload),
+            _ai_analysis_notification_body(payload),
+        )
+        sent_status = {**status, "status": "sent", "detail": "AI 分析邮件通知已发送"}
+        logger.info(
+            "ai_analysis_email_sent",
+            extra={
+                "event": "ai_analysis_email_sent",
+                "job_id": payload.get("job_id"),
+                "analysis_status": payload.get("status"),
+                "recipients": recipients,
+                "transport": status.get("transport", ""),
+            },
+        )
+        return sent_status
+    except Exception as exc:
+        error = _email_error_message(exc)
+        logger.warning(
+            "ai_analysis_email_failed",
+            extra={
+                "event": "ai_analysis_email_failed",
+                "job_id": payload.get("job_id"),
+                "analysis_status": payload.get("status"),
+                "error": error,
+                "recipients": recipients,
+                "transport": status.get("transport", ""),
+            },
+            exc_info=True,
+        )
+        return {
+            **status,
+            "status": "failed",
+            "detail": f"AI 分析邮件通知发送失败: {error}",
+            "error": error,
+        }
+
+
+async def _send_ai_analysis_completion_notification(
+    jid: str,
+    job: dict,
+    status: dict,
+    notification_context: dict,
+) -> dict:
+    if status.get("status") not in {"done", "error"}:
+        return {"status": "skipped", "detail": "AI 分析尚未结束"}
+    timing = _ai_analysis_timing(status)
+    owner_tokens = _dedupe_identity_values([
+        notification_context.get("owner_user_token"),
+        job.get("user_token"),
+        status.get("owner_user_token"),
+    ])
+    owner_tokens = _dedupe_identity_values([*owner_tokens, *await _compare_source_owner_tokens(job)])
+    payload = {
+        "job_id": jid,
+        "job_label": notification_context.get("job_label") or job.get("label") or jid,
+        "job_mode": notification_context.get("job_mode") or job.get("mode") or status.get("mode") or "",
+        "owner_user_token": owner_tokens[0] if owner_tokens else "",
+        "owner_user_tokens": owner_tokens,
+        "owner_user_email": notification_context.get("owner_user_email") or "",
+        "trigger_user_token": notification_context.get("trigger_user_token") or "",
+        "trigger_user_display": notification_context.get("trigger_user_display") or "",
+        "trigger_user_email": notification_context.get("trigger_user_email") or "",
+        "status": status.get("status") or "",
+        "error": status.get("error") or "",
+        "skill": status.get("skill") or "",
+        "started_at": status.get("started_at") or "",
+        "finished_at": status.get("finished_at") or _utc_now_iso(),
+        "duration_ms": timing.get("duration_ms") or timing.get("elapsed_ms"),
+        "report_exists": os.path.exists(ai_analysis_report_path(jid)),
+        "ai_url": _job_ai_analysis_url(jid),
+        "report_url": _job_ai_report_url(jid),
+    }
+    return await _send_ai_analysis_email_notification(payload)
+
+
+async def _feedback_attachments_for(db, message_ids: list[str]) -> dict:
+    if not message_ids:
+        return {}
+    placeholders = ",".join("?" * len(message_ids))
+    rows = await (
+        await db.execute(
+            f"""
+            SELECT id, message_id, filename, content_type, size_bytes
+            FROM feedback_attachments
+            WHERE message_id IN ({placeholders})
+            ORDER BY created_at ASC
+            """,
+            tuple(message_ids),
+        )
+    ).fetchall()
+    result: dict[str, list[dict]] = {}
+    for row in rows:
+        item = dict(row)
+        result.setdefault(item["message_id"], []).append(_feedback_attachment_response(item))
+    return result
+
+
+async def _feedback_reactions_for(db, message_ids: list[str], viewer_token: str = "") -> dict:
+    if not message_ids:
+        return {}
+    placeholders = ",".join("?" * len(message_ids))
+    rows = await (
+        await db.execute(
+            f"""
+            SELECT message_id,
+                   emoji,
+                   COUNT(*) AS count,
+                   SUM(CASE WHEN user_token=? THEN 1 ELSE 0 END) AS reacted,
+                   MIN(created_at) AS first_reacted_at
+            FROM feedback_reactions
+            WHERE message_id IN ({placeholders})
+            GROUP BY message_id, emoji
+            ORDER BY count DESC, first_reacted_at ASC
+            """,
+            (viewer_token or "", *message_ids),
+        )
+    ).fetchall()
+    result: dict[str, list[dict]] = {}
+    for row in rows:
+        item = dict(row)
+        result.setdefault(item["message_id"], []).append({
+            "emoji": item.get("emoji") or "",
+            "count": int(item.get("count") or 0),
+            "reacted": bool(item.get("reacted")),
+        })
+    return result
+
+
+def _mention_username(value: str) -> str:
+    token = (value or "").strip().lstrip("@")
+    if "@" in token:
+        token = token.split("@", 1)[0]
+    return token if FEEDBACK_MENTION_TOKEN_RE.fullmatch(token or "") else ""
+
+
+def _mention_candidate(username: str, display_name: str = "", email: str = "", source: str = "local") -> Optional[dict]:
+    token = _mention_username(username) or _mention_username(email)
+    if not token:
+        return None
+    normalized_email = _normalize_email(email or token, FEEDBACK_MENTION_DOMAIN)
+    return {
+        "username": token,
+        "display_name": (display_name or token).strip(),
+        "email": normalized_email,
+        "source": source,
+    }
+
+
+def _mention_candidate_rank(candidate: dict, query: str) -> tuple:
+    q = (query or "").lower()
+    username = (candidate.get("username") or "").lower()
+    display = (candidate.get("display_name") or "").lower()
+    email = (candidate.get("email") or "").lower()
+    source_rank = 0 if candidate.get("source") == "ldap" else 1
+    if username == q:
+        rank = 0
+    elif username.startswith(q):
+        rank = 1
+    elif display.startswith(q):
+        rank = 2
+    elif email.startswith(q):
+        rank = 3
+    elif q in username:
+        rank = 4
+    elif q in display:
+        rank = 5
+    elif q in email:
+        rank = 6
+    else:
+        rank = 7
+    return (rank, source_rank, username)
+
+
+async def _local_mention_candidates(query: str, limit: int) -> list[dict]:
+    q = (query or "").strip().lower()
+    if not q:
+        return []
+    like = f"%{q}%"
+    rows: list[dict] = []
+    db = await get_db()
+    try:
+        feedback_rows = await (
+            await db.execute(
+                """
+                SELECT user_token, user_display, MAX(created_at) AS last_seen
+                FROM feedback_messages
+                WHERE user_token <> ''
+                  AND (lower(user_token) LIKE ? OR lower(user_display) LIKE ?)
+                GROUP BY user_token, user_display
+                ORDER BY last_seen DESC
+                LIMIT ?
+                """,
+                (like, like, max(limit * 3, 20)),
+            )
+        ).fetchall()
+        rows.extend(dict(row) for row in feedback_rows)
+        job_rows = await (
+            await db.execute(
+                """
+                SELECT user_token, user_token AS user_display, MAX(created_at) AS last_seen
+                FROM jobs
+                WHERE user_token <> '' AND lower(user_token) LIKE ?
+                GROUP BY user_token
+                ORDER BY last_seen DESC
+                LIMIT ?
+                """,
+                (like, max(limit * 2, 20)),
+            )
+        ).fetchall()
+        rows.extend(dict(row) for row in job_rows)
+        user_rows = await (
+            await db.execute(
+                """
+                SELECT user_token, user_token AS user_display, created_at AS last_seen
+                FROM users
+                WHERE user_token <> '' AND lower(user_token) LIKE ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (like, max(limit * 2, 20)),
+            )
+        ).fetchall()
+        rows.extend(dict(row) for row in user_rows)
+    finally:
+        await db.close()
+
+    candidates = []
+    for row in rows:
+        candidate = _mention_candidate(
+            row.get("user_token") or "",
+            row.get("user_display") or "",
+            source="local",
+        )
+        if candidate:
+            candidates.append(candidate)
+    return candidates
+
+
+def _merge_mention_candidates(candidates: list[dict], query: str, limit: int) -> list[dict]:
+    merged: dict[str, dict] = {}
+    for item in candidates:
+        candidate = _mention_candidate(
+            item.get("username") or "",
+            item.get("display_name") or "",
+            item.get("email") or "",
+            item.get("source") or "local",
+        )
+        if not candidate:
+            continue
+        key = (candidate["username"] or candidate["email"]).lower()
+        existing = merged.get(key)
+        if not existing or existing.get("source") != "ldap" and candidate.get("source") == "ldap":
+            merged[key] = candidate
+        elif existing and not existing.get("email") and candidate.get("email"):
+            existing["email"] = candidate["email"]
+    result = list(merged.values())
+    result.sort(key=lambda item: _mention_candidate_rank(item, query))
+    return result[:limit]
+
+
+@app.get("/api/mention-candidates")
+async def mention_candidates(request: Request, q: str = "", limit: int = 8):
+    if AUTH_ENABLED:
+        current_user_token(request)
+    query = (q or "").strip()
+    limit = max(1, min(limit, 20))
+    if not query:
+        return {"data": [], "query": query}
+
+    candidates: list[dict] = []
+    if AUTH_ENABLED:
+        try:
+            ldap_users = await asyncio.to_thread(ldap_auth.search_users, query, limit)
+            for user in ldap_users:
+                candidate = _mention_candidate(
+                    user.get("username") or "",
+                    user.get("display_name") or "",
+                    user.get("email") or "",
+                    "ldap",
+                )
+                if candidate:
+                    candidates.append(candidate)
+        except Exception as exc:
+            logger.info(
+                "mention_ldap_search_failed",
+                extra={"event": "mention_ldap_search_failed", "error": str(exc)},
+            )
+
+    candidates.extend(await _local_mention_candidates(query, limit))
+    return {"data": _merge_mention_candidates(candidates, query, limit), "query": query}
+
+
+@app.get("/api/feedback")
+async def list_feedback(request: Request, limit: int = 30, offset: int = 0, sort: str = "updated"):
+    if AUTH_ENABLED:
+        current_user_token(request)
+    viewer_token, _ = _feedback_author(request)
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+    sort_key = (sort or "updated").strip().lower()
+    if sort_key not in {"updated", "created", "hot"}:
+        sort_key = "updated"
+    order_by = {
+        "updated": "last_activity_at DESC, p.created_at DESC",
+        "created": "p.created_at DESC",
+        "hot": "reply_count DESC, last_activity_at DESC, p.created_at DESC",
+    }[sort_key]
+    db = await get_db()
+    try:
+        total_row = await (
+            await db.execute("SELECT COUNT(*) AS total FROM feedback_messages WHERE parent_id IS NULL")
+        ).fetchone()
+        parent_rows = await (
+            await db.execute(
+                f"""
+                SELECT p.*,
+                       (
+                           SELECT COUNT(*)
+                           FROM feedback_messages r
+                           WHERE r.parent_id = p.id
+                       ) AS reply_count,
+                       COALESCE(
+                           (
+                               SELECT MAX(COALESCE(r.updated_at, r.created_at))
+                               FROM feedback_messages r
+                               WHERE r.parent_id = p.id
+                           ),
+                           p.updated_at,
+                           p.created_at
+                       ) AS last_activity_at
+                FROM feedback_messages p
+                WHERE p.parent_id IS NULL
+                ORDER BY {order_by}
+                LIMIT ? OFFSET ?
+                """,
+                (limit, offset),
+            )
+        ).fetchall()
+        parents = [dict(row) for row in parent_rows]
+        parent_ids = [row["id"] for row in parents]
+
+        reply_rows = []
+        if parent_ids:
+            placeholders = ",".join("?" * len(parent_ids))
+            reply_rows = await (
+                await db.execute(
+                    f"""
+                    SELECT *
+                    FROM feedback_messages
+                    WHERE parent_id IN ({placeholders})
+                    ORDER BY created_at ASC
+                    """,
+                    tuple(parent_ids),
+                )
+            ).fetchall()
+
+        replies_by_parent: dict[str, list[dict]] = {}
+        replies = [dict(row) for row in reply_rows]
+        message_ids = parent_ids + [row["id"] for row in replies]
+        attachments_by_message = await _feedback_attachments_for(db, message_ids)
+        reactions_by_message = await _feedback_reactions_for(db, message_ids, viewer_token)
+        for reply in replies:
+            replies_by_parent.setdefault(reply["parent_id"], []).append(
+                _feedback_message_response(reply, attachments_by_message, reactions_by_message)
+            )
+    finally:
+        await db.close()
+
+    return {
+        "data": [
+            _feedback_message_response(
+                parent,
+                attachments_by_message,
+                reactions_by_message,
+                replies=replies_by_parent.get(parent["id"], []),
+                reply_count=parent.get("reply_count"),
+                last_activity_at=parent.get("last_activity_at"),
+            )
+            for parent in parents
+        ],
+        "total": total_row["total"] if total_row else 0,
+        "limit": limit,
+        "offset": offset,
+        "sort": sort_key,
+    }
+
+
+@app.get("/api/feedback/{post_id}")
+async def get_feedback_post(request: Request, post_id: str):
+    if AUTH_ENABLED:
+        current_user_token(request)
+    viewer_token, _ = _feedback_author(request)
+    db = await get_db()
+    try:
+        found = await row_to_dict(
+            await (await db.execute(
+                "SELECT id, parent_id FROM feedback_messages WHERE id=?",
+                (post_id,),
+            )).fetchone()
+        )
+        if not found:
+            raise HTTPException(404, "帖子不存在")
+        root_id = found.get("parent_id") or found["id"]
+        parent = await row_to_dict(
+            await (await db.execute(
+                """
+                SELECT p.*,
+                       (
+                           SELECT COUNT(*)
+                           FROM feedback_messages r
+                           WHERE r.parent_id = p.id
+                       ) AS reply_count,
+                       COALESCE(
+                           (
+                               SELECT MAX(COALESCE(r.updated_at, r.created_at))
+                               FROM feedback_messages r
+                               WHERE r.parent_id = p.id
+                           ),
+                           p.updated_at,
+                           p.created_at
+                       ) AS last_activity_at
+                FROM feedback_messages p
+                WHERE p.id=?
+                """,
+                (root_id,),
+            )).fetchone()
+        )
+        reply_rows = await (
+            await db.execute(
+                """
+                SELECT *
+                FROM feedback_messages
+                WHERE parent_id=?
+                ORDER BY created_at ASC
+                """,
+                (root_id,),
+            )
+        ).fetchall()
+        replies = [dict(row) for row in reply_rows]
+        message_ids = [root_id] + [row["id"] for row in replies]
+        attachments_by_message = await _feedback_attachments_for(db, message_ids)
+        reactions_by_message = await _feedback_reactions_for(db, message_ids, viewer_token)
+    finally:
+        await db.close()
+
+    return _feedback_message_response(
+        parent,
+        attachments_by_message,
+        reactions_by_message,
+        replies=[_feedback_message_response(reply, attachments_by_message, reactions_by_message) for reply in replies],
+        reply_count=parent.get("reply_count"),
+        last_activity_at=parent.get("last_activity_at"),
+    )
+
+
+@app.post("/api/feedback", status_code=201)
+async def create_feedback(
+    request: Request,
+    body: str = Form(""),
+    parent_id: Optional[str] = Form(None),
+    images: Optional[list[UploadFile]] = File(None),
+):
+    if AUTH_ENABLED:
+        current_user_token(request)
+    text = (body or "").strip()
+    image_files = [img for img in (images or []) if img and img.filename]
+    if len(image_files) > FEEDBACK_MAX_IMAGES:
+        raise HTTPException(400, f"最多上传 {FEEDBACK_MAX_IMAGES} 张图片")
+    if not text and not image_files:
+        raise HTTPException(400, "请输入留言内容或上传图片")
+
+    db = await get_db()
+    message_id = str(uuid.uuid4())
+    saved_paths: list[str] = []
+    notification_payload: Optional[dict] = None
+    notification_status: Optional[dict] = None
+    try:
+        root_parent_id = parent_id or None
+        parent_post: Optional[dict] = None
+        if root_parent_id:
+            parent = await row_to_dict(
+                await (await db.execute(
+                    "SELECT id, parent_id FROM feedback_messages WHERE id=?",
+                    (root_parent_id,),
+                )).fetchone()
+            )
+            if not parent:
+                raise HTTPException(404, "留言不存在")
+            if parent.get("parent_id"):
+                root_parent_id = parent["parent_id"]
+            parent_post = await row_to_dict(
+                await (await db.execute(
+                    "SELECT id, body FROM feedback_messages WHERE id=?",
+                    (root_parent_id,),
+                )).fetchone()
+            )
+
+        user_token, user_display = _feedback_author(request)
+        await db.execute(
+            """
+            INSERT INTO feedback_messages(id, parent_id, user_token, user_display, body)
+            VALUES(?,?,?,?,?)
+            """,
+            (message_id, root_parent_id, user_token, user_display, text),
+        )
+
+        target_dir = feedback_message_dir(message_id)
+        os.makedirs(target_dir, exist_ok=True)
+        for upload in image_files:
+            data, content_type, ext = await _read_feedback_image(upload)
+            attachment_id = str(uuid.uuid4())
+            stored_path = os.path.join(target_dir, f"{attachment_id}{ext}")
+            async with aiofiles.open(stored_path, "wb") as f:
+                await f.write(data)
+            saved_paths.append(stored_path)
+            await db.execute(
+                """
+                INSERT INTO feedback_attachments(id, message_id, filename, stored_path, content_type, size_bytes)
+                VALUES(?,?,?,?,?,?)
+                """,
+                (
+                    attachment_id,
+                    message_id,
+                    _safe_download_name(upload.filename, f"image{ext}")[:240],
+                    stored_path,
+                    content_type,
+                    len(data),
+                ),
+            )
+
+        if root_parent_id:
+            await db.execute(
+                "UPDATE feedback_messages SET updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (root_parent_id,),
+            )
+
+        await write_audit(
+            db, request, "feedback.create",
+            resource_type="feedback", resource_id=message_id,
+            details={"parent_id": root_parent_id, "image_count": len(image_files)},
+        )
+        await db.commit()
+
+        message = await row_to_dict(
+            await (await db.execute("SELECT * FROM feedback_messages WHERE id=?", (message_id,))).fetchone()
+        )
+        attachments_by_message = await _feedback_attachments_for(db, [message_id])
+        recipients = _feedback_notification_recipients(text)
+        notification_payload = {
+            "message_id": message_id,
+            "post_id": root_parent_id or message_id,
+            "parent_id": root_parent_id,
+            "author": user_display,
+            "user_token": user_token,
+            "body": text,
+            "created_at": message.get("created_at") if message else _utc_now_iso(),
+            "image_count": len(image_files),
+            "post_title": _feedback_title((parent_post or {}).get("body") or text),
+            "mentioned_emails": _feedback_mentioned_emails(text),
+            "recipients": recipients,
+        }
+    except HTTPException:
+        await db.rollback()
+        for path in saved_paths:
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(path)
+        raise
+    except Exception:
+        await db.rollback()
+        for path in saved_paths:
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(path)
+        raise
+    finally:
+        await db.close()
+
+    if notification_payload:
+        notification_status = await _send_feedback_email_notification(notification_payload)
+        logger.info(
+            "feedback_created",
+            extra={
+                "event": "feedback_created",
+                "feedback_id": message_id,
+                "feedback_kind": "reply" if notification_payload.get("parent_id") else "post",
+                "post_id": notification_payload.get("post_id"),
+                "parent_id": notification_payload.get("parent_id"),
+                "user": notification_payload.get("user_token"),
+                "author": notification_payload.get("author"),
+                "ip": request_ip(request),
+                "image_count": notification_payload.get("image_count", 0),
+                "body_length": len(text),
+                "body_preview": _feedback_body_preview(text),
+                "mentioned_emails": notification_payload.get("mentioned_emails", []),
+                "recipients": notification_payload.get("recipients", []),
+                "notification_status": (notification_status or {}).get("status", ""),
+                "notification_transport": (notification_status or {}).get("transport", ""),
+            },
+        )
+
+    response = _feedback_message_response(message, attachments_by_message, {})
+    if notification_status:
+        response["notification"] = notification_status
+    return response
+
+
+@app.patch("/api/feedback/{message_id}")
+async def update_feedback_message(request: Request, message_id: str, payload: Optional[dict] = None):
+    if AUTH_ENABLED:
+        current_user_token(request)
+    user_token, _ = _feedback_author(request)
+    text = str((payload or {}).get("body") or "").strip()
+    if len(text) > 2000:
+        raise HTTPException(400, "留言内容不能超过 2000 字")
+
+    db = await get_db()
+    try:
+        target = await row_to_dict(
+            await (await db.execute(
+                "SELECT * FROM feedback_messages WHERE id=?",
+                (message_id,),
+            )).fetchone()
+        )
+        if not target:
+            raise HTTPException(404, "留言不存在")
+        if (target.get("user_token") or "") != user_token and not request_is_admin(request):
+            raise HTTPException(403, "只能编辑自己发布的内容")
+
+        attachment_count_row = await (
+            await db.execute(
+                "SELECT COUNT(*) AS count FROM feedback_attachments WHERE message_id=?",
+                (message_id,),
+            )
+        ).fetchone()
+        if not text and int(attachment_count_row["count"] or 0) == 0:
+            raise HTTPException(400, "留言内容不能为空")
+
+        await db.execute(
+            """
+            UPDATE feedback_messages
+            SET body=?,
+                updated_at=CURRENT_TIMESTAMP,
+                edited_at=CURRENT_TIMESTAMP,
+                edit_count=COALESCE(edit_count, 0) + 1
+            WHERE id=?
+            """,
+            (text, message_id),
+        )
+        root_parent_id = target.get("parent_id")
+        if root_parent_id:
+            await db.execute(
+                "UPDATE feedback_messages SET updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (root_parent_id,),
+            )
+        await write_audit(
+            db, request, "feedback.edit",
+            resource_type="feedback", resource_id=message_id,
+            details={"parent_id": root_parent_id, "body_length": len(text)},
+        )
+        await db.commit()
+
+        updated = await row_to_dict(
+            await (await db.execute("SELECT * FROM feedback_messages WHERE id=?", (message_id,))).fetchone()
+        )
+        root_id = root_parent_id or message_id
+        message_ids = [message_id]
+        attachments_by_message = await _feedback_attachments_for(db, message_ids)
+        reactions_by_message = await _feedback_reactions_for(db, message_ids, user_token)
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception:
+        await db.rollback()
+        raise
+    finally:
+        await db.close()
+
+    response = _feedback_message_response(updated, attachments_by_message, reactions_by_message)
+    response["post_id"] = root_id
+    return response
+
+
+@app.post("/api/feedback/{message_id}/reactions")
+async def toggle_feedback_reaction(request: Request, message_id: str, payload: Optional[dict] = None):
+    if AUTH_ENABLED:
+        current_user_token(request)
+    user_token, _ = _feedback_author(request)
+    emoji = str((payload or {}).get("emoji") or "").strip()
+    if emoji not in FEEDBACK_REACTION_EMOJIS:
+        raise HTTPException(400, "不支持该表情")
+
+    db = await get_db()
+    active = False
+    try:
+        target = await row_to_dict(
+            await (await db.execute(
+                "SELECT id FROM feedback_messages WHERE id=?",
+                (message_id,),
+            )).fetchone()
+        )
+        if not target:
+            raise HTTPException(404, "留言不存在")
+        existing = await row_to_dict(
+            await (await db.execute(
+                "SELECT 1 FROM feedback_reactions WHERE message_id=? AND user_token=? AND emoji=?",
+                (message_id, user_token, emoji),
+            )).fetchone()
+        )
+        if existing:
+            await db.execute(
+                "DELETE FROM feedback_reactions WHERE message_id=? AND user_token=? AND emoji=?",
+                (message_id, user_token, emoji),
+            )
+        else:
+            active = True
+            await db.execute(
+                "INSERT INTO feedback_reactions(message_id, user_token, emoji) VALUES(?,?,?)",
+                (message_id, user_token, emoji),
+            )
+        await write_audit(
+            db, request, "feedback.reaction",
+            resource_type="feedback", resource_id=message_id,
+            details={"emoji": emoji, "active": active},
+        )
+        await db.commit()
+        reactions_by_message = await _feedback_reactions_for(db, [message_id], user_token)
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception:
+        await db.rollback()
+        raise
+    finally:
+        await db.close()
+
+    return {
+        "ok": True,
+        "message_id": message_id,
+        "emoji": emoji,
+        "active": active,
+        "reactions": reactions_by_message.get(message_id, []),
+    }
+
+
+@app.delete("/api/feedback/{message_id}")
+async def delete_feedback_message(request: Request, message_id: str):
+    admin_user = require_admin(request)
+    db = await get_db()
+    deleted_ids: list[str] = []
+    deleted_paths: list[str] = []
+    root_parent_id: Optional[str] = None
+    try:
+        target = await row_to_dict(
+            await (await db.execute(
+                "SELECT id, parent_id FROM feedback_messages WHERE id=?",
+                (message_id,),
+            )).fetchone()
+        )
+        if not target:
+            raise HTTPException(404, "帖子不存在")
+
+        if target.get("parent_id"):
+            deleted_ids = [target["id"]]
+            root_parent_id = target["parent_id"]
+            delete_scope = "reply"
+        else:
+            reply_rows = await (
+                await db.execute(
+                    "SELECT id FROM feedback_messages WHERE parent_id=?",
+                    (target["id"],),
+                )
+            ).fetchall()
+            deleted_ids = [target["id"]] + [row["id"] for row in reply_rows]
+            delete_scope = "post"
+
+        placeholders = ",".join("?" * len(deleted_ids))
+        attachment_rows = await (
+            await db.execute(
+                f"SELECT stored_path FROM feedback_attachments WHERE message_id IN ({placeholders})",
+                tuple(deleted_ids),
+            )
+        ).fetchall()
+        deleted_paths = [row["stored_path"] for row in attachment_rows if row["stored_path"]]
+
+        await db.execute(
+            f"DELETE FROM feedback_attachments WHERE message_id IN ({placeholders})",
+            tuple(deleted_ids),
+        )
+        await db.execute(
+            f"DELETE FROM feedback_reactions WHERE message_id IN ({placeholders})",
+            tuple(deleted_ids),
+        )
+        await db.execute(
+            f"DELETE FROM feedback_messages WHERE id IN ({placeholders})",
+            tuple(deleted_ids),
+        )
+        if root_parent_id:
+            await db.execute(
+                "UPDATE feedback_messages SET updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (root_parent_id,),
+            )
+
+        await write_audit(
+            db, request, "feedback.delete",
+            resource_type="feedback", resource_id=target["id"],
+            details={
+                "admin_user": admin_user,
+                "scope": delete_scope,
+                "deleted_ids": deleted_ids,
+                "root_parent_id": root_parent_id,
+            },
+        )
+        await db.commit()
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception:
+        await db.rollback()
+        raise
+    finally:
+        await db.close()
+
+    _remove_feedback_storage(deleted_paths, deleted_ids)
+    return {"ok": True, "deleted": len(deleted_ids), "ids": deleted_ids}
+
+
+@app.get("/api/feedback/images/{attachment_id}")
+async def get_feedback_image(request: Request, attachment_id: str):
+    if AUTH_ENABLED:
+        current_user_token(request)
+    db = await get_db()
+    try:
+        row = await row_to_dict(
+            await (await db.execute(
+                "SELECT filename, stored_path, content_type FROM feedback_attachments WHERE id=?",
+                (attachment_id,),
+            )).fetchone()
+        )
+    finally:
+        await db.close()
+    if not row:
+        raise HTTPException(404)
+    path = row["stored_path"]
+    root = os.path.abspath(feedback_dir())
+    full = os.path.abspath(path)
+    if os.path.commonpath([root, full]) != root or not os.path.exists(full):
+        raise HTTPException(404)
+    return FileResponse(
+        full,
+        media_type=row.get("content_type") or "application/octet-stream",
+        headers={
+            "Content-Disposition": _content_disposition(
+                _safe_download_name(row.get("filename"), os.path.basename(full)),
+                disposition="inline",
+            ),
+        },
+    )
+
+
 # ── Routes: projects ──────────────────────────────────────────────────────────
 
 @app.get("/api/projects")
-async def list_projects():
+async def list_projects(request: Request):
     db = await get_db()
-    rows = await (await db.execute("""
+    access_sql, access_params = _project_access_clause(request)
+    where_sql = f"WHERE {access_sql}" if access_sql else ""
+    rows = await (await db.execute(f"""
         SELECT * FROM projects
-        ORDER BY created_at DESC
-    """)).fetchall()
+        {where_sql}
+        ORDER BY is_public DESC, created_at DESC
+    """, access_params)).fetchall()
     await db.close()
-    return [dict(r) for r in rows]
+    return [_project_response(dict(r), request) for r in rows]
 
 
 @app.post("/api/projects", status_code=201)
 async def create_project(request: Request, body: dict):
     pid = str(uuid.uuid4())
     db = await get_db()
+    user_token = await ensure_user_row(db, request)
+    is_public = 1 if body.get("is_public") else 0
     await db.execute(
-        "INSERT INTO projects(id, name, description, is_public) VALUES(?,?,?,?)",
-        (pid, body.get("name", "新项目"), body.get("description", ""), 1),
+        "INSERT INTO projects(id, user_token, name, description, is_public) VALUES(?,?,?,?,?)",
+        (pid, user_token, body.get("name", "新项目"), body.get("description", ""), is_public),
     )
     await write_audit(
         db, request, "project.create",
         resource_type="project", resource_id=pid,
-        details={"name": body.get("name", "新项目")},
+        details={"name": body.get("name", "新项目"), "is_public": is_public},
     )
     await db.commit()
     cursor = await db.execute("SELECT * FROM projects WHERE id=?", (pid,))
     row = await cursor.fetchone()
     await db.close()
-    return dict(row)
+    return _project_response(dict(row), request)
 
 
 @app.put("/api/projects/{pid}")
 async def update_project(request: Request, pid: str, body: dict):
     db = await get_db()
 
-    cursor = await db.execute("SELECT * FROM projects WHERE id=?", (pid,))
-    row = await row_to_dict(await cursor.fetchone())
+    row = await load_owned_project(db, request, pid)
     if not row:
         await db.close()
         raise HTTPException(404)
 
+    next_name = body.get("name", row.get("name"))
+    next_description = body.get("description", row.get("description", ""))
+    next_is_public = 1 if body.get("is_public", row.get("is_public", 0)) else 0
     await db.execute(
-        "UPDATE projects SET name=?, description=? WHERE id=?",
-        (body.get("name"), body.get("description", ""), pid),
+        "UPDATE projects SET name=?, description=?, is_public=? WHERE id=?",
+        (next_name, next_description, next_is_public, pid),
     )
     await write_audit(
         db, request, "project.update",
         resource_type="project", resource_id=pid,
         details={
             "old_name": row.get("name"),
-            "new_name": body.get("name"),
+            "new_name": next_name,
+            "old_is_public": row.get("is_public", 0),
+            "new_is_public": next_is_public,
         },
     )
     await db.commit()
     cursor = await db.execute("SELECT * FROM projects WHERE id=?", (pid,))
     row = await cursor.fetchone()
     await db.close()
-    return dict(row)
+    return _project_response(dict(row), request)
 
 
 @app.delete("/api/projects/{pid}", status_code=204)
 async def delete_project(request: Request, pid: str):
     db = await get_db()
 
-    cursor = await db.execute("SELECT * FROM projects WHERE id=?", (pid,))
-    row = await row_to_dict(await cursor.fetchone())
+    row = await load_owned_project(db, request, pid)
     if not row:
         await db.close()
         raise HTTPException(404)
@@ -1316,16 +5591,20 @@ async def delete_project(request: Request, pid: str):
         job_dict = dict(job)
         await db.execute("""
             INSERT INTO deleted_jobs(id, project_id, user_token, created_at, label, mode,
+                is_pinned,
                 file_a_name, file_a_path, file_a_gzip_path, file_a_exists,
                 file_b_name, file_b_path, file_b_gzip_path, file_b_exists,
-                source_job_a, source_job_b, save_triton_csv, save_triton_code,
+                source_job_a, source_job_b, step_filter_a, step_filter_b,
+                save_triton_csv, save_triton_code,
                 status, console_out, error_msg, result_dir, deleted_at)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         """, (job_dict["id"], job_dict.get("project_id"), job_dict.get("user_token"),
               job_dict.get("created_at"), job_dict.get("label", ""), job_dict.get("mode"),
+              job_dict.get("is_pinned", 0),
               job_dict.get("file_a_name"), job_dict.get("file_a_path"), job_dict.get("file_a_gzip_path"), job_dict.get("file_a_exists", 1),
               job_dict.get("file_b_name"), job_dict.get("file_b_path"), job_dict.get("file_b_gzip_path"), job_dict.get("file_b_exists", 1),
               job_dict.get("source_job_a"), job_dict.get("source_job_b"),
+              job_dict.get("step_filter_a", ""), job_dict.get("step_filter_b", ""),
               job_dict.get("save_triton_csv", 0), job_dict.get("save_triton_code", 0),
               job_dict.get("status", "pending"), job_dict.get("console_out", ""), job_dict.get("error_msg", ""), job_dict.get("result_dir", "")))
 
@@ -1346,14 +5625,17 @@ async def delete_project(request: Request, pid: str):
 # ── Routes: deleted projects (recovery) ───────────────────────────────────────
 
 @app.get("/api/deleted-projects")
-async def list_deleted_projects():
+async def list_deleted_projects(request: Request):
     """List recoverable projects deleted within the last 10 days."""
     db = await get_db()
-    rows = await (await db.execute("""
+    owner_sql, owner_params = _owner_clause(request)
+    owner_filter = f"AND {owner_sql}" if owner_sql else ""
+    rows = await (await db.execute(f"""
         SELECT * FROM deleted_projects
         WHERE deleted_at >= datetime('now', '-10 days')
+          {owner_filter}
         ORDER BY deleted_at DESC
-    """)).fetchall()
+    """, owner_params)).fetchall()
     await db.close()
     return [dict(r) for r in rows]
 
@@ -1364,8 +5646,15 @@ async def restore_project(request: Request, pid: str):
     db = await get_db()
 
     # Get deleted project info
-    cursor = await db.execute("SELECT * FROM deleted_projects WHERE id=?", (pid,))
-    row = await row_to_dict(await cursor.fetchone())
+    owner_sql, owner_params = _owner_clause(request)
+    row = await row_to_dict(
+        await (
+            await db.execute(
+                f"SELECT * FROM deleted_projects WHERE id=? {'AND ' + owner_sql if owner_sql else ''}",
+                (pid, *owner_params),
+            )
+        ).fetchone()
+    )
     if not row:
         await db.close()
         raise HTTPException(404, "Deleted project not found or expired")
@@ -1402,16 +5691,20 @@ async def restore_project(request: Request, pid: str):
         job_dict = dict(job)
         await db.execute("""
             INSERT INTO jobs(id, project_id, user_token, created_at, label, mode,
+                is_pinned,
                 file_a_name, file_a_path, file_a_gzip_path, file_a_exists,
                 file_b_name, file_b_path, file_b_gzip_path, file_b_exists,
-                source_job_a, source_job_b, save_triton_csv, save_triton_code,
+                source_job_a, source_job_b, step_filter_a, step_filter_b,
+                save_triton_csv, save_triton_code,
                 status, console_out, error_msg, result_dir)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (job_dict["id"], pid, job_dict.get("user_token"),
               job_dict.get("created_at"), job_dict.get("label", ""), job_dict.get("mode"),
+              job_dict.get("is_pinned", 0),
               job_dict.get("file_a_name"), job_dict.get("file_a_path"), job_dict.get("file_a_gzip_path"), job_dict.get("file_a_exists", 1),
               job_dict.get("file_b_name"), job_dict.get("file_b_path"), job_dict.get("file_b_gzip_path"), job_dict.get("file_b_exists", 1),
               job_dict.get("source_job_a"), job_dict.get("source_job_b"),
+              job_dict.get("step_filter_a", ""), job_dict.get("step_filter_b", ""),
               job_dict.get("save_triton_csv", 0), job_dict.get("save_triton_code", 0),
               job_dict.get("status", "pending"), job_dict.get("console_out", ""), job_dict.get("error_msg", ""), job_dict.get("result_dir", "")))
 
@@ -1439,8 +5732,15 @@ async def permanently_delete_project(request: Request, pid: str):
     """Permanently delete a project from recovery list (without restoring)."""
     db = await get_db()
 
-    cursor = await db.execute("SELECT * FROM deleted_projects WHERE id=?", (pid,))
-    row = await row_to_dict(await cursor.fetchone())
+    owner_sql, owner_params = _owner_clause(request)
+    row = await row_to_dict(
+        await (
+            await db.execute(
+                f"SELECT * FROM deleted_projects WHERE id=? {'AND ' + owner_sql if owner_sql else ''}",
+                (pid, *owner_params),
+            )
+        ).fetchone()
+    )
     if not row:
         await db.close()
         raise HTTPException(404, "Deleted project not found")
@@ -1469,7 +5769,7 @@ async def permanently_delete_project(request: Request, pid: str):
 
 # ── Routes: jobs ──────────────────────────────────────────────────────────────
 
-async def _with_file_exists(rows):
+async def _with_file_exists(rows, request: Optional[Request] = None):
     # Verify actual file existence on disk (DB flag may be stale)
     # Resolve source jobs for compare jobs in batch
     src_ids = set()
@@ -1485,9 +5785,16 @@ async def _with_file_exists(rows):
     if src_ids:
         db2 = await get_db()
         placeholders = ",".join("?" * len(src_ids))
+        params = list(src_ids)
+        access_filter = ""
+        if request is not None:
+            access_sql, access_params = _job_access_clause(request)
+            if access_sql:
+                access_filter = f" AND {access_sql}"
+                params.extend(access_params)
         cur = await db2.execute(
-            f"SELECT id, file_a_path, file_a_gzip_path FROM jobs WHERE id IN ({placeholders})",
-            tuple(src_ids))
+            f"SELECT id, file_a_path, file_a_gzip_path FROM jobs WHERE id IN ({placeholders}){access_filter}",
+            tuple(params))
         async for src_row in cur:
             s = dict(src_row)
             src_paths[s["id"]] = s.get("file_a_gzip_path") or s.get("file_a_path")
@@ -1495,7 +5802,7 @@ async def _with_file_exists(rows):
 
     data = []
     for r in rows:
-        d = dict(r)
+        d = _job_response(dict(r), request) if request is not None else dict(r)
         for slot in ("a", "b"):
             path = d.get(f"file_{slot}_gzip_path") or d.get(f"file_{slot}_path")
             if path:
@@ -1512,46 +5819,40 @@ async def _with_file_exists(rows):
 
 @app.get("/api/jobs")
 async def list_jobs(
+    request: Request,
     project_id: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
 ):
     db = await get_db()
 
-    # Count query
-    count_sql = "SELECT COUNT(*) as total FROM jobs"
-    count_params = []
-
+    clauses = []
+    params = []
+    access_sql, access_params = _job_access_clause(request)
+    if access_sql:
+        clauses.append(access_sql)
+        params.extend(access_params)
     if project_id == "__none__":
-        count_sql = "SELECT COUNT(*) as total FROM jobs WHERE project_id IS NULL"
+        clauses.append("project_id IS NULL")
     elif project_id:
-        count_sql = "SELECT COUNT(*) as total FROM jobs WHERE project_id = ?"
-        count_params = [project_id]
+        await validate_project_access(db, request, project_id)
+        clauses.append("project_id = ?")
+        params.append(project_id)
+    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
 
-    count_cursor = await db.execute(count_sql, count_params)
+    count_cursor = await db.execute(f"SELECT COUNT(*) as total FROM jobs {where_sql}", params)
     total = (await count_cursor.fetchone())[0]
 
-    # Data query - all jobs
-    if project_id == "__none__":
-        rows = await (await db.execute(
-            "SELECT * FROM jobs WHERE project_id IS NULL ORDER BY created_at DESC LIMIT ? OFFSET ?",
-            (limit, offset)
-        )).fetchall()
-    elif project_id:
-        rows = await (await db.execute(
-            "SELECT * FROM jobs WHERE project_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?",
-            (project_id, limit, offset)
-        )).fetchall()
-    else:
-        rows = await (await db.execute("""
+    rows = await (await db.execute(f"""
             SELECT * FROM jobs
-            ORDER BY created_at DESC
+            {where_sql}
+            ORDER BY COALESCE(is_pinned, 0) DESC, created_at DESC
             LIMIT ? OFFSET ?
-        """, (limit, offset))).fetchall()
+        """, (*params, limit, offset))).fetchall()
 
     await db.close()
 
-    data = await _with_file_exists(rows)
+    data = await _with_file_exists(rows, request)
     return {"data": data, "total": total, "limit": limit, "offset": offset}
 
 
@@ -1582,12 +5883,19 @@ def _unique_job_ids(body: dict) -> list[str]:
     return job_ids
 
 
-async def _load_jobs_by_ids(db, job_ids: list[str]) -> list[dict]:
+async def _load_jobs_by_ids(db, job_ids: list[str], request: Optional[Request] = None) -> list[dict]:
     placeholders = ",".join("?" * len(job_ids))
+    params = list(job_ids)
+    owner_filter = ""
+    if request is not None:
+        owner_sql, owner_params = _owner_clause(request)
+        if owner_sql:
+            owner_filter = f" AND {owner_sql}"
+            params.extend(owner_params)
     rows = await (
         await db.execute(
-            f"SELECT * FROM jobs WHERE id IN ({placeholders})",
-            tuple(job_ids),
+            f"SELECT * FROM jobs WHERE id IN ({placeholders}){owner_filter}",
+            tuple(params),
         )
     ).fetchall()
     jobs = [dict(row) for row in rows]
@@ -1600,6 +5908,20 @@ def _remove_job_dir(jid: str):
     jdir = job_dir(jid)
     if os.path.exists(jdir):
         shutil.rmtree(jdir)
+
+
+def _ai_analysis_is_active(jid: str) -> bool:
+    if jid in ai_analysis_tasks or jid in ai_analysis_queued_jobs:
+        return True
+    return _read_ai_analysis_status(jid).get("status") in {"queued", "running"}
+
+
+def _job_delete_locked(row: dict) -> bool:
+    return row.get("status") == "running" or _ai_analysis_is_active(row["id"])
+
+
+def _job_files_locked(row: dict) -> bool:
+    return row.get("status") in {"pending", "running"} or _ai_analysis_is_active(row["id"])
 
 
 async def _delete_trace_files(db, row: dict, slots=("a", "b")) -> int:
@@ -1617,6 +5939,7 @@ async def _delete_trace_files(db, row: dict, slots=("a", "b")) -> int:
 
 @app.get("/api/compare-candidates")
 async def list_compare_candidates(
+    request: Request,
     project_id: Optional[str] = None,
     q: Optional[str] = None,
     limit: int = 50,
@@ -1626,9 +5949,14 @@ async def list_compare_candidates(
 
     clauses = ["j.mode='single'", "j.status='done'"]
     params = []
+    access_sql, access_params = _job_access_clause(request, "j")
+    if access_sql:
+        clauses.append(access_sql)
+        params.extend(access_params)
     if project_id == "__none__":
         clauses.append("j.project_id IS NULL")
     elif project_id:
+        await validate_project_access(db, request, project_id)
         clauses.append("j.project_id = ?")
         params.append(project_id)
 
@@ -1656,7 +5984,7 @@ async def list_compare_candidates(
             FROM jobs j
             LEFT JOIN projects p ON p.id = j.project_id
             WHERE {where_sql}
-            ORDER BY j.created_at DESC
+            ORDER BY COALESCE(j.is_pinned, 0) DESC, j.created_at DESC
             LIMIT ? OFFSET ?
             """,
             (*params, limit, offset),
@@ -1664,7 +5992,7 @@ async def list_compare_candidates(
     ).fetchall()
     await db.close()
 
-    data = await _with_file_exists(rows)
+    data = await _with_file_exists(rows, request)
     return {"data": data, "total": total, "limit": limit, "offset": offset}
 
 
@@ -1673,7 +6001,8 @@ async def bulk_move_jobs(request: Request, body: dict):
     job_ids = _unique_job_ids(body)
     db = await get_db()
     try:
-        await _load_jobs_by_ids(db, job_ids)
+        await _load_jobs_by_ids(db, job_ids, request)
+        await validate_project_access(db, request, body.get("project_id") or None)
         placeholders = ",".join("?" * len(job_ids))
         await db.execute(
             f"UPDATE jobs SET project_id=? WHERE id IN ({placeholders})",
@@ -1695,7 +6024,10 @@ async def bulk_delete_jobs(request: Request, body: dict):
     job_ids = _unique_job_ids(body)
     db = await get_db()
     try:
-        await _load_jobs_by_ids(db, job_ids)
+        jobs = await _load_jobs_by_ids(db, job_ids, request)
+        busy = [job["id"] for job in jobs if _job_delete_locked(job)]
+        if busy:
+            raise HTTPException(409, f"任务仍在分析中，暂不能删除: {', '.join(busy[:5])}")
         for job_id in job_ids:
             _remove_job_dir(job_id)
         placeholders = ",".join("?" * len(job_ids))
@@ -1716,7 +6048,10 @@ async def bulk_delete_job_files(request: Request, body: dict):
     job_ids = _unique_job_ids(body)
     db = await get_db()
     try:
-        jobs = await _load_jobs_by_ids(db, job_ids)
+        jobs = await _load_jobs_by_ids(db, job_ids, request)
+        busy = [job["id"] for job in jobs if _job_files_locked(job)]
+        if busy:
+            raise HTTPException(409, f"任务仍在分析中，暂不能删除文件: {', '.join(busy[:5])}")
         files_deleted = 0
         for job in jobs:
             files_deleted += await _delete_trace_files(db, job)
@@ -1733,30 +6068,39 @@ async def bulk_delete_job_files(request: Request, body: dict):
 
 
 @app.get("/api/storage/summary")
-async def storage_summary():
+async def storage_summary(request: Request):
     db = await get_db()
     try:
+        access_sql, access_params = _job_access_clause(request, "j")
+        where_sql = f"WHERE {access_sql}" if access_sql else ""
         rows = await (
             await db.execute(
-                """
+                f"""
                 SELECT j.*, p.name AS project_name
                 FROM jobs j
                 LEFT JOIN projects p ON p.id = j.project_id
+                {where_sql}
                 ORDER BY j.created_at DESC
-                """
+                """,
+                access_params,
             )
         ).fetchall()
+        access_source_sql, access_source_params = _job_access_clause(request)
+        access_source_filter = f"WHERE {access_source_sql}" if access_source_sql else ""
         compare_counts_rows = await (
             await db.execute(
-                """
+                f"""
                 SELECT source_id, COUNT(*) AS count
                 FROM (
-                    SELECT source_job_a AS source_id FROM jobs WHERE source_job_a IS NOT NULL
+                    SELECT source_job_a AS source_id FROM jobs {access_source_filter}
+                    {'AND' if access_source_filter else 'WHERE'} source_job_a IS NOT NULL
                     UNION ALL
-                    SELECT source_job_b AS source_id FROM jobs WHERE source_job_b IS NOT NULL
+                    SELECT source_job_b AS source_id FROM jobs {access_source_filter}
+                    {'AND' if access_source_filter else 'WHERE'} source_job_b IS NOT NULL
                 )
                 GROUP BY source_id
-                """
+                """,
+                (*access_source_params, *access_source_params),
             )
         ).fetchall()
     finally:
@@ -1822,6 +6166,7 @@ async def storage_summary():
 
 @app.get("/api/job-groups")
 async def list_job_groups(
+    request: Request,
     project_id: Optional[str] = None,
     q: Optional[str] = None,
     limit: int = 50,
@@ -1831,9 +6176,14 @@ async def list_job_groups(
 
     clauses = []
     where_params = []
+    access_sql, access_params = _job_access_clause(request, "j")
+    if access_sql:
+        clauses.append(access_sql)
+        where_params.extend(access_params)
     if project_id == "__none__":
         clauses.append("j.project_id IS NULL")
     elif project_id:
+        await validate_project_access(db, request, project_id)
         clauses.append("j.project_id = ?")
         where_params.append(project_id)
 
@@ -1900,6 +6250,7 @@ async def list_job_groups(
 
 @app.get("/api/job-groups/{group_id}/jobs")
 async def list_group_jobs(
+    request: Request,
     group_id: str,
     q: Optional[str] = None,
     limit: int = 50,
@@ -1909,9 +6260,14 @@ async def list_group_jobs(
 
     clauses = []
     params = []
+    access_sql, access_params = _job_access_clause(request, "j")
+    if access_sql:
+        clauses.append(access_sql)
+        params.extend(access_params)
     if group_id == "__none__":
         clauses.append("j.project_id IS NULL")
     else:
+        await validate_project_access(db, request, group_id)
         clauses.append("j.project_id = ?")
         params.append(group_id)
 
@@ -1939,7 +6295,7 @@ async def list_group_jobs(
             FROM jobs j
             LEFT JOIN projects p ON p.id = j.project_id
             WHERE {where_sql}
-            ORDER BY j.created_at DESC
+            ORDER BY COALESCE(j.is_pinned, 0) DESC, j.created_at DESC
             LIMIT ? OFFSET ?
             """,
             (*params, limit, offset),
@@ -1947,7 +6303,7 @@ async def list_group_jobs(
     ).fetchall()
     await db.close()
 
-    data = await _with_file_exists(rows)
+    data = await _with_file_exists(rows, request)
     return {"data": data, "total": total, "limit": limit, "offset": offset}
 
 
@@ -1963,51 +6319,84 @@ async def create_job(
 ):
     jid = str(uuid.uuid4())
     jdir = job_dir(jid)
+    row = None
+    db_row_committed = False
 
-    path_a = os.path.join(jdir, "trace_a.json")
-    gzip_path_a = [None]
-    await save_and_extract(file_a, path_a, gzip_path_a)
+    try:
+        async with upload_semaphore:
+            _ensure_storage_capacity()
 
-    path_b = None
-    name_b = None
-    gzip_path_b = [None]
-    mode = "single"
-    if file_b and file_b.filename:
-        path_b = os.path.join(jdir, "trace_b.json")
-        await save_and_extract(file_b, path_b, gzip_path_b)
-        name_b = file_b.filename
-        mode = "compare"
+            db = await get_db()
+            try:
+                user_token = await ensure_user_row(db, request)
+                await validate_project_access(db, request, project_id or None)
+                await db.commit()
+            finally:
+                await db.close()
 
-    eff_label = label or (
-        f"{file_a.filename} vs {name_b}" if mode == "compare" and name_b else file_a.filename
-    ) or jid
+            path_a = os.path.join(jdir, "trace_a.json")
+            gzip_path_a = [None]
+            await save_and_extract(file_a, path_a, gzip_path_a)
 
-    db = await get_db()
-    await db.execute(
-        """INSERT INTO jobs(id, project_id, label, mode,
-               file_a_name, file_a_path, file_a_gzip_path, file_b_name, file_b_path, file_b_gzip_path,
-               save_triton_csv, save_triton_code)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (jid, project_id or None, eff_label, mode,
-         file_a.filename, path_a, gzip_path_a[0], name_b, path_b, gzip_path_b[0],
-         int(save_triton_csv), int(save_triton_code)),
-    )
-    await _refresh_job_storage_cache(db, jid)
-    await write_audit(
-        db, request, "job.create",
-        resource_type="job", resource_id=jid,
-        details={
-            "mode": mode,
-            "project_id": project_id,
-            "label": eff_label,
-            "file_a_name": file_a.filename,
-            "file_b_name": name_b,
-        },
-    )
-    await db.commit()
-    cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
-    row = await cursor.fetchone()
-    await db.close()
+            path_b = None
+            name_b = None
+            gzip_path_b = [None]
+            mode = "single"
+            if file_b and file_b.filename:
+                path_b = os.path.join(jdir, "trace_b.json")
+                await save_and_extract(file_b, path_b, gzip_path_b)
+                name_b = file_b.filename
+                mode = "compare"
+
+            eff_label = label or (
+                f"{file_a.filename} vs {name_b}" if mode == "compare" and name_b else file_a.filename
+            ) or jid
+
+            db = await get_db()
+            try:
+                await db.execute(
+                    """INSERT INTO jobs(id, project_id, user_token, label, mode,
+                           file_a_name, file_a_path, file_a_gzip_path, file_b_name, file_b_path, file_b_gzip_path,
+                           save_triton_csv, save_triton_code)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (jid, project_id or None, user_token, eff_label, mode,
+                     file_a.filename, path_a, gzip_path_a[0], name_b, path_b, gzip_path_b[0],
+                     int(save_triton_csv), int(save_triton_code)),
+                )
+                await _refresh_job_storage_cache(db, jid)
+                await write_audit(
+                    db, request, "job.create",
+                    resource_type="job", resource_id=jid,
+                    details={
+                        "mode": mode,
+                        "project_id": project_id,
+                        "label": eff_label,
+                        "file_a_name": file_a.filename,
+                        "file_b_name": name_b,
+                    },
+                )
+                await db.commit()
+                db_row_committed = True
+                cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
+                row = await cursor.fetchone()
+            except Exception:
+                await db.rollback()
+                raise
+            finally:
+                await db.close()
+    except Exception:
+        if row is None:
+            if db_row_committed:
+                with contextlib.suppress(Exception):
+                    cleanup_db = await get_db()
+                    try:
+                        await cleanup_db.execute("DELETE FROM jobs WHERE id=?", (jid,))
+                        await cleanup_db.commit()
+                    finally:
+                        await cleanup_db.close()
+            with contextlib.suppress(Exception):
+                _remove_job_dir(jid)
+        raise
 
     await enqueue_analysis_job(jid)
     return dict(row)
@@ -2021,36 +6410,33 @@ async def compare_jobs(request: Request, body: dict):
         raise HTTPException(400, "job_id_a and job_id_b are required")
 
     db = await get_db()
+    user_token = await ensure_user_row(db, request)
 
-    cursor_a = await db.execute("SELECT * FROM jobs WHERE id=?", (job_id_a,))
-    src_a = await row_to_dict(await cursor_a.fetchone())
-    cursor_b = await db.execute("SELECT * FROM jobs WHERE id=?", (job_id_b,))
-    src_b = await row_to_dict(await cursor_b.fetchone())
+    src_a = await load_accessible_job(db, request, job_id_a)
+    src_b = await load_accessible_job(db, request, job_id_b)
 
     if not src_a or not src_b:
         await db.close()
         raise HTTPException(404, "Source job not found")
 
-    # Verify actual file existence on disk (DB flag may be stale)
-    path_a = src_a.get("file_a_gzip_path") or src_a.get("file_a_path")
-    path_b = src_b.get("file_a_gzip_path") or src_b.get("file_a_path")
-    if not path_a or not os.path.exists(path_a):
+    if not _trace_path_exists(src_a):
         await db.close()
         raise HTTPException(409, f"Source file A has been deleted")
-    if not path_b or not os.path.exists(path_b):
+    if not _trace_path_exists(src_b):
         await db.close()
         raise HTTPException(409, f"Source file B has been deleted")
 
     jid = str(uuid.uuid4())
     eff_label = body.get("label") or f"{src_a['label']} vs {src_b['label']}"
+    await validate_project_access(db, request, body.get("project_id") or None)
 
     await db.execute(
-        """INSERT INTO jobs(id, project_id, label, mode,
+        """INSERT INTO jobs(id, project_id, user_token, label, mode,
                file_a_name, file_b_name,
                source_job_a, source_job_b,
                save_triton_csv, save_triton_code)
-           VALUES(?,?,?,?,?,?,?,?,?,?)""",
-        (jid, body.get("project_id"), eff_label, "compare",
+           VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+        (jid, body.get("project_id"), user_token, eff_label, "compare",
          src_a["file_a_name"], src_b["file_a_name"],
          job_id_a, job_id_b,
          0, 0),
@@ -2075,8 +6461,92 @@ async def compare_jobs(request: Request, body: dict):
     return dict(row)
 
 
+@app.post("/api/jobs/batch-compare", status_code=201)
+async def batch_compare_jobs(request: Request, body: dict):
+    baseline_job_id = body.get("baseline_job_id")
+    candidate_job_ids = []
+    for job_id in body.get("candidate_job_ids") or []:
+        if job_id and job_id not in candidate_job_ids:
+            candidate_job_ids.append(job_id)
+
+    if not baseline_job_id or not candidate_job_ids:
+        raise HTTPException(400, "baseline_job_id and candidate_job_ids are required")
+    if baseline_job_id in candidate_job_ids:
+        raise HTTPException(400, "baseline job cannot also be a candidate")
+    if len(candidate_job_ids) > MAX_BATCH_COMPARE_JOBS:
+        raise HTTPException(400, f"Too many candidates; max is {MAX_BATCH_COMPARE_JOBS}")
+
+    db = await get_db()
+    user_token = await ensure_user_row(db, request)
+    project_id = body.get("project_id") or None
+    await validate_project_access(db, request, project_id)
+
+    baseline = await load_accessible_job(db, request, baseline_job_id)
+    if not baseline:
+        await db.close()
+        raise HTTPException(404, "Baseline job not found")
+    if not _trace_path_exists(baseline):
+        await db.close()
+        raise HTTPException(409, "Baseline source file has been deleted")
+
+    candidates = []
+    for candidate_id in candidate_job_ids:
+        src = await load_accessible_job(db, request, candidate_id)
+        if not src:
+            await db.close()
+            raise HTTPException(404, f"Candidate job not found: {candidate_id}")
+        if not _trace_path_exists(src):
+            await db.close()
+            raise HTTPException(409, f"Candidate source file has been deleted: {src.get('label') or candidate_id}")
+        candidates.append(src)
+
+    label_prefix = str(body.get("label_prefix") or "").strip()
+    created = []
+    for src_b in candidates:
+        jid = str(uuid.uuid4())
+        pair_label = f"{baseline['label']} vs {src_b['label']}"
+        eff_label = f"{label_prefix} - {pair_label}" if label_prefix else pair_label
+        await db.execute(
+            """INSERT INTO jobs(id, project_id, user_token, label, mode,
+                   file_a_name, file_b_name,
+                   source_job_a, source_job_b,
+                   save_triton_csv, save_triton_code)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            (jid, project_id, user_token, eff_label, "compare",
+             baseline["file_a_name"], src_b["file_a_name"],
+             baseline_job_id, src_b["id"],
+             0, 0),
+        )
+        await _refresh_job_storage_cache(db, jid)
+        await write_audit(
+            db, request, "job.batch_compare_create",
+            resource_type="job", resource_id=jid,
+            details={
+                "baseline_job_id": baseline_job_id,
+                "candidate_job_id": src_b["id"],
+                "project_id": project_id,
+                "label": eff_label,
+                "batch_size": len(candidates),
+            },
+        )
+        cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
+        created.append(dict(await cursor.fetchone()))
+
+    await db.commit()
+    await db.close()
+
+    for job in created:
+        await enqueue_analysis_job(job["id"])
+    return {"data": created, "count": len(created)}
+
+
 def _primary_trace_path(row: dict, slot: str = "a") -> Optional[str]:
     return row.get(f"file_{slot}_gzip_path") or row.get(f"file_{slot}_path")
+
+
+def _trace_path_exists(row: dict, slot: str = "a") -> bool:
+    path = _primary_trace_path(row, slot)
+    return bool(path and os.path.exists(path))
 
 
 def _copy_trace_reference(src_path: str, dest_json: str) -> tuple[Optional[str], Optional[str]]:
@@ -2089,12 +6559,221 @@ def _copy_trace_reference(src_path: str, dest_json: str) -> tuple[Optional[str],
     return dest_json, None
 
 
+def _normalize_step_filter(value, label: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        parse_step_filter(text)
+    except ValueError as e:
+        raise HTTPException(400, f"{label} step 选择格式错误: {e}") from e
+    return text
+
+
+def _step_reanalysis_suffix(mode: str, step_filter_a: str, step_filter_b: str = "") -> str:
+    if mode == "single":
+        return f"step {step_filter_a}"
+    return f"A step {step_filter_a or '全部'} / B step {step_filter_b or '全部'}"
+
+
+async def _resolve_reanalysis_trace(db, request: Request, job: dict, slot: str) -> tuple[str, str, Optional[str]]:
+    path = _primary_trace_path(job, slot)
+    name = job.get(f"file_{slot}_name") or ""
+    source_id = None
+    source_job_id = job.get(f"source_job_{slot}")
+    if not path and source_job_id:
+        source = await load_accessible_job(db, request, source_job_id)
+        if not source:
+            raise HTTPException(404, f"Source job {slot.upper()} not found")
+        source_id = source["id"]
+        path = _primary_trace_path(source, "a")
+        name = source.get("file_a_name") or source.get("label") or ""
+
+    if not path or not os.path.exists(path):
+        raise HTTPException(409, f"Trace file {slot.upper()} has been deleted")
+    return path, name or os.path.basename(path), source_id
+
+
+@app.post("/api/jobs/{jid}/analyze-trace-slot", status_code=201)
+async def analyze_compare_trace_slot(request: Request, jid: str, body: dict):
+    db = await get_db()
+    new_jid = str(uuid.uuid4())
+    new_dir = job_dir(new_jid)
+    row = None
+    try:
+        user_token = await ensure_user_row(db, request)
+        job = await load_accessible_job(db, request, jid)
+        if not job:
+            raise HTTPException(404, "Job not found")
+        if job.get("mode") != "compare":
+            raise HTTPException(400, "Only compare jobs can derive a single trace analysis")
+        if job.get("status") in {"pending", "running"}:
+            raise HTTPException(409, "任务仍在分析中，完成后再单独分析 trace")
+
+        slot = str(body.get("slot") or "").strip().lower()
+        if slot not in {"a", "b"}:
+            raise HTTPException(400, "slot must be 'a' or 'b'")
+
+        project_id = body.get("project_id") if "project_id" in body else job.get("project_id")
+        await validate_project_access(db, request, project_id or None)
+
+        trace_path, trace_name, source_id = await _resolve_reanalysis_trace(db, request, job, slot)
+        try:
+            new_a_path, new_a_gzip_path = _copy_trace_reference(trace_path, os.path.join(new_dir, "trace_a.json"))
+        except OSError as e:
+            with contextlib.suppress(FileNotFoundError):
+                shutil.rmtree(new_dir)
+            raise HTTPException(500, f"Failed to copy trace file: {e}") from e
+
+        label = str(body.get("label") or "").strip() or f"{trace_name} · 单独分析"
+        await db.execute(
+            """INSERT INTO jobs(id, project_id, user_token, label, mode,
+                   file_a_name, file_a_path, file_a_gzip_path,
+                   source_job_a,
+                   save_triton_csv, save_triton_code)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                new_jid, project_id or None, user_token, label, "single",
+                trace_name, new_a_path, new_a_gzip_path,
+                source_id,
+                int(job.get("save_triton_csv", 0) or 0),
+                int(job.get("save_triton_code", 0) or 0),
+            ),
+        )
+        await _refresh_job_storage_cache(db, new_jid)
+        await write_audit(
+            db, request, "job.trace_slot_analysis_create",
+            resource_type="job", resource_id=new_jid,
+            details={
+                "source_compare_job": jid,
+                "slot": slot,
+                "source_job": source_id,
+                "project_id": project_id,
+                "label": label,
+            },
+        )
+        await db.commit()
+        row = await row_to_dict(await (await db.execute("SELECT * FROM jobs WHERE id=?", (new_jid,))).fetchone())
+    except HTTPException:
+        await db.rollback()
+        if row is None:
+            with contextlib.suppress(FileNotFoundError):
+                shutil.rmtree(new_dir)
+        raise
+    except Exception:
+        await db.rollback()
+        if row is None:
+            with contextlib.suppress(FileNotFoundError):
+                shutil.rmtree(new_dir)
+        raise
+    finally:
+        await db.close()
+
+    await enqueue_analysis_job(new_jid)
+    return row
+
+
+@app.post("/api/jobs/{jid}/reanalyze-steps", status_code=201)
+async def reanalyze_job_steps(request: Request, jid: str, body: dict):
+    db = await get_db()
+    new_jid = str(uuid.uuid4())
+    new_dir = job_dir(new_jid)
+    row = None
+    try:
+        user_token = await ensure_user_row(db, request)
+        job = await load_accessible_job(db, request, jid)
+        if not job:
+            raise HTTPException(404, "Job not found")
+        if job.get("status") in {"pending", "running"}:
+            raise HTTPException(409, "任务仍在分析中，暂不能指定 step 重分析")
+
+        mode = job.get("mode")
+        step_filter_a = _normalize_step_filter(body.get("step_filter_a"), "A")
+        step_filter_b = _normalize_step_filter(body.get("step_filter_b"), "B") if mode == "compare" else ""
+        if mode == "single" and not step_filter_a:
+            raise HTTPException(400, "单 trace 重分析需要指定 A step")
+        if mode == "compare" and not (step_filter_a or step_filter_b):
+            raise HTTPException(400, "对比重分析需要至少指定 A 或 B 的 step")
+
+        project_id = body.get("project_id") if "project_id" in body else job.get("project_id")
+        await validate_project_access(db, request, project_id or None)
+
+        path_a, name_a, source_a = await _resolve_reanalysis_trace(db, request, job, "a")
+        try:
+            new_a_path, new_a_gzip_path = _copy_trace_reference(path_a, os.path.join(new_dir, "trace_a.json"))
+            if mode == "compare":
+                path_b, name_b, source_b = await _resolve_reanalysis_trace(db, request, job, "b")
+                new_b_path, new_b_gzip_path = _copy_trace_reference(path_b, os.path.join(new_dir, "trace_b.json"))
+            else:
+                name_b = None
+                source_b = None
+                new_b_path = None
+                new_b_gzip_path = None
+        except OSError as e:
+            with contextlib.suppress(FileNotFoundError):
+                shutil.rmtree(new_dir)
+            raise HTTPException(500, f"Failed to copy trace files: {e}") from e
+
+        suffix = _step_reanalysis_suffix(mode, step_filter_a, step_filter_b)
+        label = str(body.get("label") or "").strip() or f"{job.get('label') or jid[:8]} · {suffix}"
+        await db.execute(
+            """INSERT INTO jobs(id, project_id, user_token, label, mode,
+                   file_a_name, file_a_path, file_a_gzip_path,
+                   file_b_name, file_b_path, file_b_gzip_path,
+                   source_job_a, source_job_b,
+                   step_filter_a, step_filter_b,
+                   save_triton_csv, save_triton_code)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                new_jid, project_id or None, user_token, label, mode,
+                name_a, new_a_path, new_a_gzip_path,
+                name_b, new_b_path, new_b_gzip_path,
+                source_a, source_b,
+                step_filter_a, step_filter_b,
+                int(job.get("save_triton_csv", 0) or 0),
+                int(job.get("save_triton_code", 0) or 0),
+            ),
+        )
+        await _refresh_job_storage_cache(db, new_jid)
+        await write_audit(
+            db, request, "job.step_reanalysis_create",
+            resource_type="job", resource_id=new_jid,
+            details={
+                "source_job": jid,
+                "mode": mode,
+                "project_id": project_id,
+                "step_filter_a": step_filter_a,
+                "step_filter_b": step_filter_b,
+                "label": label,
+            },
+        )
+        await db.commit()
+        row = await row_to_dict(await (await db.execute("SELECT * FROM jobs WHERE id=?", (new_jid,))).fetchone())
+    except HTTPException:
+        await db.rollback()
+        if row is None:
+            with contextlib.suppress(FileNotFoundError):
+                shutil.rmtree(new_dir)
+        raise
+    except Exception:
+        await db.rollback()
+        if row is None:
+            with contextlib.suppress(FileNotFoundError):
+                shutil.rmtree(new_dir)
+        raise
+    finally:
+        await db.close()
+
+    await enqueue_analysis_job(new_jid)
+    return row
+
+
 @app.post("/api/jobs/{jid}/rerun-swapped", status_code=201)
 async def rerun_compare_swapped(request: Request, jid: str):
     db = await get_db()
     try:
-        cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
-        job = await row_to_dict(await cursor.fetchone())
+        user_token = await ensure_user_row(db, request)
+        job = await load_accessible_job(db, request, jid)
         if not job:
             raise HTTPException(404, "Job not found")
         if job.get("mode") != "compare":
@@ -2103,10 +6782,8 @@ async def rerun_compare_swapped(request: Request, jid: str):
         new_jid = str(uuid.uuid4())
 
         if job.get("source_job_a") and job.get("source_job_b"):
-            cursor_a = await db.execute("SELECT * FROM jobs WHERE id=?", (job["source_job_a"],))
-            source_a = await row_to_dict(await cursor_a.fetchone())
-            cursor_b = await db.execute("SELECT * FROM jobs WHERE id=?", (job["source_job_b"],))
-            source_b = await row_to_dict(await cursor_b.fetchone())
+            source_a = await load_accessible_job(db, request, job["source_job_a"])
+            source_b = await load_accessible_job(db, request, job["source_job_b"])
             if not source_a or not source_b:
                 raise HTTPException(404, "Source job not found")
 
@@ -2119,13 +6796,13 @@ async def rerun_compare_swapped(request: Request, jid: str):
 
             label = f"{source_b.get('label') or source_b['id'][:8]} vs {source_a.get('label') or source_a['id'][:8]}"
             await db.execute(
-                """INSERT INTO jobs(id, project_id, label, mode,
+                """INSERT INTO jobs(id, project_id, user_token, label, mode,
                        file_a_name, file_b_name,
                        source_job_a, source_job_b,
                        save_triton_csv, save_triton_code)
-                   VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
                 (
-                    new_jid, job.get("project_id"), label, "compare",
+                    new_jid, job.get("project_id"), user_token, label, "compare",
                     source_b.get("file_a_name"), source_a.get("file_a_name"),
                     source_b["id"], source_a["id"],
                     0, 0,
@@ -2151,13 +6828,13 @@ async def rerun_compare_swapped(request: Request, jid: str):
             label_a = job.get("file_b_name") or os.path.basename(path_b)
             label_b = job.get("file_a_name") or os.path.basename(path_a)
             await db.execute(
-                """INSERT INTO jobs(id, project_id, label, mode,
+                """INSERT INTO jobs(id, project_id, user_token, label, mode,
                        file_a_name, file_a_path, file_a_gzip_path,
                        file_b_name, file_b_path, file_b_gzip_path,
                        save_triton_csv, save_triton_code)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
-                    new_jid, job.get("project_id"), f"{label_a} vs {label_b}", "compare",
+                    new_jid, job.get("project_id"), user_token, f"{label_a} vs {label_b}", "compare",
                     label_a, new_a_path, new_a_gzip_path,
                     label_b, new_b_path, new_b_gzip_path,
                     0, 0,
@@ -2183,17 +6860,83 @@ async def rerun_compare_swapped(request: Request, jid: str):
     return dict(row)
 
 
-@app.get("/api/jobs/{jid}")
-async def get_job(jid: str):
+@app.post("/api/jobs/{jid}/share")
+async def share_job(request: Request, jid: str):
     db = await get_db()
-    cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
-    row = await row_to_dict(await cursor.fetchone())
+    changed = False
+    created_project = False
+    try:
+        row = await load_accessible_job(db, request, jid)
+        if row is None:
+            raise HTTPException(404)
+
+        job = _job_response(row, request)
+        project_id = job.get("project_id")
+        project_is_public = False
+        if AUTH_ENABLED:
+            if project_id:
+                project = await load_accessible_project(db, request, project_id)
+                if not project:
+                    raise HTTPException(404, "Project not found")
+                project_is_public = bool(project.get("is_public"))
+                if not project_is_public:
+                    if not job.get("is_owner"):
+                        raise HTTPException(404)
+                    await db.execute("UPDATE projects SET is_public=1 WHERE id=?", (project_id,))
+                    project_is_public = True
+                    changed = True
+            else:
+                if not job.get("is_owner"):
+                    raise HTTPException(404)
+                user_token = await ensure_user_row(db, request)
+                project_id = str(uuid.uuid4())
+                project_name = (job.get("label") or "共享任务")[:80]
+                await db.execute(
+                    "INSERT INTO projects(id, user_token, name, description, is_public) VALUES(?,?,?,?,1)",
+                    (project_id, user_token, project_name, "由分享任务自动创建"),
+                )
+                await db.execute("UPDATE jobs SET project_id=? WHERE id=?", (project_id, jid))
+                project_is_public = True
+                changed = True
+                created_project = True
+
+        await write_audit(
+            db, request, "job.share",
+            resource_type="job", resource_id=jid,
+            details={
+                "project_id": project_id,
+                "project_is_public": project_is_public,
+                "changed": changed,
+                "created_project": created_project,
+            },
+        )
+        await db.commit()
+    except HTTPException:
+        await db.rollback()
+        raise
+    finally:
+        await db.close()
+
+    return {
+        "url": _job_share_url(request, jid),
+        "path": f"/#/job/{jid}",
+        "project_id": project_id,
+        "project_is_public": project_is_public,
+        "changed": changed,
+        "created_project": created_project,
+    }
+
+
+@app.get("/api/jobs/{jid}")
+async def get_job(request: Request, jid: str):
+    db = await get_db()
+    row = await load_accessible_job(db, request, jid)
     await db.close()
 
     if row is None:
         raise HTTPException(404)
 
-    job = dict(row)
+    job = _job_response(dict(row), request)
     # Verify actual file existence on disk (DB flag may be stale)
     # For compare jobs, resolve via source jobs
     for slot in ("a", "b"):
@@ -2204,8 +6947,7 @@ async def get_job(jid: str):
             src_jid = job.get(f"source_job_{slot}")
             if src_jid:
                 db2 = await get_db()
-                cur2 = await db2.execute("SELECT file_a_path, file_a_gzip_path FROM jobs WHERE id=?", (src_jid,))
-                src = await row_to_dict(await cur2.fetchone())
+                src = await load_accessible_job(db2, request, src_jid, "file_a_path, file_a_gzip_path")
                 await db2.close()
                 if src:
                     src_path = src.get("file_a_gzip_path") or src.get("file_a_path")
@@ -2217,13 +6959,236 @@ async def get_job(jid: str):
     if job["status"] == "done":
         job["result_files"] = collect_result_files(jid)
         job["perfetto_context"] = collect_perfetto_context(jid)
+        job["ai_analysis"] = collect_ai_analysis(jid)
     if job["mode"] == "compare":
-        job["compare_sources"] = await _compare_source_summaries(job)
+        job["compare_sources"] = await _compare_source_summaries(request, job)
     return job
+
+
+@app.get("/api/jobs/{jid}/ai-analysis")
+async def get_job_ai_analysis(request: Request, jid: str):
+    db = await get_db()
+    try:
+        row = await load_accessible_job(db, request, jid, "id, status")
+    finally:
+        await db.close()
+    if not row:
+        raise HTTPException(404)
+
+    version_id = request.query_params.get("version_id", "")
+    payload = collect_ai_analysis(jid)
+    selected_version = _select_ai_analysis_version(jid, version_id)
+    if version_id and not selected_version:
+        raise HTTPException(404, "AI analysis version not found")
+    if selected_version:
+        payload["selected_version"] = selected_version
+        payload["selected_version_id"] = selected_version.get("id", "")
+        payload["content"] = _read_ai_analysis_report(jid, selected_version.get("id", ""))
+    else:
+        payload["content"] = ""
+    payload["artifacts"] = _collect_ai_analysis_artifacts(jid)
+    return payload
+
+
+@app.get("/api/jobs/{jid}/ai-analysis/report.md")
+async def download_job_ai_analysis_report(request: Request, jid: str):
+    db = await get_db()
+    try:
+        row = await load_accessible_job(db, request, jid, "id, label, status")
+    finally:
+        await db.close()
+    if not row:
+        raise HTTPException(404)
+
+    version_id = request.query_params.get("version_id", "")
+    selected_version = _select_ai_analysis_version(jid, version_id)
+    if version_id and not selected_version:
+        raise HTTPException(404, "AI analysis version not found")
+    content = _read_ai_analysis_report(jid, selected_version.get("id", "") if selected_version else "")
+    if not content:
+        raise HTTPException(404, "AI analysis report not found")
+
+    filename = _safe_download_name(row.get("label"), f"{jid}-ai-analysis")
+    lower = filename.lower()
+    for suffix in (".markdown", ".md"):
+        if lower.endswith(suffix):
+            filename = filename[:-len(suffix)]
+            break
+    generated = ""
+    if selected_version and selected_version.get("generated_at"):
+        generated = selected_version["generated_at"].replace(":", "").replace("-", "")[:15]
+    suffix = f"-{generated}" if generated else ""
+    filename = f"{filename}-ai-analysis{suffix}.md"
+    return PlainTextResponse(
+        content.rstrip() + "\n",
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": _content_disposition(filename)},
+    )
+
+
+@app.post("/api/ai/diagnostics")
+async def run_ai_diagnostics(request: Request):
+    if not CLAUDE_ANALYSIS_ENABLED:
+        raise HTTPException(403, "Claude analysis is disabled")
+    if AUTH_ENABLED:
+        current_user_token(request)
+    return await _run_ai_diagnostics_payload()
+
+
+@app.post("/api/jobs/{jid}/ai-analysis")
+async def start_job_ai_analysis(request: Request, jid: str, body: Optional[dict] = None):
+    if not CLAUDE_ANALYSIS_ENABLED:
+        raise HTTPException(403, "Claude analysis is disabled")
+    start_ai_analysis_workers()
+
+    body = body or {}
+    force = bool(body.get("force"))
+    user_prompt = _normalize_ai_user_prompt(body.get("prompt") if "prompt" in body else body.get("promt"))
+    notification_context = {}
+    async with ai_analysis_start_lock:
+        db = await get_db()
+        try:
+            row = await load_accessible_job(db, request, jid)
+            if not row:
+                raise HTTPException(404)
+            if row.get("status") != "done":
+                raise HTTPException(409, "Job is not completed")
+
+            current = collect_ai_analysis(jid)
+            if current.get("status") in {"queued", "running"}:
+                raise HTTPException(409, "AI analysis is already queued or running")
+            if current.get("status") == "done" and not force and not user_prompt:
+                current["content"] = _read_ai_analysis_report(jid)
+                current["artifacts"] = _collect_ai_analysis_artifacts(jid)
+                return current
+            _ensure_current_ai_report_versioned(jid, _read_ai_analysis_status(jid))
+
+            user = current_user(request)
+            trigger_user_token = user.get("username") or request_user(request)
+            notification_context = {
+                "job_label": row.get("label") or row.get("file_a_name") or jid,
+                "job_mode": row.get("mode") or "",
+                "owner_user_token": row.get("user_token") or "",
+                "trigger_user_token": trigger_user_token,
+                "trigger_user_display": user.get("display_name") or trigger_user_token or "local",
+                "trigger_user_email": user.get("email") or "",
+                "user_prompt": user_prompt,
+            }
+            queued_at = _utc_now_iso()
+            _write_ai_analysis_status(jid, {
+                "status": "queued",
+                "phase": "queued",
+                "progress": 5,
+                "mode": row.get("mode"),
+                "skill": CLAUDE_COMPARE_TRACE_SKILL if row.get("mode") == "compare" else CLAUDE_SINGLE_TRACE_SKILL,
+                "model": _ai_backend_model_name(),
+                "user_prompt": user_prompt,
+                "trigger_user_token": notification_context["trigger_user_token"],
+                "trigger_user_display": notification_context["trigger_user_display"],
+                "trigger_user_email": notification_context["trigger_user_email"],
+                "owner_user_token": notification_context["owner_user_token"],
+                "queued_at": queued_at,
+                "started_at": queued_at,
+                "updated_at": queued_at,
+            })
+            await write_audit(
+                db, request, "job.ai_analysis_start",
+                resource_type="job", resource_id=jid,
+                details={"mode": row.get("mode"), "force": force, "has_user_prompt": bool(user_prompt)},
+            )
+            await db.commit()
+        except HTTPException:
+            await db.rollback()
+            raise
+        finally:
+            await db.close()
+
+        await enqueue_ai_analysis_job(jid, notification_context)
+    payload = collect_ai_analysis(jid)
+    payload["content"] = _read_ai_analysis_report(jid) if payload["report_exists"] else ""
+    payload["artifacts"] = _collect_ai_analysis_artifacts(jid)
+    return JSONResponse(payload, status_code=202)
+
+
+@app.get("/api/jobs/{jid}/report.md")
+async def download_job_report(request: Request, jid: str):
+    db = await get_db()
+    row = await load_accessible_job(db, request, jid)
+    project_name = ""
+    if row and row.get("project_id"):
+        cursor = await db.execute("SELECT name FROM projects WHERE id=?", (row["project_id"],))
+        project = await cursor.fetchone()
+        if project:
+            project_name = project["name"]
+    await db.close()
+
+    if row is None:
+        raise HTTPException(404)
+
+    job = _job_response(dict(row), request)
+    compare_sources = await _compare_source_summaries(request, job) if job.get("mode") == "compare" else {}
+    lines = [
+        f"# {job.get('label') or job['id']}",
+        "",
+        "## 任务信息",
+        "",
+        f"- 任务 ID: `{job['id']}`",
+        f"- 类型: `{job.get('mode')}`",
+        f"- 状态: `{job.get('status')}`",
+        f"- 项目: {project_name or '未分组'}",
+        f"- 创建时间: {job.get('created_at') or ''}",
+        f"- 导出版本: {APP_VERSION}",
+    ]
+    if job.get("step_filter_a") or job.get("step_filter_b"):
+        lines.append(f"- Step 过滤 A: `{job.get('step_filter_a') or '全部'}`")
+        if job.get("mode") == "compare":
+            lines.append(f"- Step 过滤 B: `{job.get('step_filter_b') or '全部'}`")
+    lines.extend([
+        "",
+        "## Trace 文件",
+        "",
+        f"- A: {job.get('file_a_name') or '无'}",
+    ])
+    if job.get("file_b_name"):
+        lines.append(f"- B: {job.get('file_b_name')}")
+    if compare_sources:
+        lines.extend(["", "## 对比来源", ""])
+        for slot in ("a", "b"):
+            source = compare_sources.get(slot)
+            if source:
+                lines.append(
+                    f"- {slot.upper()}: {source.get('label') or source.get('id')} "
+                    f"({source.get('project_name') or '未分组'}, {source.get('created_at') or ''})"
+                )
+
+    lines.extend([
+        "",
+        "## 控制台摘要",
+        "",
+        "```text",
+        _console_excerpt(job.get("console_out", "")),
+        "```",
+    ])
+
+    csv_sections = _report_csv_sections(jid, job.get("mode"))
+    if csv_sections:
+        lines.extend(["", "## 关键结果", "", *csv_sections])
+    else:
+        lines.extend(["", "## 关键结果", "", "_暂无可导出的结果表格。_"])
+
+    filename = _safe_download_name(job.get("label"), f"{jid}.md")
+    if not filename.lower().endswith(".md"):
+        filename += ".md"
+    return PlainTextResponse(
+        "\n".join(lines) + "\n",
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": _content_disposition(filename)},
+    )
 
 
 @app.get("/api/jobs/{jid}/results/{filename:path}")
 async def get_job_result_table(
+    request: Request,
     jid: str,
     filename: str,
     q: Optional[str] = None,
@@ -2236,9 +7201,7 @@ async def get_job_result_table(
 ):
     db = await get_db()
     try:
-        row = await row_to_dict(
-            await (await db.execute("SELECT id, status FROM jobs WHERE id=?", (jid,))).fetchone()
-        )
+        row = await load_accessible_job(db, request, jid, "id, status")
     finally:
         await db.close()
     if not row:
@@ -2271,17 +7234,20 @@ async def get_job_result_table(
 async def patch_job(request: Request, jid: str, body: dict):
     db = await get_db()
 
-    cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
-    row = await row_to_dict(await cursor.fetchone())
+    row = await load_owned_job(db, request, jid)
     if not row:
         await db.close()
         raise HTTPException(404)
 
+    if "project_id" in body:
+        await validate_project_access(db, request, body["project_id"] or None)
     if "label" in body:
         await db.execute("UPDATE jobs SET label=? WHERE id=?", (body["label"], jid))
     if "project_id" in body:
         await db.execute("UPDATE jobs SET project_id=? WHERE id=?",
                          (body["project_id"] or None, jid))
+    if "is_pinned" in body:
+        await db.execute("UPDATE jobs SET is_pinned=? WHERE id=?", (1 if body["is_pinned"] else 0, jid))
     await write_audit(
         db, request, "job.update",
         resource_type="job", resource_id=jid,
@@ -2290,6 +7256,8 @@ async def patch_job(request: Request, jid: str, body: dict):
             "new_label": body.get("label", row.get("label")),
             "old_project_id": row.get("project_id"),
             "new_project_id": body.get("project_id", row.get("project_id")),
+            "old_is_pinned": row.get("is_pinned", 0),
+            "new_is_pinned": 1 if body.get("is_pinned", row.get("is_pinned", 0)) else 0,
         },
     )
     await db.commit()
@@ -2303,12 +7271,14 @@ async def patch_job(request: Request, jid: str, body: dict):
 async def delete_job(request: Request, jid: str):
     db = await get_db()
 
-    cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
-    row = await row_to_dict(await cursor.fetchone())
+    row = await load_owned_job(db, request, jid)
     if not row:
         await db.close()
         raise HTTPException(404)
 
+    if _job_delete_locked(row):
+        await db.close()
+        raise HTTPException(409, "任务仍在分析中，暂不能删除")
 
     _remove_job_dir(jid)
 
@@ -2323,12 +7293,11 @@ async def delete_job(request: Request, jid: str):
 
 
 @app.post("/api/jobs/{jid}/run-triton")
-async def run_job_triton(jid: str):
+async def run_job_triton(request: Request, jid: str):
     """Run triton code files and append local efficiency to CSV."""
     require_code_execution_enabled()
     db = await get_db()
-    cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
-    row = await row_to_dict(await cursor.fetchone())
+    row = await load_owned_job(db, request, jid)
     await db.close()
 
     if row is None:
@@ -2446,14 +7415,13 @@ async def run_job_triton(jid: str):
 
 
 @app.post("/api/jobs/{jid}/clear-inductor-cache")
-async def clear_inductor_cache(jid: str):
+async def clear_inductor_cache(request: Request, jid: str):
     """Clear the torchinductor cache for a job's triton runs."""
     require_code_execution_enabled()
     import shutil, glob
 
     db = await get_db()
-    cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
-    row = await row_to_dict(await cursor.fetchone())
+    row = await load_owned_job(db, request, jid)
     await db.close()
 
     if row is None:
@@ -2476,12 +7444,11 @@ async def clear_inductor_cache(jid: str):
 
 
 @app.post("/api/jobs/{jid}/run-triton-single")
-async def run_single_triton(jid: str, body: dict):
+async def run_single_triton(request: Request, jid: str, body: dict):
     """Run a single triton code file and return its efficiency."""
     require_code_execution_enabled()
     db = await get_db()
-    cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
-    row = await row_to_dict(await cursor.fetchone())
+    row = await load_owned_job(db, request, jid)
     await db.close()
 
     if row is None:
@@ -2575,12 +7542,11 @@ except Exception as e:
 
 
 @app.post("/api/jobs/{jid}/run-triton-custom")
-async def run_custom_triton(jid: str, body: dict):
+async def run_custom_triton(request: Request, jid: str, body: dict):
     """Run a custom triton code string and return its efficiency."""
     require_code_execution_enabled()
     db = await get_db()
-    cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
-    row = await row_to_dict(await cursor.fetchone())
+    row = await load_owned_job(db, request, jid)
     await db.close()
 
     if row is None:
@@ -2689,8 +7655,7 @@ async def get_job_file(request: Request, jid: str, slot: str, format: Optional[s
         raise HTTPException(403, "File download is disabled")
 
     db = await get_db()
-    cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
-    row = await row_to_dict(await cursor.fetchone())
+    row = await load_accessible_job(db, request, jid)
     await db.close()
 
     if not row:
@@ -2711,11 +7676,7 @@ async def get_job_file(request: Request, jid: str, slot: str, format: Optional[s
         src_jid = row.get(f"source_job_{slot}")
         if src_jid:
             db2 = await get_db()
-            cur2 = await db2.execute(
-                "SELECT file_a_name, file_a_path, file_a_gzip_path FROM jobs WHERE id=?",
-                (src_jid,),
-            )
-            src = await row_to_dict(await cur2.fetchone())
+            src = await load_accessible_job(db2, request, src_jid, "file_a_name, file_a_path, file_a_gzip_path")
             await db2.close()
             if src:
                 gzip_path = src.get("file_a_gzip_path")
@@ -2765,14 +7726,16 @@ async def get_job_file(request: Request, jid: str, slot: str, format: Optional[s
 async def delete_job_file(request: Request, jid: str, slot: str):
     """Delete the stored trace file (a or b) for a job."""
     db = await get_db()
-    cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
-    row = await row_to_dict(await cursor.fetchone())
+    row = await load_owned_job(db, request, jid)
     if not row:
         await db.close()
         raise HTTPException(404)
     if slot not in ("a", "b"):
         await db.close()
         raise HTTPException(400, "slot must be 'a' or 'b'")
+    if _job_files_locked(row):
+        await db.close()
+        raise HTTPException(409, "任务仍在分析中，暂不能删除文件")
 
     await _delete_trace_files(db, row, slots=(slot,))
     await _refresh_job_storage_cache(db, jid)
@@ -2786,32 +7749,29 @@ async def delete_job_file(request: Request, jid: str, slot: str):
 
 
 @app.get("/api/jobs/{jid}/files/{slot}/delete-impact")
-async def get_delete_file_impact(jid: str, slot: str):
+async def get_delete_file_impact(request: Request, jid: str, slot: str):
     if slot not in ("a", "b"):
         raise HTTPException(400, "slot must be 'a' or 'b'")
 
     db = await get_db()
     try:
-        row = await row_to_dict(
-            await (await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))).fetchone()
-        )
+        row = await load_owned_job(db, request, jid)
         if not row:
             raise HTTPException(404)
-        dependents = await _compare_dependents(db, jid) if slot == "a" else []
+        dependents = await _compare_dependents(db, request, jid) if slot == "a" else []
     finally:
         await db.close()
     return {"dependent_compare_jobs": dependents, "count": len(dependents)}
 
 
 @app.get("/api/jobs/{jid}/triton-code/{path:path}")
-async def get_triton_code(jid: str, path: str):
+async def get_triton_code(request: Request, jid: str, path: str):
     """Serve triton code file for display in browser."""
     if not ALLOW_FILE_DOWNLOAD:
         raise HTTPException(403, "File download is disabled")
 
     db = await get_db()
-    cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
-    row = await row_to_dict(await cursor.fetchone())
+    row = await load_accessible_job(db, request, jid)
     await db.close()
 
     if not row:

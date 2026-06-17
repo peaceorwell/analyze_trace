@@ -1,9 +1,13 @@
 import asyncio
 import gzip
 import json
+import logging
 import os
+import shlex
+import socket
 import sys
 import tarfile
+import textwrap
 import time
 from pathlib import Path
 import shutil
@@ -27,10 +31,31 @@ import server as web_server  # noqa: E402
 @pytest.fixture
 def isolated_server(tmp_path, monkeypatch):
     storage_dir = tmp_path / "storage"
+    monkeypatch.delenv("TRACE_LOG_FILE", raising=False)
     monkeypatch.setattr(web_db, "DB_PATH", str(storage_dir / "jobs.db"))
     monkeypatch.setattr(web_server, "STORAGE_DIR", str(storage_dir))
+    monkeypatch.setattr(web_server, "BACKUP_DIR", str(storage_dir / "backups"))
     monkeypatch.setattr(web_server, "ALLOW_FILE_DOWNLOAD", True)
     monkeypatch.setattr(web_server, "ALLOW_CODE_EXECUTION", False)
+    monkeypatch.setattr(web_server, "MAX_UPLOAD_BYTES", 0)
+    monkeypatch.setattr(web_server, "MIN_STORAGE_FREE_BYTES", 0)
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_ENABLED", False)
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_COMMAND_TEMPLATE", "")
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_EXTRA_ARGS", "")
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_TIMEOUT_SECONDS", 30)
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_MODEL", "Claude Code default")
+    monkeypatch.setattr(web_server, "AUTH_MODE", "none")
+    monkeypatch.setattr(web_server, "AUTH_ENABLED", False)
+    monkeypatch.setattr(web_server, "ADMIN_USERS", set())
+    web_server.LOGIN_FAILURES.clear()
+    web_server.LOGIN_CAPTCHA_CHALLENGES.clear()
+    web_server.ai_analysis_workers.clear()
+    web_server.ai_analysis_tasks.clear()
+    web_server.ai_analysis_queued_jobs.clear()
+    web_server.ai_analysis_locks.clear()
+    while not web_server.ai_analysis_queue.empty():
+        web_server.ai_analysis_queue.get_nowait()
+        web_server.ai_analysis_queue.task_done()
     return web_server
 
 
@@ -45,15 +70,1455 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.1.8",
+        "version": "0.2.86",
+        "auth_mode": "none",
+        "auth_required": False,
         "allow_file_download": True,
         "allow_code_execution": False,
+        "claude_analysis_enabled": False,
     }
+
+
+def test_json_log_formatter_uses_configured_timezone():
+    formatter = web_server.JsonLogFormatter(web_server._resolve_log_timezone("Asia/Shanghai"))
+    record = logging.LogRecord(
+        name="test",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="hello",
+        args=(),
+        exc_info=None,
+    )
+    record.created = 0
+
+    payload = json.loads(formatter.format(record))
+
+    assert payload["time"].startswith("1970-01-01T08:00:00")
+    assert payload["time"].endswith("+08:00")
+
+
+def test_ai_analysis_is_disabled_by_default(client):
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                "INSERT INTO jobs(id, label, mode, status) VALUES(?,?,?,?)",
+                ("ai-disabled-job", "AI disabled", "single", "done"),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+
+    r = client.post("/api/jobs/ai-disabled-job/ai-analysis", json={})
+
+    assert r.status_code == 403
+
+
+def test_upload_limit_cleans_partial_job_directory(client, sample_trace_file, monkeypatch):
+    monkeypatch.setattr(web_server, "MAX_UPLOAD_BYTES", 1)
+
+    with open(sample_trace_file, "rb") as trace:
+        response = client.post(
+            "/api/jobs",
+            files={"file_a": ("trace.json", trace, "application/json")},
+        )
+
+    assert response.status_code == 413
+    storage_dir = Path(web_server.STORAGE_DIR)
+    assert not list(storage_dir.glob("*/trace_a.json"))
+
+
+def test_ai_analysis_rejects_duplicate_and_delete_while_active(
+    client,
+    tmp_path,
+    monkeypatch,
+):
+    trace_path = tmp_path / "trace.pt.trace.json.gz"
+    with gzip.open(trace_path, "wt", encoding="utf-8") as f:
+        f.write("{}")
+
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO jobs(id, label, mode, status, file_a_name, file_a_gzip_path)
+                VALUES(?,?,?,?,?,?)
+                """,
+                ("ai-active-job", "AI active", "single", "done", trace_path.name, str(trace_path)),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+    Path(web_server.result_dir("ai-active-job")).mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_ENABLED", True)
+    monkeypatch.setattr(
+        web_server,
+        "CLAUDE_ANALYSIS_COMMAND_TEMPLATE",
+        _fake_claude_template(
+            tmp_path,
+            """
+            import time
+            time.sleep(0.5)
+            pathlib.Path(os.environ['TRACE_AI_REPORT_PATH']).write_text('# Slow Report\\n', encoding='utf-8')
+            print('# AI OK')
+            """,
+        ),
+    )
+
+    first = client.post("/api/jobs/ai-active-job/ai-analysis", json={})
+    second = client.post("/api/jobs/ai-active-job/ai-analysis", json={"force": True})
+    delete_response = client.delete("/api/jobs/ai-active-job")
+
+    assert first.status_code == 202
+    assert second.status_code == 409
+    assert delete_response.status_code == 409
+
+    payload = {}
+    for _ in range(100):
+        payload = client.get("/api/jobs/ai-active-job/ai-analysis").json()
+        if payload["status"] not in {"queued", "running"}:
+            break
+        time.sleep(0.05)
+
+    assert payload["status"] == "done"
+
+
+def test_ai_report_normalizes_flat_conclusion_evidence_advice_list(isolated_server):
+    raw = """
+# AI 性能分析报告
+
+## 结论概览
+
+- 结论：设备利用率低，compute gap 是主要瓶颈。
+- 证据：gap_summary.py 显示 gap 占比 38%。
+- 建议：优先用 MLU Graph 捕获稳定序列。
+- 结论：小 kernel 启动开销偏高。
+- 证据：867 个 kernel 平均 0.016 ms。
+- 建议：合并 LayerNorm 与激活相关小 kernel。
+""".lstrip()
+
+    normalized = isolated_server._normalize_ai_report_markdown(raw)
+
+    assert "### 发现 1：设备利用率低，compute gap 是主要瓶颈" in normalized
+    assert "**结论：** 设备利用率低，compute gap 是主要瓶颈。" in normalized
+    assert "**证据：** gap_summary.py 显示 gap 占比 38%。" in normalized
+    assert "**建议：** 优先用 MLU Graph 捕获稳定序列。" in normalized
+    assert "### 发现 2：小 kernel 启动开销偏高" in normalized
+    assert "- 证据：" not in normalized
+
+
+def test_claude_command_normalizes_legacy_permission_args(isolated_server, monkeypatch):
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_COMMAND", "/usr/local/node20/bin/claude")
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_COMMAND_TEMPLATE", "")
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_EXTRA_ARGS", "--permission-mode bypassPermissions")
+
+    command = web_server._build_claude_command("OK", {})
+
+    assert command == ["/usr/local/node20/bin/claude", "--dangerously-skip-permissions", "-p", "OK"]
+
+
+def test_claude_command_template_normalizes_legacy_permission_args(isolated_server, monkeypatch):
+    monkeypatch.setattr(
+        web_server,
+        "CLAUDE_ANALYSIS_COMMAND_TEMPLATE",
+        "/usr/local/node20/bin/claude --permission-mode=bypassPermissions -p {prompt}",
+    )
+
+    command = web_server._build_claude_command("OK", {})
+
+    assert command == ["/usr/local/node20/bin/claude", "--dangerously-skip-permissions", "-p", "OK"]
+
+
+def test_claude_skills_mount_is_writable_copy(tmp_path):
+    skills_dir = tmp_path / "source-skills"
+    skill_dir = skills_dir / "e2e-profiling-analyzer"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("---\nname: e2e-profiling-analyzer\n---\n", encoding="utf-8")
+    analysis_dir = tmp_path / "analysis"
+
+    web_server._mount_claude_skills_for_analysis(str(analysis_dir), str(skills_dir))
+
+    target = analysis_dir / ".claude" / "skills"
+    assert target.exists()
+    assert not target.is_symlink()
+    assert (target / "e2e-profiling-analyzer" / "SKILL.md").exists()
+    (analysis_dir / ".claude" / "session-env").mkdir()
+    env = web_server._build_claude_env({"HOME": str(tmp_path)}, str(analysis_dir), {"TRACE_AI_JOB_ID": "x"})
+    assert env["CLAUDE_PROJECT_DIR"] == str(analysis_dir)
+    assert env["CLAUDE_CODE_PROJECT_DIR"] == str(analysis_dir)
+    assert env["ANTHROPIC_CUSTOM_HEADERS"] == "x-project: torch_mlu"
+    settings = json.loads((analysis_dir / ".claude" / "settings.local.json").read_text(encoding="utf-8"))
+    assert settings["env"]["ANTHROPIC_CUSTOM_HEADERS"] == "x-project: torch_mlu"
+
+
+def test_claude_env_preserves_existing_custom_headers(tmp_path, monkeypatch):
+    monkeypatch.setattr(web_server, "TRACE_CLAUDE_CUSTOM_HEADERS", "")
+    monkeypatch.setattr(web_server, "CLAUDE_CUSTOM_HEADERS", "x-project: torch_mlu")
+    analysis_dir = tmp_path / "analysis"
+
+    env = web_server._build_claude_env(
+        {"HOME": str(tmp_path), "ANTHROPIC_CUSTOM_HEADERS": "x-project: existing"},
+        str(analysis_dir),
+    )
+
+    assert env["ANTHROPIC_CUSTOM_HEADERS"] == "x-project: existing"
+    settings = json.loads((analysis_dir / ".claude" / "settings.local.json").read_text(encoding="utf-8"))
+    assert settings["env"]["ANTHROPIC_CUSTOM_HEADERS"] == "x-project: existing"
+
+
+def test_claude_env_trace_custom_headers_override_base_env(tmp_path, monkeypatch):
+    monkeypatch.setattr(web_server, "TRACE_CLAUDE_CUSTOM_HEADERS", "x-project: override")
+    monkeypatch.setattr(web_server, "CLAUDE_CUSTOM_HEADERS", "x-project: override")
+    analysis_dir = tmp_path / "analysis"
+
+    env = web_server._build_claude_env(
+        {"HOME": str(tmp_path), "ANTHROPIC_CUSTOM_HEADERS": "x-project: existing"},
+        str(analysis_dir),
+    )
+
+    assert env["ANTHROPIC_CUSTOM_HEADERS"] == "x-project: override"
+    settings = json.loads((analysis_dir / ".claude" / "settings.local.json").read_text(encoding="utf-8"))
+    assert settings["env"]["ANTHROPIC_CUSTOM_HEADERS"] == "x-project: override"
+
+
+def _fake_claude_template(tmp_path: Path, analysis_body: str) -> str:
+    script = tmp_path / "fake_claude.py"
+    body = textwrap.indent(textwrap.dedent(analysis_body).strip() or "pass", "    ")
+    script.write_text(
+        "import os\n"
+        "import pathlib\n"
+        "import sys\n"
+        "\n"
+        "prompt = sys.argv[1] if len(sys.argv) > 1 else \"\"\n"
+        "if \"claude_tool_probe.txt\" in prompt:\n"
+        "    pathlib.Path(\"claude_tool_probe.txt\").write_text(\n"
+        "        os.environ.get(\"TRACE_AI_TOOL_PROBE_TOKEN\", \"\"),\n"
+        "        encoding=\"utf-8\",\n"
+        "    )\n"
+        "    print(\"OK\")\n"
+        "elif \"这是环境诊断\" in prompt:\n"
+        "    skill = os.environ.get(\"TRACE_AI_SKILL\", \"\")\n"
+        "    print(\"OK\")\n"
+        "    print(os.path.exists(pathlib.Path(\".claude\") / \"skills\" / skill / \"SKILL.md\"))\n"
+        "else:\n"
+        f"{body}\n",
+        encoding="utf-8",
+    )
+    return f"{shlex.quote(sys.executable)} {shlex.quote(str(script))} {{prompt}}"
+
+
+def test_ai_analysis_runs_configured_command(client, isolated_server, tmp_path, monkeypatch):
+    trace_path = tmp_path / "trace.pt.trace.json.gz"
+    with gzip.open(trace_path, "wt", encoding="utf-8") as f:
+        f.write("{}")
+
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO jobs(id, label, mode, status, file_a_name, file_a_gzip_path)
+                VALUES(?,?,?,?,?,?)
+                """,
+                ("ai-job", "AI job", "single", "done", "trace.pt.trace.json.gz", str(trace_path)),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+    Path(web_server.result_dir("ai-job")).mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_ENABLED", True)
+    monkeypatch.setattr(
+        web_server,
+        "CLAUDE_ANALYSIS_COMMAND_TEMPLATE",
+        _fake_claude_template(
+            tmp_path,
+            """
+            pathlib.Path('details.txt').write_text('Detail Artifact\\n', encoding='utf-8')
+            pathlib.Path('metrics.json').write_text('{\"ok\": true}\\n', encoding='utf-8')
+            pathlib.Path('report.md').write_text('# Local Report\\n', encoding='utf-8')
+            pathlib.Path(os.environ['TRACE_AI_REPORT_PATH']).write_text('# Final Report\\n', encoding='utf-8')
+            print('# AI OK')
+            print('prompt_len=' + str(len(prompt)))
+            """,
+        ),
+    )
+
+    started = client.post("/api/jobs/ai-job/ai-analysis", json={})
+
+    assert started.status_code == 202
+
+    payload = {}
+    for _ in range(80):
+        payload = client.get("/api/jobs/ai-job/ai-analysis").json()
+        if payload["status"] not in {"queued", "running"}:
+            break
+        time.sleep(0.05)
+
+    assert payload["status"] == "done"
+    assert payload["progress"] == 100
+    assert payload["duration_ms"] >= 0
+    assert payload["diagnostics"]["ok"] is True
+    assert payload["content"].strip() == "# Final Report"
+    artifact_paths = {item["path"] for item in payload["artifacts"]}
+    assert "ai_analysis.md" in artifact_paths
+    assert "report.md" in artifact_paths
+    assert "details.txt" in artifact_paths
+    assert "metrics.json" in artifact_paths
+    assert "stdout.txt" in artifact_paths
+    assert "stderr.txt" in artifact_paths
+    assert "command.json" not in artifact_paths
+    assert "ai_analysis_status.json" not in artifact_paths
+    details_artifact = next(item for item in payload["artifacts"] if item["path"] == "details.txt")
+    assert "Detail Artifact" in details_artifact["content"]
+
+    detail = client.get("/api/jobs/ai-job").json()
+    assert detail["ai_analysis"]["status"] == "done"
+    assert detail["ai_analysis"]["report_exists"] is True
+    assert detail["ai_analysis"]["duration_ms"] >= 0
+
+
+def test_ai_analysis_keeps_report_versions(client, isolated_server, tmp_path, monkeypatch):
+    trace_path = tmp_path / "trace.pt.trace.json.gz"
+    with gzip.open(trace_path, "wt", encoding="utf-8") as f:
+        f.write("{}")
+
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO jobs(id, user_token, label, mode, status, file_a_name, file_a_gzip_path)
+                VALUES(?,?,?,?,?,?,?)
+                """,
+                ("ai-version-job", "owner", "AI version job", "single", "done", trace_path.name, str(trace_path)),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+    Path(web_server.result_dir("ai-version-job")).mkdir(parents=True, exist_ok=True)
+    counter_path = tmp_path / "ai_counter.txt"
+
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_ENABLED", True)
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_MODEL", "claude-test-model")
+    user_prompt = "请重点关注 attention kernel"
+    monkeypatch.setattr(
+        web_server,
+        "CLAUDE_ANALYSIS_COMMAND_TEMPLATE",
+        _fake_claude_template(
+            tmp_path,
+            f"""
+            if '只回复一行 OK' in prompt:
+                print('OK')
+            else:
+                counter = pathlib.Path({str(counter_path)!r})
+                value = int(counter.read_text(encoding='utf-8')) + 1 if counter.exists() else 1
+                counter.write_text(str(value), encoding='utf-8')
+                prompt_seen = {user_prompt!r} in prompt
+                report = f'# Report {{value}}\\n\\nGenerated version {{value}}\\n\\nprompt_seen={{prompt_seen}}\\n'
+                pathlib.Path(os.environ['TRACE_AI_REPORT_PATH']).write_text(report, encoding='utf-8')
+                print(report)
+            """,
+        ),
+    )
+
+    first = client.post(
+        "/api/jobs/ai-version-job/ai-analysis",
+        json={},
+        headers={"X-Remote-User": "runner"},
+    )
+    assert first.status_code == 202
+    first_payload = {}
+    for _ in range(80):
+        first_payload = client.get("/api/jobs/ai-version-job/ai-analysis").json()
+        if first_payload["status"] not in {"queued", "running"}:
+            break
+        time.sleep(0.05)
+    assert first_payload["status"] == "done"
+    assert "# Report 1" in first_payload["content"]
+
+    second = client.post(
+        "/api/jobs/ai-version-job/ai-analysis",
+        json={"force": True, "prompt": user_prompt},
+        headers={"X-Remote-User": "runner"},
+    )
+    assert second.status_code == 202
+    latest = {}
+    for _ in range(80):
+        latest = client.get("/api/jobs/ai-version-job/ai-analysis").json()
+        if latest["status"] not in {"queued", "running"}:
+            break
+        time.sleep(0.05)
+
+    assert latest["status"] == "done"
+    assert "# Report 2" in latest["content"]
+    assert "prompt_seen=True" in latest["content"]
+    assert len(latest["versions"]) == 2
+    assert latest["selected_version_id"] == latest["versions"][0]["id"]
+    assert latest["versions"][0]["model"] == "claude-test-model"
+    assert latest["versions"][0]["user_prompt"] == user_prompt
+    assert latest["versions"][0]["generated_at"]
+    assert latest["versions"][0]["trigger_user_token"] == "runner"
+
+    old_version = latest["versions"][1]
+    old_response = client.get(f"/api/jobs/ai-version-job/ai-analysis?version_id={old_version['id']}")
+    assert old_response.status_code == 200
+    old_payload = old_response.json()
+    assert old_payload["selected_version_id"] == old_version["id"]
+    assert "# Report 1" in old_payload["content"]
+
+    download = client.get(f"/api/jobs/ai-version-job/ai-analysis/report.md?version_id={old_version['id']}")
+    assert download.status_code == 200
+    assert "# Report 1" in download.text
+
+
+def test_ai_analysis_completion_sends_email_with_result_link(client, isolated_server, tmp_path, monkeypatch):
+    trace_path = tmp_path / "trace.pt.trace.json.gz"
+    with gzip.open(trace_path, "wt", encoding="utf-8") as f:
+        f.write("{}")
+
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO jobs(id, user_token, label, mode, status, file_a_name, file_a_gzip_path)
+                VALUES(?,?,?,?,?,?,?)
+                """,
+                (
+                    "ai-mail-job",
+                    "owner",
+                    "AI mail job",
+                    "single",
+                    "done",
+                    "trace.pt.trace.json.gz",
+                    str(trace_path),
+                ),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+    Path(web_server.result_dir("ai-mail-job")).mkdir(parents=True, exist_ok=True)
+
+    sent = []
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_ENABLED", True)
+    monkeypatch.setattr(web_server, "PUBLIC_BASE_URL", "http://trace.example")
+    monkeypatch.setattr(web_server, "SMTP_HOST", "smtp.test")
+    monkeypatch.setattr(web_server, "SENDMAIL_COMMAND", "")
+    monkeypatch.setattr(
+        web_server,
+        "_send_email_sync",
+        lambda recipients, subject, body: sent.append({
+            "recipients": recipients,
+            "subject": subject,
+            "body": body,
+        }),
+    )
+    monkeypatch.setattr(
+        web_server,
+        "CLAUDE_ANALYSIS_COMMAND_TEMPLATE",
+        _fake_claude_template(
+            tmp_path,
+            """
+            pathlib.Path(os.environ['TRACE_AI_REPORT_PATH']).write_text('# Final Report\\n', encoding='utf-8')
+            print('# AI OK')
+            """,
+        ),
+    )
+
+    started = client.post(
+        "/api/jobs/ai-mail-job/ai-analysis",
+        json={},
+        headers={"X-Remote-User": "runner"},
+    )
+
+    assert started.status_code == 202
+
+    payload = {}
+    for _ in range(100):
+        payload = client.get("/api/jobs/ai-mail-job/ai-analysis").json()
+        if payload["status"] not in {"queued", "running"} and sent:
+            break
+        time.sleep(0.05)
+
+    assert payload["status"] == "done"
+    assert len(sent) == 1
+    assert sent[0]["recipients"] == ["runner@cambricon.com", "owner@cambricon.com"]
+    assert "AI分析完成" in sent[0]["subject"]
+    assert "打开 AI 分析结果: http://trace.example/#/job/ai-mail-job/ai" in sent[0]["body"]
+    assert "下载 Markdown 报告: http://trace.example/api/jobs/ai-mail-job/ai-analysis/report.md" in sent[0]["body"]
+
+
+def test_compare_ai_analysis_completion_sends_email_with_result_link(client, isolated_server, tmp_path, monkeypatch):
+    trace_a = tmp_path / "trace-a.pt.trace.json.gz"
+    trace_b = tmp_path / "trace-b.pt.trace.json.gz"
+    with gzip.open(trace_a, "wt", encoding="utf-8") as f:
+        f.write("{}")
+    with gzip.open(trace_b, "wt", encoding="utf-8") as f:
+        f.write("{}")
+
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO jobs(
+                    id, user_token, label, mode, status,
+                    file_a_name, file_a_gzip_path,
+                    file_b_name, file_b_gzip_path
+                )
+                VALUES(?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    "ai-compare-mail-job",
+                    "compare-owner",
+                    "AI compare mail job",
+                    "compare",
+                    "done",
+                    "trace-a.pt.trace.json.gz",
+                    str(trace_a),
+                    "trace-b.pt.trace.json.gz",
+                    str(trace_b),
+                ),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+    Path(web_server.result_dir("ai-compare-mail-job")).mkdir(parents=True, exist_ok=True)
+
+    sent = []
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_ENABLED", True)
+    monkeypatch.setattr(web_server, "PUBLIC_BASE_URL", "http://trace.example")
+    monkeypatch.setattr(web_server, "SMTP_HOST", "smtp.test")
+    monkeypatch.setattr(web_server, "SENDMAIL_COMMAND", "")
+    monkeypatch.setattr(
+        web_server,
+        "_send_email_sync",
+        lambda recipients, subject, body: sent.append({
+            "recipients": recipients,
+            "subject": subject,
+            "body": body,
+        }),
+    )
+    monkeypatch.setattr(
+        web_server,
+        "CLAUDE_ANALYSIS_COMMAND_TEMPLATE",
+        _fake_claude_template(
+            tmp_path,
+            """
+            assert os.environ['TRACE_AI_MODE'] == 'compare'
+            pathlib.Path(os.environ['TRACE_AI_REPORT_PATH']).write_text('# Compare Final Report\\n', encoding='utf-8')
+            print('# Compare AI OK')
+            """,
+        ),
+    )
+
+    started = client.post(
+        "/api/jobs/ai-compare-mail-job/ai-analysis",
+        json={},
+        headers={"X-Remote-User": "runner"},
+    )
+
+    assert started.status_code == 202
+
+    payload = {}
+    for _ in range(100):
+        payload = client.get("/api/jobs/ai-compare-mail-job/ai-analysis").json()
+        if payload["status"] not in {"queued", "running"} and sent:
+            break
+        time.sleep(0.05)
+
+    assert payload["status"] == "done"
+    assert len(sent) == 1
+    assert sent[0]["recipients"] == ["runner@cambricon.com", "compare-owner@cambricon.com"]
+    assert "AI分析完成" in sent[0]["subject"]
+    assert "类型: 对比" in sent[0]["body"]
+    assert "打开 AI 分析结果: http://trace.example/#/job/ai-compare-mail-job/ai" in sent[0]["body"]
+    assert "下载 Markdown 报告: http://trace.example/api/jobs/ai-compare-mail-job/ai-analysis/report.md" in sent[0]["body"]
+
+
+def test_source_compare_ai_analysis_emails_trigger_compare_owner_and_source_owners(client, isolated_server, tmp_path, monkeypatch):
+    trace_a = tmp_path / "source-a.pt.trace.json.gz"
+    trace_b = tmp_path / "source-b.pt.trace.json.gz"
+    with gzip.open(trace_a, "wt", encoding="utf-8") as f:
+        f.write("{}")
+    with gzip.open(trace_b, "wt", encoding="utf-8") as f:
+        f.write("{}")
+
+    async def insert_jobs():
+        db = await web_db.get_db()
+        try:
+            await db.executemany(
+                """
+                INSERT INTO jobs(id, user_token, label, mode, status, file_a_name, file_a_gzip_path)
+                VALUES(?,?,?,?,?,?,?)
+                """,
+                [
+                    ("source-a", "owner-a", "Source A", "single", "done", "source-a.pt.trace.json.gz", str(trace_a)),
+                    ("source-b", "owner-b", "Source B", "single", "done", "source-b.pt.trace.json.gz", str(trace_b)),
+                ],
+            )
+            await db.execute(
+                """
+                INSERT INTO jobs(
+                    id, user_token, label, mode, status,
+                    file_a_name, file_b_name,
+                    source_job_a, source_job_b
+                )
+                VALUES(?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    "ai-source-compare-mail-job",
+                    "compare-owner",
+                    "Source A vs Source B",
+                    "compare",
+                    "done",
+                    "source-a.pt.trace.json.gz",
+                    "source-b.pt.trace.json.gz",
+                    "source-a",
+                    "source-b",
+                ),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_jobs())
+    Path(web_server.result_dir("ai-source-compare-mail-job")).mkdir(parents=True, exist_ok=True)
+
+    sent = []
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_ENABLED", True)
+    monkeypatch.setattr(web_server, "PUBLIC_BASE_URL", "http://trace.example")
+    monkeypatch.setattr(web_server, "SMTP_HOST", "smtp.test")
+    monkeypatch.setattr(web_server, "SENDMAIL_COMMAND", "")
+    monkeypatch.setattr(
+        web_server,
+        "_send_email_sync",
+        lambda recipients, subject, body: sent.append({
+            "recipients": recipients,
+            "subject": subject,
+            "body": body,
+        }),
+    )
+    monkeypatch.setattr(
+        web_server,
+        "CLAUDE_ANALYSIS_COMMAND_TEMPLATE",
+        _fake_claude_template(
+            tmp_path,
+            """
+            assert os.environ['TRACE_AI_MODE'] == 'compare'
+            pathlib.Path(os.environ['TRACE_AI_REPORT_PATH']).write_text('# Source Compare Final Report\\n', encoding='utf-8')
+            print('# Source Compare AI OK')
+            """,
+        ),
+    )
+
+    started = client.post(
+        "/api/jobs/ai-source-compare-mail-job/ai-analysis",
+        json={},
+        headers={"X-Remote-User": "runner"},
+    )
+
+    assert started.status_code == 202
+
+    payload = {}
+    for _ in range(100):
+        payload = client.get("/api/jobs/ai-source-compare-mail-job/ai-analysis").json()
+        if payload["status"] not in {"queued", "running"} and sent:
+            break
+        time.sleep(0.05)
+
+    assert payload["status"] == "done"
+    assert len(sent) == 1
+    assert sent[0]["recipients"] == [
+        "runner@cambricon.com",
+        "compare-owner@cambricon.com",
+        "owner-a@cambricon.com",
+        "owner-b@cambricon.com",
+    ]
+    assert "类型: 对比" in sent[0]["body"]
+
+
+def test_ai_analysis_mounts_configured_claude_skills(client, tmp_path, monkeypatch):
+    trace_path = tmp_path / "trace.pt.trace.json.gz"
+    with gzip.open(trace_path, "wt", encoding="utf-8") as f:
+        f.write("{}")
+    skills_dir = tmp_path / "skills"
+    skill_dir = skills_dir / "e2e-profiling-analyzer"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("---\nname: e2e-profiling-analyzer\n---\n", encoding="utf-8")
+    compare_skill_dir = skills_dir / "e2e-profiling-comparator"
+    compare_skill_dir.mkdir(parents=True)
+    (compare_skill_dir / "SKILL.md").write_text("---\nname: e2e-profiling-comparator\n---\n", encoding="utf-8")
+
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO jobs(id, label, mode, status, file_a_name, file_a_gzip_path)
+                VALUES(?,?,?,?,?,?)
+                """,
+                ("ai-skills-job", "AI skills job", "single", "done", trace_path.name, str(trace_path)),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+    Path(web_server.result_dir("ai-skills-job")).mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_ENABLED", True)
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_SKILLS_DIR", str(skills_dir))
+    monkeypatch.setattr(
+        web_server,
+        "CLAUDE_ANALYSIS_COMMAND_TEMPLATE",
+        _fake_claude_template(
+            tmp_path,
+            """
+            print(os.path.exists('.claude/skills/e2e-profiling-analyzer/SKILL.md'))
+            print(os.environ['TRACE_CLAUDE_SKILLS_DIR'])
+            """,
+        ),
+    )
+
+    started = client.post("/api/jobs/ai-skills-job/ai-analysis", json={})
+
+    assert started.status_code == 202
+
+    payload = {}
+    for _ in range(80):
+        payload = client.get("/api/jobs/ai-skills-job/ai-analysis").json()
+        if payload["status"] not in {"queued", "running"}:
+            break
+        time.sleep(0.05)
+
+    assert payload["status"] == "done"
+    assert payload["diagnostics"]["ok"] is True
+    assert "True" in payload["content"]
+    assert str(skills_dir) in payload["content"]
+
+
+def test_ai_analysis_marks_permission_failure_output_as_error(client, isolated_server, tmp_path, monkeypatch):
+    trace_path = tmp_path / "trace.pt.trace.json.gz"
+    with gzip.open(trace_path, "wt", encoding="utf-8") as f:
+        f.write("{}")
+
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO jobs(id, label, mode, status, file_a_name, file_a_gzip_path)
+                VALUES(?,?,?,?,?,?)
+                """,
+                ("ai-permission-job", "AI permission job", "single", "done", trace_path.name, str(trace_path)),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+    Path(web_server.result_dir("ai-permission-job")).mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_ENABLED", True)
+    monkeypatch.setattr(
+        web_server,
+        "CLAUDE_ANALYSIS_COMMAND_TEMPLATE",
+        (
+            f"{shlex.quote(sys.executable)} -c "
+            "\"print('ERROR: tool denied'); "
+            "print('All tool calls are being denied.')\""
+        ),
+    )
+
+    started = client.post("/api/jobs/ai-permission-job/ai-analysis", json={})
+
+    assert started.status_code == 202
+
+    payload = {}
+    for _ in range(80):
+        payload = client.get("/api/jobs/ai-permission-job/ai-analysis").json()
+        if payload["status"] not in {"queued", "running"}:
+            break
+        time.sleep(0.05)
+
+    assert payload["status"] == "error"
+    assert payload["phase"] == "diagnostics_failed"
+    assert payload["diagnostics"]["ok"] is False
+    assert "AI environment diagnostics failed" in payload["error"]
+    assert "AI 环境诊断未通过" in payload["content"]
+    assert "工具权限探针" in payload["content"]
+    assert "ERROR: tool denied" in payload["content"]
+
+
+def test_ai_analysis_report_markdown_download(client):
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                "INSERT INTO jobs(id, label, mode, status) VALUES(?,?,?,?)",
+                ("ai-download-job", "AI report", "single", "done"),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+    Path(web_server.ai_analysis_dir("ai-download-job")).mkdir(parents=True, exist_ok=True)
+    Path(web_server.ai_analysis_report_path("ai-download-job")).write_text(
+        "# AI 性能分析报告\n\n## 结论概览\n\n- ok\n",
+        encoding="utf-8",
+    )
+
+    response = client.get("/api/jobs/ai-download-job/ai-analysis/report.md")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/markdown")
+    assert "AI report-ai-analysis-" in response.headers["content-disposition"]
+    assert "# AI 性能分析报告" in response.text
+
+
+def test_ai_analysis_reports_missing_claude_command(client, tmp_path, monkeypatch):
+    trace_path = tmp_path / "trace.pt.trace.json.gz"
+    with gzip.open(trace_path, "wt", encoding="utf-8") as f:
+        f.write("{}")
+
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO jobs(id, label, mode, status, file_a_name, file_a_gzip_path)
+                VALUES(?,?,?,?,?,?)
+                """,
+                ("ai-missing-command", "AI missing command", "single", "done", trace_path.name, str(trace_path)),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+    Path(web_server.result_dir("ai-missing-command")).mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_ENABLED", True)
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_COMMAND_TEMPLATE", "")
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_COMMAND", "__missing_claude_code_for_test__")
+
+    started = client.post("/api/jobs/ai-missing-command/ai-analysis", json={})
+
+    assert started.status_code == 202
+
+    payload = {}
+    for _ in range(80):
+        payload = client.get("/api/jobs/ai-missing-command/ai-analysis").json()
+        if payload["status"] not in {"queued", "running"}:
+            break
+        time.sleep(0.05)
+
+    assert payload["status"] == "error"
+    assert payload["phase"] == "diagnostics_failed"
+    assert payload["diagnostics"]["ok"] is False
+    assert "AI 环境诊断未通过" in payload["content"]
+    assert "Claude Code command not found" in payload["content"]
+    assert "__missing_claude_code_for_test__" in payload["content"]
+    assert "TRACE_CLAUDE_COMMAND" in payload["content"]
+
+
+def test_ai_diagnostics_runs_command_and_skill_smoke(client, tmp_path, monkeypatch):
+    skills_dir = tmp_path / "skills"
+    for skill_name in ("e2e-profiling-analyzer", "e2e-profiling-comparator"):
+        skill_dir = skills_dir / skill_name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(f"---\nname: {skill_name}\n---\n", encoding="utf-8")
+
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_ENABLED", True)
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_SKILLS_DIR", str(skills_dir))
+    monkeypatch.setattr(web_server, "CLAUDE_DIAGNOSTIC_TIMEOUT_SECONDS", 5)
+    monkeypatch.setattr(
+        web_server,
+        "CLAUDE_ANALYSIS_COMMAND_TEMPLATE",
+        (
+            f"{shlex.quote(sys.executable)} -c "
+            "\"import os, sys; "
+            "prompt = sys.argv[1] if len(sys.argv) > 1 else ''; "
+            "open('claude_tool_probe.txt', 'w').write(os.environ['TRACE_AI_TOOL_PROBE_TOKEN']) if 'claude_tool_probe.txt' in prompt else None; "
+            "print('OK'); "
+            "print(os.path.exists('.claude/skills/e2e-profiling-analyzer/SKILL.md'))\" "
+            "{prompt}"
+        ),
+    )
+
+    response = client.post("/api/ai/diagnostics")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    checks = {item["name"]: item for item in payload["checks"]}
+    assert checks["command"]["status"] == "ok"
+    assert checks["skills_dir"]["status"] == "ok"
+    assert checks["single_skill"]["status"] == "ok"
+    assert checks["compare_skill"]["status"] == "ok"
+    assert checks["skills_mount"]["status"] == "ok"
+    assert checks["base_smoke"]["status"] == "ok"
+    assert checks["tool_probe"]["status"] == "ok"
+    assert checks["skill_smoke"]["status"] == "ok"
+    assert "True" in checks["skill_smoke"]["stdout_tail"]
+
+
+def test_ai_diagnostics_reports_missing_command(client, monkeypatch):
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_ENABLED", True)
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_COMMAND_TEMPLATE", "")
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_COMMAND", "__missing_claude_diag_for_test__")
+
+    response = client.post("/api/ai/diagnostics")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    checks = {item["name"]: item for item in payload["checks"]}
+    assert checks["command"]["status"] == "error"
+    assert "__missing_claude_diag_for_test__" in checks["command"]["detail"]
+    assert checks["base_smoke"]["status"] == "skipped"
+
+
+def test_ai_analysis_supports_compare_jobs(client, tmp_path, monkeypatch):
+    trace_a = tmp_path / "a.pt.trace.json.gz"
+    trace_b = tmp_path / "b.pt.trace.json.gz"
+    for path in (trace_a, trace_b):
+        with gzip.open(path, "wt", encoding="utf-8") as f:
+            f.write("{}")
+
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO jobs(
+                    id, label, mode, status,
+                    file_a_name, file_a_gzip_path,
+                    file_b_name, file_b_gzip_path
+                )
+                VALUES(?,?,?,?,?,?,?,?)
+                """,
+                (
+                    "ai-compare-job", "AI compare", "compare", "done",
+                    "a.pt.trace.json.gz", str(trace_a),
+                    "b.pt.trace.json.gz", str(trace_b),
+                ),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+    Path(web_server.result_dir("ai-compare-job")).mkdir(parents=True, exist_ok=True)
+    skills_dir = tmp_path / "skills"
+    single_skill_dir = skills_dir / "e2e-profiling-analyzer"
+    single_skill_dir.mkdir(parents=True)
+    (single_skill_dir / "SKILL.md").write_text("---\nname: e2e-profiling-analyzer\n---\n", encoding="utf-8")
+    skill_dir = skills_dir / "compare-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("---\nname: compare-skill\n---\n", encoding="utf-8")
+
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_ENABLED", True)
+    monkeypatch.setattr(web_server, "CLAUDE_COMPARE_TRACE_SKILL", "compare-skill")
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_SKILLS_DIR", str(skills_dir))
+    monkeypatch.setattr(
+        web_server,
+        "CLAUDE_ANALYSIS_COMMAND_TEMPLATE",
+        _fake_claude_template(
+            tmp_path,
+            """
+            print('# Compare OK')
+            print(os.environ['TRACE_AI_MODE'])
+            print(os.environ['TRACE_AI_SKILL'])
+            print(os.environ['TRACE_AI_TRACE_B'])
+            """,
+        ),
+    )
+
+    started = client.post("/api/jobs/ai-compare-job/ai-analysis", json={})
+
+    assert started.status_code == 202
+
+    payload = {}
+    for _ in range(80):
+        payload = client.get("/api/jobs/ai-compare-job/ai-analysis").json()
+        if payload["status"] not in {"queued", "running"}:
+            break
+        time.sleep(0.05)
+
+    assert payload["status"] == "done"
+    assert payload["diagnostics"]["ok"] is True
+    assert "# Compare OK" in payload["content"]
+    assert "compare-skill" in payload["content"]
+    assert str(trace_b) in payload["content"]
+
+
+def test_feedback_board_supports_images_and_replies(client):
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 24
+
+    created = client.post(
+        "/api/feedback",
+        data={"body": "建议增加批量导出"},
+        files=[("images", ("idea.png", png_bytes, "image/png"))],
+        headers={"X-Remote-User": "alice"},
+    )
+
+    assert created.status_code == 201
+    message = created.json()
+    assert message["body"] == "建议增加批量导出"
+    assert message["user_display"] == "alice"
+    assert len(message["attachments"]) == 1
+
+    attachment = client.get(message["attachments"][0]["url"], headers={"X-Remote-User": "alice"})
+    assert attachment.status_code == 200
+    assert attachment.headers["content-type"].startswith("image/png")
+    assert attachment.headers["content-disposition"].startswith("inline")
+    assert attachment.content == png_bytes
+
+    reply = client.post(
+        "/api/feedback",
+        data={"body": "这个确实有用", "parent_id": message["id"]},
+        headers={"X-Remote-User": "bob"},
+    )
+
+    assert reply.status_code == 201
+
+    listed = client.get("/api/feedback")
+    assert listed.status_code == 200
+    payload = listed.json()
+    assert payload["total"] == 1
+    assert payload["data"][0]["id"] == message["id"]
+    assert payload["data"][0]["attachments"][0]["filename"] == "idea.png"
+    assert payload["data"][0]["reply_count"] == 1
+    assert payload["data"][0]["last_activity_at"]
+    assert payload["data"][0]["replies"][0]["body"] == "这个确实有用"
+    assert payload["data"][0]["replies"][0]["user_display"] == "bob"
+
+    detail = client.get(f"/api/feedback/{message['id']}")
+    assert detail.status_code == 200
+    detail_payload = detail.json()
+    assert detail_payload["id"] == message["id"]
+    assert detail_payload["reply_count"] == 1
+    assert detail_payload["replies"][0]["body"] == "这个确实有用"
+
+    detail_from_reply = client.get(f"/api/feedback/{reply.json()['id']}")
+    assert detail_from_reply.status_code == 200
+    assert detail_from_reply.json()["id"] == message["id"]
+
+
+def test_feedback_email_recipients_include_admin_and_mentions(isolated_server, monkeypatch):
+    monkeypatch.setattr(isolated_server, "FEEDBACK_NOTIFICATION_ADMIN_EMAILS", ["admin@cambricon.com"])
+    monkeypatch.setattr(isolated_server, "FEEDBACK_MENTION_DOMAIN", "cambricon.com")
+
+    recipients = isolated_server._feedback_notification_recipients(
+        "请 @alice 和 @bob_1、@alice.z 看下，alice@example.com 不应被误识别，@alice 去重"
+    )
+
+    assert recipients == [
+        "admin@cambricon.com",
+        "alice@cambricon.com",
+        "bob_1@cambricon.com",
+        "alice.z@cambricon.com",
+    ]
+
+
+def test_feedback_create_sends_email_notification(client, isolated_server, monkeypatch):
+    sent = []
+    logged = []
+    monkeypatch.setattr(isolated_server, "FEEDBACK_NOTIFICATION_ADMIN_EMAILS", ["admin@cambricon.com"])
+    monkeypatch.setattr(isolated_server, "FEEDBACK_MENTION_DOMAIN", "cambricon.com")
+    monkeypatch.setattr(isolated_server, "SMTP_HOST", "smtp.test")
+    monkeypatch.setattr(isolated_server, "SENDMAIL_COMMAND", "")
+    monkeypatch.setattr(
+        isolated_server,
+        "_send_email_sync",
+        lambda recipients, subject, body: sent.append({
+            "recipients": recipients,
+            "subject": subject,
+            "body": body,
+        }),
+    )
+    monkeypatch.setattr(
+        isolated_server.logger,
+        "info",
+        lambda msg, *args, **kwargs: logged.append((msg, kwargs.get("extra") or {})),
+    )
+
+    response = client.post(
+        "/api/feedback",
+        data={"body": "这个功能很有用，@alice 帮忙看一下"},
+        headers={"X-Remote-User": "bob"},
+    )
+
+    assert response.status_code == 201
+    notification = response.json()["notification"]
+    assert notification["status"] == "sent"
+    assert notification["transport"] == "smtp"
+    assert notification["recipients"] == ["admin@cambricon.com", "alice@cambricon.com"]
+    assert len(sent) == 1
+    assert sent[0]["recipients"] == ["admin@cambricon.com", "alice@cambricon.com"]
+    assert "留言板新帖子" in sent[0]["subject"]
+    assert "这个功能很有用，@alice 帮忙看一下" in sent[0]["body"]
+    feedback_logs = [extra for msg, extra in logged if msg == "feedback_created"]
+    assert feedback_logs
+    assert feedback_logs[0]["event"] == "feedback_created"
+    assert feedback_logs[0]["feedback_kind"] == "post"
+    assert feedback_logs[0]["user"] == "bob"
+    assert feedback_logs[0]["mentioned_emails"] == ["alice@cambricon.com"]
+    assert feedback_logs[0]["notification_status"] == "sent"
+    assert "这个功能很有用" in feedback_logs[0]["body_preview"]
+
+
+def test_feedback_notification_body_includes_deep_link(isolated_server, monkeypatch):
+    monkeypatch.setattr(isolated_server, "PUBLIC_BASE_URL", "http://trace.example")
+
+    post_body = isolated_server._feedback_notification_body({
+        "post_id": "post-1",
+        "message_id": "post-1",
+        "author": "Alice",
+        "body": "new post",
+    })
+    reply_body = isolated_server._feedback_notification_body({
+        "post_id": "post-1",
+        "message_id": "reply-2",
+        "parent_id": "post-1",
+        "author": "Bob",
+        "body": "reply",
+    })
+
+    assert "打开留言: http://trace.example/#/feedback/post-1" in post_body
+    assert "打开留言: http://trace.example/#/feedback/post-1?message=reply-2" in reply_body
+    assert "打开应用:" not in reply_body
+    assert "帖子 ID:" not in reply_body
+    assert "消息 ID:" not in reply_body
+    assert "图片:" not in reply_body
+
+
+def test_feedback_create_reports_email_send_failure(client, isolated_server, monkeypatch):
+    monkeypatch.setattr(isolated_server, "FEEDBACK_NOTIFICATION_ADMIN_EMAILS", ["admin@cambricon.com"])
+    monkeypatch.setattr(isolated_server, "SMTP_HOST", "smtp.test")
+    monkeypatch.setattr(isolated_server, "SENDMAIL_COMMAND", "")
+
+    def fail_send(*args, **kwargs):
+        raise RuntimeError("smtp rejected")
+
+    monkeypatch.setattr(isolated_server, "_send_email_sync", fail_send)
+
+    response = client.post(
+        "/api/feedback",
+        data={"body": "发送失败需要可见"},
+        headers={"X-Remote-User": "bob"},
+    )
+
+    assert response.status_code == 201
+    notification = response.json()["notification"]
+    assert notification["status"] == "failed"
+    assert notification["transport"] == "smtp"
+    assert "smtp rejected" in notification["detail"]
+
+
+def test_feedback_email_error_explains_dns_failure(isolated_server, monkeypatch):
+    monkeypatch.setattr(isolated_server, "SMTP_HOST", "smtp.invalid.local")
+
+    message = isolated_server._email_error_message(socket.gaierror(-2, "Name or service not known"))
+
+    assert "SMTP 主机无法解析" in message
+    assert "smtp.invalid.local" in message
+
+
+def test_feedback_create_reports_missing_email_transport(client, isolated_server, monkeypatch):
+    monkeypatch.setattr(isolated_server, "FEEDBACK_NOTIFICATION_ADMIN_EMAILS", ["admin@cambricon.com"])
+    monkeypatch.setattr(isolated_server, "SMTP_HOST", "")
+    monkeypatch.setattr(isolated_server, "SENDMAIL_COMMAND", "")
+
+    response = client.post(
+        "/api/feedback",
+        data={"body": "邮件状态需要可见"},
+        headers={"X-Remote-User": "bob"},
+    )
+
+    assert response.status_code == 201
+    notification = response.json()["notification"]
+    assert notification["status"] == "missing_transport"
+    assert notification["recipients"] == ["admin@cambricon.com"]
+
+
+def test_email_diagnostics_reports_smtp_dns_failure(client, isolated_server, monkeypatch):
+    monkeypatch.setattr(isolated_server, "SMTP_HOST", "smtp.invalid.local")
+    monkeypatch.setattr(isolated_server, "SMTP_PORT", 25)
+    monkeypatch.setattr(isolated_server, "SENDMAIL_COMMAND", "")
+
+    def fail_getaddrinfo(*args, **kwargs):
+        raise socket.gaierror(-2, "Name or service not known")
+
+    monkeypatch.setattr(isolated_server.socket, "getaddrinfo", fail_getaddrinfo)
+
+    response = client.get("/api/email/diagnostics")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["transport"] == "smtp"
+    dns_checks = [item for item in payload["checks"] if item["label"] == "SMTP DNS 解析"]
+    assert dns_checks
+    assert dns_checks[0]["status"] == "fail"
+    assert "SMTP 主机无法解析" in dns_checks[0]["detail"]
+
+
+def test_mention_candidates_use_local_feedback_authors(client):
+    async def insert_feedback_authors():
+        db = await web_db.get_db()
+        try:
+            await db.executemany(
+                """
+                INSERT INTO feedback_messages(id, parent_id, user_token, user_display, body)
+                VALUES(?,?,?,?,?)
+                """,
+                [
+                    ("mention-a", None, "alice", "Alice Zhou", "hello"),
+                    ("mention-b", None, "bob", "Bob", "hello"),
+                    ("mention-c", None, "alice.z", "Alice Z", "hello"),
+                ],
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_feedback_authors())
+
+    response = client.get("/api/mention-candidates?q=ali")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [item["username"] for item in payload["data"]][:2] == ["alice", "alice.z"]
+    assert payload["data"][0]["email"] == "alice@cambricon.com"
+
+
+def test_feedback_list_supports_sort_modes(client):
+    async def insert_feedback_rows():
+        db = await web_db.get_db()
+        try:
+            await db.executemany(
+                """
+                INSERT INTO feedback_messages(id, parent_id, user_token, user_display, body, created_at, updated_at)
+                VALUES(?,?,?,?,?,?,?)
+                """,
+                [
+                    ("post-active", None, "alice", "alice", "最近有回复", "2026-06-01 09:00:00", "2026-06-01 09:00:00"),
+                    ("post-hot", None, "bob", "bob", "讨论很多", "2026-06-01 10:00:00", "2026-06-01 10:00:00"),
+                    ("post-new", None, "carol", "carol", "发布时间最新", "2026-06-01 12:00:00", "2026-06-01 12:00:00"),
+                    ("reply-active", "post-active", "dave", "dave", "最近回复", "2026-06-01 13:00:00", "2026-06-01 13:00:00"),
+                    ("reply-hot-a", "post-hot", "erin", "erin", "热度一", "2026-06-01 10:30:00", "2026-06-01 10:30:00"),
+                    ("reply-hot-b", "post-hot", "frank", "frank", "热度二", "2026-06-01 10:40:00", "2026-06-01 10:40:00"),
+                ],
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_feedback_rows())
+
+    updated = client.get("/api/feedback").json()
+    created = client.get("/api/feedback?sort=created").json()
+    hot = client.get("/api/feedback?sort=hot").json()
+    invalid = client.get("/api/feedback?sort=unknown").json()
+
+    assert updated["sort"] == "updated"
+    assert [item["id"] for item in updated["data"]] == ["post-active", "post-new", "post-hot"]
+    assert created["sort"] == "created"
+    assert [item["id"] for item in created["data"]] == ["post-new", "post-hot", "post-active"]
+    assert hot["sort"] == "hot"
+    assert [item["id"] for item in hot["data"]] == ["post-hot", "post-active", "post-new"]
+    assert invalid["sort"] == "updated"
+
+
+def test_feedback_delete_requires_admin_and_removes_files(client, isolated_server, monkeypatch):
+    monkeypatch.setattr(isolated_server, "ADMIN_USERS", {"admin"})
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 24
+
+    created = client.post(
+        "/api/feedback",
+        data={"body": "需要管理员清理"},
+        files=[("images", ("cleanup.png", png_bytes, "image/png"))],
+        headers={"X-Remote-User": "alice"},
+    )
+    assert created.status_code == 201
+    post = created.json()
+    attachment_url = post["attachments"][0]["url"]
+
+    reply = client.post(
+        "/api/feedback",
+        data={"body": "一条回复", "parent_id": post["id"]},
+        headers={"X-Remote-User": "bob"},
+    )
+    assert reply.status_code == 201
+
+    denied = client.delete(f"/api/feedback/{post['id']}", headers={"X-Remote-User": "alice"})
+    assert denied.status_code == 403
+
+    deleted_reply = client.delete(
+        f"/api/feedback/{reply.json()['id']}",
+        headers={"X-Remote-User": "admin"},
+    )
+    assert deleted_reply.status_code == 200
+    assert deleted_reply.json()["deleted"] == 1
+    detail = client.get(f"/api/feedback/{post['id']}")
+    assert detail.status_code == 200
+    assert detail.json()["reply_count"] == 0
+
+    deleted_post = client.delete(f"/api/feedback/{post['id']}", headers={"X-Remote-User": "admin"})
+    assert deleted_post.status_code == 200
+    assert deleted_post.json()["deleted"] == 1
+    assert client.get(attachment_url).status_code == 404
+    listed = client.get("/api/feedback")
+    assert listed.status_code == 200
+    assert listed.json()["total"] == 0
+
+
+def test_feedback_board_rejects_non_images(client):
+    response = client.post(
+        "/api/feedback",
+        data={"body": "bad file"},
+        files=[("images", ("note.txt", b"not an image", "text/plain"))],
+    )
+
+    assert response.status_code == 400
+
+
+def test_feedback_author_can_edit_posts_and_replies(client):
+    created = client.post(
+        "/api/feedback",
+        data={"body": "原始帖子"},
+        headers={"X-Remote-User": "alice"},
+    )
+    assert created.status_code == 201
+    post = created.json()
+
+    denied = client.patch(
+        f"/api/feedback/{post['id']}",
+        json={"body": "别人编辑"},
+        headers={"X-Remote-User": "bob"},
+    )
+    assert denied.status_code == 403
+
+    edited = client.patch(
+        f"/api/feedback/{post['id']}",
+        json={"body": "编辑后的帖子"},
+        headers={"X-Remote-User": "alice"},
+    )
+    assert edited.status_code == 200
+    edited_payload = edited.json()
+    assert edited_payload["body"] == "编辑后的帖子"
+    assert edited_payload["edited_at"]
+    assert edited_payload["edit_count"] == 1
+    assert edited_payload["user_token"] == "alice"
+
+    reply = client.post(
+        "/api/feedback",
+        data={"body": "原始回复", "parent_id": post["id"]},
+        headers={"X-Remote-User": "bob"},
+    )
+    assert reply.status_code == 201
+
+    edited_reply = client.patch(
+        f"/api/feedback/{reply.json()['id']}",
+        json={"body": "编辑后的回复"},
+        headers={"X-Remote-User": "bob"},
+    )
+    assert edited_reply.status_code == 200
+    assert edited_reply.json()["body"] == "编辑后的回复"
+
+    detail = client.get(f"/api/feedback/{post['id']}", headers={"X-Remote-User": "bob"})
+    assert detail.status_code == 200
+    detail_payload = detail.json()
+    assert detail_payload["body"] == "编辑后的帖子"
+    assert detail_payload["edit_count"] == 1
+    assert detail_payload["replies"][0]["body"] == "编辑后的回复"
+    assert detail_payload["replies"][0]["edit_count"] == 1
+
+
+def test_feedback_reactions_toggle_per_user(client):
+    created = client.post(
+        "/api/feedback",
+        data={"body": "表情测试"},
+        headers={"X-Remote-User": "alice"},
+    )
+    assert created.status_code == 201
+    post_id = created.json()["id"]
+    reply = client.post(
+        "/api/feedback",
+        data={"body": "可以点赞", "parent_id": post_id},
+        headers={"X-Remote-User": "bob"},
+    )
+    assert reply.status_code == 201
+    reply_id = reply.json()["id"]
+
+    first = client.post(
+        f"/api/feedback/{reply_id}/reactions",
+        json={"emoji": "👍"},
+        headers={"X-Remote-User": "alice"},
+    )
+    assert first.status_code == 200
+    assert first.json()["active"] is True
+    assert first.json()["reactions"] == [{"emoji": "👍", "count": 1, "reacted": True}]
+
+    second_user = client.post(
+        f"/api/feedback/{reply_id}/reactions",
+        json={"emoji": "👍"},
+        headers={"X-Remote-User": "carol"},
+    )
+    assert second_user.status_code == 200
+    assert second_user.json()["reactions"][0]["count"] == 2
+
+    detail_for_alice = client.get(f"/api/feedback/{post_id}", headers={"X-Remote-User": "alice"}).json()
+    reaction = detail_for_alice["replies"][0]["reactions"][0]
+    assert reaction["emoji"] == "👍"
+    assert reaction["count"] == 2
+    assert reaction["reacted"] is True
+
+    toggled_off = client.post(
+        f"/api/feedback/{reply_id}/reactions",
+        json={"emoji": "👍"},
+        headers={"X-Remote-User": "alice"},
+    )
+    assert toggled_off.status_code == 200
+    assert toggled_off.json()["active"] is False
+    assert toggled_off.json()["reactions"][0]["count"] == 1
+
+    unsupported = client.post(
+        f"/api/feedback/{reply_id}/reactions",
+        json={"emoji": "🧪"},
+        headers={"X-Remote-User": "alice"},
+    )
+    assert unsupported.status_code == 400
 
 
 def test_ops_endpoints_and_audit_logs(client):
     assert client.get("/healthz").json()["status"] == "ok"
-    assert client.get("/readyz").json()["checks"]["db"] == "ok"
+    ready = client.get("/readyz").json()
+    assert ready["checks"]["db"] == "ok"
+    assert ready["checks"]["storage"] == "ok"
+    assert ready["checks"]["backup"] == "ok"
+    assert ready["checks"]["log_file"] == "disabled"
+    assert ready["paths"]["storage"]
 
     created = client.post(
         "/api/projects",
@@ -74,6 +1539,334 @@ def test_ops_endpoints_and_audit_logs(client):
     assert metrics.status_code == 200
     assert "analyze_trace_app_uptime_seconds" in metrics.text
     assert "analyze_trace_http_requests_total" in metrics.text
+
+
+def test_admin_usage_stats_tracks_daily_activity(client):
+    assert client.get("/api/config", headers={"X-Remote-User": "alice"}).status_code == 200
+    assert client.get("/api/projects", headers={"X-Remote-User": "alice"}).status_code == 200
+    assert client.get("/api/config", headers={"X-Remote-User": "bob"}).status_code == 200
+
+    async def insert_audit_rows():
+        db = await web_db.get_db()
+        try:
+            await db.executemany(
+                """
+                INSERT INTO audit_logs(id, user, action, resource_type, resource_id)
+                VALUES(?,?,?,?,?)
+                """,
+                [
+                    ("usage-audit-upload", "alice", "job.create", "job", "job-a"),
+                    ("usage-audit-compare", "alice", "job.compare_create", "job", "job-b"),
+                    ("usage-audit-batch", "alice", "job.batch_compare_create", "job", "job-c"),
+                    ("usage-audit-ai", "alice", "job.ai_analysis_start", "job", "job-a"),
+                    ("usage-audit-feedback", "bob", "feedback.create", "feedback", "feedback-a"),
+                ],
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_audit_rows())
+
+    response = client.get("/api/admin/usage?days=7")
+    assert response.status_code == 200
+    payload = response.json()
+    today = payload["today"]
+    assert today["dau"] == 2
+    assert today["requests"] == 3
+    assert today["upload_jobs"] == 1
+    assert today["compare_jobs"] == 2
+    assert today["ai_runs"] == 1
+    assert today["feedback_messages"] == 1
+    assert payload["seven_days"]["active_users"] == 2
+    assert [item["user_token"] for item in payload["top_users_today"]] == ["alice", "bob"]
+
+
+def test_admin_usage_requires_admin_when_ldap_enabled(isolated_server, monkeypatch):
+    def fake_authenticate(username, password):
+        return {
+            "username": username,
+            "display_name": username.title(),
+            "email": f"{username}@example.com",
+            "dn": f"CN={username},DC=example,DC=com",
+        }
+
+    monkeypatch.setattr(web_server, "AUTH_MODE", "ldap")
+    monkeypatch.setattr(web_server, "AUTH_ENABLED", True)
+    monkeypatch.setattr(web_server, "ADMIN_USERS", {"admin"})
+    monkeypatch.setattr(web_server.ldap_auth, "authenticate", fake_authenticate)
+
+    with TestClient(isolated_server.app) as test_client:
+        assert test_client.get("/api/admin/usage").status_code == 401
+        assert test_client.post("/api/login", json={"username": "bob", "password": "ok"}).status_code == 200
+        assert test_client.get("/api/admin/usage").status_code == 403
+        assert test_client.post("/api/logout").status_code == 200
+        assert test_client.post("/api/login", json={"username": "admin", "password": "ok"}).status_code == 200
+        assert test_client.get("/api/admin/usage").status_code == 200
+
+
+def test_readyz_reports_log_file_writeability(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("TRACE_LOG_FILE", str(tmp_path / "logs" / "app.jsonl"))
+
+    ready = client.get("/readyz").json()
+
+    assert ready["status"] == "ok"
+    assert ready["checks"]["log_file"] == "ok"
+    assert ready["paths"]["log_file"].endswith("app.jsonl")
+
+
+def test_ldap_auth_requires_login_and_isolates_user_data(isolated_server, monkeypatch):
+    def fake_authenticate(username, password):
+        if password != "ok":
+            raise web_server.ldap_auth.AuthError("bad credentials")
+        return {
+            "username": username,
+            "display_name": f"{username} User",
+            "email": f"{username}@example.com",
+            "dn": f"CN={username},DC=example,DC=com",
+        }
+
+    monkeypatch.setattr(web_server, "AUTH_MODE", "ldap")
+    monkeypatch.setattr(web_server, "AUTH_ENABLED", True)
+    monkeypatch.setattr(web_server.ldap_auth, "authenticate", fake_authenticate)
+
+    with TestClient(isolated_server.app) as test_client:
+        assert test_client.get("/api/projects").status_code == 401
+
+        bad = test_client.post("/api/login", json={"username": "alice", "password": "bad"})
+        assert bad.status_code == 401
+
+        login = test_client.post("/api/login", json={"username": "alice", "password": "ok"})
+        assert login.status_code == 200
+        assert login.json()["user"]["username"] == "alice"
+
+        created = test_client.post("/api/projects", json={"name": "Alice Project"})
+        assert created.status_code == 201
+        alice_project = created.json()
+        assert alice_project["user_token"] == "alice"
+        assert alice_project["is_public"] == 0
+
+        shared_created = test_client.post("/api/projects", json={"name": "Shared Project", "is_public": True})
+        assert shared_created.status_code == 201
+        shared_project = shared_created.json()
+        assert shared_project["user_token"] == "alice"
+        assert shared_project["is_public"] == 1
+        assert shared_project["is_owner"] is True
+
+        async def insert_rows():
+            db = await web_db.get_db()
+            try:
+                await db.execute("INSERT OR IGNORE INTO users(user_token) VALUES(?)", ("bob",))
+                await db.execute(
+                    "INSERT INTO projects(id, user_token, name) VALUES(?,?,?)",
+                    ("bob-project", "bob", "Bob Project"),
+                )
+                await db.executemany(
+                    "INSERT INTO jobs(id, project_id, user_token, label, mode, status) VALUES(?,?,?,?,?,?)",
+                    [
+                        ("alice-job", alice_project["id"], "alice", "alice job", "single", "done"),
+                        ("shared-job", shared_project["id"], "alice", "shared job", "single", "done"),
+                        ("bob-job", "bob-project", "bob", "bob job", "single", "done"),
+                    ],
+                )
+                await db.commit()
+            finally:
+                await db.close()
+
+        asyncio.run(insert_rows())
+
+        projects = test_client.get("/api/projects")
+        assert projects.status_code == 200
+        assert {item["id"] for item in projects.json()} == {alice_project["id"], shared_project["id"]}
+
+        jobs = test_client.get("/api/jobs")
+        assert jobs.status_code == 200
+        assert {item["id"] for item in jobs.json()["data"]} == {"alice-job", "shared-job"}
+
+        assert test_client.get("/api/jobs/bob-job").status_code == 404
+        assert test_client.get("/api/jobs/alice-job").status_code == 200
+
+        assert test_client.post("/api/logout").status_code == 200
+        bob_login = test_client.post("/api/login", json={"username": "bob", "password": "ok"})
+        assert bob_login.status_code == 200
+
+        bob_projects = test_client.get("/api/projects")
+        assert bob_projects.status_code == 200
+        assert {item["id"] for item in bob_projects.json()} == {"bob-project", shared_project["id"]}
+
+        assert test_client.get("/api/jobs/alice-job").status_code == 404
+        shared_detail = test_client.get("/api/jobs/shared-job")
+        assert shared_detail.status_code == 200
+        assert shared_detail.json()["is_owner"] is False
+
+        cannot_patch = test_client.patch("/api/jobs/shared-job", json={"label": "bob edit"})
+        assert cannot_patch.status_code == 404
+
+        shared_jobs = test_client.get(f"/api/jobs?project_id={shared_project['id']}")
+        assert shared_jobs.status_code == 200
+        assert [item["id"] for item in shared_jobs.json()["data"]] == ["shared-job"]
+
+        candidates = test_client.get(f"/api/compare-candidates?project_id={shared_project['id']}")
+        assert candidates.status_code == 200
+        assert [item["id"] for item in candidates.json()["data"]] == ["shared-job"]
+
+
+@pytest.mark.parametrize(
+    ("admin_identity", "expected"),
+    [
+        ("alice", True),
+        ("alice@example.com", True),
+        ("Alice User", True),
+        ("bob", False),
+    ],
+)
+def test_ldap_me_reports_admin_for_configured_identity(isolated_server, monkeypatch, admin_identity, expected):
+    def fake_authenticate(username, password):
+        return {
+            "username": username,
+            "display_name": f"{username.title()} User",
+            "email": f"{username}@example.com",
+            "dn": f"CN={username},DC=example,DC=com",
+        }
+
+    monkeypatch.setattr(web_server, "AUTH_MODE", "ldap")
+    monkeypatch.setattr(web_server, "AUTH_ENABLED", True)
+    monkeypatch.setattr(web_server, "ADMIN_USERS", {admin_identity.lower()})
+    monkeypatch.setattr(web_server.ldap_auth, "authenticate", fake_authenticate)
+
+    with TestClient(isolated_server.app) as test_client:
+        before_login = test_client.get("/api/me")
+        assert before_login.status_code == 200
+        assert before_login.json()["is_admin"] is False
+
+        login = test_client.post("/api/login", json={"username": "alice", "password": "ok"})
+        assert login.status_code == 200
+        assert login.json()["is_admin"] is expected
+
+        me = test_client.get("/api/me")
+        assert me.status_code == 200
+        assert me.json()["authenticated"] is True
+        assert me.json()["is_admin"] is expected
+
+
+def test_ldap_login_requires_captcha_after_repeated_failures(isolated_server, monkeypatch):
+    auth_calls = []
+
+    def fake_authenticate(username, password):
+        auth_calls.append((username, password))
+        if password != "ok":
+            raise web_server.ldap_auth.AuthError("bad credentials")
+        return {
+            "username": username,
+            "display_name": f"{username} User",
+            "email": f"{username}@example.com",
+            "dn": f"CN={username},DC=example,DC=com",
+        }
+
+    monkeypatch.setattr(web_server, "AUTH_MODE", "ldap")
+    monkeypatch.setattr(web_server, "AUTH_ENABLED", True)
+    monkeypatch.setattr(web_server, "LOGIN_CAPTCHA_THRESHOLD", 5)
+    monkeypatch.setattr(web_server.ldap_auth, "authenticate", fake_authenticate)
+
+    with TestClient(isolated_server.app) as test_client:
+        for _ in range(4):
+            bad = test_client.post("/api/login", json={"username": "alice", "password": "bad"})
+            assert bad.status_code == 401
+            assert bad.json()["captcha_required"] is False
+
+        fifth_bad = test_client.post("/api/login", json={"username": "alice", "password": "bad"})
+        assert fifth_bad.status_code == 401
+        fifth_payload = fifth_bad.json()
+        assert fifth_payload["captcha_required"] is True
+        assert fifth_payload["captcha_image"].startswith("data:image/svg+xml;base64,")
+        assert len(auth_calls) == 5
+
+        missing_captcha = test_client.post("/api/login", json={"username": "alice", "password": "ok"})
+        assert missing_captcha.status_code == 400
+        assert missing_captcha.json()["captcha_required"] is True
+        assert len(auth_calls) == 5
+
+        wrong_captcha = test_client.post(
+            "/api/login",
+            json={"username": "alice", "password": "ok", "captcha": "WRONG"},
+        )
+        assert wrong_captcha.status_code == 400
+        assert wrong_captcha.json()["captcha_required"] is True
+        assert len(auth_calls) == 5
+
+        captcha_answer = next(iter(web_server.LOGIN_CAPTCHA_CHALLENGES.values()))["answer"]
+        login = test_client.post(
+            "/api/login",
+            json={"username": "alice", "password": "ok", "captcha": captcha_answer},
+        )
+        assert login.status_code == 200
+        assert login.json()["user"]["username"] == "alice"
+        assert len(auth_calls) == 6
+        assert web_server.LOGIN_FAILURES == {}
+        assert web_server.LOGIN_CAPTCHA_CHALLENGES == {}
+
+
+def test_job_share_converts_private_project_and_allows_other_users(isolated_server, monkeypatch):
+    def fake_authenticate(username, password):
+        return {
+            "username": username,
+            "display_name": f"{username} User",
+            "email": f"{username}@example.com",
+            "dn": f"CN={username},DC=example,DC=com",
+        }
+
+    monkeypatch.setattr(web_server, "AUTH_MODE", "ldap")
+    monkeypatch.setattr(web_server, "AUTH_ENABLED", True)
+    monkeypatch.setattr(web_server.ldap_auth, "authenticate", fake_authenticate)
+    monkeypatch.setattr(isolated_server, "PUBLIC_BASE_URL", "http://tpa.cambricon.com:1818")
+
+    with TestClient(isolated_server.app) as test_client:
+        assert test_client.post("/api/login", json={"username": "alice", "password": "ok"}).status_code == 200
+        project = test_client.post("/api/projects", json={"name": "Private Project"}).json()
+
+        async def insert_job():
+            db = await web_db.get_db()
+            try:
+                await db.execute(
+                    "INSERT INTO jobs(id, project_id, user_token, label, mode, status) VALUES(?,?,?,?,?,?)",
+                    ("share-job", project["id"], "alice", "share me", "single", "done"),
+                )
+                await db.commit()
+            finally:
+                await db.close()
+
+        asyncio.run(insert_job())
+
+        share = test_client.post("/api/jobs/share-job/share")
+        assert share.status_code == 200
+        payload = share.json()
+        assert payload["project_is_public"] is True
+        assert payload["changed"] is True
+        assert payload["url"] == "http://tpa.cambricon.com:1818/#/job/share-job"
+
+        assert test_client.post("/api/logout").status_code == 200
+        assert test_client.post("/api/login", json={"username": "bob", "password": "ok"}).status_code == 200
+        assert test_client.get("/api/jobs/share-job").status_code == 200
+
+
+def test_ldap_bind_error_is_wrapped_as_auth_error(monkeypatch):
+    class FakeLDAPException(Exception):
+        pass
+
+    class FakeConnection:
+        def __init__(self, *args, **kwargs):
+            raise FakeLDAPException("invalidCredentials")
+
+    monkeypatch.setenv("LDAP_USER_DN_TEMPLATE", "CN={username},DC=example,DC=com")
+    monkeypatch.setattr(web_server.ldap_auth, "_ldap_server", lambda: object())
+    monkeypatch.setattr(
+        web_server.ldap_auth,
+        "_ldap_imports",
+        lambda: (None, FakeConnection, None, None, lambda value: value, FakeLDAPException),
+    )
+
+    with pytest.raises(web_server.ldap_auth.AuthError, match="Invalid username or password"):
+        web_server.ldap_auth.authenticate("alice", "bad")
 
 
 def test_backup_script_creates_archive_and_manifest(client, isolated_server, tmp_path):
@@ -132,6 +1925,64 @@ def test_job_patch_does_not_require_auth(client):
 
     assert patched.status_code == 200
     assert patched.json()["label"] == "after"
+
+
+def test_job_patch_can_pin_and_lists_pinned_first(client):
+    async def insert_rows():
+        db = await web_db.get_db()
+        try:
+            await db.execute("INSERT INTO projects(id, name) VALUES(?,?)", ("project-pin", "Pinned"))
+            await db.executemany(
+                """
+                INSERT INTO jobs(id, project_id, label, mode, status, created_at, is_pinned)
+                VALUES(?,?,?,?,?,?,?)
+                """,
+                [
+                    ("old-job", "project-pin", "old", "single", "done", "2026-05-18 10:00:00", 0),
+                    ("new-job", "project-pin", "new", "single", "done", "2026-05-18 12:00:00", 0),
+                    ("pin-job", "project-pin", "pin", "single", "done", "2026-05-18 09:00:00", 0),
+                ],
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_rows())
+
+    patched = client.patch("/api/jobs/pin-job", json={"is_pinned": True})
+    assert patched.status_code == 200
+    assert patched.json()["is_pinned"] == 1
+
+    response = client.get("/api/job-groups/project-pin/jobs")
+    assert response.status_code == 200
+    assert [job["id"] for job in response.json()["data"][:3]] == ["pin-job", "new-job", "old-job"]
+
+
+def test_project_restore_preserves_pinned_jobs(client):
+    async def insert_rows():
+        db = await web_db.get_db()
+        try:
+            await db.execute("INSERT INTO projects(id, name) VALUES(?,?)", ("project-restore", "Restore"))
+            await db.execute(
+                """
+                INSERT INTO jobs(id, project_id, label, mode, status, is_pinned)
+                VALUES(?,?,?,?,?,?)
+                """,
+                ("restore-job", "project-restore", "pin", "single", "done", 1),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_rows())
+
+    assert client.delete("/api/projects/project-restore").status_code == 204
+    restored = client.post("/api/deleted-projects/project-restore/restore")
+    assert restored.status_code == 200
+
+    response = client.get("/api/job-groups/project-restore/jobs")
+    assert response.status_code == 200
+    assert response.json()["data"][0]["is_pinned"] == 1
 
 
 def test_job_groups_paginate_by_visible_groups(client):
@@ -435,40 +2286,61 @@ def test_triton_code_paths_reject_sibling_prefix_traversal(isolated_server, monk
     assert exc_info.value.detail == "Invalid path"
 
 
-def test_startup_marks_interrupted_jobs_error(isolated_server):
-    job_id = "interrupted-job"
+def test_startup_requeues_interrupted_jobs(isolated_server, monkeypatch):
+    seen = []
+    running_job_id = "interrupted-running-job"
+    legacy_error_job_id = "interrupted-error-job"
     os.makedirs(Path(web_db.DB_PATH).parent, exist_ok=True)
+
+    async def fake_run_analysis(job_id):
+        seen.append(job_id)
 
     async def seed_db():
         await web_db.init_db()
         db = await aiosqlite.connect(web_db.DB_PATH)
         try:
-            await db.execute(
-                "INSERT INTO jobs(id, label, mode, status) VALUES(?,?,?,?)",
-                (job_id, "running", "single", "running"),
+            await db.executemany(
+                "INSERT INTO jobs(id, label, mode, status, error_msg) VALUES(?,?,?,?,?)",
+                [
+                    (running_job_id, "running", "single", "running", ""),
+                    (
+                        legacy_error_job_id,
+                        "interrupted error",
+                        "single",
+                        "error",
+                        web_server.INTERRUPTED_ANALYSIS_ERROR,
+                    ),
+                ],
             )
             await db.commit()
         finally:
             await db.close()
 
     asyncio.run(seed_db())
+    monkeypatch.setattr(web_server, "run_analysis", fake_run_analysis)
 
     with TestClient(isolated_server.app):
-        pass
+        for _ in range(50):
+            if set(seen) == {running_job_id, legacy_error_job_id}:
+                break
+            time.sleep(0.01)
 
-    async def fetch_job():
+    async def fetch_jobs():
         db = await web_db.get_db()
         try:
-            row = await (
-                await db.execute("SELECT status, error_msg FROM jobs WHERE id=?", (job_id,))
-            ).fetchone()
-            return dict(row)
+            rows = await (
+                await db.execute("SELECT id, status, error_msg FROM jobs ORDER BY id")
+            ).fetchall()
+            return {row["id"]: dict(row) for row in rows}
         finally:
             await db.close()
 
-    row = asyncio.run(fetch_job())
-    assert row["status"] == "error"
-    assert "Server restarted" in row["error_msg"]
+    rows = asyncio.run(fetch_jobs())
+    assert set(seen) == {running_job_id, legacy_error_job_id}
+    assert rows[running_job_id]["status"] == "pending"
+    assert rows[running_job_id]["error_msg"] == ""
+    assert rows[legacy_error_job_id]["status"] == "pending"
+    assert rows[legacy_error_job_id]["error_msg"] == ""
 
 
 def test_startup_enqueues_pending_jobs(isolated_server, monkeypatch):
@@ -540,6 +2412,55 @@ def test_compare_from_history_accepts_tar_gzip_sources(
     compare_job = created.json()
     assert compare_job["mode"] == "compare"
     assert compare_job["status"] in {"pending", "running", "done"}
+
+
+def test_batch_compare_creates_jobs_from_baseline(client, sample_trace_file, monkeypatch):
+    queued = []
+
+    async def fake_enqueue(job_id):
+        queued.append(job_id)
+
+    monkeypatch.setattr(web_server, "enqueue_analysis_job", fake_enqueue)
+
+    async def insert_jobs():
+        db = await web_db.get_db()
+        try:
+            await db.executemany(
+                """
+                INSERT INTO jobs(
+                    id, label, mode, status, file_a_name, file_a_path, file_a_exists
+                ) VALUES(?,?,?,?,?,?,?)
+                """,
+                [
+                    ("baseline-job", "baseline", "single", "done", "base.json", sample_trace_file, 1),
+                    ("candidate-a", "candidate-a", "single", "done", "a.json", sample_trace_file, 1),
+                    ("candidate-b", "candidate-b", "single", "done", "b.json", sample_trace_file, 1),
+                ],
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_jobs())
+
+    response = client.post(
+        "/api/jobs/batch-compare",
+        json={
+            "baseline_job_id": "baseline-job",
+            "candidate_job_ids": ["candidate-a", "candidate-b"],
+            "label_prefix": "batch",
+        },
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["count"] == 2
+    assert len(payload["data"]) == 2
+    assert {job["source_job_a"] for job in payload["data"]} == {"baseline-job"}
+    assert {job["source_job_b"] for job in payload["data"]} == {"candidate-a", "candidate-b"}
+    assert all(job["mode"] == "compare" for job in payload["data"])
+    assert all(job["label"].startswith("batch - baseline vs ") for job in payload["data"])
+    assert queued == [job["id"] for job in payload["data"]]
 
 
 def test_perfetto_json_download_extracts_tar_gzip_source(
@@ -632,6 +2553,54 @@ def test_zip_upload_is_normalized_to_json_gzip(
         assert json.load(f)["traceEvents"]
     with gzip.open(gzip_path[0], "rt", encoding="utf-8") as f:
         assert json.load(f)["traceEvents"]
+
+
+def test_plain_gzip_upload_keeps_compressed_without_materializing_json(
+    sample_trace_file_gz,
+    tmp_path,
+):
+    dest_json = tmp_path / "trace.json"
+    gzip_path = [None]
+
+    async def extract_upload():
+        with open(sample_trace_file_gz, "rb") as f:
+            upload = UploadFile(file=f, filename="trace.json.gz")
+            await web_server.save_and_extract(upload, str(dest_json), gzip_path)
+
+    asyncio.run(extract_upload())
+
+    assert not dest_json.exists()
+    assert gzip_path[0] == str(dest_json) + ".gz"
+    with gzip.open(gzip_path[0], "rt", encoding="utf-8") as f:
+        assert json.load(f)["traceEvents"]
+
+
+def test_trace_json_size_guard_skips_plain_gzip_without_strict_check(
+    sample_trace_file_gz,
+    isolated_server,
+    monkeypatch,
+):
+    monkeypatch.setattr(web_server, "MAX_TRACE_JSON_BYTES", 64)
+    monkeypatch.setattr(web_server, "STRICT_GZIP_SIZE_CHECK", False)
+
+    def fail_iter(_path):
+        raise AssertionError("plain gzip should not be pre-scanned")
+
+    monkeypatch.setattr(web_server, "_iter_json_chunks", fail_iter)
+
+    web_server._assert_trace_json_size_supported(sample_trace_file_gz, "a")
+
+
+def test_trace_json_size_guard_rejects_oversized_plain_gzip_in_strict_mode(
+    sample_trace_file_gz,
+    isolated_server,
+    monkeypatch,
+):
+    monkeypatch.setattr(web_server, "MAX_TRACE_JSON_BYTES", 64)
+    monkeypatch.setattr(web_server, "STRICT_GZIP_SIZE_CHECK", True)
+
+    with pytest.raises(ValueError, match="超过当前分析上限"):
+        web_server._assert_trace_json_size_supported(sample_trace_file_gz, "a")
 
 
 def test_trace_file_downloads_default_to_json_gzip_for_supported_formats(
@@ -757,9 +2726,15 @@ def test_uploaded_trace_formats_download_as_json_gzip(
         job_id = created.json()["id"]
 
         asyncio.run(web_server.run_analysis(job_id))
-        job_resp = client.get(f"/api/jobs/{job_id}")
-        assert job_resp.status_code == 200
-        job = job_resp.json()
+        job = None
+        for _ in range(100):
+            job_resp = client.get(f"/api/jobs/{job_id}")
+            assert job_resp.status_code == 200
+            job = job_resp.json()
+            if job["status"] == "done":
+                break
+            time.sleep(0.05)
+        assert job is not None
         assert job["status"] == "done", job.get("error_msg")
 
         json_resp = client.get(f"/api/jobs/{job_id}/files/a?format=json")
@@ -773,6 +2748,58 @@ def test_uploaded_trace_formats_download_as_json_gzip(
         assert gzip_resp.headers["content-type"].startswith("application/gzip")
         assert 'filename="trace.json.gz"' in gzip_resp.headers["content-disposition"]
         assert json.loads(gzip.decompress(gzip_resp.content))["traceEvents"]
+
+
+def test_run_analysis_does_not_block_on_slow_progress_writer(
+    isolated_server,
+    sample_trace_file,
+    tmp_path,
+    monkeypatch,
+):
+    trace_path = tmp_path / "trace.json"
+    shutil.copyfile(sample_trace_file, trace_path)
+    progress_calls = []
+
+    async def slow_progress_writer(job_id, message):
+        progress_calls.append((job_id, message))
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr(web_server, "_write_analysis_progress", slow_progress_writer)
+
+    async def run_job():
+        await web_db.init_db()
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO jobs(
+                    id, user_token, label, mode, status, file_a_name, file_a_path,
+                    save_triton_csv, save_triton_code
+                )
+                VALUES(?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    "slow-progress-job", "local", "slow progress", "single", "pending",
+                    "trace.json", str(trace_path), 0, 0,
+                ),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+        await asyncio.wait_for(web_server.run_analysis("slow-progress-job"), timeout=5)
+
+        db = await web_db.get_db()
+        try:
+            cursor = await db.execute("SELECT status, error_msg FROM jobs WHERE id=?", ("slow-progress-job",))
+            return await web_server.row_to_dict(await cursor.fetchone())
+        finally:
+            await db.close()
+
+    row = asyncio.run(run_job())
+
+    assert row["status"] == "done", row["error_msg"]
+    assert progress_calls
 
 
 def test_direct_two_file_upload_creates_compare_job(client, sample_trace_file, sample_trace_file_gz):
@@ -791,8 +2818,26 @@ def test_direct_two_file_upload_creates_compare_job(client, sample_trace_file, s
     assert job["label"] == "base.json vs target.json.gz"
     assert job["file_a_name"] == "base.json"
     assert job["file_b_name"] == "target.json.gz"
-    assert Path(web_server.job_dir(job["id"]), "trace_a.json").exists()
-    assert Path(web_server.job_dir(job["id"]), "trace_b.json").exists()
+    detail = job
+    for _ in range(100):
+        detail = client.get(f"/api/jobs/{job['id']}").json()
+        if detail["status"] == "done":
+            break
+        time.sleep(0.05)
+
+    assert detail["status"] == "done"
+    jdir = Path(web_server.job_dir(job["id"]))
+    assert not (jdir / "trace_a.json").exists()
+    assert not (jdir / "trace_b.json").exists()
+    assert (jdir / "trace_a.json.gz").exists()
+    assert (jdir / "trace_b.json.gz").exists()
+
+    download_a = client.get(f"/api/jobs/{job['id']}/files/a")
+    download_b = client.get(f"/api/jobs/{job['id']}/files/b")
+    assert download_a.status_code == 200
+    assert download_b.status_code == 200
+    assert json.loads(gzip.decompress(download_a.content))["traceEvents"]
+    assert json.loads(gzip.decompress(download_b.content))["traceEvents"]
 
 
 def test_done_job_exposes_perfetto_context(client, sample_trace_file):
@@ -838,10 +2883,10 @@ def test_done_job_lists_result_files_and_paginates_tables(client):
     result_dir = Path(web_server.result_dir("table-job"))
     result_dir.mkdir(parents=True)
     (result_dir / "all_kernels_avg.csv").write_text(
-        "kernel_name,avg_dur_ms,family\n"
-        "slow_kernel,30,gemm\n"
-        "medium_kernel,20,gemm\n"
-        "fast_kernel,10,other\n"
+        "kernel_name,count_pct,avg_dur_ms,dur_pct,family\n"
+        "slow_kernel,50.0%,30,60.0%,gemm\n"
+        "medium_kernel,30.0%,20,30.0%,gemm\n"
+        "fast_kernel,20.0%,10,10.0%,other\n"
     )
 
     async def insert_job():
@@ -873,6 +2918,8 @@ def test_done_job_lists_result_files_and_paginates_tables(client):
     assert payload["total"] == 3
     assert payload["filtered_total"] == 3
     assert [row["kernel_name"] for row in payload["rows"]] == ["slow_kernel", "medium_kernel"]
+    assert "dur_pct" not in payload["fields"]
+    assert "count_pct" not in payload["rows"][0]
 
     filtered = client.get(
         "/api/jobs/table-job/results/all_kernels_avg.csv",
@@ -881,6 +2928,50 @@ def test_done_job_lists_result_files_and_paginates_tables(client):
     assert filtered.status_code == 200
     assert filtered.json()["filtered_total"] == 1
     assert filtered.json()["rows"][0]["kernel_name"] == "fast_kernel"
+
+    old_percent_filter = client.get(
+        "/api/jobs/table-job/results/all_kernels_avg.csv",
+        params={"filters": json.dumps({"dur_pct": "60"}), "limit": 10},
+    )
+    assert old_percent_filter.status_code == 200
+    assert old_percent_filter.json()["filtered_total"] == 3
+
+
+def test_job_report_download_includes_markdown_summary(client):
+    result_dir = Path(web_server.result_dir("report-job"))
+    result_dir.mkdir(parents=True)
+    (result_dir / "kernel_types_avg.csv").write_text(
+        "type,avg_dur_ms,dur_pct\n"
+        "gemm,12.3,70%\n"
+        "attention,4.5,30%\n"
+    )
+
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO jobs(id, label, mode, status, file_a_name, console_out, result_dir)
+                VALUES(?,?,?,?,?,?,?)
+                """,
+                ("report-job", "report", "single", "done", "trace.json", "Top kernels\nok", str(result_dir)),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+
+    response = client.get("/api/jobs/report-job/report.md")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/markdown")
+    text = response.text
+    assert "# report" in text
+    assert "## 任务信息" in text
+    assert "Top kernels" in text
+    assert "| type | avg_dur_ms |" in text
+    assert "dur_pct" not in text
 
 
 def test_all_kernels_cmp_without_family_exposes_virtual_family(client):
@@ -1116,6 +3207,297 @@ def test_rerun_swapped_source_compare_reverses_sources(
     assert job["source_job_a"] == "source-b"
     assert job["source_job_b"] == "source-a"
     assert enqueued == [job["id"]]
+
+
+def test_step_reanalysis_creates_single_job(
+    client,
+    sample_trace_file,
+    monkeypatch,
+):
+    enqueued = []
+
+    async def fake_enqueue(job_id):
+        enqueued.append(job_id)
+
+    monkeypatch.setattr(web_server, "enqueue_analysis_job", fake_enqueue)
+
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO jobs(
+                    id, label, mode, status, file_a_name, file_a_path,
+                    save_triton_csv, save_triton_code
+                ) VALUES(?,?,?,?,?,?,?,?)
+                """,
+                ("single-source", "single", "single", "done", "trace.json", sample_trace_file, 1, 1),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+
+    response = client.post(
+        "/api/jobs/single-source/reanalyze-steps",
+        json={"step_filter_a": "0,2", "label": "single steps"},
+    )
+
+    assert response.status_code == 201
+    job = response.json()
+    assert job["mode"] == "single"
+    assert job["label"] == "single steps"
+    assert job["step_filter_a"] == "0,2"
+    assert job["step_filter_b"] == ""
+    assert job["save_triton_csv"] == 1
+    assert job["save_triton_code"] == 1
+    assert Path(job["file_a_path"]).exists()
+    assert enqueued == [job["id"]]
+
+
+def test_compare_trace_slot_analysis_creates_single_job(
+    client,
+    sample_trace_file,
+    tmp_path,
+    monkeypatch,
+):
+    enqueued = []
+
+    async def fake_enqueue(job_id):
+        enqueued.append(job_id)
+
+    trace_b = tmp_path / "b.json"
+    shutil.copyfile(sample_trace_file, trace_b)
+    monkeypatch.setattr(web_server, "enqueue_analysis_job", fake_enqueue)
+
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO jobs(
+                    id, label, mode, status,
+                    file_a_name, file_a_path,
+                    file_b_name, file_b_path,
+                    save_triton_csv, save_triton_code
+                ) VALUES(?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    "quick-compare", "a vs b", "compare", "done",
+                    "a.json", sample_trace_file,
+                    "b.json", str(trace_b),
+                    1, 1,
+                ),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+
+    response = client.post(
+        "/api/jobs/quick-compare/analyze-trace-slot",
+        json={"slot": "b"},
+    )
+
+    assert response.status_code == 201
+    job = response.json()
+    assert job["mode"] == "single"
+    assert job["label"] == "b.json · 单独分析"
+    assert job["file_a_name"] == "b.json"
+    assert job["file_a_path"]
+    assert Path(job["file_a_path"]).exists()
+    assert job["file_a_gzip_path"] is None
+    assert job["source_job_a"] is None
+    assert job["save_triton_csv"] == 1
+    assert job["save_triton_code"] == 1
+    assert enqueued == [job["id"]]
+
+
+def test_compare_trace_slot_analysis_runs_gzip_trace(
+    client,
+    sample_trace_file_gz,
+    tmp_path,
+    monkeypatch,
+):
+    enqueued = []
+
+    async def fake_enqueue(job_id):
+        enqueued.append(job_id)
+
+    trace_b = tmp_path / "b.json.gz"
+    shutil.copyfile(sample_trace_file_gz, trace_b)
+    monkeypatch.setattr(web_server, "enqueue_analysis_job", fake_enqueue)
+
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO jobs(
+                    id, label, mode, status,
+                    file_a_name, file_a_gzip_path,
+                    file_b_name, file_b_gzip_path
+                ) VALUES(?,?,?,?,?,?,?,?)
+                """,
+                (
+                    "quick-gzip-compare", "gzip a vs b", "compare", "done",
+                    "a.json.gz", sample_trace_file_gz,
+                    "b.json.gz", str(trace_b),
+                ),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+
+    response = client.post(
+        "/api/jobs/quick-gzip-compare/analyze-trace-slot",
+        json={"slot": "a"},
+    )
+
+    assert response.status_code == 201
+    job = response.json()
+    assert job["mode"] == "single"
+    assert job["file_a_path"] is None
+    assert job["file_a_gzip_path"].endswith(".json.gz")
+    assert enqueued == [job["id"]]
+
+    asyncio.run(web_server.run_analysis(job["id"]))
+
+    async def fetch_job():
+        db = await web_db.get_db()
+        try:
+            cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (job["id"],))
+            return await web_server.row_to_dict(await cursor.fetchone())
+        finally:
+            await db.close()
+
+    analyzed = asyncio.run(fetch_job())
+    assert analyzed["status"] == "done"
+
+
+def test_step_reanalysis_creates_compare_job_with_independent_steps(
+    client,
+    sample_trace_file,
+    tmp_path,
+    monkeypatch,
+):
+    enqueued = []
+
+    async def fake_enqueue(job_id):
+        enqueued.append(job_id)
+
+    trace_b = tmp_path / "b.json"
+    shutil.copyfile(sample_trace_file, trace_b)
+    monkeypatch.setattr(web_server, "enqueue_analysis_job", fake_enqueue)
+
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO jobs(
+                    id, label, mode, status,
+                    file_a_name, file_a_path,
+                    file_b_name, file_b_path
+                ) VALUES(?,?,?,?,?,?,?,?)
+                """,
+                (
+                    "compare-source", "base vs target", "compare", "done",
+                    "a.json", sample_trace_file,
+                    "b.json", str(trace_b),
+                ),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+
+    response = client.post(
+        "/api/jobs/compare-source/reanalyze-steps",
+        json={"step_filter_a": "0", "step_filter_b": "2"},
+    )
+
+    assert response.status_code == 201
+    job = response.json()
+    assert job["mode"] == "compare"
+    assert job["step_filter_a"] == "0"
+    assert job["step_filter_b"] == "2"
+    assert "A step 0 / B step 2" in job["label"]
+    assert Path(job["file_a_path"]).exists()
+    assert Path(job["file_b_path"]).exists()
+    assert enqueued == [job["id"]]
+
+
+def test_step_reanalysis_runs_compare_job_with_gzip_only_traces(
+    client,
+    sample_trace_file_gz,
+    tmp_path,
+    monkeypatch,
+):
+    enqueued = []
+
+    async def fake_enqueue(job_id):
+        enqueued.append(job_id)
+
+    trace_b = tmp_path / "b.json.gz"
+    shutil.copyfile(sample_trace_file_gz, trace_b)
+    monkeypatch.setattr(web_server, "enqueue_analysis_job", fake_enqueue)
+
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO jobs(
+                    id, label, mode, status,
+                    file_a_name, file_a_gzip_path,
+                    file_b_name, file_b_gzip_path
+                ) VALUES(?,?,?,?,?,?,?,?)
+                """,
+                (
+                    "compare-gzip-source", "gzip base vs target", "compare", "done",
+                    "a.json.gz", sample_trace_file_gz,
+                    "b.json.gz", str(trace_b),
+                ),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+
+    response = client.post(
+        "/api/jobs/compare-gzip-source/reanalyze-steps",
+        json={"step_filter_a": "0", "step_filter_b": "2"},
+    )
+
+    assert response.status_code == 201
+    job = response.json()
+    assert job["file_a_path"] is None
+    assert job["file_a_gzip_path"].endswith(".json.gz")
+    assert job["file_b_path"] is None
+    assert job["file_b_gzip_path"].endswith(".json.gz")
+    assert enqueued == [job["id"]]
+
+    asyncio.run(web_server.run_analysis(job["id"]))
+
+    async def fetch_job():
+        db = await web_db.get_db()
+        try:
+            cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (job["id"],))
+            return await web_server.row_to_dict(await cursor.fetchone())
+        finally:
+            await db.close()
+
+    analyzed = asyncio.run(fetch_job())
+    assert analyzed["status"] == "done"
+    assert "Step filter A: 0" in analyzed["console_out"]
+    assert "Step filter B: 2" in analyzed["console_out"]
 
 
 def test_storage_summary(client, tmp_path):
