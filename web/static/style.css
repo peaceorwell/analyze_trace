@@ -1146,6 +1146,19 @@ body.result-reading-active { overflow: hidden; }
   line-height: 1.72;
   overflow: auto;
 }
+.ai-artifact-inline-link {
+  color: inherit;
+  text-decoration: none;
+}
+.ai-artifact-inline-link code {
+  color: var(--purple);
+  cursor: pointer;
+  box-shadow: inset 0 -1px 0 rgba(99, 102, 241, 0.35);
+}
+.ai-artifact-inline-link:hover code {
+  background: var(--purple-soft);
+  box-shadow: inset 0 -1px 0 var(--purple);
+}
 .markdown-body {
   overflow-wrap: anywhere;
 }

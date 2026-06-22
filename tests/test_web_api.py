@@ -70,7 +70,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.86",
+        "version": "0.2.87",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -892,6 +892,39 @@ def test_ai_analysis_report_markdown_download(client):
     assert response.headers["content-type"].startswith("text/markdown")
     assert "AI report-ai-analysis-" in response.headers["content-disposition"]
     assert "# AI 性能分析报告" in response.text
+
+
+def test_ai_analysis_artifact_download(client):
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                "INSERT INTO jobs(id, label, mode, status) VALUES(?,?,?,?)",
+                ("ai-artifact-job", "AI artifact", "single", "done"),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+    analysis_dir = Path(web_server.ai_analysis_dir("ai-artifact-job"))
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+    (analysis_dir / "details.txt").write_text("Detail Artifact\n", encoding="utf-8")
+    (analysis_dir / "trace_a.db").write_bytes(b"sqlite-db")
+    (analysis_dir / "ai_analysis_status.json").write_text("{}", encoding="utf-8")
+
+    text_response = client.get("/api/jobs/ai-artifact-job/ai-analysis/artifacts/details.txt")
+    db_response = client.get("/api/jobs/ai-artifact-job/ai-analysis/artifacts/trace_a.db")
+    internal_response = client.get("/api/jobs/ai-artifact-job/ai-analysis/artifacts/ai_analysis_status.json")
+    traversal_response = client.get("/api/jobs/ai-artifact-job/ai-analysis/artifacts/%2E%2E/details.txt")
+
+    assert text_response.status_code == 200
+    assert text_response.text == "Detail Artifact\n"
+    assert "details.txt" in text_response.headers["content-disposition"]
+    assert db_response.status_code == 200
+    assert db_response.content == b"sqlite-db"
+    assert internal_response.status_code == 400
+    assert traversal_response.status_code == 400
 
 
 def test_ai_analysis_reports_missing_claude_command(client, tmp_path, monkeypatch):

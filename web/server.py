@@ -9,6 +9,7 @@ import html
 import io
 import json
 import logging
+import mimetypes
 import os
 import re
 import secrets
@@ -55,7 +56,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.86"
+APP_VERSION = "0.2.87"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -80,6 +81,7 @@ AI_ANALYSIS_ARTIFACT_MAX_TOTAL_BYTES = 1024 * 1024
 AI_ANALYSIS_ARTIFACT_EXTENSIONS = {
     ".csv", ".json", ".log", ".md", ".text", ".tsv", ".txt", ".yaml", ".yml",
 }
+AI_ANALYSIS_DOWNLOAD_ARTIFACT_EXTENSIONS = AI_ANALYSIS_ARTIFACT_EXTENSIONS | {".db"}
 AI_ANALYSIS_INTERNAL_FILES = {
     AI_ANALYSIS_STATUS_FILE,
     AI_ANALYSIS_VERSION_META_FILE,
@@ -1851,6 +1853,31 @@ def _collect_ai_analysis_artifacts(jid: str) -> list[dict]:
 
     artifacts.sort(key=lambda item: _ai_artifact_priority(item["path"]))
     return artifacts
+
+
+def _safe_ai_analysis_artifact_path(jid: str, rel_path: str) -> tuple[str, str]:
+    raw = (rel_path or "").strip()
+    if not raw or os.path.isabs(raw):
+        raise HTTPException(400, "Invalid AI analysis artifact path")
+    normalized = raw.replace("\\", "/")
+    parts = normalized.split("/")
+    if any(part in {"", ".", ".."} or part.startswith(".") for part in parts):
+        raise HTTPException(400, "Invalid AI analysis artifact path")
+    if parts[0] == AI_ANALYSIS_VERSIONS_DIR:
+        raise HTTPException(400, "Invalid AI analysis artifact path")
+
+    filename = parts[-1]
+    if filename.endswith(".tmp") or filename in AI_ANALYSIS_INTERNAL_FILES:
+        raise HTTPException(400, "Invalid AI analysis artifact path")
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in AI_ANALYSIS_DOWNLOAD_ARTIFACT_EXTENSIONS:
+        raise HTTPException(400, "Unsupported AI analysis artifact type")
+
+    root = ai_analysis_dir(jid)
+    full = _safe_child_path(root, normalized, "Invalid AI analysis artifact path")
+    if not os.path.isfile(full):
+        raise HTTPException(404, "AI analysis artifact not found")
+    return full, normalized
 
 
 def _parse_iso_datetime(value: str) -> Optional[datetime]:
@@ -7022,6 +7049,44 @@ async def download_job_ai_analysis_report(request: Request, jid: str):
     return PlainTextResponse(
         content.rstrip() + "\n",
         media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": _content_disposition(filename)},
+    )
+
+
+@app.get("/api/jobs/{jid}/ai-analysis/artifacts/{artifact_path:path}")
+async def download_job_ai_analysis_artifact(request: Request, jid: str, artifact_path: str):
+    if not ALLOW_FILE_DOWNLOAD:
+        raise HTTPException(403, "File download is disabled")
+
+    db = await get_db()
+    try:
+        row = await load_accessible_job(db, request, jid, "id, label, status")
+    finally:
+        await db.close()
+    if not row:
+        raise HTTPException(404)
+
+    full_path, normalized_path = _safe_ai_analysis_artifact_path(jid, artifact_path)
+
+    audit_db = await get_db()
+    try:
+        await write_audit(
+            audit_db, request, "job.ai_analysis_artifact_download",
+            resource_type="job", resource_id=jid,
+            details={"path": normalized_path, "size": _path_size(full_path)},
+        )
+        await audit_db.commit()
+    finally:
+        await audit_db.close()
+
+    filename = _safe_download_name(
+        normalized_path.replace("/", "__"),
+        os.path.basename(normalized_path),
+    )
+    media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    return FileResponse(
+        full_path,
+        media_type=media_type,
         headers={"Content-Disposition": _content_disposition(filename)},
     )
 

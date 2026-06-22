@@ -2,7 +2,7 @@
 
 Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/内网性能分析工具。它可以解析 `.json`、`.json.gz`、`.gz`、`.json.zip`、`.zip`、`.tar.gz` 和 `.tgz` trace 文件，统计 GPU kernel、Triton kernel、ATen Ops、CNCL/NCCL 通信算子，并提供单 trace 分析、双 trace 对比、历史管理、AI 分析和 Web 可视化界面。
 
-当前版本：`0.2.86`
+当前版本：`0.2.87`
 
 ## 主要功能
 
@@ -165,7 +165,7 @@ AI 分析默认关闭。开启后，已完成任务会出现 `AI 分析` 页签�
 2. 诊断检查 Claude 命令、skills 目录、单 trace skill、对比 skill、skills 挂载、基础 Claude 调用和工具权限探针。
 3. 如果诊断失败，页面展示 Markdown 诊断报告和具体 stdout/stderr。
 4. 如果诊断通过，调用 Claude Code 和对应 skill 生成 Markdown 分析报告。
-5. 页面显示阶段进度、已耗时/总耗时，渲染 Markdown 报告，并支持复制和下载。
+5. 页面显示阶段进度、已耗时/总耗时，渲染 Markdown 报告，并支持复制、下载报告，以及点击报告中的产物文件名下载对应日志/DB/中间报告。
 6. 如果页面不在前台，分析完成或失败时会触发浏览器通知；如果通知权限不可用，会退回到页面 toast 和标题提示。
 7. 如果配置了邮件通道，分析完成或失败后会邮件通知触发人和任务所属人，邮件中包含 `AI 分析` 页直达链接和 Markdown 报告下载链接。
 

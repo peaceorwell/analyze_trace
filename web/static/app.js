@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.86");
+const appVersion = ref("0.2.87");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -987,7 +987,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.2.86";
+  appVersion.value = cfg.version || "0.2.87";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -2654,7 +2654,32 @@ const aiArtifactSummary = computed(() =>
     .map(item => `${item.path} (${fmtBytes(item.size)})`)
     .join(" · ")
 );
-const aiAnalysisHtml = computed(() => renderMarkdown(aiAnalysisContent.value));
+const AI_ARTIFACT_DOWNLOAD_EXT_RE = /\.(?:csv|db|json|log|md|text|tsv|txt|ya?ml)$/i;
+const normalizeAiArtifactDownloadPath = value => {
+  const raw = String(value || "").trim().replace(/\\/g, "/");
+  if (!raw || raw.startsWith("/") || /^[A-Za-z]:/.test(raw) || raw.includes("://")) return "";
+  if (!AI_ARTIFACT_DOWNLOAD_EXT_RE.test(raw)) return "";
+  const parts = raw.split("/");
+  if (parts.some(part => !part || part === "." || part === ".." || part.startsWith("."))) return "";
+  if (parts[0] === "versions") return "";
+  return raw;
+};
+const encodePathSegments = value => String(value || "").split("/").map(encodeURIComponent).join("/");
+const aiArtifactDownloadUrl = artifactOrPath => {
+  const path = normalizeAiArtifactDownloadPath(
+    typeof artifactOrPath === "string" ? artifactOrPath : artifactOrPath?.path,
+  );
+  if (!selectedJobId.value || !path) return "";
+  return `/api/jobs/${encodeURIComponent(selectedJobId.value)}/ai-analysis/artifacts/${encodePathSegments(path)}`;
+};
+const renderAiArtifactCode = code => {
+  const url = aiArtifactDownloadUrl(code);
+  if (!url) return "";
+  return `<a class="ai-artifact-inline-link" href="${escapeHtml(url)}" download title="下载 ${escapeHtml(code)}"><code>${escapeHtml(code)}</code></a>`;
+};
+const aiAnalysisHtml = computed(() => renderMarkdown(aiAnalysisContent.value, {
+  codeRenderer: renderAiArtifactCode,
+}));
 
 const aiAnalysisStatusText = status => ({
   not_started: "未开始",
@@ -2931,6 +2956,15 @@ const downloadAiAnalysisReport = () => {
   const params = new URLSearchParams();
   if (aiAnalysisSelectedVersionId.value) params.set("version_id", aiAnalysisSelectedVersionId.value);
   a.href = `/api/jobs/${selectedJobId.value}/ai-analysis/report.md${params.toString() ? `?${params}` : ""}`;
+  a.click();
+};
+
+const downloadAiAnalysisArtifact = artifact => {
+  const url = aiArtifactDownloadUrl(artifact);
+  if (!url) return;
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = artifact?.name || artifact?.path || "";
   a.click();
 };
 
@@ -4440,7 +4474,7 @@ const safeMarkdownUrl = value => {
   return "";
 };
 
-const renderInlineMarkdown = text => {
+const renderInlineMarkdown = (text, options = {}) => {
   const tokens = [];
   const stash = html => {
     const key = `\u0000MD${tokens.length}\u0000`;
@@ -4448,7 +4482,10 @@ const renderInlineMarkdown = text => {
     return key;
   };
   let value = String(text ?? "");
-  value = value.replace(/`([^`]+)`/g, (_, code) => stash(`<code>${escapeHtml(code)}</code>`));
+  value = value.replace(/`([^`]+)`/g, (_, code) => {
+    const custom = options.codeRenderer?.(code);
+    return stash(custom || `<code>${escapeHtml(code)}</code>`);
+  });
   value = value.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => {
     const safeUrl = safeMarkdownUrl(url);
     const safeLabel = escapeHtml(label);
@@ -4480,7 +4517,7 @@ const isMarkdownTableSep = line => {
   return cells.length > 1 && cells.every(cell => /^:?-{3,}:?$/.test(cell));
 };
 
-function renderMarkdown(markdown) {
+function renderMarkdown(markdown, options = {}) {
   const lines = String(markdown || "").replace(/\r\n/g, "\n").split("\n");
   const html = [];
   let i = 0;
@@ -4498,7 +4535,7 @@ function renderMarkdown(markdown) {
       || isTableStartAt(index);
   };
   const renderListItem = parts =>
-    parts.map(part => renderInlineMarkdown(part.trim())).join("<br>");
+    parts.map(part => renderInlineMarkdown(part.trim(), options)).join("<br>");
 
   while (i < lines.length) {
     const line = lines[i];
@@ -4525,7 +4562,7 @@ function renderMarkdown(markdown) {
     const heading = line.match(/^(#{1,6})\s+(.+)$/);
     if (heading) {
       const level = heading[1].length;
-      html.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
+      html.push(`<h${level}>${renderInlineMarkdown(heading[2], options)}</h${level}>`);
       i += 1;
       continue;
     }
@@ -4545,8 +4582,8 @@ function renderMarkdown(markdown) {
         i += 1;
       }
       html.push(
-        `<div class="md-table-wrap"><table><thead><tr>${headers.map(cell => `<th>${renderInlineMarkdown(cell)}</th>`).join("")}</tr></thead>`
-        + `<tbody>${rows.map(row => `<tr>${headers.map((_, index) => `<td>${renderInlineMarkdown(row[index] || "")}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`
+        `<div class="md-table-wrap"><table><thead><tr>${headers.map(cell => `<th>${renderInlineMarkdown(cell, options)}</th>`).join("")}</tr></thead>`
+        + `<tbody>${rows.map(row => `<tr>${headers.map((_, index) => `<td>${renderInlineMarkdown(row[index] || "", options)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`
       );
       continue;
     }
@@ -4589,7 +4626,7 @@ function renderMarkdown(markdown) {
         quote.push(lines[i].replace(/^>\s?/, ""));
         i += 1;
       }
-      html.push(`<blockquote>${quote.map(part => `<p>${renderInlineMarkdown(part)}</p>`).join("")}</blockquote>`);
+      html.push(`<blockquote>${quote.map(part => `<p>${renderInlineMarkdown(part, options)}</p>`).join("")}</blockquote>`);
       continue;
     }
 
@@ -4599,7 +4636,7 @@ function renderMarkdown(markdown) {
       para.push(lines[i]);
       i += 1;
     }
-    html.push(`<p>${renderInlineMarkdown(para.join(" "))}</p>`);
+    html.push(`<p>${renderInlineMarkdown(para.join(" "), options)}</p>`);
   }
   return html.join("\n");
 }
@@ -5921,6 +5958,10 @@ const JobDetail = {
                   <div class="ai-artifact-meta">
                     <span>{{ fmtBytes(artifact.size) }}</span>
                     <span v-if="artifact.truncated">已截断</span>
+                    <button class="btn btn-xs btn-outline"
+                            @click="downloadAiAnalysisArtifact(artifact)">
+                      下载
+                    </button>
                     <button v-if="artifact.content"
                             class="btn btn-xs btn-outline"
                             @click="copyAiAnalysisArtifact(artifact)">
@@ -6146,7 +6187,7 @@ const JobDetail = {
       aiDiagnosticsLoading, aiDiagnosticsError, aiDiagnosticsResult, aiDiagnosticStatusText,
       refreshAiAnalysis, startAiAnalysis, openAiPromptModal, closeAiPromptModal, confirmAiPromptModal,
       copyAiAnalysisReport,
-      downloadAiAnalysisReport, changeAiAnalysisVersion, copyAiAnalysisArtifact,
+      downloadAiAnalysisReport, changeAiAnalysisVersion, copyAiAnalysisArtifact, downloadAiAnalysisArtifact,
       runAiDiagnostics, copyAiDiagnostics,
       openActionMenu, toggleActionMenu, closeActionMenu,
       switchTab,
