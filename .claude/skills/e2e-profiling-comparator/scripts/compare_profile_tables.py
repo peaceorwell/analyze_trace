@@ -200,6 +200,11 @@ def compare_named_rows(baseline_rows, current_rows, primary_metric):
             row["bandwidth_gbps"] = delta_values(
                 a_item.get("bandwidth_gbps"), b_item.get("bandwidth_gbps")
             )
+        for metric in ("fused_ms", "unfused_ms", "unfused_share_pct", "fused_count", "unfused_count"):
+            if metric == primary_metric:
+                continue
+            if metric in a_item or metric in b_item:
+                row[metric] = delta_values(a_item.get(metric), b_item.get(metric))
         rows.append(row)
     rows.sort(key=lambda item: item[primary_metric]["delta"], reverse=True)
     return rows
@@ -245,9 +250,31 @@ def build_comparison(baseline, current, limit):
                 ("fusion coverage %", ("torch_compile", "fusion", "fusion_coverage_pct"), False),
                 ("triton fused ms", ("torch_compile", "fusion", "triton_fused_ms"), False),
                 ("non-triton ms", ("torch_compile", "fusion", "non_triton_ms"), True),
+                ("unfused pointwise ms", ("torch_compile", "fusion", "fusion_granularity", "unfused_pointwise_ms"), True),
+                ("unfused reduce ms", ("torch_compile", "fusion", "fusion_granularity", "unfused_reduce_ms"), True),
                 ("outside-region compute ms", ("torch_compile", "segmentation", "outside_region_compute_ms"), True),
                 ("recompile indicators", ("torch_compile", "segmentation", "recompile_indicator_count"), True),
             ],
+        ),
+        "fusion_granularity_families": compare_named_rows(
+            nested_get(baseline, ("torch_compile", "fusion", "fusion_granularity", "families"), []) or [],
+            nested_get(current, ("torch_compile", "fusion", "fusion_granularity", "families"), []) or [],
+            "unfused_ms",
+        ),
+        "unfused_fusion_sensitive_kernels": compare_named_rows(
+            nested_get(
+                baseline,
+                ("torch_compile", "fusion", "fusion_granularity", "top_unfused_fusion_sensitive"),
+                [],
+            )
+            or [],
+            nested_get(
+                current,
+                ("torch_compile", "fusion", "fusion_granularity", "top_unfused_fusion_sensitive"),
+                [],
+            )
+            or [],
+            "total_ms",
         ),
         "non_fused_kernels": compare_named_rows(
             nested_get(baseline, ("torch_compile", "fusion", "top_non_fused"), []) or [],
@@ -354,6 +381,18 @@ def print_markdown(payload, limit):
 
     tc = payload.get("torch_compile_delta", {})
     print_scalar_delta_table("torch.compile / Fusion Delta", tc.get("fusion_scalar", []))
+    print_delta_table(
+        "Inductor Fusion Granularity Delta (unfused_ms)",
+        tc.get("fusion_granularity_families", []),
+        "unfused_ms",
+        limit=limit,
+    )
+    print_delta_table(
+        "Highlighted Unfused Pointwise/Reduce Delta (total_ms)",
+        [r for r in tc.get("unfused_fusion_sensitive_kernels", []) if r.get("status") == "regression"],
+        "total_ms",
+        limit=limit,
+    )
     print_delta_table(
         "Non-Fused Kernels Delta (total_ms)",
         [r for r in tc.get("non_fused_kernels", []) if r.get("status") == "regression"],

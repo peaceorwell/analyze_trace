@@ -64,7 +64,7 @@ Use this reference when a task needs direct SQLite queries or when script output
 
 ## torch.compile / triton Metadata (converted torch traces)
 
-These sources support the `compile-segmentation`, `triton-fusion-coverage`, and `triton-kernel-efficiency` branches. They are mainly populated in DBs converted from torch profiler traces; native cnperf DBs may or may not carry them.
+These sources support the `compile-segmentation`, `triton-fusion-coverage`, and `triton-kernel-efficiency` branches, including Inductor fusion granularity by kernel family. They are mainly populated in DBs converted from torch profiler traces; native cnperf DBs may or may not carry them.
 
 - Compiled-region ranges: torch.compile emits host ranges such as `Torch-Compiled Region`, `CompiledFunction`, `CompiledFunctionBackward`, `TorchDynamo Cache Lookup`, and `inductor`. They land in `Internal_operation_range_data`; decode `nameId` via `string_table`. Work outside any compiled region is eager/graph-break execution.
 - Triton kernel names: inductor-fused device kernels appear in `device_task_kernel_data` with observed names like `triton_poi_fused_*`, `triton_red_fused_*`, `triton_per_fused_*`, `triton_tem_fused_*`. Non-`triton` compute kernels (`isComputation=1`) are library/eager/vendor kernels. Match the actual `string_table` names rather than assuming the full prefix set.

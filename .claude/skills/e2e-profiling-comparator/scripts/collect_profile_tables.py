@@ -26,6 +26,29 @@ COMPILE_REGION_REGEX = re.compile(
 RECOMPILE_REGEX = re.compile(r"TorchDynamo Cache Lookup|recompile|guard", re.IGNORECASE)
 IO_EFF_KEYS = ("io_efficiency", "io_eff", "memory_efficiency", "mem_efficiency")
 BANDWIDTH_KEYS = ("achieved_bandwidth", "bandwidth", "gbps", "effective_bandwidth")
+COMMUNICATION_RE = re.compile(
+    r"allreduce|all_reduce|allgather|all_gather|reduce_scatter|barrier|(?:^|[_:])broadcast|"
+    r"send|recv|nccl|cncl|tccl|tcpipe|tcdp|ring|collective",
+    re.IGNORECASE,
+)
+LIBRARY_RE = re.compile(
+    r"gemm|matmul|bmm|mmkernel|conv|convolution|flash[_-]?attention|attention|"
+    r"cudnn|cnnl|mluop|mlublas|embedding|gather|scatter|sort|topk|pool",
+    re.IGNORECASE,
+)
+REDUCE_RE = re.compile(
+    r"triton[_-]red|triton[_-]reduce|reduce|reduction|sum|mean|amax|amin|"
+    r"(?<!all)reduce|layernorm|layer_norm|rmsnorm|norm|softmax|argmax|argmin|"
+    r"variance|var|std|prod",
+    re.IGNORECASE,
+)
+POINTWISE_RE = re.compile(
+    r"triton[_-]poi|pointwise|elementwise|elemwise|where|masked|binary|unary|"
+    r"add|sub|mul|div|pow|neg|abs|exp|log|sqrt|rsqrt|sigmoid|silu|gelu|relu|"
+    r"tanh|erf|clamp|cast|convert|copy|fill|zero|maximum|minimum|equal|less|greater",
+    re.IGNORECASE,
+)
+FUSION_SENSITIVE_FAMILIES = {"pointwise", "reduce"}
 
 def ms(ns):
     return ns / 1e6 if ns is not None else None
@@ -599,6 +622,30 @@ def classify_kernel(name):
     return "non_triton"
 
 
+def classify_fusion_family(name):
+    if COMMUNICATION_RE.search(name):
+        return "communication"
+    if REDUCE_RE.search(name):
+        return "reduce"
+    if POINTWISE_RE.search(name):
+        return "pointwise"
+    if LIBRARY_RE.search(name):
+        return "library_or_gemm"
+    if "triton" in name.lower():
+        return "triton_other"
+    return "other"
+
+
+def highlight_unfused_reason(cls, family):
+    if cls == "triton_fused" or family not in FUSION_SENSITIVE_FAMILIES:
+        return ""
+    if family == "pointwise":
+        return "pointwise-like kernel did not appear as triton-fused; likely missed Inductor fusion or eager fallback"
+    if family == "reduce":
+        return "reduction-like kernel did not appear as triton-fused; inspect reduce fusion or graph breaks"
+    return "fusion-sensitive kernel did not appear as triton-fused"
+
+
 def find_key(d, candidates):
     lowered = {k.lower(): k for k in d.keys()}
     for cand in candidates:
@@ -734,6 +781,7 @@ def device_stream_gap_summary(cur, start, end):
 
 def triton_fusion_summary(cur, strings, start, end, compute_rows, top=20):
     by_class = {"triton_fused": 0, "triton_other": 0, "non_triton": 0}
+    by_family = {}
     by_name = {}
     for name_id, row_start, row_end in compute_rows:
         duration = clipped_duration(row_start, row_end, start, end)
@@ -741,8 +789,21 @@ def triton_fusion_summary(cur, strings, start, end, compute_rows, top=20):
             continue
         name = simplify_name(get_name(strings, name_id))
         cls = classify_kernel(name)
+        family = classify_fusion_family(name)
         by_class[cls] += duration
-        item = by_name.setdefault(name, {"class": cls, "total": 0, "count": 0})
+        family_item = by_family.setdefault(
+            family,
+            {"total": 0, "count": 0, "fused": 0, "fused_count": 0, "unfused": 0, "unfused_count": 0},
+        )
+        family_item["total"] += duration
+        family_item["count"] += 1
+        if cls == "triton_fused":
+            family_item["fused"] += duration
+            family_item["fused_count"] += 1
+        else:
+            family_item["unfused"] += duration
+            family_item["unfused_count"] += 1
+        item = by_name.setdefault(name, {"class": cls, "family": family, "total": 0, "count": 0})
         item["total"] += duration
         item["count"] += 1
     total = sum(by_class.values())
@@ -751,6 +812,10 @@ def triton_fusion_summary(cur, strings, start, end, compute_rows, top=20):
             {
                 "name": name,
                 "class": item["class"],
+                "fusion_family": item["family"],
+                "fusion_sensitive": item["family"] in FUSION_SENSITIVE_FAMILIES,
+                "highlight_unfused": bool(highlight_unfused_reason(item["class"], item["family"])),
+                "highlight_reason": highlight_unfused_reason(item["class"], item["family"]),
                 "total_ms": ms(item["total"]),
                 "count": item["count"],
                 "share_pct": item["total"] / total * 100 if total else 0.0,
@@ -760,6 +825,24 @@ def triton_fusion_summary(cur, strings, start, end, compute_rows, top=20):
         ),
         key=lambda r: -(r["total_ms"] or 0.0),
     )
+    family_rows = []
+    for family, item in sorted(by_family.items()):
+        family_rows.append(
+            {
+                "name": family,
+                "family": family,
+                "total_ms": ms(item["total"]),
+                "fused_ms": ms(item["fused"]),
+                "unfused_ms": ms(item["unfused"]),
+                "unfused_share_pct": item["unfused"] / item["total"] * 100 if item["total"] else 0.0,
+                "count": item["count"],
+                "fused_count": item["fused_count"],
+                "unfused_count": item["unfused_count"],
+                "highlight": family in FUSION_SENSITIVE_FAMILIES and item["unfused"] > 0,
+            }
+        )
+    family_rows.sort(key=lambda r: (-(r.get("unfused_ms") or 0.0), r["family"]))
+    sensitive_unfused = [row for row in non_fused if row["highlight_unfused"]]
     return {
         "uses_torch_compile": bool(by_class["triton_fused"] or by_class["triton_other"]),
         "compute_total_ms": ms(total),
@@ -768,6 +851,19 @@ def triton_fusion_summary(cur, strings, start, end, compute_rows, top=20):
         "triton_other_ms": ms(by_class["triton_other"]),
         "non_triton_ms": ms(by_class["non_triton"]),
         "top_non_fused": non_fused[:top],
+        "fusion_granularity": {
+            "families": family_rows,
+            "unfused_pointwise_ms": ms(by_family.get("pointwise", {}).get("unfused", 0)),
+            "unfused_reduce_ms": ms(by_family.get("reduce", {}).get("unfused", 0)),
+            "highlight_unfused_pointwise": any(
+                row["family"] == "pointwise" and row["highlight"] for row in family_rows
+            ),
+            "top_unfused_fusion_sensitive": sensitive_unfused[:top],
+            "note": (
+                "Family classification is name-based. Treat highlighted pointwise/reduce rows "
+                "as Inductor fusion candidates to confirm with graph-break and generated-code evidence."
+            ),
+        },
     }
 
 
@@ -1220,12 +1316,38 @@ def print_torch_compile(side):
     )
     if fusion.get("top_non_fused"):
         print("\n#### Top Non-Fused Kernels")
-        print("| Kernel | Class | Total ms | Count | Share |")
-        print("|---|---|---:|---:|---:|")
+        print("| Kernel | Class | Family | Total ms | Count | Share | Highlight |")
+        print("|---|---|---|---:|---:|---:|:--:|")
         for row in fusion["top_non_fused"][:10]:
+            mark = "yes" if row.get("highlight_unfused") else ""
             print(
-                f"| {row['name']} | {row['class']} | {fmt_ms(row.get('total_ms', 0.0))} | "
-                f"{row.get('count', 0):,.0f} | {row.get('share_pct', 0.0):.2f}% |"
+                f"| {row['name']} | {row['class']} | {row.get('fusion_family', '')} | "
+                f"{fmt_ms(row.get('total_ms', 0.0))} | {row.get('count', 0):,.0f} | "
+                f"{row.get('share_pct', 0.0):.2f}% | {mark} |"
+            )
+    granularity = fusion.get("fusion_granularity", {})
+    if granularity.get("families"):
+        print("\n#### Inductor Fusion Granularity")
+        print("| Family | Total ms | Fused ms | Unfused ms | Unfused share | Count | Unfused count | Highlight |")
+        print("|---|---:|---:|---:|---:|---:|---:|:--:|")
+        for row in granularity["families"]:
+            mark = "yes" if row.get("highlight") else ""
+            print(
+                f"| {row['family']} | {fmt_ms(row.get('total_ms', 0.0))} | "
+                f"{fmt_ms(row.get('fused_ms', 0.0))} | {fmt_ms(row.get('unfused_ms', 0.0))} | "
+                f"{row.get('unfused_share_pct', 0.0):.2f}% | {row.get('count', 0):,.0f} | "
+                f"{row.get('unfused_count', 0):,.0f} | {mark} |"
+            )
+    sensitive = granularity.get("top_unfused_fusion_sensitive", [])
+    if sensitive:
+        print("\n#### Highlighted Unfused Pointwise/Reduce Candidates")
+        print("| Kernel | Family | Total ms | Count | Share | Reason |")
+        print("|---|---|---:|---:|---:|---|")
+        for row in sensitive[:10]:
+            print(
+                f"| {row['name']} | {row.get('fusion_family', '')} | {fmt_ms(row.get('total_ms', 0.0))} | "
+                f"{row.get('count', 0):,.0f} | {row.get('share_pct', 0.0):.2f}% | "
+                f"{row.get('highlight_reason', '')} |"
             )
     if ke.get("has_io_metadata") and ke.get("kernels"):
         print("\n#### Triton Kernel IO Efficiency (io_efficiency = folded bandwidth, not %)")

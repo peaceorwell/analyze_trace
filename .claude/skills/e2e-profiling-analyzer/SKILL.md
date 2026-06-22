@@ -40,7 +40,7 @@ Do not assume the bottleneck is communication, a specific kernel family, TCDP, o
 - `scripts/comm_breakdown.py`: communication kernel total/uncovered time, per-process/device exposure, and top long events.
 - `scripts/rank_compare.py`: cross-DB process/device span, compute, uncovered communication, and compute-gap skew.
 - `scripts/compile_segmentation.py`: torch.compile compiled-region inventory, inside/outside-region (eager) kernel split, recompilation indicators, and the host-launch-overhead / cpp_wrapper check driven by device-stream gap ratio. Supports `--format json`.
-- `scripts/triton_fusion_coverage.py`: classifies compute kernels into triton-fused / other-triton / non-triton, fusion coverage ratio, top non-fused kernels, and per-rank coverage. Supports `--format json` and `--top`.
+- `scripts/triton_fusion_coverage.py`: classifies compute kernels into triton-fused / other-triton / non-triton, fusion coverage ratio, Inductor fusion granularity by kernel family (pointwise/reduce/library/etc.), highlighted unfused pointwise/reduce candidates, top non-fused kernels, and per-rank coverage. Supports `--format json` and `--top`.
 - `scripts/triton_kernel_efficiency.py`: triton kernel IO efficiency from `device_task_kernel_data.extra`, treating `io_efficiency` as a folded-bandwidth value (not a 0–1 ratio) compared against device peak bandwidth, plus `output_code` dump (`--dump-dir`). Supports `--format json` and `--top`.
 - `scripts/query_common.py`: shared helpers and `--host-stack=<function_corr_id>` CLI.
 - `scripts/torch_trace_to_cnperf_db.py`: self-contained torch profiler Chrome trace converter. Requires Python module `simdjson` from package `pysimdjson`.
@@ -529,11 +529,12 @@ Workflow:
      --format text > "$ANALYSIS_DIR/triton_fusion_coverage.md"
    ```
 
-   It classifies compute kernels (`isComputation=1`) by name from `string_table` into triton-fused (`triton_*fused*`), other triton (rare), and non-triton/library/eager, and reports per-class and per-name count/total/avg/max time and share, the top non-fused kernels, and per-process/device fusion coverage.
+   It classifies compute kernels (`isComputation=1`) by name from `string_table` into triton-fused (`triton_*fused*`), other triton (rare), and non-triton/library/eager. It also groups kernels into Inductor fusion families (`pointwise`, `reduce`, `library_or_gemm`, `communication`, `triton_other`, `other`) and reports fused/unfused time for each family, highlighted unfused pointwise/reduce candidates, top non-fused kernels, and per-process/device fusion coverage.
 2. Read the fusion-coverage ratio (triton-fused compute time / total compute time) and the top non-fused kernels as fusion-miss / fallback candidates.
-3. Cross-reference with `compile-segmentation` when available: are non-fused kernels concentrated in eager/graph-break segments?
-4. If multiple DBs are involved, compare the fusion-coverage ratio across ranks (the script emits `per_process_device`).
-5. Report whether raising fusion coverage is a worthwhile target versus other exposed time.
+3. Inspect `Inductor Fusion Granularity` first. If `pointwise` has non-zero unfused time, highlight it as the strongest missed-fusion signal; if `reduce` has non-zero unfused time, highlight it as a secondary fusion/reduction candidate. Treat library/GEMM/conv families as likely intended fast paths unless other evidence says otherwise.
+4. Cross-reference with `compile-segmentation` when available: are highlighted non-fused pointwise/reduce kernels concentrated in eager/graph-break segments?
+5. If multiple DBs are involved, compare the fusion-coverage ratio and pointwise/reduce unfused time across ranks (the script emits `per_process_device`).
+6. Report whether raising fusion coverage is a worthwhile target versus other exposed time.
 
 Guardrail: do not assume every non-triton kernel is a fusion defect. Vendor GEMM/conv/library compute primitives are often the intended fast path. Flag fusion misses primarily for elementwise/pointwise/reduction kernels left unfused, not for library compute primitives.
 
@@ -541,6 +542,8 @@ Output contract:
 
 - `Scope`: DB files, process/device coverage.
 - `Fusion Coverage Summary`: fused vs non-fused compute time and ratio, kernel counts per class.
+- `Inductor Fusion Granularity`: family-level fused/unfused time; explicitly call out unfused `pointwise` and `reduce` time. A non-zero unfused pointwise row must be highlighted.
+- `Highlighted Unfused Pointwise/Reduce Candidates`: top kernels whose names look pointwise/reduce-like but did not appear as triton-fused, with impact and the script's reason.
 - `Top Non-Fused Kernels`: `kernel_name`, `count`, `total_ms`, `share_of_compute`, `avg_ms`, `max_ms`.
 - `Segment Correlation`: whether non-fused kernels cluster in eager/graph-break segments (link to `compile-segmentation` if run).
 - `Per-Rank Fusion Coverage`: fusion ratio per `db/rank` and skew (when multiple DBs available).
