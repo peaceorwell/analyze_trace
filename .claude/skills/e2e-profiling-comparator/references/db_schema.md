@@ -62,6 +62,16 @@ Use this reference when a task needs direct SQLite queries or when script output
 - Device timestamps and host op timestamps can be compared in these profiles, but always verify ranges first with `basic_info.py`.
 - Multi-DB analysis must keep each DB's string map and process/device identity separate.
 
+## torch.compile / triton Metadata (converted torch traces)
+
+These sources support the torch.compile/triton comparison tables (fusion coverage, compile segmentation, kernel IO efficiency). They are mainly populated in DBs converted from torch profiler traces; native cnperf DBs may or may not carry them.
+
+- Compiled-region ranges: torch.compile emits host ranges such as `Torch-Compiled Region`, `CompiledFunction`, `CompiledFunctionBackward`, `TorchDynamo Cache Lookup`, and `inductor`. They land in `Internal_operation_range_data`; decode `nameId` via `string_table`. Work outside any compiled region is eager/graph-break execution.
+- Triton kernel names: inductor-fused device kernels appear in `device_task_kernel_data` with observed names like `triton_poi_fused_*`, `triton_red_fused_*`, `triton_per_fused_*`, `triton_tem_fused_*`. Non-`triton` compute kernels (`isComputation=1`) are library/eager/vendor kernels. Match the actual `string_table` names rather than assuming the full prefix set.
+- Per-kernel metadata: the converter stores each kernel event's `args`/`extra` as JSON in `device_task_kernel_data.extra`. Optional inductor/profiler enrichment such as `output_code`, `io_efficiency` (or `io_eff` / `memory_efficiency`), `achieved_bandwidth` / `bandwidth`, and `bytes` appears here when present. Report the observed keys first; these fields are frequently absent.
+- `io_efficiency` is a bandwidth-equivalent value (the kernel's effective/folded bandwidth), NOT a normalized 0–1 ratio or percentage. Judge memory-IO efficiency by comparing it against the device **theoretical (peak) bandwidth**; verify units match before dividing; never compute `1 - io_efficiency`. The theoretical bandwidth is taken from the MLU model: **MLU590 → 2000, MLU580 → 1200** (same unit as `io_efficiency`, i.e. GB/s), falling back to `meta_information` `deviceInfo.m_dev_basic_info.max_bandwidth` only when the model is unknown.
+- Device-stream (queue) gap ratio: the fraction of a device stream's span spent idle between tasks. A high main-compute-stream gap ratio is the key indicator that the host is not keeping the device fed (host overhead), and is distinct from total host-side wall time.
+
 ## Common SQL Queries
 
 Load string map:

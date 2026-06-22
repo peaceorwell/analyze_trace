@@ -16,6 +16,8 @@ Use non-interactive automatic mode immediately when any of these are true:
 
 In this mode, never ask follow-up questions. Treat trace A as baseline, trace B as current, and use `Delta = B - A`. If required evidence is missing, continue with available evidence and record the missing input under `Open Questions`.
 
+Default to this automatic mode when the user has not explicitly asked for an interactive, step-by-step comparison. Only pause for input when the user wants to choose the baseline/current mapping or analysis window interactively.
+
 If the prompt is an environment diagnostic or smoke test and asks to reply only `OK`, reply exactly `OK` and do not run tools or load references.
 
 ## Final Report Contract
@@ -28,7 +30,7 @@ user-facing final report:
 - Print the same final report to stdout. Do not print tool logs, raw command output, prompt text, or progress narration to stdout.
 - Save supporting evidence as separate files in the analysis directory, such as `baseline.tables.json`, `current.tables.json`, `comparison_evidence.md`, and conversion logs.
 - If analysis cannot proceed because a trace file, DB table, Python dependency, or tool permission is missing, write a concise failure report instead of a partial or fabricated comparison.
-- Prefer Chinese report text when the request is Chinese.
+- Prefer Chinese report text when the request is Chinese. Keep structural field labels (table headers, metric names emitted by the scripts) in English so the evidence stays machine-checkable, but write the narrative (findings, conclusions, recommendations) in the request's language.
 
 The final `report.md` must use this exact high-level structure:
 
@@ -55,8 +57,8 @@ artifact files, then cite those files from the report.
 
 ## Resources
 
-- `scripts/collect_profile_tables.py`: collect host summaries and device breakdown tables for one cnperf DB over one explicit time range.
-- `scripts/compare_profile_tables.py`: compare baseline/current table JSON files and emit A/B/delta evidence.
+- `scripts/collect_profile_tables.py`: collect host summaries and device breakdown tables for one cnperf DB over one explicit time range. Also emits the device-stream (queue) gap ratio and torch.compile/triton sections: fusion coverage, compile segmentation + host-launch-overhead (cpp_wrapper signal), and triton kernel IO efficiency (`io_efficiency` as folded bandwidth vs MLU-model theoretical peak).
+- `scripts/compare_profile_tables.py`: compare baseline/current table JSON files and emit A/B/delta evidence, including a direction-aware host-overhead delta (device-stream gap, launch self-time), fusion/segmentation deltas, and per-kernel IO-efficiency deltas.
 - `scripts/torch_trace_to_cnperf_db.py`: convert PyTorch profiler Chrome trace JSON/JSON.GZ to a cnperf-compatible SQLite DB before table collection.
 - `references/db_schema.md`: load when writing direct DB queries or interpreting table fields.
 - `references/profiling_concepts.md`: load before turning observed differences into causal hypotheses.
@@ -74,8 +76,9 @@ artifact files, then cite those files from the report.
    - Device comparison: baseline = expected-aligned or faster device; current = device under analysis.
    - Configuration experiment: baseline = control configuration; current = experiment configuration.
 3. Prepare each capture upstream.
-   - Resolve the skill directory from the loaded skill path and keep it in `SKILL_DIR`.
+   - Resolve `SKILL_DIR` to this skill directory's absolute path before running any command. Derive it from the path this skill was loaded from (`<SKILL_DIR>/SKILL.md`); if unavailable, locate it once with `SKILL_DIR=$(dirname "$(find "$HOME/.claude" "$PWD" -type f -path '*/e2e-profiling-comparator/SKILL.md' 2>/dev/null | head -n1)")` and verify `SKILL_DIR/scripts/collect_profile_tables.py` exists.
    - Convert JSON/JSON.GZ traces to cnperf-compatible DB in the temporary analysis directory when needed.
+   - After conversion, verify each generated DB opens and is readable (e.g. run `collect_profile_tables.py` once, or a quick range query). If a converted DB fails this check, record it as blocked and do not feed a silently corrupt DB into the comparison.
    - Determine raw, preparation, stable, or manually selected analysis windows.
    - Inspect basic information such as device model, card count, driver/cnperf version, host environment, and card usage.
 4. Collect breakdown tables independently for each DB and selected time range.
@@ -90,6 +93,8 @@ artifact files, then cite those files from the report.
    - Start from upstream E2E windows: raw, preparation, stable.
    - Focus on categories where current is worse than baseline; only briefly record current advantages.
    - Use Device Breakdown Overview to locate current regressions across compute, communication, memcpy, compute gap, pure gap, and other activity.
+   - Check the Host Overhead Delta early: if the main compute stream gap ratio increased, the regression is host-bound; follow the cpp_wrapper guidance for torch.compile workloads.
+   - When the workload uses torch.compile/triton, use the fusion-coverage, compile-segmentation, and triton kernel IO-efficiency deltas to locate fusion loss, eager fallback, recompilation, or per-kernel bandwidth regressions.
    - Always compare Compute Kernel Summary at name level, because device kernel cost is usually the primary investigation target.
    - Enter other name-level tables for additional regressed categories.
    - Use Host Function Summary and Host Internal Operation Summary as lightweight follow-up signals; inspect sync-like function names there when needed.
@@ -219,6 +224,23 @@ Group memcpy by copy direction or type.
 `bytes` and `bandwidth` are available only when the DB exposes size information.
 `collect_profile_tables.py` already applies 95% share compaction and merges the remainder into `other`; do not compress the emitted rows again.
 
+### Device Stream Gap Ratio
+
+Per device stream (queue) within the selected range.
+
+| Queue | Span ms | Busy ms | Gap ms | Gap% | Compute ms | Main |
+|---:|---:|---:|---:|---:|---:|:--:|
+
+Plus two scalars: `main compute stream gap %` (the gap ratio of the busiest compute queue) and `device-level gap %`. The **main compute stream gap ratio is the key host-overhead indicator** — a high value means the host is not keeping the device fed. The comparison flags an increase as a regression.
+
+### torch.compile / Triton Tables
+
+Emitted only when the DB carries compiled-region annotations or `triton_*` kernels (mainly converted torch traces). Skip them when absent.
+
+- Fusion Coverage: `fusion coverage %` = triton-fused compute time / total compute time, plus `triton_fused_ms` / `non_triton_ms` and a top non-fused kernel list (fusion-miss / fallback candidates). Lower coverage is worse.
+- Compile Segmentation + Host Launch Overhead: compiled region count, inside vs outside-region (eager) compute, recompilation indicators, and the host-launch-overhead metrics — `main_stream_gap_pct`, `avg_launch_self_us`, `launch_self_to_compute_ratio` — used for the cpp_wrapper signal.
+- Triton Kernel IO Efficiency: per kernel name, `io_efficiency` (folded bandwidth, NOT a 0–1 ratio) and `bandwidth_utilization = io_efficiency / theoretical_peak`. Theoretical peak comes from the MLU model (MLU590 → 2000, MLU580 → 1200). Lower utilization is worse.
+
 ### Host Summaries
 
 - Host Function Summary: source `function_data`; include count, selected-range total duration, avg, max, and top names by total. Totals can double count overlapping threads and nested calls.
@@ -246,5 +268,10 @@ Group memcpy by copy direction or type.
 - For communication differences, interpret total time together with uncovered time. High total with low uncovered may be hidden by compute overlap.
 - For memcpy differences, separate direction/type changes, uncovered time, bytes, and bandwidth.
 - For compute gap or pure gap differences, consider scheduling, launch, synchronization, pipeline bubbles, device idle, host submission, or missing activity coverage.
+- For host-overhead differences, judge primarily by the device-stream (main compute stream) gap ratio, not host-side wall time. An increased main-stream gap ratio in current means the host is feeding the device less well. Confirm with `avg_launch_self_us` and `launch_self_to_compute_ratio`.
+- When current is host-bound (higher main-stream gap ratio with small kernels and higher per-launch host self-time) on a torch.compile workload, and `cpp_wrapper` looks disabled or unconfirmed, recommend enabling `cpp_wrapper` (inductor C++ wrapper codegen) first to cut per-launch host overhead. Do not recommend graph capture (CUDA graph / device-graph capture) as the only remedy; it is a complementary suggestion, not a substitute. The trace rarely records the config flag, so treat the wrapper mode as inferred.
+- For fusion-coverage differences, a drop in `fusion coverage %` or a rise in non-triton/eager compute time in current points to lost inductor fusion (graph breaks, fallback ops). Do not treat vendor GEMM/conv library kernels as fusion defects; flag elementwise/reduction/pointwise fallbacks.
+- For triton kernel IO-efficiency differences, treat `io_efficiency` as a folded bandwidth value (not a percentage); compare `bandwidth_utilization` against the same MLU-model theoretical peak on both sides. A utilization drop in current is a memory-IO regression. Never compute `1 - io_efficiency` on the raw value.
 - For other activity differences, inspect notifier, atomic operation, memset, or related device task tables.
+- When both captures are single-card, treat communication-kernel deltas with caution: single-card communication exposure is dominated by waiting for absent peers, so a comm delta reflects timing/exposure noise more than real communication cost. Do not draw cross-rank communication conclusions from single-card captures unless multi-rank captures are provided.
 - End with suggested follow-up branches, not a forced root cause.

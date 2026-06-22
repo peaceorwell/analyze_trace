@@ -68,6 +68,58 @@ def classify_delta(delta, threshold=1e-9):
     return "flat"
 
 
+def status_for(delta, higher_is_worse=True, threshold=1e-9):
+    """Direction-aware status. Some metrics regress when they go down (e.g. fusion
+    coverage, bandwidth utilization), others when they go up (e.g. gap ratio)."""
+    if abs(delta) <= threshold:
+        return "flat"
+    worse = delta > 0 if higher_is_worse else delta < 0
+    return "regression" if worse else "improvement"
+
+
+def scalar_delta_rows(baseline, current, specs):
+    """specs: list of (label, path_tuple, higher_is_worse)."""
+    rows = []
+    for label, path, higher_is_worse in specs:
+        a = num(nested_get(baseline, path))
+        b = num(nested_get(current, path))
+        row = delta_values(a, b)
+        row["metric"] = label
+        row["higher_is_worse"] = higher_is_worse
+        row["status"] = status_for(row["delta"], higher_is_worse)
+        rows.append(row)
+    return rows
+
+
+def compare_kernel_efficiency(baseline_rows, current_rows):
+    """Per triton-kernel-name IO efficiency delta. Lower utilization/bandwidth is worse."""
+    a_map = row_map(baseline_rows)
+    b_map = row_map(current_rows)
+    rows = []
+    for name in sorted(set(a_map) | set(b_map)):
+        a_item = a_map.get(name, {})
+        b_item = b_map.get(name, {})
+        util = delta_values(a_item.get("bandwidth_utilization"), b_item.get("bandwidth_utilization"))
+        rows.append(
+            {
+                "name": name,
+                "bandwidth_utilization": util,
+                "avg_io_efficiency": delta_values(
+                    a_item.get("avg_io_efficiency"), b_item.get("avg_io_efficiency")
+                ),
+                "total_ms": delta_values(a_item.get("total_ms"), b_item.get("total_ms")),
+                "status": status_for(util["delta"], higher_is_worse=False),
+                "presence": (
+                    "both" if name in a_map and name in b_map
+                    else "current_only" if name in b_map else "baseline_only"
+                ),
+            }
+        )
+    # Worst regressions first: largest utilization drop.
+    rows.sort(key=lambda r: r["bandwidth_utilization"]["delta"])
+    return rows
+
+
 def compare_overview(baseline, current):
     rows = []
     baseline_duration = num(nested_get(baseline, ("range", "duration_ms"), 0.0))
@@ -175,22 +227,61 @@ def build_comparison(baseline, current, limit):
             "rows": rows,
             "top": top_rows(rows, limit),
         }
+    host_overhead_delta = scalar_delta_rows(
+        baseline,
+        current,
+        [
+            ("main compute stream gap %", ("device", "device_stream_gap", "main_stream_gap_pct"), True),
+            ("device-level gap %", ("device", "device_stream_gap", "device_gap_pct"), True),
+            ("avg launch self (us)", ("torch_compile", "segmentation", "host_launch_overhead", "avg_launch_self_us"), True),
+            ("launch/compute ratio", ("torch_compile", "segmentation", "host_launch_overhead", "launch_self_to_compute_ratio"), True),
+        ],
+    )
+    torch_compile_delta = {
+        "fusion_scalar": scalar_delta_rows(
+            baseline,
+            current,
+            [
+                ("fusion coverage %", ("torch_compile", "fusion", "fusion_coverage_pct"), False),
+                ("triton fused ms", ("torch_compile", "fusion", "triton_fused_ms"), False),
+                ("non-triton ms", ("torch_compile", "fusion", "non_triton_ms"), True),
+                ("outside-region compute ms", ("torch_compile", "segmentation", "outside_region_compute_ms"), True),
+                ("recompile indicators", ("torch_compile", "segmentation", "recompile_indicator_count"), True),
+            ],
+        ),
+        "non_fused_kernels": compare_named_rows(
+            nested_get(baseline, ("torch_compile", "fusion", "top_non_fused"), []) or [],
+            nested_get(current, ("torch_compile", "fusion", "top_non_fused"), []) or [],
+            "total_ms",
+        ),
+        "kernel_efficiency": compare_kernel_efficiency(
+            nested_get(baseline, ("torch_compile", "kernel_efficiency", "kernels"), []) or [],
+            nested_get(current, ("torch_compile", "kernel_efficiency", "kernels"), []) or [],
+        ),
+    }
+
     return {
         "comparison": {
             "baseline": {
                 "label": baseline.get("label"),
                 "db": baseline.get("db"),
                 "range": baseline.get("range"),
+                "device_name": nested_get(baseline, ("torch_compile", "device_name")),
+                "peak_bandwidth": nested_get(baseline, ("torch_compile", "peak_bandwidth")),
             },
             "current": {
                 "label": current.get("label"),
                 "db": current.get("db"),
                 "range": current.get("range"),
+                "device_name": nested_get(current, ("torch_compile", "device_name")),
+                "peak_bandwidth": nested_get(current, ("torch_compile", "peak_bandwidth")),
             },
             "delta_definition": "current - baseline",
         },
         "device_overview_delta": compare_overview(baseline, current),
         "named_deltas": named,
+        "host_overhead_delta": host_overhead_delta,
+        "torch_compile_delta": torch_compile_delta,
     }
 
 
@@ -224,6 +315,22 @@ def print_delta_table(title, rows, metric_key, name_key="name", limit=20):
         )
 
 
+def print_scalar_delta_table(title, rows):
+    print(f"\n## {title}")
+    if not rows:
+        print("No rows.")
+        return
+    print("| Metric | A | B | Delta | Delta % | Status |")
+    print("|---|---:|---:|---:|---:|---|")
+    for row in rows:
+        delta_pct = row.get("delta_pct")
+        pct_text = "n/a" if delta_pct is None else f"{delta_pct:+.2f}%"
+        print(
+            f"| {row['metric']} | {fmt(row.get('baseline'))} | {fmt(row.get('current'))} | "
+            f"{fmt(row.get('delta'))} | {pct_text} | {row.get('status', '')} |"
+        )
+
+
 def print_markdown(payload, limit):
     cmp_info = payload["comparison"]
     print("# E2E Profiling Comparison Delta")
@@ -239,6 +346,34 @@ def print_markdown(payload, limit):
         name_key="category",
         limit=limit,
     )
+
+    print_scalar_delta_table(
+        "Host Overhead Delta (device-stream gap is the key indicator)",
+        payload.get("host_overhead_delta", []),
+    )
+
+    tc = payload.get("torch_compile_delta", {})
+    print_scalar_delta_table("torch.compile / Fusion Delta", tc.get("fusion_scalar", []))
+    print_delta_table(
+        "Non-Fused Kernels Delta (total_ms)",
+        [r for r in tc.get("non_fused_kernels", []) if r.get("status") == "regression"],
+        "total_ms",
+        limit=limit,
+    )
+    eff_rows = [r for r in tc.get("kernel_efficiency", []) if r.get("status") == "regression"]
+    if eff_rows:
+        print("\n## Triton Kernel IO Efficiency Delta (utilization; lower is worse)")
+        print("| Kernel | Util A | Util B | Delta | io_eff A | io_eff B | Status |")
+        print("|---|---:|---:|---:|---:|---:|---|")
+        for row in eff_rows[:limit]:
+            u = row["bandwidth_utilization"]
+            e = row["avg_io_efficiency"]
+            print(
+                f"| {row['name']} | {fmt(u.get('baseline'))} | {fmt(u.get('current'))} | "
+                f"{fmt(u.get('delta'))} | {fmt(e.get('baseline'))} | {fmt(e.get('current'))} | "
+                f"{row.get('status', '')} |"
+            )
+
     for table_name, table in payload["named_deltas"].items():
         primary = table["primary_metric"]
         title = f"{table_name.replace('_', ' ').title()} Delta ({primary})"

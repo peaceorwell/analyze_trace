@@ -5,6 +5,7 @@ import argparse
 import bisect
 import json
 import math
+import re
 import sqlite3
 from pathlib import Path
 from urllib.parse import quote
@@ -12,6 +13,19 @@ from urllib.parse import quote
 DEFAULT_GAP_THRESHOLD_NS = 100_000
 DEFAULT_INVOKE_THRESHOLD_NS = 100_000
 DEFAULT_HOST_ROWS = 100
+
+# Theoretical (peak) bandwidth per MLU model, same unit as io_efficiency (folded
+# bandwidth, GB/s). Matched by substring on the device model name.
+THEORETICAL_BANDWIDTH = {"590": 2000, "580": 1200}
+
+COMPILE_REGION_REGEX = re.compile(
+    r"Torch-Compiled Region|CompiledFunction|TorchDynamo|Inductor|"
+    r"compiled_fn|AOTAutograd|graph\s*break",
+    re.IGNORECASE,
+)
+RECOMPILE_REGEX = re.compile(r"TorchDynamo Cache Lookup|recompile|guard", re.IGNORECASE)
+IO_EFF_KEYS = ("io_efficiency", "io_eff", "memory_efficiency", "mem_efficiency")
+BANDWIDTH_KEYS = ("achieved_bandwidth", "bandwidth", "gbps", "effective_bandwidth")
 
 def ms(ns):
     return ns / 1e6 if ns is not None else None
@@ -574,6 +588,351 @@ def _load_device_data(cur, start, end):
     }
 
 
+def classify_kernel(name):
+    low = name.lower()
+    is_triton = "triton" in low
+    is_fused = "fused" in low
+    if is_triton and is_fused:
+        return "triton_fused"
+    if is_triton:
+        return "triton_other"
+    return "non_triton"
+
+
+def find_key(d, candidates):
+    lowered = {k.lower(): k for k in d.keys()}
+    for cand in candidates:
+        if cand in lowered:
+            return d[lowered[cand]]
+    return None
+
+
+def to_float(value):
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        match = re.search(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", value)
+        if match:
+            return float(match.group(0))
+    return None
+
+
+def get_device_name(cur):
+    if table_exists(cur, "device_information"):
+        row = cur.execute(
+            "SELECT name FROM device_information WHERE name IS NOT NULL LIMIT 1"
+        ).fetchone()
+        if row and row[0]:
+            return row[0]
+    if table_exists(cur, "meta_information"):
+        row = cur.execute(
+            "SELECT value FROM meta_information WHERE type = 'deviceInfo'"
+        ).fetchone()
+        if row:
+            try:
+                return json.loads(row[0]).get("m_dev_basic_info", {}).get("dev_name")
+            except Exception:
+                return None
+    return None
+
+
+def resolve_peak_bandwidth(cur):
+    """Prefer MLU-model theoretical bandwidth; fall back to meta max_bandwidth."""
+    device_name = get_device_name(cur)
+    if device_name:
+        for key, bw in THEORETICAL_BANDWIDTH.items():
+            if key in device_name:
+                return bw, device_name, "theoretical(MLU model)"
+    if table_exists(cur, "meta_information"):
+        row = cur.execute(
+            "SELECT value FROM meta_information WHERE type = 'deviceInfo'"
+        ).fetchone()
+        if row:
+            try:
+                meta = json.loads(row[0]).get("m_dev_basic_info", {}).get("max_bandwidth")
+                if meta is not None:
+                    return meta, device_name, "meta max_bandwidth"
+            except Exception:
+                pass
+    return None, device_name, None
+
+
+def _exec_tasks_with_queue(cur, start, end):
+    rows = []
+    if table_exists(cur, "device_task_kernel_data"):
+        rows.extend(
+            (pid, did, qid, s, e, isc)
+            for pid, did, qid, s, e, isc in cur.execute(
+                "SELECT processId, deviceId, queueId, start, end, isComputation "
+                "FROM device_task_kernel_data WHERE start >= :window_start AND start < :window_end",
+                window_params(start, end),
+            )
+        )
+    for table in ("device_task_memcpy_data", "device_task_memset_data", "device_task_atomic_operation_data"):
+        if not table_exists(cur, table):
+            continue
+        rows.extend(
+            (pid, did, qid, s, e, 0)
+            for pid, did, qid, s, e in cur.execute(
+                f"SELECT processId, deviceId, queueId, start, end "
+                f"FROM {table} WHERE start >= :window_start AND start < :window_end",
+                window_params(start, end),
+            )
+        )
+    return rows
+
+
+def device_stream_gap_summary(cur, start, end):
+    """Per-queue (device stream) gap ratio within the window. Key host-overhead signal."""
+    rows = _exec_tasks_with_queue(cur, start, end)
+    queues = {}
+    device_intervals = {}
+    for pid, did, qid, s, e, isc in rows:
+        cs, ce = max(s, start), min(e, end)
+        if ce <= cs:
+            continue
+        item = queues.setdefault((pid, did, qid), {"intervals": [], "compute": 0})
+        item["intervals"].append((cs, ce))
+        if isc == 1:
+            item["compute"] += ce - cs
+        device_intervals.setdefault((pid, did), []).append((cs, ce))
+
+    queue_rows = []
+    for (pid, did, qid), item in queues.items():
+        span = max(e for _, e in item["intervals"]) - min(s for s, _ in item["intervals"])
+        busy = interval_total(merge_intervals(item["intervals"]))
+        gap = span - busy
+        queue_rows.append(
+            {
+                "process_id": pid,
+                "device_id": did,
+                "queue_id": qid,
+                "span_ms": ms(span),
+                "busy_ms": ms(busy),
+                "gap_ms": ms(gap),
+                "gap_pct": (gap / span * 100) if span > 0 else 0.0,
+                "compute_ms": ms(item["compute"]),
+            }
+        )
+    queue_rows.sort(key=lambda r: -(r["compute_ms"] or 0.0))
+    for i, row in enumerate(queue_rows):
+        row["is_main_compute_stream"] = i == 0
+    main_stream_gap_pct = queue_rows[0]["gap_pct"] if queue_rows else 0.0
+
+    window = end - start
+    device_busy = sum(
+        interval_total(merge_intervals(iv)) for iv in device_intervals.values()
+    ) / max(1, len(device_intervals))
+    device_gap_pct = ((window - device_busy) / window * 100) if window > 0 else 0.0
+
+    return {
+        "main_stream_gap_pct": main_stream_gap_pct,
+        "device_gap_pct": device_gap_pct,
+        "queues": queue_rows,
+    }
+
+
+def triton_fusion_summary(cur, strings, start, end, compute_rows, top=20):
+    by_class = {"triton_fused": 0, "triton_other": 0, "non_triton": 0}
+    by_name = {}
+    for name_id, row_start, row_end in compute_rows:
+        duration = clipped_duration(row_start, row_end, start, end)
+        if duration <= 0:
+            continue
+        name = simplify_name(get_name(strings, name_id))
+        cls = classify_kernel(name)
+        by_class[cls] += duration
+        item = by_name.setdefault(name, {"class": cls, "total": 0, "count": 0})
+        item["total"] += duration
+        item["count"] += 1
+    total = sum(by_class.values())
+    non_fused = sorted(
+        (
+            {
+                "name": name,
+                "class": item["class"],
+                "total_ms": ms(item["total"]),
+                "count": item["count"],
+                "share_pct": item["total"] / total * 100 if total else 0.0,
+            }
+            for name, item in by_name.items()
+            if item["class"] != "triton_fused"
+        ),
+        key=lambda r: -(r["total_ms"] or 0.0),
+    )
+    return {
+        "uses_torch_compile": bool(by_class["triton_fused"] or by_class["triton_other"]),
+        "compute_total_ms": ms(total),
+        "fusion_coverage_pct": by_class["triton_fused"] / total * 100 if total else 0.0,
+        "triton_fused_ms": ms(by_class["triton_fused"]),
+        "triton_other_ms": ms(by_class["triton_other"]),
+        "non_triton_ms": ms(by_class["non_triton"]),
+        "top_non_fused": non_fused[:top],
+    }
+
+
+def compile_segmentation_summary(cur, strings, start, end, kernel_rows, stream_gap):
+    regions_by_thread = {}
+    region_inventory = {}
+    recompile_count = 0
+    if table_exists(cur, "Internal_operation_range_data"):
+        for pid, tid, r_start, r_end, name_id in cur.execute(
+            "SELECT processId, threadId, start, end, nameId FROM Internal_operation_range_data "
+            "WHERE start < :window_end AND end > :window_start",
+            window_params(start, end),
+        ):
+            name = simplify_name(get_name(strings, name_id))
+            if RECOMPILE_REGEX.search(name):
+                recompile_count += 1
+            if not COMPILE_REGION_REGEX.search(name):
+                continue
+            regions_by_thread.setdefault((pid, tid), []).append((r_start, r_end))
+            norm = re.sub(r"[:#]\s*\d+\s*$", "", name).strip() or name
+            inv = region_inventory.setdefault(norm, {"count": 0, "host_ns": 0})
+            inv["count"] += 1
+            inv["host_ns"] += max(0, min(r_end, end) - max(r_start, start))
+
+    region_sets = {}
+    for key, intervals in regions_by_thread.items():
+        merged = merge_intervals(intervals)
+        region_sets[key] = (merged, [s for s, _ in merged])
+
+    def in_region(pid, tid, point):
+        entry = region_sets.get((pid, tid))
+        if not entry:
+            return False
+        merged, starts = entry
+        idx = bisect.bisect_right(starts, point) - 1
+        if idx < 0:
+            return False
+        s, e = merged[idx]
+        return s <= point < e
+
+    launch_by_corr = {}
+    if table_exists(cur, "function_data"):
+        for corr, pid, tid, f_start, self_ns in cur.execute(
+            "SELECT correlationId, processId, threadId, start, self FROM function_data "
+            "WHERE start >= :window_start AND start < :window_end",
+            window_params(start, end),
+        ):
+            launch_by_corr[corr] = (pid, tid, f_start, self_ns)
+
+    inside_ns = outside_ns = 0
+    inside_cnt = outside_cnt = 0
+    total_launch_self_ns = 0
+    launched = 0
+    for name_id, k_start, k_end, is_comp, pid, did, qid, corr in kernel_rows:
+        if is_comp != 1:
+            continue
+        dur = clipped_duration(k_start, k_end, start, end)
+        if dur <= 0:
+            continue
+        launch = launch_by_corr.get(corr)
+        if launch is None:
+            outside_ns += dur
+            outside_cnt += 1
+            continue
+        lpid, ltid, lstart, self_ns = launch
+        total_launch_self_ns += self_ns or 0
+        launched += 1
+        if in_region(lpid, ltid, lstart):
+            inside_ns += dur
+            inside_cnt += 1
+        else:
+            outside_ns += dur
+            outside_cnt += 1
+
+    device_compute_ns = inside_ns + outside_ns
+    return {
+        "has_compiled_regions": bool(region_inventory),
+        "compiled_region_count": sum(v["count"] for v in region_inventory.values()),
+        "recompile_indicator_count": recompile_count,
+        "inside_region_compute_ms": ms(inside_ns),
+        "inside_region_kernel_count": inside_cnt,
+        "outside_region_compute_ms": ms(outside_ns),
+        "outside_region_kernel_count": outside_cnt,
+        "outside_region_share_pct": (outside_ns / device_compute_ns * 100) if device_compute_ns else 0.0,
+        "host_launch_overhead": {
+            "main_stream_gap_pct": stream_gap.get("main_stream_gap_pct", 0.0),
+            "launched_kernel_count": launched,
+            "avg_launch_self_us": (total_launch_self_ns / launched / 1000.0) if launched else 0.0,
+            "total_launch_self_ms": ms(total_launch_self_ns),
+            "device_compute_ms": ms(device_compute_ns),
+            "launch_self_to_compute_ratio": (total_launch_self_ns / device_compute_ns) if device_compute_ns else 0.0,
+        },
+        "region_inventory": sorted(
+            ({"region": k, "count": v["count"], "host_ms": ms(v["host_ns"])} for k, v in region_inventory.items()),
+            key=lambda r: -(r["host_ms"] or 0.0),
+        ),
+    }
+
+
+def triton_kernel_efficiency_summary(cur, strings, start, end, peak_bandwidth, top=20):
+    if not table_exists(cur, "device_task_kernel_data"):
+        return {"has_io_metadata": False, "observed_keys": [], "kernels": []}
+    observed = set()
+    by_name = {}
+    for name_id, k_start, k_end, extra in cur.execute(
+        "SELECT nameId, start, end, extra FROM device_task_kernel_data "
+        "WHERE isComputation = 1 AND start >= :window_start AND start < :window_end",
+        window_params(start, end),
+    ):
+        name = simplify_name(get_name(strings, name_id))
+        if "triton" not in name.lower():
+            continue
+        extra_obj = parse_extra(extra)
+        if not extra_obj:
+            continue
+        io_val = to_float(find_key(extra_obj, IO_EFF_KEYS))
+        bw_val = to_float(find_key(extra_obj, BANDWIDTH_KEYS))
+        if io_val is None and bw_val is None:
+            continue
+        for cand_set, present in ((IO_EFF_KEYS, io_val), (BANDWIDTH_KEYS, bw_val)):
+            if present is not None:
+                for k in cand_set:
+                    if k in {kk.lower() for kk in extra_obj}:
+                        observed.add(k)
+                        break
+        dur = clipped_duration(k_start, k_end, start, end)
+        if dur <= 0:
+            continue
+        item = by_name.setdefault(name, {"dur": 0, "count": 0, "io": [], "bw": []})
+        item["dur"] += dur
+        item["count"] += 1
+        if io_val is not None:
+            item["io"].append((io_val, dur))
+        if bw_val is not None:
+            item["bw"].append((bw_val, dur))
+
+    if not by_name:
+        return {"has_io_metadata": False, "observed_keys": [], "kernels": []}
+
+    def wavg(pairs):
+        w = sum(x[1] for x in pairs)
+        return sum(v * wt for v, wt in pairs) / w if w else None
+
+    kernels = []
+    for name, item in by_name.items():
+        io_eff = wavg(item["io"]) if item["io"] else None
+        util = (io_eff / float(peak_bandwidth)) if (io_eff is not None and peak_bandwidth) else None
+        kernels.append(
+            {
+                "name": name,
+                "count": item["count"],
+                "total_ms": ms(item["dur"]),
+                "avg_io_efficiency": io_eff,
+                "avg_achieved_bandwidth": wavg(item["bw"]) if item["bw"] else None,
+                "bandwidth_utilization": util,
+            }
+        )
+    kernels.sort(key=lambda k: (k["bandwidth_utilization"] if k["bandwidth_utilization"] is not None else float("inf"), -(k["total_ms"] or 0.0)))
+    return {
+        "has_io_metadata": True,
+        "observed_keys": sorted(observed),
+        "kernels": kernels[:top],
+    }
+
+
 def device_summary(cur, strings, start, end):
     data = _load_device_data(cur, start, end)
     kernel_rows = data["kernel_rows"]
@@ -600,6 +959,23 @@ def device_summary(cur, strings, start, end):
         ),
         "pure_gap": pure_gap_summary(cur, start, end, preloaded_intervals),
         "other_activity": other_activity_summary(cur, start, end, preloaded_intervals),
+        "device_stream_gap": device_stream_gap_summary(cur, start, end),
+    }
+
+
+def torch_compile_summary(cur, strings, start, end):
+    data = _load_device_data(cur, start, end)
+    kernel_rows = data["kernel_rows"]
+    compute_rows = data["compute_rows"]
+    stream_gap = device_stream_gap_summary(cur, start, end)
+    peak_bandwidth, device_name, peak_source = resolve_peak_bandwidth(cur)
+    return {
+        "device_name": device_name,
+        "peak_bandwidth": peak_bandwidth,
+        "peak_bandwidth_source": peak_source,
+        "fusion": triton_fusion_summary(cur, strings, start, end, compute_rows),
+        "segmentation": compile_segmentation_summary(cur, strings, start, end, kernel_rows, stream_gap),
+        "kernel_efficiency": triton_kernel_efficiency_summary(cur, strings, start, end, peak_bandwidth),
     }
 
 
@@ -622,6 +998,7 @@ def analyze_db(db_path, start_ms, end_ms):
             },
             "host": host_summary(cur, strings, start, end),
             "device": device_summary(cur, strings, start, end),
+            "torch_compile": torch_compile_summary(cur, strings, start, end),
         }
 
 
@@ -791,12 +1168,83 @@ def print_family_basic_table(title, family_map):
         )
 
 
+def print_device_stream_gap(side):
+    sg = side["device"].get("device_stream_gap")
+    if not sg:
+        return
+    print(f"\n### {side['label']} Device Stream Gap Ratio  <-- key host-overhead indicator")
+    print(
+        f"- main compute stream gap ratio: {sg['main_stream_gap_pct']:.2f}%  "
+        f"(device-level gap ratio: {sg['device_gap_pct']:.2f}%)"
+    )
+    print("| Queue | Span ms | Gap ms | Gap% | Compute ms | Main |")
+    print("|---:|---:|---:|---:|---:|:--:|")
+    for row in sg["queues"]:
+        main = "*" if row.get("is_main_compute_stream") else ""
+        print(
+            f"| {row['queue_id']} | {fmt_ms(row.get('span_ms', 0.0))} | "
+            f"{fmt_ms(row.get('gap_ms', 0.0))} | {row.get('gap_pct', 0.0):.2f}% | "
+            f"{fmt_ms(row.get('compute_ms', 0.0))} | {main} |"
+        )
+
+
+def print_torch_compile(side):
+    tc = side.get("torch_compile")
+    if not tc:
+        return
+    fusion = tc.get("fusion", {})
+    seg = tc.get("segmentation", {})
+    ke = tc.get("kernel_efficiency", {})
+    if not (fusion.get("uses_torch_compile") or seg.get("has_compiled_regions") or ke.get("has_io_metadata")):
+        return
+    print(f"\n### {side['label']} torch.compile / triton")
+    print(
+        f"- fusion coverage: {fusion.get('fusion_coverage_pct', 0.0):.2f}% "
+        f"(fused {fmt_ms(fusion.get('triton_fused_ms', 0.0))} ms, "
+        f"non-triton {fmt_ms(fusion.get('non_triton_ms', 0.0))} ms)"
+    )
+    hlo = seg.get("host_launch_overhead", {})
+    print(
+        f"- host launch overhead: main stream gap {hlo.get('main_stream_gap_pct', 0.0):.2f}%, "
+        f"avg launch self {hlo.get('avg_launch_self_us', 0.0):.2f} us, "
+        f"launch/compute ratio {hlo.get('launch_self_to_compute_ratio', 0.0):.2f}"
+    )
+    print(
+        f"- compiled regions: {seg.get('compiled_region_count', 0)}, "
+        f"outside/eager compute {fmt_ms(seg.get('outside_region_compute_ms', 0.0))} ms "
+        f"({seg.get('outside_region_share_pct', 0.0):.1f}%), recompile indicators {seg.get('recompile_indicator_count', 0)}"
+    )
+    print(
+        f"- device: {tc.get('device_name')}, peak bandwidth {tc.get('peak_bandwidth')} "
+        f"(source: {tc.get('peak_bandwidth_source')})"
+    )
+    if fusion.get("top_non_fused"):
+        print("\n#### Top Non-Fused Kernels")
+        print("| Kernel | Class | Total ms | Count | Share |")
+        print("|---|---|---:|---:|---:|")
+        for row in fusion["top_non_fused"][:10]:
+            print(
+                f"| {row['name']} | {row['class']} | {fmt_ms(row.get('total_ms', 0.0))} | "
+                f"{row.get('count', 0):,.0f} | {row.get('share_pct', 0.0):.2f}% |"
+            )
+    if ke.get("has_io_metadata") and ke.get("kernels"):
+        print("\n#### Triton Kernel IO Efficiency (io_efficiency = folded bandwidth, not %)")
+        print("| Kernel | Count | Total ms | Folded BW (io_eff) | Utilization |")
+        print("|---|---:|---:|---:|---:|")
+        for row in ke["kernels"][:10]:
+            io_eff = "n/a" if row.get("avg_io_efficiency") is None else f"{row['avg_io_efficiency']:,.2f}"
+            util = "n/a" if row.get("bandwidth_utilization") is None else f"{row['bandwidth_utilization']*100:.1f}%"
+            print(f"| {row['name']} | {row.get('count', 0):,.0f} | {fmt_ms(row.get('total_ms', 0.0))} | {io_eff} | {util} |")
+
+
 def print_single_file_tables(side):
     print(f"\n## {side['label']} Breakdown Tables")
     print_device_overview_table(side)
+    print_device_stream_gap(side)
     print_compute_kernel_summary(side)
     print_communication_kernel_summary(side)
     print_memcpy_summary(side)
+    print_torch_compile(side)
     print_named_basic_table(f"{side['label']} Host Function Summary", side["host"]["function"]["top"])
     print_named_basic_table(
         f"{side['label']} Host annotation Summary",
