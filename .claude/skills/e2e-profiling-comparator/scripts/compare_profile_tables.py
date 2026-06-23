@@ -146,6 +146,9 @@ def compare_custom_op_simple_aten(baseline_rows, current_rows):
             ),
             "top_simple_aten_ops_A": a_item.get("top_simple_aten_ops", []),
             "top_simple_aten_ops_B": b_item.get("top_simple_aten_ops", []),
+            "report_priority_A": a_item.get("report_priority", "low"),
+            "report_priority_B": b_item.get("report_priority", "low"),
+            "must_report": bool(b_item.get("must_report")),
             "status": classify_delta(nested["delta"]),
             "presence": (
                 "both"
@@ -483,13 +486,14 @@ def print_markdown(payload, limit):
     custom_rows = [r for r in tc.get("custom_op_simple_aten", []) if r.get("status") == "regression"]
     if custom_rows:
         print("\n## Custom Op Simple Aten Nesting Delta")
-        print("| Custom op | Aten A | Aten B | Delta | Avg/call A | Avg/call B | Presence | Status |")
-        print("|---|---:|---:|---:|---:|---:|---|---|")
+        print("| Custom op | Priority B | Aten A | Aten B | Delta | Avg/call A | Avg/call B | Presence | Status |")
+        print("|---|---|---:|---:|---:|---:|---:|---|---|")
         for row in custom_rows[:limit]:
             count = row["nested_simple_aten_count"]
             avg = row["avg_simple_aten_per_call"]
             print(
-                f"| {row['name']} | {fmt(count.get('baseline'))} | {fmt(count.get('current'))} | "
+                f"| {row['name']} | {row.get('report_priority_B', 'low')} | "
+                f"{fmt(count.get('baseline'))} | {fmt(count.get('current'))} | "
                 f"{fmt(count.get('delta'))} | {fmt(avg.get('baseline'))} | {fmt(avg.get('current'))} | "
                 f"{row.get('presence', '')} | {row.get('status', '')} |"
             )

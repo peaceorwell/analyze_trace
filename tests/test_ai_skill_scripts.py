@@ -105,11 +105,11 @@ def make_custom_op_simple_aten_db(path):
         "INSERT INTO Internal_operation_range_data VALUES(?, ?, ?, ?, ?)",
         (1, 1, 0, 1_000_000, 1),
     )
-    for idx, name_id in enumerate([2, 3, 4, 5, 6, 7]):
-        start = 100_000 + idx * 100_000
+    for idx, name_id in enumerate([2, 3, 4, 5, 6, 7] * 2):
+        start = 80_000 + idx * 70_000
         conn.execute(
             "INSERT INTO Internal_operation_range_data VALUES(?, ?, ?, ?, ?)",
-            (1, 1, start, start + 50_000, name_id),
+            (1, 1, start, start + 30_000, name_id),
         )
     conn.execute(
         """
@@ -252,9 +252,13 @@ def test_compile_segmentation_highlights_custom_op_with_simple_aten(tmp_path):
     row = summary["highlighted_custom_ops"][0]
 
     assert summary["has_issue"] is True
+    assert summary["must_report"] is True
+    assert summary["top_issue"]["custom_op_name"] == "lego_fastop::mlu_xmm_fwd"
     assert row["custom_op_name"] == "lego_fastop::mlu_xmm_fwd"
-    assert row["nested_simple_aten_count"] == 6
-    assert row["avg_simple_aten_per_call"] == pytest.approx(6.0)
+    assert row["nested_simple_aten_count"] == 12
+    assert row["avg_simple_aten_per_call"] == pytest.approx(12.0)
+    assert row["report_priority"] == "high"
+    assert row["must_report"] is True
     assert {item["name"] for item in row["top_simple_aten_ops"]} >= {"aten::mul", "aten::slice"}
 
 
@@ -429,9 +433,12 @@ def test_collect_profile_tables_compile_summary_highlights_custom_op_simple_aten
     row = custom_summary["highlighted_custom_ops"][0]
 
     assert custom_summary["has_issue"] is True
+    assert custom_summary["must_report"] is True
     assert row["custom_op_name"] == "lego_fastop::mlu_xmm_fwd"
-    assert row["nested_simple_aten_count"] == 6
-    assert row["avg_simple_aten_per_call"] == pytest.approx(6.0)
+    assert row["nested_simple_aten_count"] == 12
+    assert row["avg_simple_aten_per_call"] == pytest.approx(12.0)
+    assert row["report_priority"] == "high"
+    assert row["must_report"] is True
 
 
 def test_compare_profile_tables_reports_unfused_pointwise_delta():
@@ -482,6 +489,8 @@ def test_compare_profile_tables_reports_unfused_pointwise_delta():
                             "nested_simple_aten_ms": 1.03,
                             "avg_simple_aten_per_call": 19.0,
                             "unique_simple_aten_ops": 8,
+                            "report_priority": "high",
+                            "must_report": True,
                         }
                     ]
                 }
@@ -508,4 +517,6 @@ def test_compare_profile_tables_reports_unfused_pointwise_delta():
     custom_rows = comparison["torch_compile_delta"]["custom_op_simple_aten"]
     assert custom_rows[0]["name"] == "lego_fastop::mlu_xmm_fwd"
     assert custom_rows[0]["nested_simple_aten_count"]["delta"] == pytest.approx(304)
+    assert custom_rows[0]["report_priority_B"] == "high"
+    assert custom_rows[0]["must_report"] is True
     assert custom_rows[0]["status"] == "regression"

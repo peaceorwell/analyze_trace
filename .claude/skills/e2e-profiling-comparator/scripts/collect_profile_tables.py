@@ -56,6 +56,8 @@ SIMPLE_ATEN_RE = re.compile(
 CUSTOM_SIMPLE_ATEN_MIN_AVG_PER_CALL = 5
 CUSTOM_SIMPLE_ATEN_MIN_TOTAL_COUNT = 50
 CUSTOM_SIMPLE_ATEN_MIN_UNIQUE_OPS = 3
+CUSTOM_SIMPLE_ATEN_HIGH_AVG_PER_CALL = 10
+CUSTOM_SIMPLE_ATEN_HIGH_TOTAL_COUNT = 100
 IO_EFF_KEYS = (
     "io_efficiency",
     "io_eff",
@@ -186,6 +188,20 @@ def custom_simple_aten_reason(avg_per_call, total_count, unique_ops):
         f"{total_count:,} nested simple aten ops, avg {avg_per_call:.1f}/call, "
         f"{unique_ops} unique simple op names"
     )
+
+
+def custom_simple_aten_report_priority(group):
+    if not custom_simple_aten_is_issue(group):
+        return "low"
+    avg_per_call = (
+        group["nested_simple_aten_count"] / group["range_count"] if group["range_count"] else 0.0
+    )
+    if (
+        avg_per_call >= CUSTOM_SIMPLE_ATEN_HIGH_AVG_PER_CALL
+        or group["nested_simple_aten_count"] >= CUSTOM_SIMPLE_ATEN_HIGH_TOTAL_COUNT
+    ):
+        return "high"
+    return "normal"
 
 
 def boolish_cpp_wrapper_state(value):
@@ -1195,6 +1211,7 @@ def summarize_custom_op_simple_aten(cur, strings, start, end):
                     "total_ms": ms(group["simple_aten_ns_by_op"][op_name]),
                 }
             )
+        report_priority = custom_simple_aten_report_priority(group)
         rows.append(
             {
                 "name": group["custom_op_name"],
@@ -1209,8 +1226,14 @@ def summarize_custom_op_simple_aten(cur, strings, start, end):
                 "unique_simple_aten_ops": unique_ops,
                 "top_simple_aten_ops": top_ops,
                 "highlight": custom_simple_aten_is_issue(group),
+                "report_priority": report_priority,
+                "must_report": report_priority == "high",
                 "reason": custom_simple_aten_reason(
                     avg_per_call, group["nested_simple_aten_count"], unique_ops
+                ),
+                "recommendation": (
+                    "Move repeated simple aten pointwise/view/reduce/copy/allocation work into the custom "
+                    "backend kernel, or restructure the custom op wrapper so Inductor can see and fuse it."
                 ),
             }
         )
@@ -1224,6 +1247,8 @@ def summarize_custom_op_simple_aten(cur, strings, start, end):
     )
     return {
         "has_issue": any(row["highlight"] for row in rows),
+        "must_report": any(row.get("must_report") for row in rows),
+        "top_issue": next((row for row in rows if row.get("highlight")), rows[0] if rows else None),
         "selected_priority": selected_priority,
         "candidate_range_count": len(candidates),
         "candidate_ranges_with_simple_aten": nonempty_candidate_count,
@@ -1785,14 +1810,17 @@ def print_torch_compile(side):
         print(f"- issue detected: {'yes' if custom_simple.get('has_issue') else 'no'}")
         if custom_simple.get("note"):
             print(f"- interpretation: {custom_simple['note']}")
-        print("| Custom op | Calls | Simple aten | Avg/call | Simple aten ms | Host ms | Top nested ops | Reason |")
-        print("|---|---:|---:|---:|---:|---:|---|---|")
+        print(
+            "| Custom op | Priority | Calls | Simple aten | Avg/call | Simple aten ms | Host ms | Top nested ops | Reason |"
+        )
+        print("|---|---|---:|---:|---:|---:|---:|---|---|")
         for row in custom_rows[:10]:
             top_ops = ", ".join(
                 f"{op['name']}({op['count']})" for op in row.get("top_simple_aten_ops", [])[:5]
             )
             print(
-                f"| {row['custom_op_name']} | {row['range_count']:,} | "
+                f"| {row['custom_op_name']} | {row.get('report_priority', 'low')} | "
+                f"{row['range_count']:,} | "
                 f"{row['nested_simple_aten_count']:,} | {row['avg_simple_aten_per_call']:.1f} | "
                 f"{fmt_ms(row.get('nested_simple_aten_ms', 0.0))} | "
                 f"{fmt_ms(row.get('total_host_ms', 0.0))} | {top_ops} | {row.get('reason', '')} |"

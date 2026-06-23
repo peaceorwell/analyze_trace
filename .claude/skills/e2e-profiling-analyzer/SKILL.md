@@ -82,6 +82,7 @@ The final `report.md` must use this exact high-level structure:
    - Use one subsection per finding: `### 发现 N：short title`, followed by separate paragraphs `**结论：** ...`, `**证据：** ...`, and `**建议：** ...`.
    - Keep each `结论` / `证据` / `建议` paragraph to one short sentence. Merge overlapping findings instead of repeating the same cause from multiple script outputs.
    - Treat host gap, launch overhead, and `cpp_wrapper` mode as one causal chain when they describe the same bottleneck; do not split them into separate findings.
+   - If `compile_segmentation.json` reports `custom_op_simple_aten.must_report=true`, one finding must cover that custom-op/simple-aten issue even when its direct duration is smaller than host gap or IO-efficiency findings. Use 4 findings if needed instead of dropping it.
    - Do not output sibling bullets like `- 结论` / `- 证据` / `- 建议`; that renders as a flat wall in the Web UI.
 3. `## 关键指标`
    - Compact Markdown table with metric, value, source file/log, and interpretation.
@@ -505,7 +506,7 @@ Workflow:
    - `state=unknown` means the trace did not carry a direct signal; only then infer wrapper mode from high main-stream gap ratio, small kernels, high `avg_launch_self_us`, and high `launch_self_to_compute_ratio`.
    - Always report the signal source and confidence. Do not write "无法从 trace 确认 cpp_wrapper" when `cpp_wrapper_signal.source` is `explicit_trace_metadata` or `kernel_file_extension`.
 5. Identify the largest outside-region (eager) kernels from `top_outside_region_kernels`.
-6. Read `custom_op_simple_aten`. If `has_issue=true`, promote it as an optimization candidate: a custom/user op is present but still executes many simple `aten::` pointwise/view/reduce/copy/allocation ops inside the wrapper, so those ops should be moved into the custom backend kernel or restructured to let Inductor fuse them. Cite the concrete `custom_op_name`, call count, nested simple aten count, average nested ops per call, and top nested `aten::` names.
+6. Read `custom_op_simple_aten`. If `has_issue=true`, promote it as an optimization candidate: a custom/user op is present but still executes many simple `aten::` pointwise/view/reduce/copy/allocation ops inside the wrapper, so those ops should be moved into the custom backend kernel or restructured to let Inductor fuse them. If `must_report=true` or the top row has `report_priority=high`, this is a final-report finding, not just branch detail. Cite the concrete `custom_op_name`, call count, nested simple aten count, average nested ops per call, and top nested `aten::` names.
 7. Report whether segmentation is material: large compute time or many kernels outside compiled regions, frequent recompilation, custom-op simple-aten nesting, or many small fragmented regions.
 
 Output contract:
@@ -607,10 +608,12 @@ Workflow:
 1. List completed inputs: Phase 1 baseline plus each completed branch.
 2. Merge evidence by causal path, not by script output.
 3. Separate confirmed findings from hypotheses.
-4. Estimate potential benefit using measured exposed time or skew. If benefits overlap, state that they are not additive.
-5. Prioritize recommendations by expected impact, confidence, and implementation scope.
-6. Call out missing evidence and which branch or input would close it.
-7. Do not append raw table dumps to `report.md`. Keep audit details in stage reports or `evidence_summary.md`, and reference full output filenames.
+4. Before pruning to the final 2-4 findings, scan `compile_segmentation.json` for `custom_op_simple_aten.must_report=true`. When present, reserve one finding and one action row for the custom-op/simple-aten issue; this is a structural missed-fusion signal and should not be buried because its host-range duration is smaller than other exposed-time metrics.
+5. Estimate potential benefit using measured exposed time or skew. If benefits overlap, state that they are not additive.
+6. Prioritize recommendations by expected impact, confidence, and implementation scope.
+7. If custom-op/simple-aten is reserved, phrase the action as moving repeated simple `aten::` pointwise/view/reduce/copy/allocation work into the custom backend kernel, or restructuring the wrapper so Inductor can see and fuse it.
+8. Call out missing evidence and which branch or input would close it.
+9. Do not append raw table dumps to `report.md`. Keep audit details in stage reports or `evidence_summary.md`, and reference full output filenames.
 
 Final `report.md` structure:
 
@@ -625,9 +628,9 @@ Use the exact structure defined in `Final Report Contract`:
 
 Output contract:
 
-- `结论概览`: 2-4 prioritized findings, usually 3. Use one `### 发现 N：short title` subsection per finding with separate `**结论：**`, `**证据：**`, and `**建议：**` paragraphs; each paragraph must be one short sentence. Merge host gap / launch overhead / `cpp_wrapper` into one finding when they are the same causal path.
+- `结论概览`: 2-4 prioritized findings, usually 3. Use one `### 发现 N：short title` subsection per finding with separate `**结论：**`, `**证据：**`, and `**建议：**` paragraphs; each paragraph must be one short sentence. Merge host gap / launch overhead / `cpp_wrapper` into one finding when they are the same causal path. If `custom_op_simple_aten.must_report=true`, include a finding titled around "自定义算子内部仍有大量简单 aten 算子" or equivalent.
 - `关键指标`: compact table with 4-6 rows: metric, measured value/share, source artifact, and interpretation.
-- `优先行动`: 3-5 rows: priority, action, expected benefit, confidence, risk/cost, and validation method.
+- `优先行动`: 3-5 rows: priority, action, expected benefit, confidence, risk/cost, and validation method. If `custom_op_simple_aten.must_report=true`, include an action for the custom op using the exact custom op name and top nested aten names.
 - `不确定性与下一步`: missing data or unresolved hypotheses, plus the branch/input needed to resolve each and one recommended first next step.
 - `产物`: analysis directory, report path, stage report paths, generated DB paths, `evidence_summary.md`, and logs used as evidence.
 
