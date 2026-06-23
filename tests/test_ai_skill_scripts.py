@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import sqlite3
 from pathlib import Path
 
@@ -7,6 +8,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 ANALYZER_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts/triton_fusion_coverage.py"
+TRITON_EFFICIENCY_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts/triton_kernel_efficiency.py"
+TRACE_CONVERTER_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts/torch_trace_to_cnperf_db.py"
 COLLECT_SCRIPT = ROOT / ".claude/skills/e2e-profiling-comparator/scripts/collect_profile_tables.py"
 COMPARE_SCRIPT = ROOT / ".claude/skills/e2e-profiling-comparator/scripts/compare_profile_tables.py"
 
@@ -75,6 +78,91 @@ def test_analyzer_highlights_unfused_pointwise_and_reduce(tmp_path):
     assert names["reduceKernelAdd"]["fusion_family"] == "reduce"
 
 
+def test_trace_converter_preserves_top_level_triton_efficiency_metadata(tmp_path):
+    module = load_module("torch_trace_to_cnperf_db", TRACE_CONVERTER_SCRIPT)
+    db_path = tmp_path / "trace.db"
+    converter = module.Converter(str(db_path))
+    try:
+        converter.process_event(
+            {
+                "ph": "X",
+                "cat": "kernel",
+                "name": "triton_poi_fused_add",
+                "ts": 10,
+                "dur": 5,
+                "args": {
+                    "extra": {"dimx": 1, "dimy": 1, "kernel_type": "BLOCK"},
+                    "correlation": 7,
+                    "stream": 1,
+                    "device": 0,
+                    "IO efficiency(GB/s)": "350.2 GB/s",
+                    "kernel num(GB)": "10.5",
+                    "triton output code": "def kernel(): pass",
+                },
+            }
+        )
+        converter.conn.commit()
+        extra = converter.cur.execute("SELECT extra FROM device_task_kernel_data").fetchone()[0]
+    finally:
+        converter.close()
+
+    payload = json.loads(extra)
+
+    assert payload["dimx"] == 1
+    assert payload["IO efficiency(GB/s)"] == "350.2 GB/s"
+    assert payload["io_efficiency"] == "350.2 GB/s"
+    assert payload["kernel_num_gb"] == "10.5"
+    assert payload["output_code"] == "def kernel(): pass"
+
+
+def test_triton_efficiency_script_reads_raw_trace_efficiency_keys(tmp_path):
+    module = load_module("triton_kernel_efficiency", TRITON_EFFICIENCY_SCRIPT)
+    db_path = tmp_path / "trace.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE string_table(ID INTEGER PRIMARY KEY, string TEXT)")
+    conn.execute("CREATE TABLE device_information(name TEXT)")
+    conn.execute(
+        """
+        CREATE TABLE device_task_kernel_data(
+            nameId INTEGER,
+            start INTEGER,
+            end INTEGER,
+            isComputation INTEGER,
+            extra TEXT
+        )
+        """
+    )
+    conn.execute("INSERT INTO string_table(ID, string) VALUES(1, 'triton_poi_fused_add')")
+    conn.execute("INSERT INTO device_information(name) VALUES('MLU590-M9DK')")
+    conn.execute(
+        "INSERT INTO device_task_kernel_data VALUES(?, ?, ?, ?, ?)",
+        (
+            1,
+            0,
+            10_000_000,
+            1,
+            json.dumps(
+                {
+                    "IO efficiency(GB/s)": "350.2 GB/s",
+                    "kernel num(GB)": "10.5",
+                    "triton output code": "def kernel(): pass",
+                }
+            ),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    payload = module.analyze_db(str(db_path), top=10, dump_dir=str(tmp_path / "code"))
+    kernels = payload["top_low_bandwidth_kernels"]
+
+    assert payload["has_io_metadata"] is True
+    assert "IO efficiency(GB/s)" in payload["observed_metadata_keys"]
+    assert kernels[0]["avg_io_efficiency"] == pytest.approx(350.2)
+    assert kernels[0]["bandwidth_utilization"] == pytest.approx(350.2 / 2000)
+    assert Path(kernels[0]["output_code_file"]).exists()
+
+
 def test_collect_profile_tables_emits_fusion_granularity():
     module = load_module("collect_profile_tables", COLLECT_SCRIPT)
     assert module.classify_fusion_family("MLUBroadcastWhereKernel") == "pointwise"
@@ -102,6 +190,43 @@ def test_collect_profile_tables_emits_fusion_granularity():
     assert by_family["reduce"]["unfused_ms"] == pytest.approx(3.0)
     assert by_family["library_or_gemm"]["highlight"] is False
     assert summary["top_non_fused"][0]["fusion_family"] == "library_or_gemm"
+
+
+def test_collect_profile_tables_reads_raw_trace_efficiency_keys(tmp_path):
+    module = load_module("collect_profile_tables", COLLECT_SCRIPT)
+    db_path = tmp_path / "trace.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE device_task_kernel_data(
+            nameId INTEGER,
+            start INTEGER,
+            end INTEGER,
+            isComputation INTEGER,
+            extra TEXT
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO device_task_kernel_data VALUES(?, ?, ?, ?, ?)",
+        (
+            1,
+            0,
+            10_000_000,
+            1,
+            json.dumps({"IO efficiency(GB/s)": "350.2 GB/s"}),
+        ),
+    )
+
+    summary = module.triton_kernel_efficiency_summary(
+        conn.cursor(), {1: "triton_poi_fused_add"}, 0, 20_000_000, peak_bandwidth=2000, top=10
+    )
+    conn.close()
+
+    assert summary["has_io_metadata"] is True
+    assert summary["observed_keys"] == ["IO efficiency(GB/s)"]
+    assert summary["kernels"][0]["avg_io_efficiency"] == pytest.approx(350.2)
+    assert summary["kernels"][0]["bandwidth_utilization"] == pytest.approx(350.2 / 2000)
 
 
 def test_compare_profile_tables_reports_unfused_pointwise_delta():

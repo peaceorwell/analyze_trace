@@ -24,8 +24,21 @@ COMPILE_REGION_REGEX = re.compile(
     re.IGNORECASE,
 )
 RECOMPILE_REGEX = re.compile(r"TorchDynamo Cache Lookup|recompile|guard", re.IGNORECASE)
-IO_EFF_KEYS = ("io_efficiency", "io_eff", "memory_efficiency", "mem_efficiency")
-BANDWIDTH_KEYS = ("achieved_bandwidth", "bandwidth", "gbps", "effective_bandwidth")
+IO_EFF_KEYS = (
+    "io_efficiency",
+    "io_eff",
+    "memory_efficiency",
+    "mem_efficiency",
+    "IO efficiency(GB/s)",
+    "io efficiency",
+)
+BANDWIDTH_KEYS = (
+    "achieved_bandwidth",
+    "bandwidth",
+    "gbps",
+    "effective_bandwidth",
+    "achieved bandwidth(GB/s)",
+)
 COMMUNICATION_RE = re.compile(
     r"allreduce|all_reduce|allgather|all_gather|reduce_scatter|barrier|(?:^|[_:])broadcast|"
     r"send|recv|nccl|cncl|tccl|tcpipe|tcdp|ring|collective",
@@ -646,12 +659,22 @@ def highlight_unfused_reason(cls, family):
     return "fusion-sensitive kernel did not appear as triton-fused"
 
 
+def normalize_metadata_key(key):
+    return re.sub(r"[^a-z0-9]+", "", str(key).lower())
+
+
 def find_key(d, candidates):
     lowered = {k.lower(): k for k in d.keys()}
     for cand in candidates:
-        if cand in lowered:
-            return d[lowered[cand]]
-    return None
+        key = lowered.get(cand.lower())
+        if key is not None:
+            return key, d[key]
+    normalized = {normalize_metadata_key(k): k for k in d.keys()}
+    for cand in candidates:
+        key = normalized.get(normalize_metadata_key(cand))
+        if key is not None:
+            return key, d[key]
+    return None, None
 
 
 def to_float(value):
@@ -979,16 +1002,16 @@ def triton_kernel_efficiency_summary(cur, strings, start, end, peak_bandwidth, t
         extra_obj = parse_extra(extra)
         if not extra_obj:
             continue
-        io_val = to_float(find_key(extra_obj, IO_EFF_KEYS))
-        bw_val = to_float(find_key(extra_obj, BANDWIDTH_KEYS))
+        io_key, raw_io_val = find_key(extra_obj, IO_EFF_KEYS)
+        bw_key, raw_bw_val = find_key(extra_obj, BANDWIDTH_KEYS)
+        io_val = to_float(raw_io_val)
+        bw_val = to_float(raw_bw_val)
         if io_val is None and bw_val is None:
             continue
-        for cand_set, present in ((IO_EFF_KEYS, io_val), (BANDWIDTH_KEYS, bw_val)):
-            if present is not None:
-                for k in cand_set:
-                    if k in {kk.lower() for kk in extra_obj}:
-                        observed.add(k)
-                        break
+        if io_val is not None and io_key:
+            observed.add(io_key)
+        if bw_val is not None and bw_key:
+            observed.add(bw_key)
         dur = clipped_duration(k_start, k_end, start, end)
         if dur <= 0:
             continue

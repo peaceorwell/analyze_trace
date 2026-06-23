@@ -31,10 +31,29 @@ THEORETICAL_BANDWIDTH = {
     "580": 1200,
 }
 
-IO_EFF_KEYS = ("io_efficiency", "io_eff", "memory_efficiency", "mem_efficiency")
-BANDWIDTH_KEYS = ("achieved_bandwidth", "bandwidth", "gbps", "effective_bandwidth")
-OUTPUT_CODE_KEYS = ("output_code", "triton_code", "source_code", "kernel_code")
-BYTES_KEYS = ("bytes", "nbytes", "num_bytes")
+IO_EFF_KEYS = (
+    "io_efficiency",
+    "io_eff",
+    "memory_efficiency",
+    "mem_efficiency",
+    "IO efficiency(GB/s)",
+    "io efficiency",
+)
+BANDWIDTH_KEYS = (
+    "achieved_bandwidth",
+    "bandwidth",
+    "gbps",
+    "effective_bandwidth",
+    "achieved bandwidth(GB/s)",
+)
+OUTPUT_CODE_KEYS = (
+    "output_code",
+    "triton output code",
+    "triton_code",
+    "source_code",
+    "kernel_code",
+)
+BYTES_KEYS = ("bytes", "nbytes", "num_bytes", "kernel num(GB)", "kernel_num_gb")
 
 
 def table_exists(cur, table):
@@ -63,12 +82,22 @@ def parse_extra(extra_str):
         return {}
 
 
+def normalize_metadata_key(key):
+    return re.sub(r"[^a-z0-9]+", "", str(key).lower())
+
+
 def find_key(d, candidates):
-    """Case-insensitive top-level key lookup; returns (matched_key, value) or (None, None)."""
+    """Robust top-level key lookup; returns (matched_key, value) or (None, None)."""
     lowered = {k.lower(): k for k in d.keys()}
     for cand in candidates:
-        if cand in lowered:
-            return lowered[cand], d[lowered[cand]]
+        key = lowered.get(cand.lower())
+        if key is not None:
+            return key, d[key]
+    normalized = {normalize_metadata_key(k): k for k in d.keys()}
+    for cand in candidates:
+        key = normalized.get(normalize_metadata_key(cand))
+        if key is not None:
+            return key, d[key]
     return None, None
 
 

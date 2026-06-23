@@ -131,6 +131,52 @@ def kernel_class_from_extra(extra):
     return 0
 
 
+def normalize_metadata_key(key):
+    return re.sub(r"[^a-z0-9]+", "", str(key).lower())
+
+
+KERNEL_METADATA_ALIASES = {
+    "ioefficiency": "io_efficiency",
+    "ioefficiencygbs": "io_efficiency",
+    "ioefficiencygbps": "io_efficiency",
+    "ioeff": "io_efficiency",
+    "memoryefficiency": "io_efficiency",
+    "memefficiency": "io_efficiency",
+    "tritonoutputcode": "output_code",
+    "outputcode": "output_code",
+    "tritoncode": "output_code",
+    "sourcecode": "output_code",
+    "kernelcode": "output_code",
+    "kernelnum": "kernel_num_gb",
+    "kernelnumgb": "kernel_num_gb",
+    "kernelkwargs": "kernel_kwargs",
+    "numstages": "num_stages",
+}
+
+
+def is_json_scalar(value):
+    return value is None or isinstance(value, (str, int, float, bool))
+
+
+def kernel_extra_payload(args):
+    """Keep device extra plus top-level Triton profiler metadata.
+
+    PyTorch traces put launch geometry in args.extra, but fields such as
+    "IO efficiency(GB/s)" and "triton output code" live next to extra. Storing
+    only args.extra loses the data used by the AI efficiency scripts.
+    """
+    raw_extra = args.get("extra") if isinstance(args.get("extra"), dict) else {}
+    payload = dict(raw_extra)
+    for key, value in args.items():
+        if key == "extra" or not is_json_scalar(value):
+            continue
+        payload.setdefault(key, value)
+        alias = KERNEL_METADATA_ALIASES.get(normalize_metadata_key(key))
+        if alias:
+            payload.setdefault(alias, value)
+    return payload
+
+
 def is_gzip_path(path):
     return path.endswith(".gz")
 
@@ -477,7 +523,7 @@ class Converter:
     def insert_kernel(self, event):
         fields = self.common_device_fields(event)
         name = event.get("name") or "<kernel>"
-        extra = fields["extra"]
+        extra = kernel_extra_payload(fields["args"])
         is_comp = 0 if self.is_comm_kernel(name, fields["args"]) else 1
         self.cur.execute(
             """
