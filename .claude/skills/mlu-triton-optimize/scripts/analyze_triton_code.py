@@ -375,6 +375,8 @@ def _final_report_guidance(kernels: list[dict[str, Any]], scanned_files: int) ->
             "promote_to_finding": False,
             "suggested_placement": "产物",
             "summary_cn": "未从可用 Triton output_code 中识别到明确代码级优化候选。",
+            "required_section_title": "",
+            "required_table_md": "",
             "candidates": [],
         }
 
@@ -429,11 +431,32 @@ def _final_report_guidance(kernels: list[dict[str, Any]], scanned_files: int) ->
             "recommendation": findings[0].get("recommendation", "") if findings else "",
         })
 
+    table_lines = [
+        "### Triton Kernel 代码优化候选",
+        "",
+        "| Kernel | 代码文件 | 耗时 | BW 利用率 | 主要方向 | 证据 | 建议 |",
+        "|---|---|---:|---:|---|---|---|",
+    ]
+    for candidate in candidates[:3]:
+        code_file = Path(str(candidate.get("file") or "")).name
+        table_lines.append(
+            "| "
+            f"`{_md_cell(candidate.get('kernel_name'))}` | "
+            f"`{_md_cell(code_file)}` | "
+            f"{_fmt_ms(candidate.get('total_ms'))} ms | "
+            f"{_fmt_util(candidate.get('bandwidth_utilization'))} | "
+            f"{_md_cell(', '.join(candidate.get('strategies') or []))} | "
+            f"{_md_cell(candidate.get('evidence'))} | "
+            f"{_md_cell(candidate.get('recommendation'))} |"
+        )
+
     return {
         "must_surface": True,
         "promote_to_finding": bool(material),
         "suggested_placement": "结论概览/优先行动" if material else "关键指标/不确定性与下一步",
         "summary_cn": summary_cn,
+        "required_section_title": "Triton Kernel 代码优化候选",
+        "required_table_md": "\n".join(table_lines),
         "top_strategies": [{"strategy": name, "count": count} for name, count in sorted_strategies[:8]],
         "candidates": candidates,
     }
@@ -482,6 +505,11 @@ def _fmt_util(value: Any) -> str:
     return f"{number * 100:.1f}%"
 
 
+def _md_cell(value: Any) -> str:
+    text = str(value or "-").replace("\n", " ").replace("|", "\\|")
+    return text.strip() or "-"
+
+
 def render_markdown(payload: dict[str, Any]) -> str:
     lines: list[str] = ["# Triton Code Optimization Candidates", ""]
     summary = payload["summary"]
@@ -495,6 +523,8 @@ def render_markdown(payload: dict[str, Any]) -> str:
     if guidance:
         lines.append(f"- Final report placement: {guidance.get('suggested_placement', '-')}")
         lines.append(f"- Summary for final report: {guidance.get('summary_cn', '-')}")
+        if guidance.get("required_table_md"):
+            lines.extend(["", "## Required Final Report Snippet", "", guidance["required_table_md"]])
     if not payload["has_findings"]:
         lines.append("")
         lines.append("No actionable Triton code optimization candidates were detected from available output_code.")

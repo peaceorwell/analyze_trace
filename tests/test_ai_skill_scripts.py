@@ -374,6 +374,9 @@ def triton_poi_fused_test(in_ptr0, in_ptr1, out_ptr, N:tl.constexpr, BLOCK:tl.co
     assert guidance["promote_to_finding"] is True
     assert "Triton output_code" in guidance["summary_cn"]
     assert guidance["candidates"][0]["kernel_name"] == "triton_poi_fused_test"
+    assert guidance["required_section_title"] == "Triton Kernel 代码优化候选"
+    assert "| Kernel | 代码文件 | 耗时 | BW 利用率 |" in guidance["required_table_md"]
+    assert "triton_poi_fused_test" in guidance["required_table_md"]
     assert kernel["kernel_name"] == "triton_poi_fused_test"
     assert kernel["bandwidth_utilization"] == pytest.approx(0.09)
     assert "libdevice_math_candidate" in categories
@@ -385,6 +388,7 @@ def triton_poi_fused_test(in_ptr0, in_ptr1, out_ptr, N:tl.constexpr, BLOCK:tl.co
     assert {"libdevice-opt", "div-to-mul", "bulk-io-opt", "reduce-opt", "retiling", "modify-grid"} <= strategies
     assert "Triton Code Optimization Candidates" in markdown
     assert "Final report placement" in markdown
+    assert "Required Final Report Snippet" in markdown
     assert "triton_poi_fused_test" in markdown
 
 

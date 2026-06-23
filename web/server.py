@@ -56,7 +56,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.96"
+APP_VERSION = "0.2.97"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -2696,6 +2696,7 @@ def _render_claude_prompt(
         "- `## 结论概览` 不要输出平铺的 `- 结论` / `- 证据` / `- 建议` 同级列表。",
         "- 每个关键发现请使用 `### 发现 N：一句话标题`，下面分别写 `**结论：** ...`、`**证据：** ...`、`**建议：** ...`，每段只写一句短句。",
         "- 不要同时写一套详细的 `主要发现` / `主要回退` 来重复 `结论概览`；详细证据、脚本输出、长表格和调用栈放到产物文件中引用。",
+        "- 例外：如果生成了 `triton_code_optimization.json` 且其中 `has_findings=true`，必须在最终报告正文中加入一个 `Triton Kernel 代码优化候选` 小表，优先使用 `final_report_guidance.required_table_md`，保留 1-3 行即可，不要只把它放到 `## 产物`。",
         "- 尽量引用现有 CSV / console 摘要 / trace 中的可验证数字。",
         "- 对不确定结论明确写出依据和不确定性。",
         "- 最后给出可执行优化建议，按收益和排查成本排序。",
