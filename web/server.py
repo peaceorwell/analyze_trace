@@ -56,7 +56,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.101"
+APP_VERSION = "0.2.102"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -2004,6 +2004,34 @@ _AI_FINDING_BULLET_RE = re.compile(
 )
 
 
+def _clean_ai_table_text(value: object) -> str:
+    text = str(value or "").replace("\n", " ").strip()
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"\s+([，。；：、])", r"\1", text)
+    text = text.replace(".；", "；").replace("。；", "；")
+    return text.strip("；; ")
+
+
+def _split_ai_table_items(value: object) -> list[str]:
+    if isinstance(value, (list, tuple)):
+        raw_items = value
+    else:
+        raw_items = re.split(r"\s*[；;]\s*", str(value or ""))
+    items: list[str] = []
+    for item in raw_items:
+        cleaned = _clean_ai_table_text(item)
+        if cleaned:
+            items.append(cleaned.replace("|", "\\|"))
+    return items
+
+
+def _format_ai_table_cell(value: object) -> str:
+    items = _split_ai_table_items(value)
+    if not items:
+        return "-"
+    return "<br>".join(items)
+
+
 def _format_ai_finding_blocks(items: list[tuple[str, str]]) -> Optional[list[str]]:
     if len(items) < 3:
         return None
@@ -2138,8 +2166,8 @@ def _build_triton_code_optimization_section(jid: str) -> str:
             else:
                 strategies = ", ".join(str(strategy) for strategy in raw_strategies)
             strategies = (strategies or "-").replace("|", "\\|")
-            evidence = str(candidate.get("evidence") or "-").replace("\n", " ").replace("|", "\\|")
-            recommendation = str(candidate.get("recommendation") or "-").replace("\n", " ").replace("|", "\\|")
+            evidence = _format_ai_table_cell(candidate.get("evidence_items") or candidate.get("evidence"))
+            recommendation = _format_ai_table_cell(candidate.get("recommendation_items") or candidate.get("recommendation"))
             table_lines.append(
                 f"| `{kernel_name}` | `{code_file}` | {total_text} | {bw_text} | "
                 f"{strategies} | {evidence} | {recommendation} |"

@@ -398,6 +398,8 @@ def triton_poi_fused_second(in_ptr0, out_ptr, N:tl.constexpr, BLOCK:tl.constexpr
     assert guidance["promote_to_finding"] is True
     assert "Triton output_code" in guidance["summary_cn"]
     assert guidance["candidates"][0]["kernel_name"] == "triton_poi_fused_test"
+    assert guidance["candidates"][0]["evidence_items"]
+    assert guidance["candidates"][0]["recommendation_items"]
     assert len(guidance["candidates"]) == 2
     assert guidance["required_section_title"] == "Triton Kernel 代码优化"
     assert guidance["required_table_md"].startswith("## Triton Kernel 代码优化")

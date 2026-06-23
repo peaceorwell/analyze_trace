@@ -361,6 +361,34 @@ def _split_strategies(value: str) -> list[str]:
     return [item.strip() for item in re.split(r"\s*/\s*", value or "") if item.strip()]
 
 
+def _clean_report_text(value: Any) -> str:
+    text = str(value or "").replace("\n", " ").strip()
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"\s+([，。；：、])", r"\1", text)
+    text = text.replace(".；", "；").replace("。；", "；")
+    return text.strip("；; ")
+
+
+def _split_report_items(value: Any) -> list[str]:
+    if isinstance(value, (list, tuple)):
+        raw_items = value
+    else:
+        raw_items = re.split(r"\s*[；;]\s*", str(value or ""))
+    items = []
+    for item in raw_items:
+        cleaned = _clean_report_text(item)
+        if cleaned:
+            items.append(cleaned)
+    return items
+
+
+def _md_multiline_cell(value: Any) -> str:
+    items = _split_report_items(value)
+    if not items:
+        return "-"
+    return "<br>".join(_md_cell(item) for item in items)
+
+
 def _to_float(value: Any, default: float = 0.0) -> float:
     try:
         return float(value)
@@ -428,7 +456,17 @@ def _final_report_guidance(kernels: list[dict[str, Any]], scanned_files: int) ->
                 for strategy in _split_strategies(finding.get("strategy", ""))
             }),
             "evidence": "; ".join(finding.get("evidence", "") for finding in findings[:2] if finding.get("evidence")),
+            "evidence_items": [
+                _clean_report_text(finding.get("evidence", ""))
+                for finding in findings[:3]
+                if finding.get("evidence")
+            ],
             "recommendation": findings[0].get("recommendation", "") if findings else "",
+            "recommendation_items": [
+                _clean_report_text(finding.get("recommendation", ""))
+                for finding in findings[:2]
+                if finding.get("recommendation")
+            ],
         })
 
     table_lines = [
@@ -446,8 +484,8 @@ def _final_report_guidance(kernels: list[dict[str, Any]], scanned_files: int) ->
             f"{_fmt_ms(candidate.get('total_ms'))} ms | "
             f"{_fmt_util(candidate.get('bandwidth_utilization'))} | "
             f"{_md_cell(', '.join(candidate.get('strategies') or []))} | "
-            f"{_md_cell(candidate.get('evidence'))} | "
-            f"{_md_cell(candidate.get('recommendation'))} |"
+            f"{_md_multiline_cell(candidate.get('evidence_items') or candidate.get('evidence'))} | "
+            f"{_md_multiline_cell(candidate.get('recommendation_items') or candidate.get('recommendation'))} |"
         )
 
     return {
