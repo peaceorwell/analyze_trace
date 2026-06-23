@@ -338,6 +338,22 @@ def triton_poi_fused_test(in_ptr0, in_ptr1, out_ptr, N:tl.constexpr, BLOCK:tl.co
 """,
         encoding="utf-8",
     )
+    second_code_file = code_dir / "triton_output_code_01_triton_poi_fused_second.txt"
+    second_code_file.write_text(
+        """
+import triton
+import triton.language as tl
+
+@triton.jit
+def triton_poi_fused_second(in_ptr0, out_ptr, N:tl.constexpr, BLOCK:tl.constexpr):
+    pid0 = tl.program_id(0)
+    offs = pid0 * BLOCK + tl.arange(0, BLOCK)
+    x = tl.load(in_ptr0 + offs, mask=offs < N, other=0.0).to(tl.float32)
+    y = x / 3.0
+    tl.store(out_ptr + offs, y, mask=offs < N)
+""",
+        encoding="utf-8",
+    )
     efficiency_json = tmp_path / "triton_kernel_efficiency.json"
     efficiency_json.write_text(
         json.dumps(
@@ -353,6 +369,14 @@ def triton_poi_fused_test(in_ptr0, in_ptr1, out_ptr, N:tl.constexpr, BLOCK:tl.co
                                 "avg_io_efficiency": 180.0,
                                 "bandwidth_utilization": 0.09,
                                 "improvement_target": 10.9,
+                            },
+                            {
+                                "kernel_name": "triton_poi_fused_second",
+                                "output_code_file": str(second_code_file),
+                                "total_ms": 1.5,
+                                "avg_io_efficiency": 200.0,
+                                "bandwidth_utilization": 0.1,
+                                "improvement_target": 1.35,
                             }
                         ],
                     }
@@ -374,10 +398,12 @@ def triton_poi_fused_test(in_ptr0, in_ptr1, out_ptr, N:tl.constexpr, BLOCK:tl.co
     assert guidance["promote_to_finding"] is True
     assert "Triton output_code" in guidance["summary_cn"]
     assert guidance["candidates"][0]["kernel_name"] == "triton_poi_fused_test"
+    assert len(guidance["candidates"]) == 2
     assert guidance["required_section_title"] == "Triton Kernel 代码优化"
     assert guidance["required_table_md"].startswith("## Triton Kernel 代码优化")
     assert "| Kernel | 代码文件 | 耗时 | BW 利用率 |" in guidance["required_table_md"]
     assert "triton_poi_fused_test" in guidance["required_table_md"]
+    assert "triton_poi_fused_second" in guidance["required_table_md"]
     assert kernel["kernel_name"] == "triton_poi_fused_test"
     assert kernel["bandwidth_utilization"] == pytest.approx(0.09)
     assert "libdevice_math_candidate" in categories

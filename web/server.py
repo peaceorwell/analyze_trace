@@ -56,7 +56,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.98"
+APP_VERSION = "0.2.99"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -2089,23 +2089,13 @@ def _build_triton_code_optimization_section(jid: str) -> str:
 
     guidance = payload.get("final_report_guidance") or {}
     summary = guidance.get("summary_cn") or ""
-    table_md = guidance.get("required_table_md") or ""
-    table_lines = []
-    for line in str(table_md).splitlines():
-        stripped = line.strip()
-        if stripped.startswith("#"):
-            continue
-        if not stripped and not table_lines:
-            continue
-        table_lines.append(line)
-
-    if not table_lines:
-        candidates = guidance.get("candidates") or []
+    candidates = guidance.get("candidates") or []
+    if candidates:
         table_lines = [
             "| Kernel | 代码文件 | 耗时 | BW 利用率 | 主要方向 | 证据 | 建议 |",
             "|---|---|---:|---:|---|---|---|",
         ]
-        for candidate in candidates[:3]:
+        for candidate in candidates:
             kernel_name = str(candidate.get("kernel_name") or "-").replace("|", "\\|")
             code_file = os.path.basename(str(candidate.get("file") or "-")).replace("|", "\\|")
             total_ms = candidate.get("total_ms")
@@ -2118,13 +2108,28 @@ def _build_triton_code_optimization_section(jid: str) -> str:
                 bw_text = f"{float(bw_util) * 100:.1f}%"
             except (TypeError, ValueError):
                 bw_text = "-"
-            strategies = ", ".join(candidate.get("strategies") or []) or "-"
+            raw_strategies = candidate.get("strategies") or []
+            if isinstance(raw_strategies, str):
+                strategies = raw_strategies
+            else:
+                strategies = ", ".join(str(strategy) for strategy in raw_strategies)
+            strategies = (strategies or "-").replace("|", "\\|")
             evidence = str(candidate.get("evidence") or "-").replace("\n", " ").replace("|", "\\|")
             recommendation = str(candidate.get("recommendation") or "-").replace("\n", " ").replace("|", "\\|")
             table_lines.append(
                 f"| `{kernel_name}` | `{code_file}` | {total_text} | {bw_text} | "
                 f"{strategies} | {evidence} | {recommendation} |"
             )
+    else:
+        table_md = guidance.get("required_table_md") or ""
+        table_lines = []
+        for line in str(table_md).splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            if not stripped and not table_lines:
+                continue
+            table_lines.append(line)
 
     lines = ["## Triton Kernel 代码优化", ""]
     if summary:
@@ -2139,6 +2144,23 @@ def _build_triton_code_optimization_section(jid: str) -> str:
 
 def _has_top_level_triton_code_section(content: str) -> bool:
     return bool(re.search(r"(?m)^##\s+Triton Kernel 代码优化\s*$", content or ""))
+
+
+def _replace_top_level_triton_code_section(content: str, section: str) -> str:
+    match = re.search(r"(?m)^##\s+Triton Kernel 代码优化\s*$", content or "")
+    if not match:
+        return content
+    next_match = re.search(r"(?m)^##\s+\S", content[match.end():])
+    end = match.end() + next_match.start() if next_match else len(content)
+    before = content[:match.start()].rstrip()
+    after = content[end:].lstrip()
+    parts = []
+    if before:
+        parts.append(before)
+    parts.append(section)
+    if after:
+        parts.append(after)
+    return "\n\n".join(parts).rstrip() + "\n"
 
 
 def _strip_nested_triton_code_candidate_sections(content: str) -> str:
@@ -2161,13 +2183,16 @@ def _strip_nested_triton_code_candidate_sections(content: str) -> str:
 
 
 def _inject_triton_code_optimization_section(jid: str, content: str) -> str:
-    if not content or _has_top_level_triton_code_section(content):
+    if not content:
         return content
     section = _build_triton_code_optimization_section(jid)
     if not section:
         return content
 
     source = _strip_nested_triton_code_candidate_sections(content)
+    if _has_top_level_triton_code_section(source):
+        return _replace_top_level_triton_code_section(source, section)
+
     match = re.search(r"(?m)^##\s+不确定性与下一步\s*$", source)
     if not match:
         match = re.search(r"(?m)^##\s+产物\s*$", source)
@@ -2804,7 +2829,7 @@ def _render_claude_prompt(
         "- `## 结论概览` 不要输出平铺的 `- 结论` / `- 证据` / `- 建议` 同级列表。",
         "- 每个关键发现请使用 `### 发现 N：一句话标题`，下面分别写 `**结论：** ...`、`**证据：** ...`、`**建议：** ...`，每段只写一句短句。",
         "- 不要同时写一套详细的 `主要发现` / `主要回退` 来重复 `结论概览`；详细证据、脚本输出、长表格和调用栈放到产物文件中引用。",
-        "- 例外：如果生成了 `triton_code_optimization.json` 且其中 `has_findings=true`，必须在最终报告正文中加入独立顶级章节 `## Triton Kernel 代码优化`，优先使用 `final_report_guidance.required_table_md`，保留 1-3 行即可，位置放在 `## 优先行动` 之后、`## 不确定性与下一步` 之前，不要只把它放到 `## 产物`。",
+        "- 例外：如果生成了 `triton_code_optimization.json` 且其中 `has_findings=true`，必须在最终报告正文中加入独立顶级章节 `## Triton Kernel 代码优化`，展示 `final_report_guidance.candidates` / `required_table_md` 中的全部候选，位置放在 `## 优先行动` 之后、`## 不确定性与下一步` 之前，不要只把它放到 `## 产物`。",
         "- 尽量引用现有 CSV / console 摘要 / trace 中的可验证数字。",
         "- 对不确定结论明确写出依据和不确定性。",
         "- 最后给出可执行优化建议，按收益和排查成本排序。",

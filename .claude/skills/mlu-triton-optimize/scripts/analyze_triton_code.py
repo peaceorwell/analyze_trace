@@ -414,7 +414,7 @@ def _final_report_guidance(kernels: list[dict[str, Any]], scanned_files: int) ->
         summary_cn += " 当前候选绝对耗时较小，建议放在主要瓶颈修复后的下一步验证。"
 
     candidates = []
-    for kernel in kernels[:5]:
+    for kernel in kernels:
         findings = kernel.get("findings", [])
         candidates.append({
             "kernel_name": kernel.get("kernel_name"),
@@ -437,7 +437,7 @@ def _final_report_guidance(kernels: list[dict[str, Any]], scanned_files: int) ->
         "| Kernel | 代码文件 | 耗时 | BW 利用率 | 主要方向 | 证据 | 建议 |",
         "|---|---|---:|---:|---|---|---|",
     ]
-    for candidate in candidates[:3]:
+    for candidate in candidates:
         code_file = Path(str(candidate.get("file") or "")).name
         table_lines.append(
             "| "
@@ -462,13 +462,14 @@ def _final_report_guidance(kernels: list[dict[str, Any]], scanned_files: int) ->
     }
 
 
-def analyze(input_dir: str | None, efficiency_json: str | None, top: int = 20) -> dict[str, Any]:
+def analyze(input_dir: str | None, efficiency_json: str | None, top: int = 0) -> dict[str, Any]:
     meta = _load_efficiency_meta(efficiency_json)
     files = _iter_code_files(input_dir, meta)
     kernels = [analyze_code_file(path, _meta_for_file(path, meta)) for path in files]
     kernels = [item for item in kernels if item["findings"]]
     kernels.sort(key=lambda item: item["priority_score"], reverse=True)
-    kernels = kernels[:top]
+    if top and top > 0:
+        kernels = kernels[:top]
     strategies: dict[str, int] = {}
     for kernel in kernels:
         for finding in kernel["findings"]:
@@ -570,7 +571,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input-dir", help="directory containing dumped Triton output_code files")
     parser.add_argument("--efficiency-json", help="optional triton_kernel_efficiency.json")
-    parser.add_argument("--top", type=int, default=20)
+    parser.add_argument("--top", type=int, default=0, help="limit reported kernels; 0 means all findings")
     parser.add_argument("--format", choices=("json", "text"), default="text")
     return parser.parse_args()
 

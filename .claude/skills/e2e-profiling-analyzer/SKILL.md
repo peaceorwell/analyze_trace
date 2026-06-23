@@ -91,7 +91,7 @@ The final `report.md` must use this exact high-level structure:
 4. `## 优先行动`
    - Prioritized actions with expected benefit, implementation cost, risk, and validation method.
 5. `## Triton Kernel 代码优化` (only when `triton_code_optimization.json.has_findings=true`)
-   - Compact 1-3 row table copied from or equivalent to `final_report_guidance.required_table_md`.
+   - Compact table copied from or equivalent to `final_report_guidance.required_table_md`; include all candidates from `triton_code_optimization.json`, not just the top few.
    - Keep wording as static code-level candidates and validation targets unless runtime evidence confirms a speedup.
 6. `## 不确定性与下一步`
    - Missing evidence and the next check that would reduce uncertainty.
@@ -634,7 +634,7 @@ Workflow:
 2. Merge evidence by causal path, not by script output.
 3. Separate confirmed findings from hypotheses.
 4. Before pruning to the final 2-4 findings, scan `compile_segmentation.json` for `custom_op_simple_aten.must_report=true`. When present, reserve one finding and one action row for the custom-op/simple-aten issue; this is a structural missed-fusion signal and should not be buried because its host-range duration is smaller than other exposed-time metrics.
-5. Also scan `triton_code_optimization.json` when present. If `has_findings=true`, read `final_report_guidance` first and include a dedicated top-level `## Triton Kernel 代码优化` section using `final_report_guidance.required_table_md` or an equivalent 1-3 row table. The table must name concrete kernels, measured time, BW utilization when available, strategy names, evidence, and validation-oriented recommendation. Place this section after `## 优先行动` and before `## 不确定性与下一步`. Still include a `关键指标` row with scanned file count, candidate kernel count, top strategies, and source file. Keep wording as a validation target unless runtime evidence confirms a speedup.
+5. Also scan `triton_code_optimization.json` when present. If `has_findings=true`, read `final_report_guidance` first and include a dedicated top-level `## Triton Kernel 代码优化` section using `final_report_guidance.required_table_md` or an equivalent table. The table must include all candidates from `triton_code_optimization.json`, and name concrete kernels, measured time, BW utilization when available, strategy names, evidence, and validation-oriented recommendation. Place this section after `## 优先行动` and before `## 不确定性与下一步`. Still include a `关键指标` row with scanned file count, candidate kernel count, top strategies, and source file. Keep wording as a validation target unless runtime evidence confirms a speedup.
 6. Estimate potential benefit using measured exposed time or skew. If benefits overlap, state that they are not additive.
 7. Prioritize recommendations by expected impact, confidence, and implementation scope.
 8. If custom-op/simple-aten is reserved, phrase the action as moving repeated simple `aten::` pointwise/view/reduce/copy/allocation work into the custom backend kernel, or restructuring the wrapper so Inductor can see and fuse it.
@@ -658,7 +658,7 @@ Output contract:
 - `结论概览`: 2-4 prioritized findings, usually 3. Use one `### 发现 N：short title` subsection per finding with separate `**结论：**`, `**证据：**`, and `**建议：**` paragraphs; each paragraph must be one short sentence. Merge host gap / launch overhead / `cpp_wrapper` into one finding when they are the same causal path. If `custom_op_simple_aten.must_report=true`, include a finding titled around "自定义算子内部仍有大量简单 aten 算子" or equivalent.
 - `关键指标`: compact table with 4-7 rows: metric, measured value/share, source artifact, and interpretation. If `triton_code_optimization.json.has_findings=true`, include a row such as `Triton code 候选` with `final_report_guidance.summary_cn` or the top strategies.
 - `优先行动`: 3-5 rows: priority, action, expected benefit, confidence, risk/cost, and validation method. If `custom_op_simple_aten.must_report=true`, include an action for the custom op using the exact custom op name and top nested aten names. If `triton_code_optimization.json` contributes an action, name the concrete Triton strategy such as `libdevice-opt`, `div-to-mul`, `bulk-io-opt`, `trans-opt`, `reduce-opt`, `retiling`, `modify-grid`, or `llc-cache-opt`, and cite the output-code artifact.
-- `Triton Kernel 代码优化`: include only when `triton_code_optimization.json.has_findings=true`. Use `final_report_guidance.required_table_md` or an equivalent compact 1-3 row table. The section must be top-level `##`, not nested below `优先行动` or `不确定性与下一步`.
+- `Triton Kernel 代码优化`: include only when `triton_code_optimization.json.has_findings=true`. Use `final_report_guidance.required_table_md` or an equivalent compact table with all candidates from the JSON. The section must be top-level `##`, not nested below `优先行动` or `不确定性与下一步`.
 - `不确定性与下一步`: missing data or unresolved hypotheses, plus the branch/input needed to resolve each and one recommended first next step.
 - `产物`: analysis directory, report path, stage report paths, generated DB paths, `evidence_summary.md`, `triton_code_optimization.md/json` when present, and logs used as evidence.
 

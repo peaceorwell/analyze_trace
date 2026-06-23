@@ -52,7 +52,7 @@ The JSON output must be machine-readable and include:
 
 - `has_findings`: whether actionable candidates were found.
 - `summary`: scanned file count, finding count, and top strategy names.
-- `final_report_guidance`: concise Chinese guidance for the parent E2E report, including whether the candidates must be surfaced, whether they should be promoted to a top finding/action, suggested placement, top strategies, top candidate summaries, and `required_table_md`, a compact Markdown table that can be copied into the final report.
+- `final_report_guidance`: concise Chinese guidance for the parent E2E report, including whether the candidates must be surfaced, whether they should be promoted to a top finding/action, suggested placement, top strategies, candidate summaries, and `required_table_md`, a compact Markdown table with all detected Triton code candidates that can be copied into the final report.
 - `kernels`: sorted by priority, each containing `kernel_name`, `file`, optional IO-efficiency metrics, `priority`, `priority_score`, and `findings`.
 
 The Markdown output should be short enough to read in the final AI report:
@@ -66,7 +66,7 @@ The Markdown output should be short enough to read in the final AI report:
 When this skill is used by `e2e-profiling-analyzer`, its output should augment the `triton-kernel-efficiency` branch:
 
 - Cite `triton_code_optimization.md` in the branch report.
-- Always make `has_findings=true` visible in the final E2E report: copy or faithfully summarize `final_report_guidance.required_table_md` as an independent top-level `## Triton Kernel 代码优化` section. Place it after `## 优先行动` and before `## 不确定性与下一步`.
+- Always make `has_findings=true` visible in the final E2E report: copy or faithfully summarize `final_report_guidance.required_table_md` as an independent top-level `## Triton Kernel 代码优化` section, preserving all candidate rows. Place it after `## 优先行动` and before `## 不确定性与下一步`.
 - Promote high-priority Triton-code findings to the final report when their kernel time, low bandwidth utilization, or repeated pattern is material.
 - Avoid claiming a transformation is definitely profitable. Phrase recommendations as validation targets unless runtime evidence confirms the gain.
 

@@ -70,7 +70,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.98",
+        "version": "0.2.99",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -251,6 +251,26 @@ def test_ai_report_injects_triton_code_optimization_section(isolated_server):
                 "has_findings": True,
                 "final_report_guidance": {
                     "summary_cn": "扫描 2 个 Triton output_code，1 个 kernel 存在代码级候选。",
+                    "candidates": [
+                        {
+                            "kernel_name": "triton_x",
+                            "file": "triton_x.py",
+                            "total_ms": 1.23,
+                            "bandwidth_utilization": 0.4,
+                            "strategies": ["div-to-mul"],
+                            "evidence": "发现张量除法",
+                            "recommendation": "验证 reciprocal + multiply",
+                        },
+                        {
+                            "kernel_name": "triton_y",
+                            "file": "triton_y.py",
+                            "total_ms": 0.45,
+                            "bandwidth_utilization": 0.25,
+                            "strategies": ["bulk-io-opt"],
+                            "evidence": "离散 load 较多",
+                            "recommendation": "验证连续 bulk IO",
+                        },
+                    ],
                     "required_table_md": "\n".join(
                         [
                             "### Triton Kernel 代码优化候选",
@@ -279,6 +299,12 @@ def test_ai_report_injects_triton_code_optimization_section(isolated_server):
 
 ---
 
+## Triton Kernel 代码优化
+
+| Kernel | 代码文件 | 耗时 | BW 利用率 | 主要方向 | 证据 | 建议 |
+|---|---|---:|---:|---|---|---|
+| `old_top_level` | `old.py` | 0.01 ms | 1.0% | old | old | old |
+
 ## 不确定性与下一步
 
 - next
@@ -294,6 +320,8 @@ def test_ai_report_injects_triton_code_optimization_section(isolated_server):
     assert finalized.index("## Triton Kernel 代码优化") < finalized.index("## 不确定性与下一步")
     assert "### Triton Kernel 代码优化候选" not in finalized
     assert "`triton_x`" in finalized
+    assert "`triton_y`" in finalized
+    assert "old_top_level" not in finalized
     assert "stale" not in finalized
 
 
