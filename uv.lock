@@ -793,7 +793,7 @@ wheels = [
 
 [[package]]
 name = "trace-analyzer"
-version = "0.2.94"
+version = "0.2.95"
 source = { editable = "." }
 dependencies = [
     { name = "ijson" },

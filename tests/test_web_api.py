@@ -70,7 +70,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.94",
+        "version": "0.2.95",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -115,6 +115,33 @@ def test_ai_analysis_is_disabled_by_default(client):
     r = client.post("/api/jobs/ai-disabled-job/ai-analysis", json={})
 
     assert r.status_code == 403
+
+
+def test_ai_analysis_report_download_supports_unicode_filename(client, isolated_server):
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                "INSERT INTO jobs(id, label, mode, status) VALUES(?,?,?,?)",
+                ("ai-unicode-download-job", "中文报告", "single", "done"),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+    analysis_dir = Path(web_server.ai_analysis_dir("ai-unicode-download-job"))
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+    (analysis_dir / web_server.AI_ANALYSIS_REPORT_FILE).write_text("# 中文报告\n", encoding="utf-8")
+
+    r = client.get("/api/jobs/ai-unicode-download-job/ai-analysis/report.md")
+
+    assert r.status_code == 200
+    assert r.text == "# 中文报告\n"
+    disposition = r.headers["content-disposition"]
+    assert 'filename="' in disposition
+    assert "filename*=UTF-8''" in disposition
+    disposition.encode("latin-1")
 
 
 def test_upload_limit_cleans_partial_job_directory(client, sample_trace_file, monkeypatch):

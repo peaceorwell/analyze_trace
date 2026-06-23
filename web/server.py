@@ -56,7 +56,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.94"
+APP_VERSION = "0.2.95"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -1332,7 +1332,15 @@ def _gzip_json_download_name(filename: Optional[str], slot: str) -> str:
 
 
 def _content_disposition(filename: str, disposition: str = "attachment") -> str:
-    return f'{disposition}; filename="{filename}"'
+    raw_name = os.path.basename(str(filename or "download")).replace("\\", "_")
+    raw_name = re.sub(r"[\r\n\x00-\x1f\x7f]+", "_", raw_name).replace('"', "").strip()
+    raw_name = raw_name or "download"
+    fallback = raw_name.encode("ascii", "ignore").decode("ascii")
+    fallback = re.sub(r"[^A-Za-z0-9._ -]+", "_", fallback).strip(" .") or "download"
+    if len(fallback) > 180:
+        base, ext = os.path.splitext(fallback)
+        fallback = (base[: max(1, 180 - len(ext))].rstrip(" .") or "download") + ext
+    return f'{disposition}; filename="{fallback}"; filename*=UTF-8\'\'{quote(raw_name)}'
 
 
 def _app_base_url(request: Request) -> str:
