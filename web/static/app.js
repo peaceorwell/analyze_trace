@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.100");
+const appVersion = ref("0.2.101");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -995,7 +995,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.2.100";
+  appVersion.value = cfg.version || "0.2.101";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -2716,7 +2716,7 @@ const renderAiArtifactCode = code => {
   if (!url) return "";
   const path = resolveAiArtifactPath(code);
   if (isAiCodeArtifactPath(path)) {
-    return `<button type="button" class="ai-artifact-inline-link ai-code-preview-link" data-ai-code-path="${escapeHtml(path)}" title="查看 Python 代码 ${escapeHtml(path)}"><code>${escapeHtml(code)}</code></button>`;
+    return `<button type="button" class="ai-artifact-inline-link ai-code-preview-link" data-ai-code-path="${escapeHtml(path)}" title="查看 Python 代码 ${escapeHtml(path)}" aria-label="查看 Python 代码 ${escapeHtml(path)}">查看代码</button>`;
   }
   return `<a class="ai-artifact-inline-link" href="${escapeHtml(url)}" download title="下载 ${escapeHtml(code)}"><code>${escapeHtml(code)}</code></a>`;
 };

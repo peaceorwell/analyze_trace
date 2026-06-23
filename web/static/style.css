@@ -1168,12 +1168,26 @@ button.ai-artifact-inline-link {
   background: var(--purple-soft);
   box-shadow: inset 0 -1px 0 var(--purple);
 }
-.ai-code-preview-link code::after {
-  content: " 查看";
-  color: var(--muted);
+button.ai-artifact-inline-link.ai-code-preview-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 10px;
+  border: 1px solid rgba(99, 102, 241, 0.28);
+  border-radius: 6px;
+  background: var(--purple-soft);
+  color: var(--purple);
   font-family: var(--font);
-  font-size: 11px;
-  font-weight: 700;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.25;
+  white-space: nowrap;
+  cursor: pointer;
+}
+button.ai-artifact-inline-link.ai-code-preview-link:hover {
+  border-color: var(--purple);
+  background: rgba(99, 102, 241, 0.16);
+  text-decoration: none;
 }
 .markdown-body {
   overflow-wrap: anywhere;
