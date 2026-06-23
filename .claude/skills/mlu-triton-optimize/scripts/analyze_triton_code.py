@@ -432,7 +432,7 @@ def _final_report_guidance(kernels: list[dict[str, Any]], scanned_files: int) ->
         })
 
     table_lines = [
-        "### Triton Kernel 代码优化候选",
+        "## Triton Kernel 代码优化",
         "",
         "| Kernel | 代码文件 | 耗时 | BW 利用率 | 主要方向 | 证据 | 建议 |",
         "|---|---|---:|---:|---|---|---|",
@@ -455,7 +455,7 @@ def _final_report_guidance(kernels: list[dict[str, Any]], scanned_files: int) ->
         "promote_to_finding": bool(material),
         "suggested_placement": "结论概览/优先行动" if material else "关键指标/不确定性与下一步",
         "summary_cn": summary_cn,
-        "required_section_title": "Triton Kernel 代码优化候选",
+        "required_section_title": "Triton Kernel 代码优化",
         "required_table_md": "\n".join(table_lines),
         "top_strategies": [{"strategy": name, "count": count} for name, count in sorted_strategies[:8]],
         "candidates": candidates,

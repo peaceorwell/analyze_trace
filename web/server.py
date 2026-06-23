@@ -56,7 +56,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.97"
+APP_VERSION = "0.2.98"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -1604,7 +1604,7 @@ def _save_ai_analysis_version(
     job: Optional[dict] = None,
     notification_context: Optional[dict] = None,
 ) -> dict:
-    normalized_content = _normalize_ai_report_markdown(content or "")
+    normalized_content = _finalize_ai_report_markdown(jid, content or "")
     if not normalized_content.strip():
         return {}
 
@@ -2075,6 +2075,114 @@ def _normalize_ai_report_markdown(content: str) -> str:
     return normalized + ("\n" if source.endswith("\n") else "")
 
 
+def _build_triton_code_optimization_section(jid: str) -> str:
+    path = os.path.join(ai_analysis_dir(jid), "triton_code_optimization.json")
+    if not os.path.exists(path):
+        return ""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return ""
+    if not payload.get("has_findings"):
+        return ""
+
+    guidance = payload.get("final_report_guidance") or {}
+    summary = guidance.get("summary_cn") or ""
+    table_md = guidance.get("required_table_md") or ""
+    table_lines = []
+    for line in str(table_md).splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        if not stripped and not table_lines:
+            continue
+        table_lines.append(line)
+
+    if not table_lines:
+        candidates = guidance.get("candidates") or []
+        table_lines = [
+            "| Kernel | 代码文件 | 耗时 | BW 利用率 | 主要方向 | 证据 | 建议 |",
+            "|---|---|---:|---:|---|---|---|",
+        ]
+        for candidate in candidates[:3]:
+            kernel_name = str(candidate.get("kernel_name") or "-").replace("|", "\\|")
+            code_file = os.path.basename(str(candidate.get("file") or "-")).replace("|", "\\|")
+            total_ms = candidate.get("total_ms")
+            try:
+                total_text = f"{float(total_ms):.2f} ms"
+            except (TypeError, ValueError):
+                total_text = "-"
+            bw_util = candidate.get("bandwidth_utilization")
+            try:
+                bw_text = f"{float(bw_util) * 100:.1f}%"
+            except (TypeError, ValueError):
+                bw_text = "-"
+            strategies = ", ".join(candidate.get("strategies") or []) or "-"
+            evidence = str(candidate.get("evidence") or "-").replace("\n", " ").replace("|", "\\|")
+            recommendation = str(candidate.get("recommendation") or "-").replace("\n", " ").replace("|", "\\|")
+            table_lines.append(
+                f"| `{kernel_name}` | `{code_file}` | {total_text} | {bw_text} | "
+                f"{strategies} | {evidence} | {recommendation} |"
+            )
+
+    lines = ["## Triton Kernel 代码优化", ""]
+    if summary:
+        lines.extend([summary, ""])
+    lines.extend(table_lines)
+    lines.extend([
+        "",
+        "> 该章节由 `triton_code_optimization.json` 生成，属于静态代码级候选；具体收益需要用单 kernel benchmark 或重新采集 trace 验证。",
+    ])
+    return "\n".join(lines).rstrip()
+
+
+def _has_top_level_triton_code_section(content: str) -> bool:
+    return bool(re.search(r"(?m)^##\s+Triton Kernel 代码优化\s*$", content or ""))
+
+
+def _strip_nested_triton_code_candidate_sections(content: str) -> str:
+    lines = str(content or "").splitlines()
+    output: list[str] = []
+    i = 0
+    while i < len(lines):
+        if re.match(r"^#{3,6}\s+Triton Kernel 代码优化候选\s*$", lines[i].strip()):
+            i += 1
+            while i < len(lines):
+                stripped = lines[i].strip()
+                if re.match(r"^##\s+\S", stripped) or stripped == "---":
+                    break
+                i += 1
+            continue
+        output.append(lines[i])
+        i += 1
+    normalized = "\n".join(output).rstrip()
+    return normalized + ("\n" if normalized else "")
+
+
+def _inject_triton_code_optimization_section(jid: str, content: str) -> str:
+    if not content or _has_top_level_triton_code_section(content):
+        return content
+    section = _build_triton_code_optimization_section(jid)
+    if not section:
+        return content
+
+    source = _strip_nested_triton_code_candidate_sections(content)
+    match = re.search(r"(?m)^##\s+不确定性与下一步\s*$", source)
+    if not match:
+        match = re.search(r"(?m)^##\s+产物\s*$", source)
+    if not match:
+        return source.rstrip() + "\n\n" + section + "\n"
+    before = source[:match.start()].rstrip()
+    after = source[match.start():].lstrip()
+    return before + "\n\n" + section + "\n\n" + after
+
+
+def _finalize_ai_report_markdown(jid: str, content: str) -> str:
+    normalized = _normalize_ai_report_markdown(content)
+    return _inject_triton_code_optimization_section(jid, normalized)
+
+
 def _read_ai_analysis_report(jid: str, version_id: str = "") -> str:
     version = _select_ai_analysis_version(jid, version_id)
     if not version:
@@ -2082,7 +2190,7 @@ def _read_ai_analysis_report(jid: str, version_id: str = "") -> str:
     path = _ai_version_report_path_from_metadata(jid, version)
     if not path:
         return ""
-    return _normalize_ai_report_markdown(_read_text_file(path))
+    return _finalize_ai_report_markdown(jid, _read_text_file(path))
 
 
 class _SafeFormatDict(dict):
@@ -2696,7 +2804,7 @@ def _render_claude_prompt(
         "- `## 结论概览` 不要输出平铺的 `- 结论` / `- 证据` / `- 建议` 同级列表。",
         "- 每个关键发现请使用 `### 发现 N：一句话标题`，下面分别写 `**结论：** ...`、`**证据：** ...`、`**建议：** ...`，每段只写一句短句。",
         "- 不要同时写一套详细的 `主要发现` / `主要回退` 来重复 `结论概览`；详细证据、脚本输出、长表格和调用栈放到产物文件中引用。",
-        "- 例外：如果生成了 `triton_code_optimization.json` 且其中 `has_findings=true`，必须在最终报告正文中加入一个 `Triton Kernel 代码优化候选` 小表，优先使用 `final_report_guidance.required_table_md`，保留 1-3 行即可，不要只把它放到 `## 产物`。",
+        "- 例外：如果生成了 `triton_code_optimization.json` 且其中 `has_findings=true`，必须在最终报告正文中加入独立顶级章节 `## Triton Kernel 代码优化`，优先使用 `final_report_guidance.required_table_md`，保留 1-3 行即可，位置放在 `## 优先行动` 之后、`## 不确定性与下一步` 之前，不要只把它放到 `## 产物`。",
         "- 尽量引用现有 CSV / console 摘要 / trace 中的可验证数字。",
         "- 对不确定结论明确写出依据和不确定性。",
         "- 最后给出可执行优化建议，按收益和排查成本排序。",
@@ -2927,7 +3035,7 @@ async def _run_ai_analysis_task(jid: str, notification_context: Optional[dict] =
             )
         if not content:
             content = "Claude command completed, but no report content was produced."
-        content = _normalize_ai_report_markdown(content)
+        content = _finalize_ai_report_markdown(jid, content)
         _write_ai_report(report_path, content)
         final_status = {
             **status,

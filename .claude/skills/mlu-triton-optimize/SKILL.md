@@ -66,7 +66,7 @@ The Markdown output should be short enough to read in the final AI report:
 When this skill is used by `e2e-profiling-analyzer`, its output should augment the `triton-kernel-efficiency` branch:
 
 - Cite `triton_code_optimization.md` in the branch report.
-- Always make `has_findings=true` visible in the final E2E report: copy or faithfully summarize `final_report_guidance.required_table_md` as a compact `Triton Kernel 代码优化候选` table, either under `优先行动` when `final_report_guidance.promote_to_finding=true`, or under `不确定性与下一步` when larger bottlenecks dominate.
+- Always make `has_findings=true` visible in the final E2E report: copy or faithfully summarize `final_report_guidance.required_table_md` as an independent top-level `## Triton Kernel 代码优化` section. Place it after `## 优先行动` and before `## 不确定性与下一步`.
 - Promote high-priority Triton-code findings to the final report when their kernel time, low bandwidth utilization, or repeated pattern is material.
 - Avoid claiming a transformation is definitely profitable. Phrase recommendations as validation targets unless runtime evidence confirms the gain.
 

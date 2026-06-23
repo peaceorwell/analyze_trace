@@ -70,7 +70,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.97",
+        "version": "0.2.98",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -239,6 +239,62 @@ def test_ai_report_normalizes_flat_conclusion_evidence_advice_list(isolated_serv
     assert "**建议：** 优先用 MLU Graph 捕获稳定序列。" in normalized
     assert "### 发现 2：小 kernel 启动开销偏高" in normalized
     assert "- 证据：" not in normalized
+
+
+def test_ai_report_injects_triton_code_optimization_section(isolated_server):
+    jid = "ai-triton-section-job"
+    analysis_dir = Path(isolated_server.ai_analysis_dir(jid))
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+    (analysis_dir / "triton_code_optimization.json").write_text(
+        json.dumps(
+            {
+                "has_findings": True,
+                "final_report_guidance": {
+                    "summary_cn": "扫描 2 个 Triton output_code，1 个 kernel 存在代码级候选。",
+                    "required_table_md": "\n".join(
+                        [
+                            "### Triton Kernel 代码优化候选",
+                            "",
+                            "| Kernel | 代码文件 | 耗时 | BW 利用率 | 主要方向 | 证据 | 建议 |",
+                            "|---|---|---:|---:|---|---|---|",
+                            "| `triton_x` | `triton_x.py` | 1.23 ms | 40.0% | div-to-mul | 发现张量除法 | 验证 reciprocal + multiply |",
+                        ]
+                    ),
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    raw = """
+# AI 性能分析报告
+
+## 优先行动
+
+### Triton Kernel 代码优化候选
+
+| old | old |
+|---|---|
+| stale | stale |
+
+---
+
+## 不确定性与下一步
+
+- next
+
+## 产物
+
+- artifact
+""".lstrip()
+
+    finalized = isolated_server._finalize_ai_report_markdown(jid, raw)
+
+    assert "## Triton Kernel 代码优化\n" in finalized
+    assert finalized.index("## Triton Kernel 代码优化") < finalized.index("## 不确定性与下一步")
+    assert "### Triton Kernel 代码优化候选" not in finalized
+    assert "`triton_x`" in finalized
+    assert "stale" not in finalized
 
 
 def test_claude_command_normalizes_legacy_permission_args(isolated_server, monkeypatch):
