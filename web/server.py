@@ -56,7 +56,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.89"
+APP_VERSION = "0.2.90"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -2683,9 +2683,11 @@ def _render_claude_prompt(
     lines.extend([
         "",
         "报告要求:",
-        "- 先给出 3-6 个关键发现，说明主要性能热点、回退或改善点。",
+        "- 默认生成适合 Web 阅读的短报告：单 trace 在 `## 产物` 前不超过约 1200 个中文字符，对比报告不超过约 1500 个中文字符。",
+        "- 先给出 3-4 个关键发现，说明主要性能热点、回退或改善点；合并相同根因，不要重复展开。",
         "- `## 结论概览` 不要输出平铺的 `- 结论` / `- 证据` / `- 建议` 同级列表。",
-        "- 每个关键发现请使用 `### 发现 N：一句话标题`，下面分别写 `**结论：** ...`、`**证据：** ...`、`**建议：** ...`。",
+        "- 每个关键发现请使用 `### 发现 N：一句话标题`，下面分别写 `**结论：** ...`、`**证据：** ...`、`**建议：** ...`，每段只写一句短句。",
+        "- 不要同时写一套详细的 `主要发现` / `主要回退` 来重复 `结论概览`；详细证据、脚本输出、长表格和调用栈放到产物文件中引用。",
         "- 尽量引用现有 CSV / console 摘要 / trace 中的可验证数字。",
         "- 对不确定结论明确写出依据和不确定性。",
         "- 最后给出可执行优化建议，按收益和排查成本排序。",

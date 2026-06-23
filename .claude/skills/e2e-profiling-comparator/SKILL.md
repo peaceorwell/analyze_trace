@@ -36,24 +36,25 @@ The final `report.md` must use this exact high-level structure:
 
 1. `# AI 对比分析报告`
 2. `## 结论概览`
-   - 3-6 prioritized findings focused on regressions first, then meaningful improvements.
+   - 3-4 prioritized findings focused on regressions first, then meaningful improvements.
    - Use one subsection per finding: `### 发现 N：short title`, followed by separate paragraphs `**结论：** ...`, `**证据：** ...`, and `**建议：** ...`.
+   - Keep each `结论` / `证据` / `建议` paragraph to one short sentence. Merge overlapping regressions instead of repeating the same delta from multiple tables.
    - Do not output sibling bullets like `- 结论` / `- 证据` / `- 建议`; that renders as a flat wall in the Web UI.
 3. `## 对比口径`
    - Baseline/current files, selected windows, devices, and `Delta = B - A`.
 4. `## 关键 Delta`
    - Compact Markdown table with metric, A, B, delta, interpretation, and source.
-5. `## 主要回退与原因假设`
-   - Prioritized findings with evidence, counter-evidence, estimated impact, confidence, and affected ranks/devices.
-6. `## 优化建议`
+5. `## 优先行动`
    - Prioritized actions with expected benefit, implementation cost, risk, and validation method.
-7. `## 不确定性与下一步`
+6. `## 不确定性与下一步`
    - Missing evidence and the next check that would reduce uncertainty.
-8. `## 产物`
+7. `## 产物`
    - Converted DBs, collected table JSON files, evidence logs, and analysis directory.
 
-Keep the final report concise enough for Web reading. Move large raw tables and long logs into
-artifact files, then cite those files from the report.
+Default to a concise Web report. Target no more than 1500 Chinese characters before the `产物`
+section. Do not duplicate a full `主要回退与原因假设` section after `结论概览`; put detailed
+per-table evidence, raw deltas, long stack traces, and script logs into artifacts, then cite those
+filenames from the report.
 
 ## Resources
 
@@ -101,7 +102,7 @@ artifact files, then cite those files from the report.
 7. Generate the final Markdown analysis document.
    - Write the report to `$REPORT_MD` and, in Web/server-side automatic mode, also to `report.md` in the current working directory.
    - Use the exact structure from `Final Report Contract`.
-   - Put large raw tables in supporting artifacts, then cite those artifact filenames from `## 产物`.
+   - Put large raw tables and detailed per-table deltas in supporting artifacts, then cite those artifact filenames from `## 产物`.
 
 ## Commands
 
@@ -259,11 +260,11 @@ Emitted only when the DB carries compiled-region annotations or `triton_*` kerne
 
 - Treat the chosen baseline/current meaning as part of the analysis contract before comparing tables.
 - Prioritize current regressions: larger total time, higher count, worse avg/p90/max, higher uncovered time, lower bandwidth, or higher gap/idle share.
-- Write the final deliverable using the exact `Final Report Contract` structure.
+- Write the final deliverable using the exact concise `Final Report Contract` structure.
 - Include an `## 产物` section with the temporary analysis directory, report path, converted DB paths, table collection outputs, and delta comparison outputs used as evidence.
-- In `## 结论概览`, include supporting summary data next to each claim. For each highlighted regression, show the relevant baseline value, current value, delta, and table source when both values are available.
+- In `## 结论概览`, include only the strongest supporting summary data next to each claim. For each highlighted regression, show the relevant baseline value, current value, delta, and table source when both values are available.
 - Prefer compact evidence snippets over separate comparison tables, for example: `stable compute kernel total: baseline 820 ms, current 970 ms, +150 ms (+18.3%), from Device Breakdown Overview`.
-- Always include a detailed Compute Kernel Summary comparison in the conclusion: compare high-share kernel names by total/count/avg/p90/max/share, and call out whether the regression is from slower kernels, more launches, or long-tail changes.
+- Always include the key Compute Kernel Summary comparison signal in the conclusion, but do not paste a detailed per-kernel table into the main report; cite the artifact instead.
 - Use the summary rows exactly as emitted by `collect_profile_tables.py`; they already cover the leading 95% share plus `other`, so do not apply another top-k or 95% compression pass when reading them.
 - For compute differences, inspect total/count/avg/p90/max and optionally group kernels by workload semantics such as matmul/gemm, attention, normalization/reduce, elementwise/fusion, Triton, embedding/indexing, or data movement.
 - For communication differences, interpret total time together with uncovered time. High total with low uncovered may be hidden by compute overlap.

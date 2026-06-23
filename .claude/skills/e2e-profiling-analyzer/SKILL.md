@@ -78,22 +78,23 @@ The final `report.md` must use this exact high-level structure:
 
 1. `# AI 性能分析报告`
 2. `## 结论概览`
-   - 3-6 prioritized findings.
+   - 3-4 prioritized findings only.
    - Use one subsection per finding: `### 发现 N：short title`, followed by separate paragraphs `**结论：** ...`, `**证据：** ...`, and `**建议：** ...`.
+   - Keep each `结论` / `证据` / `建议` paragraph to one short sentence. Merge overlapping findings instead of repeating the same cause from multiple script outputs.
    - Do not output sibling bullets like `- 结论` / `- 证据` / `- 建议`; that renders as a flat wall in the Web UI.
 3. `## 关键指标`
    - Compact Markdown table with metric, value, source file/log, and interpretation.
-4. `## 主要发现`
-   - Prioritized findings with evidence, counter-evidence, estimated impact, confidence, and affected ranks/devices.
-5. `## 优化建议`
+4. `## 优先行动`
    - Prioritized actions with expected benefit, implementation cost, risk, and validation method.
-6. `## 不确定性与下一步`
+5. `## 不确定性与下一步`
    - Missing evidence and the next check that would reduce uncertainty.
-7. `## 产物`
+6. `## 产物`
    - Generated DBs, stage reports, evidence logs, and analysis directory.
 
-Keep the final report concise enough for Web reading. Move large raw tables and long logs into
-artifact files such as `evidence_summary.md`, then cite those files from the report.
+Default to a concise Web report. Target no more than 1200 Chinese characters before the `产物`
+section. Do not duplicate a full `主要发现` section after `结论概览`; put detailed branch findings,
+long evidence, raw tables, stack traces, and script logs into artifacts such as
+`phase2_<branch>_report.md` and `evidence_summary.md`, then cite those filenames from the report.
 
 ## Setup And Inputs
 
@@ -587,7 +588,7 @@ Output contract:
 
 ## Phase 3: Final Synthesis
 
-Goal: synthesize Phase 1 and completed Phase 2 branches into `report.md`, provide prioritized recommendations, and append raw table evidence.
+Goal: synthesize Phase 1 and completed Phase 2 branches into a concise `report.md`, provide prioritized recommendations, and reference raw evidence artifacts.
 
 Enter Phase 3:
 
@@ -602,7 +603,7 @@ Workflow:
 4. Estimate potential benefit using measured exposed time or skew. If benefits overlap, state that they are not additive.
 5. Prioritize recommendations by expected impact, confidence, and implementation scope.
 6. Call out missing evidence and which branch or input would close it.
-7. Append raw table information from script outputs and query result files. Include compact raw excerpts sufficient to audit claims, and reference full output filenames.
+7. Do not append raw table dumps to `report.md`. Keep audit details in stage reports or `evidence_summary.md`, and reference full output filenames.
 
 Final `report.md` structure:
 
@@ -611,17 +612,15 @@ Use the exact structure defined in `Final Report Contract`:
 1. `# AI 性能分析报告`
 2. `## 结论概览`
 3. `## 关键指标`
-4. `## 主要发现`
-5. `## 优化建议`
-6. `## 不确定性与下一步`
-7. `## 产物`
+4. `## 优先行动`
+5. `## 不确定性与下一步`
+6. `## 产物`
 
 Output contract:
 
-- `结论概览`: 3-6 prioritized findings. Use one `### 发现 N：short title` subsection per finding with separate `**结论：**`, `**证据：**`, and `**建议：**` paragraphs.
-- `关键指标`: compact table with metric, measured value/share, source artifact, and interpretation.
-- `主要发现`: status, cause/hypothesis, evidence, counter-evidence, affected ranks/devices, estimated impact, confidence, and overlap/non-additivity notes.
-- `优化建议`: priority, action, expected benefit, confidence, evidence link, risk/cost, and validation method.
+- `结论概览`: 3-4 prioritized findings. Use one `### 发现 N：short title` subsection per finding with separate `**结论：**`, `**证据：**`, and `**建议：**` paragraphs; each paragraph must be one short sentence.
+- `关键指标`: compact table with 4-6 rows: metric, measured value/share, source artifact, and interpretation.
+- `优先行动`: 3-5 rows: priority, action, expected benefit, confidence, risk/cost, and validation method.
 - `不确定性与下一步`: missing data or unresolved hypotheses, plus the branch/input needed to resolve each and one recommended first next step.
 - `产物`: analysis directory, report path, stage report paths, generated DB paths, `evidence_summary.md`, and logs used as evidence.
 
