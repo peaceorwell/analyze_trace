@@ -366,9 +366,14 @@ def triton_poi_fused_test(in_ptr0, in_ptr1, out_ptr, N:tl.constexpr, BLOCK:tl.co
     kernel = payload["kernels"][0]
     categories = {finding["category"] for finding in kernel["findings"]}
     strategies = {strategy for finding in kernel["findings"] for strategy in finding["strategy"].split(" / ")}
+    guidance = payload["final_report_guidance"]
     markdown = module.render_markdown(payload)
 
     assert payload["has_findings"] is True
+    assert guidance["must_surface"] is True
+    assert guidance["promote_to_finding"] is True
+    assert "Triton output_code" in guidance["summary_cn"]
+    assert guidance["candidates"][0]["kernel_name"] == "triton_poi_fused_test"
     assert kernel["kernel_name"] == "triton_poi_fused_test"
     assert kernel["bandwidth_utilization"] == pytest.approx(0.09)
     assert "libdevice_math_candidate" in categories
@@ -379,6 +384,7 @@ def triton_poi_fused_test(in_ptr0, in_ptr1, out_ptr, N:tl.constexpr, BLOCK:tl.co
     assert "grid_or_retiling_candidate" in categories
     assert {"libdevice-opt", "div-to-mul", "bulk-io-opt", "reduce-opt", "retiling", "modify-grid"} <= strategies
     assert "Triton Code Optimization Candidates" in markdown
+    assert "Final report placement" in markdown
     assert "triton_poi_fused_test" in markdown
 
 

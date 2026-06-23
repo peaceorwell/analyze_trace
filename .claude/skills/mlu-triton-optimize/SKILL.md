@@ -52,6 +52,7 @@ The JSON output must be machine-readable and include:
 
 - `has_findings`: whether actionable candidates were found.
 - `summary`: scanned file count, finding count, and top strategy names.
+- `final_report_guidance`: concise Chinese guidance for the parent E2E report, including whether the candidates must be surfaced, whether they should be promoted to a top finding/action, suggested placement, top strategies, and the top candidate summaries.
 - `kernels`: sorted by priority, each containing `kernel_name`, `file`, optional IO-efficiency metrics, `priority`, `priority_score`, and `findings`.
 
 The Markdown output should be short enough to read in the final AI report:
@@ -65,7 +66,8 @@ The Markdown output should be short enough to read in the final AI report:
 When this skill is used by `e2e-profiling-analyzer`, its output should augment the `triton-kernel-efficiency` branch:
 
 - Cite `triton_code_optimization.md` in the branch report.
-- Promote high-priority Triton-code findings to the final report only when their kernel time, low bandwidth utilization, or repeated pattern is material.
+- Always make `has_findings=true` visible in the final E2E report: either as a top finding/action when `final_report_guidance.promote_to_finding=true`, or as a `关键指标` / `不确定性与下一步` note when larger bottlenecks dominate.
+- Promote high-priority Triton-code findings to the final report when their kernel time, low bandwidth utilization, or repeated pattern is material.
 - Avoid claiming a transformation is definitely profitable. Phrase recommendations as validation targets unless runtime evidence confirms the gain.
 
 ## Guardrails

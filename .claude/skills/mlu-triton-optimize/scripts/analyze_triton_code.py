@@ -357,6 +357,88 @@ def analyze_code_file(path: Path, meta: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _split_strategies(value: str) -> list[str]:
+    return [item.strip() for item in re.split(r"\s*/\s*", value or "") if item.strip()]
+
+
+def _to_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _final_report_guidance(kernels: list[dict[str, Any]], scanned_files: int) -> dict[str, Any]:
+    if not kernels:
+        return {
+            "must_surface": False,
+            "promote_to_finding": False,
+            "suggested_placement": "产物",
+            "summary_cn": "未从可用 Triton output_code 中识别到明确代码级优化候选。",
+            "candidates": [],
+        }
+
+    top_strategies: dict[str, int] = {}
+    for kernel in kernels:
+        for finding in kernel.get("findings", []):
+            for strategy in _split_strategies(finding.get("strategy", "")):
+                top_strategies[strategy] = top_strategies.get(strategy, 0) + 1
+    sorted_strategies = sorted(top_strategies.items(), key=lambda item: (-item[1], item[0]))
+    material = [
+        kernel for kernel in kernels
+        if kernel.get("priority") == "high"
+        and (
+            _to_float(kernel.get("total_ms")) >= 1.0
+            or _to_float(kernel.get("improvement_target")) >= 1.0
+            or (
+                kernel.get("bandwidth_utilization") is not None
+                and _to_float(kernel.get("bandwidth_utilization"), default=1.0) <= 0.5
+            )
+        )
+    ]
+    top_kernel = kernels[0]
+    top_strategy_names = [name for name, _ in sorted_strategies[:4]]
+    summary_cn = (
+        f"扫描 {scanned_files} 个 Triton output_code，"
+        f"{len(kernels)} 个 kernel 存在代码级候选，"
+        f"主要方向为 {', '.join(top_strategy_names) or '待确认'}。"
+    )
+    if material:
+        summary_cn += (
+            f" Top 候选 `{top_kernel.get('kernel_name')}` "
+            f"耗时 {_fmt_ms(top_kernel.get('total_ms'))} ms，建议作为验证目标进入优先行动。"
+        )
+    else:
+        summary_cn += " 当前候选绝对耗时较小，建议放在主要瓶颈修复后的下一步验证。"
+
+    candidates = []
+    for kernel in kernels[:5]:
+        findings = kernel.get("findings", [])
+        candidates.append({
+            "kernel_name": kernel.get("kernel_name"),
+            "file": kernel.get("file"),
+            "priority": kernel.get("priority"),
+            "total_ms": kernel.get("total_ms"),
+            "bandwidth_utilization": kernel.get("bandwidth_utilization"),
+            "strategies": sorted({
+                strategy
+                for finding in findings[:3]
+                for strategy in _split_strategies(finding.get("strategy", ""))
+            }),
+            "evidence": "; ".join(finding.get("evidence", "") for finding in findings[:2] if finding.get("evidence")),
+            "recommendation": findings[0].get("recommendation", "") if findings else "",
+        })
+
+    return {
+        "must_surface": True,
+        "promote_to_finding": bool(material),
+        "suggested_placement": "结论概览/优先行动" if material else "关键指标/不确定性与下一步",
+        "summary_cn": summary_cn,
+        "top_strategies": [{"strategy": name, "count": count} for name, count in sorted_strategies[:8]],
+        "candidates": candidates,
+    }
+
+
 def analyze(input_dir: str | None, efficiency_json: str | None, top: int = 20) -> dict[str, Any]:
     meta = _load_efficiency_meta(efficiency_json)
     files = _iter_code_files(input_dir, meta)
@@ -379,6 +461,7 @@ def analyze(input_dir: str | None, efficiency_json: str | None, top: int = 20) -
             "finding_count": sum(len(item["findings"]) for item in kernels),
             "top_strategies": [{"strategy": name, "count": count} for name, count in top_strategies[:8]],
         },
+        "final_report_guidance": _final_report_guidance(kernels, len(files)),
         "kernels": kernels,
     }
 
@@ -408,6 +491,10 @@ def render_markdown(payload: dict[str, Any]) -> str:
     if summary["top_strategies"]:
         joined = ", ".join(f"{item['strategy']} x{item['count']}" for item in summary["top_strategies"])
         lines.append(f"- Top strategies: {joined}")
+    guidance = payload.get("final_report_guidance") or {}
+    if guidance:
+        lines.append(f"- Final report placement: {guidance.get('suggested_placement', '-')}")
+        lines.append(f"- Summary for final report: {guidance.get('summary_cn', '-')}")
     if not payload["has_findings"]:
         lines.append("")
         lines.append("No actionable Triton code optimization candidates were detected from available output_code.")
