@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.102");
+const appVersion = ref("0.2.103");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -995,7 +995,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.2.102";
+  appVersion.value = cfg.version || "0.2.103";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -2722,6 +2722,7 @@ const renderAiArtifactCode = code => {
 };
 const aiAnalysisHtml = computed(() => renderMarkdown(aiAnalysisContent.value, {
   codeRenderer: renderAiArtifactCode,
+  collapsedSections: ["产物"],
 }));
 const highlightPythonCodeBlocks = () => nextTick(() => {
   if (!window.hljs) return;
@@ -4616,10 +4617,15 @@ const isMarkdownTableSep = line => {
   return cells.length > 1 && cells.every(cell => /^:?-{3,}:?$/.test(cell));
 };
 
+const normalizeMarkdownHeadingTitle = value => String(value || "")
+  .replace(/[`*_~]/g, "")
+  .trim();
+
 function renderMarkdown(markdown, options = {}) {
   const lines = String(markdown || "").replace(/\r\n/g, "\n").split("\n");
   const html = [];
   let i = 0;
+  const collapsedSections = new Set(options.collapsedSections || []);
   const isTableStartAt = index => index + 1 < lines.length && isMarkdownTableSep(lines[index + 1]);
   const isHorizontalRule = line => /^[-*_]\s*[-*_]\s*[-*_][\s\-*_]*$/.test(line.trim());
   const isListStart = line => /^\s*[-*+]\s+/.test(line) || /^\s*\d+\.\s+/.test(line);
@@ -4661,6 +4667,28 @@ function renderMarkdown(markdown, options = {}) {
     const heading = line.match(/^(#{1,6})\s+(.+)$/);
     if (heading) {
       const level = heading[1].length;
+      const title = normalizeMarkdownHeadingTitle(heading[2]);
+      if (level === 2 && collapsedSections.has(title)) {
+        const start = i + 1;
+        let end = start;
+        while (end < lines.length) {
+          const nextHeading = lines[end].match(/^(#{1,6})\s+(.+)$/);
+          if (nextHeading && nextHeading[1].length <= level) break;
+          end += 1;
+        }
+        const body = lines.slice(start, end).join("\n").trim();
+        const bodyHtml = body
+          ? renderMarkdown(body, { ...options, collapsedSections: [] })
+          : "<p>暂无内容</p>";
+        html.push(
+          `<details class="md-collapsible-section md-collapsible-artifacts">`
+          + `<summary><span>${renderInlineMarkdown(heading[2], options)}</span><small>点击展开</small></summary>`
+          + `<div class="md-collapsible-body">${bodyHtml}</div>`
+          + `</details>`
+        );
+        i = end;
+        continue;
+      }
       html.push(`<h${level}>${renderInlineMarkdown(heading[2], options)}</h${level}>`);
       i += 1;
       continue;

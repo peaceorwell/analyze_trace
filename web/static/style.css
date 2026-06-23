@@ -1293,6 +1293,50 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
   font-weight: 800;
 }
 .markdown-body tr:last-child td { border-bottom: 0; }
+.markdown-body .md-collapsible-section {
+  margin: 14px 0 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  overflow: hidden;
+}
+.markdown-body .md-collapsible-section summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  cursor: pointer;
+  color: var(--text1);
+  font-size: 14px;
+  font-weight: 850;
+  list-style: none;
+}
+.markdown-body .md-collapsible-section summary::-webkit-details-marker { display: none; }
+.markdown-body .md-collapsible-section summary::before {
+  content: "";
+  width: 0;
+  height: 0;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-left: 7px solid var(--purple-l);
+  transition: transform .16s ease;
+}
+.markdown-body .md-collapsible-section[open] summary::before {
+  transform: rotate(90deg);
+}
+.markdown-body .md-collapsible-section summary span {
+  flex: 1;
+}
+.markdown-body .md-collapsible-section summary small {
+  color: var(--text3);
+  font-size: 12px;
+  font-weight: 800;
+}
+.markdown-body .md-collapsible-body {
+  padding: 0 12px 12px;
+  border-top: 1px solid var(--border);
+}
 .ai-artifacts-panel {
   display: flex; flex-direction: column; gap: 8px;
   border: 1px solid var(--border);
