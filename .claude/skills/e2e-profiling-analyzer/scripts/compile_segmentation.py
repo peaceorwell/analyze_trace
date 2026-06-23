@@ -4,17 +4,17 @@ torch.compile segmentation + host-launch-overhead (cpp_wrapper) analysis.
 
 torch.compile 编译区域分段分析，以及 host launch overhead / cpp_wrapper 检查。
 
-The primary host-overhead indicator is the device-stream (queue) gap ratio: the
-fraction of the main compute stream's span spent idle between device tasks. A high
-gap ratio together with small kernels and high per-launch host self-time is the
-signature of Python-wrapper launch overhead (cpp_wrapper disabled). The torch
-trace rarely records the cpp_wrapper config flag, so this is inferred, not stated
-as fact.
+The primary host-overhead indicator is the device-stream (queue) gap ratio. The
+cpp_wrapper switch is read from converted trace metadata when possible, including
+explicit config keys and trace kernel_file evidence. Only fall back to gap-based
+interpretation when the trace does not carry a direct signal.
 """
 
 import argparse
 import bisect
+import collections
 import json
+import os
 import re
 import sqlite3
 from pathlib import Path
@@ -26,11 +26,25 @@ COMPILE_REGION_REGEX = re.compile(
     re.IGNORECASE,
 )
 RECOMPILE_REGEX = re.compile(r"TorchDynamo Cache Lookup|recompile|guard", re.IGNORECASE)
+CPP_WRAPPER_KEY_RE = re.compile(r"cpp\s*[_\-. ]?\s*wrapper|cppwrapper", re.IGNORECASE)
+CPP_WRAPPER_VALUE_RE = re.compile(
+    r"cpp\s*[_\-. ]?\s*wrapper\w*\s*[:=]\s*['\"]?"
+    r"(true|false|1|0|yes|no|on|off|enabled|disabled)",
+    re.IGNORECASE,
+)
+CPP_WRAPPER_ON_EXTENSIONS = {".cc", ".cpp", ".cxx", ".so", ".dylib", ".dll"}
+CPP_WRAPPER_OFF_EXTENSIONS = {".py", ".pyc"}
 
 
 def table_exists(cur, table):
     cur.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,))
     return cur.fetchone() is not None
+
+
+def table_columns(cur, table):
+    if not table_exists(cur, table):
+        return set()
+    return {row[1] for row in cur.execute(f"PRAGMA table_info({table})").fetchall()}
 
 
 def load_strings(cur):
@@ -69,6 +83,130 @@ def normalize_region(name):
     return n or name
 
 
+def normalize_metadata_key(key):
+    return re.sub(r"[^a-z0-9]+", "", str(key).lower())
+
+
+def boolish_cpp_wrapper_state(value):
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on", "enabled", "enable"}:
+        return "on"
+    if text in {"0", "false", "no", "off", "disabled", "disable"}:
+        return "off"
+    match = CPP_WRAPPER_VALUE_RE.search(text)
+    if match:
+        return boolish_cpp_wrapper_state(match.group(1))
+    return None
+
+
+def parse_json_maybe(value):
+    if not value:
+        return None
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return None
+
+
+class CppWrapperDetector:
+    def __init__(self):
+        self.explicit = []
+        self.kernel_file_exts = collections.Counter()
+
+    def observe_kernel_file(self, value, source):
+        if not isinstance(value, str) or not value:
+            return
+        ext = os.path.splitext(value)[1].lower()
+        if ext:
+            self.kernel_file_exts[ext] += 1
+
+    def observe_mapping(self, value, source, depth=0):
+        if not isinstance(value, dict) or depth > 3:
+            return
+        for key, item in value.items():
+            norm_key = normalize_metadata_key(key)
+            if norm_key == "kernelfile":
+                self.observe_kernel_file(item, f"{source}.{key}")
+                continue
+            if CPP_WRAPPER_KEY_RE.search(str(key)):
+                state = boolish_cpp_wrapper_state(item)
+                if state:
+                    self.explicit.append(
+                        {"source": f"{source}.{key}", "state": state, "value": str(item)[:200]}
+                    )
+                continue
+            if isinstance(item, dict):
+                self.observe_mapping(item, f"{source}.{key}", depth + 1)
+            elif isinstance(item, str) and "cpp" in item.lower() and "wrapper" in item.lower():
+                state = boolish_cpp_wrapper_state(item)
+                if state:
+                    self.explicit.append(
+                        {"source": f"{source}.{key}", "state": state, "value": item[:200]}
+                    )
+
+    def observe_json_text(self, value, source):
+        obj = parse_json_maybe(value)
+        if isinstance(obj, dict):
+            self.observe_mapping(obj, source)
+
+    def summary(self):
+        explicit_states = {item["state"] for item in self.explicit}
+        py_count = sum(self.kernel_file_exts.get(ext, 0) for ext in CPP_WRAPPER_OFF_EXTENSIONS)
+        cpp_count = sum(self.kernel_file_exts.get(ext, 0) for ext in CPP_WRAPPER_ON_EXTENSIONS)
+        evidence = self.explicit[:6]
+        if self.kernel_file_exts:
+            evidence.append(
+                {
+                    "source": "trace.args.kernel_file",
+                    "state": "on" if cpp_count and not py_count else "off" if py_count and not cpp_count else "unknown",
+                    "value": dict(self.kernel_file_exts.most_common()),
+                }
+            )
+        if len(explicit_states) == 1:
+            state, source, confidence = next(iter(explicit_states)), "explicit_trace_metadata", "high"
+        elif len(explicit_states) > 1:
+            state, source, confidence = "unknown", "conflicting_explicit_trace_metadata", "low"
+        elif cpp_count and not py_count:
+            state, source, confidence = "on", "kernel_file_extension", "medium"
+        elif py_count and not cpp_count:
+            state, source, confidence = "off", "kernel_file_extension", "medium"
+        elif py_count and cpp_count:
+            state, source, confidence = "unknown", "mixed_kernel_file_extension", "low"
+        else:
+            state, source, confidence = "unknown", "not_found", "unknown"
+        return {
+            "state": state,
+            "source": source,
+            "confidence": confidence,
+            "kernel_file_extensions": dict(self.kernel_file_exts.most_common()),
+            "evidence": evidence,
+        }
+
+
+def load_cpp_wrapper_signal_from_meta(cur):
+    detector = CppWrapperDetector()
+    if not table_exists(cur, "meta_information"):
+        return detector
+    for meta_type, value in cur.execute("SELECT type, value FROM meta_information"):
+        if meta_type == "torch_compile_cpp_wrapper":
+            obj = parse_json_maybe(value)
+            if isinstance(obj, dict) and obj.get("state"):
+                detector.observe_mapping(obj, f"meta_information.{meta_type}")
+                for ext, count in (obj.get("kernel_file_extensions") or {}).items():
+                    detector.kernel_file_exts[ext] += count
+                state = obj.get("state")
+                if state in {"on", "off"} and obj.get("source") == "explicit_trace_metadata":
+                    detector.explicit.append(
+                        {"source": f"meta_information.{meta_type}", "state": state, "value": obj.get("source")}
+                    )
+            continue
+        if "cpp" in str(value).lower() or "kernel_file" in str(value):
+            detector.observe_json_text(value, f"meta_information.{meta_type}")
+    return detector
+
+
 class IntervalSet:
     def __init__(self, intervals):
         self.merged = merge_intervals(intervals)
@@ -89,6 +227,7 @@ def analyze_db(db_path):
         strings = load_strings(cur)
         if not table_exists(cur, "device_task_kernel_data"):
             return {"db": db_path, "label": Path(db_path).stem, "error": "missing device_task_kernel_data"}
+        cpp_wrapper_detector = load_cpp_wrapper_signal_from_meta(cur)
 
         # --- Compiled region ranges (host side) ---
         regions_by_thread = {}
@@ -96,9 +235,17 @@ def analyze_db(db_path):
         recompile_count = 0
         has_region_table = table_exists(cur, "Internal_operation_range_data")
         if has_region_table:
-            for pid, tid, start, end, name_id in cur.execute(
-                "SELECT processId, threadId, start, end, nameId FROM Internal_operation_range_data"
-            ):
+            range_cols = table_columns(cur, "Internal_operation_range_data")
+            range_select = "processId, threadId, start, end, nameId"
+            if "extra" in range_cols:
+                range_select += ", extra"
+            for row in cur.execute(f"SELECT {range_select} FROM Internal_operation_range_data"):
+                if "extra" in range_cols:
+                    pid, tid, start, end, name_id, extra = row
+                    if extra and ("kernel_file" in extra or "cpp" in extra.lower()):
+                        cpp_wrapper_detector.observe_json_text(extra, "Internal_operation_range_data.extra")
+                else:
+                    pid, tid, start, end, name_id = row
                 name = name_of(strings, name_id)
                 if RECOMPILE_REGEX.search(name):
                     recompile_count += 1
@@ -175,9 +322,19 @@ def analyze_db(db_path):
         total_launch_self_ns = 0
         launched_kernel_count = 0
 
-        for corr, start, end, name_id in cur.execute(
-            "SELECT correlationId, start, end, nameId FROM device_task_kernel_data WHERE isComputation = 1"
+        kernel_cols = table_columns(cur, "device_task_kernel_data")
+        kernel_select = "correlationId, start, end, nameId"
+        if "extra" in kernel_cols:
+            kernel_select += ", extra"
+        for row in cur.execute(
+            f"SELECT {kernel_select} FROM device_task_kernel_data WHERE isComputation = 1"
         ):
+            if "extra" in kernel_cols:
+                corr, start, end, name_id, extra = row
+                if extra and ("kernel_file" in extra or "cpp" in extra.lower()):
+                    cpp_wrapper_detector.observe_json_text(extra, "device_task_kernel_data.extra")
+            else:
+                corr, start, end, name_id = row
             dur = max(0, end - start)
             launch = launch_by_corr.get(corr)
             if launch is None:
@@ -217,6 +374,22 @@ def analyze_db(db_path):
         launch_to_compute_ratio = (
             total_launch_self_ns / device_compute_ns if device_compute_ns > 0 else 0.0
         )
+        cpp_wrapper_signal = cpp_wrapper_detector.summary()
+        if cpp_wrapper_signal["state"] == "off":
+            cpp_note = (
+                "Trace evidence indicates cpp_wrapper is disabled; use host-launch metrics "
+                "to judge whether it is the active bottleneck."
+            )
+        elif cpp_wrapper_signal["state"] == "on":
+            cpp_note = (
+                "Trace evidence indicates cpp_wrapper is enabled; if the main-stream gap is "
+                "still high, investigate graph breaks, synchronization, tiny kernels, or host framework work."
+            )
+        else:
+            cpp_note = (
+                "No direct cpp_wrapper trace signal was found; interpret wrapper mode from "
+                "device-stream gap and host launch metrics only as a hypothesis."
+            )
 
         region_inv_rows = sorted(
             (
@@ -253,13 +426,10 @@ def analyze_db(db_path):
                 "total_launch_self_ms": ms(total_launch_self_ns),
                 "device_compute_ms": ms(device_compute_ns),
                 "launch_self_to_compute_ratio": launch_to_compute_ratio,
-                "note": (
-                    "High main_stream_gap_pct with small kernels + high avg_launch_self_us "
-                    "and launch_self_to_compute_ratio indicates Python-wrapper launch overhead "
-                    "(cpp_wrapper likely disabled). Recommend enabling cpp_wrapper. "
-                    "cpp_wrapper mode is inferred, not read from a config flag."
-                ),
+                "cpp_wrapper_signal": cpp_wrapper_signal,
+                "note": cpp_note,
             },
+            "cpp_wrapper_signal": cpp_wrapper_signal,
             "queues": queue_rows,
         }
     finally:
@@ -290,6 +460,18 @@ def print_markdown(payload):
 
         hlo = profile["host_launch_overhead"]
         print("\n### Host Launch Overhead / cpp_wrapper Check")
+        cpp_signal = hlo.get("cpp_wrapper_signal") or profile.get("cpp_wrapper_signal") or {}
+        state_text = {
+            "on": "enabled / ON",
+            "off": "disabled / OFF",
+            "unknown": "unconfirmed",
+        }.get(cpp_signal.get("state"), "unconfirmed")
+        print(
+            f"- cpp_wrapper trace signal: **{state_text}** "
+            f"(source: {cpp_signal.get('source', 'n/a')}, confidence: {cpp_signal.get('confidence', 'n/a')})"
+        )
+        if cpp_signal.get("kernel_file_extensions"):
+            print(f"- kernel_file extensions: `{cpp_signal['kernel_file_extensions']}`")
         print(f"- main compute stream gap ratio: **{hlo['main_stream_gap_pct']:.2f}%** (key host-overhead indicator)")
         print(
             f"- avg host launch self-time per kernel: {hlo['avg_launch_self_us']:.2f} us "
@@ -299,6 +481,8 @@ def print_markdown(payload):
             f"- launch self-time vs device compute: {hlo['total_launch_self_ms']:,.2f} ms / "
             f"{hlo['device_compute_ms']:,.2f} ms (ratio {hlo['launch_self_to_compute_ratio']:.2f})"
         )
+        if hlo.get("note"):
+            print(f"- interpretation: {hlo['note']}")
 
         if profile["region_inventory"]:
             print("\n### Compiled Region Inventory")

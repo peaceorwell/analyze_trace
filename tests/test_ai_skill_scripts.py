@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ANALYZER_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts/triton_fusion_coverage.py"
 TRITON_EFFICIENCY_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts/triton_kernel_efficiency.py"
 TRACE_CONVERTER_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts/torch_trace_to_cnperf_db.py"
+COMPILE_SEGMENTATION_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts/compile_segmentation.py"
 COLLECT_SCRIPT = ROOT / ".claude/skills/e2e-profiling-comparator/scripts/collect_profile_tables.py"
 COMPARE_SCRIPT = ROOT / ".claude/skills/e2e-profiling-comparator/scripts/compare_profile_tables.py"
 
@@ -113,6 +114,70 @@ def test_trace_converter_preserves_top_level_triton_efficiency_metadata(tmp_path
     assert payload["io_efficiency"] == "350.2 GB/s"
     assert payload["kernel_num_gb"] == "10.5"
     assert payload["output_code"] == "def kernel(): pass"
+
+
+def test_trace_converter_records_cpp_wrapper_signal_from_kernel_file(tmp_path):
+    module = load_module("torch_trace_to_cnperf_db_cpp_wrapper", TRACE_CONVERTER_SCRIPT)
+    db_path = tmp_path / "trace.db"
+    converter = module.Converter(str(db_path))
+    try:
+        converter.process_event(
+            {
+                "ph": "X",
+                "cat": "cpu_op",
+                "name": "triton_poi_fused_add",
+                "pid": 1,
+                "tid": 2,
+                "ts": 10,
+                "dur": 5,
+                "args": {
+                    "kernel_backend": "triton",
+                    "kernel_file": "/tmp/.inductor_cache/ab/cabc.py",
+                },
+            }
+        )
+        converter.finish({}, "trace.json.gz", "simdjson", None)
+        row = converter.cur.execute(
+            "SELECT value FROM meta_information WHERE type = 'torch_compile_cpp_wrapper'"
+        ).fetchone()
+    finally:
+        converter.close()
+
+    payload = json.loads(row[0])
+
+    assert payload["state"] == "off"
+    assert payload["source"] == "kernel_file_extension"
+    assert payload["confidence"] == "medium"
+    assert payload["kernel_file_extensions"][".py"] == 1
+
+
+def test_compile_segmentation_reads_cpp_wrapper_signal_from_converted_db(tmp_path):
+    converter_module = load_module("torch_trace_to_cnperf_db_compile", TRACE_CONVERTER_SCRIPT)
+    segmentation_module = load_module("compile_segmentation_cpp_wrapper", COMPILE_SEGMENTATION_SCRIPT)
+    db_path = tmp_path / "trace.db"
+    converter = converter_module.Converter(str(db_path))
+    try:
+        converter.process_event(
+            {
+                "ph": "X",
+                "cat": "cpu_op",
+                "name": "triton_poi_fused_add",
+                "pid": 1,
+                "tid": 2,
+                "ts": 10,
+                "dur": 5,
+                "args": {"kernel_file": "/tmp/.inductor_cache/ab/cabc.py"},
+            }
+        )
+        converter.finish({}, "trace.json.gz", "simdjson", None)
+    finally:
+        converter.close()
+
+    payload = segmentation_module.analyze_db(str(db_path))
+
+    assert payload["cpp_wrapper_signal"]["state"] == "off"
+    assert payload["host_launch_overhead"]["cpp_wrapper_signal"]["state"] == "off"
+    assert "Trace evidence indicates cpp_wrapper is disabled" in payload["host_launch_overhead"]["note"]
 
 
 def test_triton_efficiency_script_reads_raw_trace_efficiency_keys(tmp_path):
@@ -227,6 +292,43 @@ def test_collect_profile_tables_reads_raw_trace_efficiency_keys(tmp_path):
     assert summary["observed_keys"] == ["IO efficiency(GB/s)"]
     assert summary["kernels"][0]["avg_io_efficiency"] == pytest.approx(350.2)
     assert summary["kernels"][0]["bandwidth_utilization"] == pytest.approx(350.2 / 2000)
+
+
+def test_collect_profile_tables_compile_summary_keeps_cpp_wrapper_signal(tmp_path):
+    module = load_module("collect_profile_tables_cpp_wrapper", COLLECT_SCRIPT)
+    db_path = tmp_path / "trace.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE meta_information(type TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    conn.execute(
+        "INSERT INTO meta_information VALUES(?, ?)",
+        (
+            "torch_compile_cpp_wrapper",
+            json.dumps(
+                {
+                    "state": "off",
+                    "source": "kernel_file_extension",
+                    "confidence": "medium",
+                    "kernel_file_extensions": {".py": 3},
+                }
+            ),
+        ),
+    )
+    conn.commit()
+
+    summary = module.compile_segmentation_summary(
+        conn.cursor(),
+        {},
+        0,
+        10_000_000,
+        [],
+        {"main_stream_gap_pct": 12.5},
+    )
+    conn.close()
+
+    signal = summary["cpp_wrapper_signal"]
+    assert signal["state"] == "off"
+    assert signal["source"] == "kernel_file_extension"
+    assert summary["host_launch_overhead"]["cpp_wrapper_signal"]["kernel_file_extensions"][".py"] == 3
 
 
 def test_compare_profile_tables_reports_unfused_pointwise_delta():

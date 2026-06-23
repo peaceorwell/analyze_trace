@@ -36,9 +36,10 @@ The final `report.md` must use this exact high-level structure:
 
 1. `# AI 对比分析报告`
 2. `## 结论概览`
-   - 3-4 prioritized findings focused on regressions first, then meaningful improvements.
+   - 2-4 prioritized findings focused on regressions first, then meaningful improvements; prefer 3 unless the evidence clearly needs more.
    - Use one subsection per finding: `### 发现 N：short title`, followed by separate paragraphs `**结论：** ...`, `**证据：** ...`, and `**建议：** ...`.
    - Keep each `结论` / `证据` / `建议` paragraph to one short sentence. Merge overlapping regressions instead of repeating the same delta from multiple tables.
+   - Treat device gap, host launch overhead, and `cpp_wrapper` mode as one causal chain when they explain the same A/B regression; do not split them into separate findings.
    - Do not output sibling bullets like `- 结论` / `- 证据` / `- 建议`; that renders as a flat wall in the Web UI.
 3. `## 对比口径`
    - Baseline/current files, selected windows, devices, and `Delta = B - A`.
@@ -55,6 +56,9 @@ Default to a concise Web report. Target no more than 1500 Chinese characters bef
 section. Do not duplicate a full `主要回退与原因假设` section after `结论概览`; put detailed
 per-table evidence, raw deltas, long stack traces, and script logs into artifacts, then cite those
 filenames from the report.
+If graph capture, multi-stream execution, driver/runtime upgrades, or other environment changes are
+only plausible follow-ups without direct A/B evidence, keep them in `不确定性与下一步` instead of
+promoting them to top findings or primary actions.
 
 ## Resources
 
@@ -94,7 +98,7 @@ filenames from the report.
    - Start from upstream E2E windows: raw, preparation, stable.
    - Focus on categories where current is worse than baseline; only briefly record current advantages.
    - Use Device Breakdown Overview to locate current regressions across compute, communication, memcpy, compute gap, pure gap, and other activity.
-   - Check the Host Overhead Delta early: if the main compute stream gap ratio increased, the regression is host-bound; follow the cpp_wrapper guidance for torch.compile workloads.
+   - Check the Host Overhead Delta early: if the main compute stream gap ratio increased, the regression is host-bound; follow the cpp_wrapper guidance for torch.compile workloads and report the trace signal source/confidence.
    - When the workload uses torch.compile/triton, use the fusion-coverage, Inductor fusion-granularity, compile-segmentation, and triton kernel IO-efficiency deltas to locate fusion loss, unfused pointwise/reduce kernels, eager fallback, recompilation, or per-kernel bandwidth regressions.
    - Always compare Compute Kernel Summary at name level, because device kernel cost is usually the primary investigation target.
    - Enter other name-level tables for additional regressed categories.
@@ -240,7 +244,7 @@ Emitted only when the DB carries compiled-region annotations or `triton_*` kerne
 
 - Fusion Coverage: `fusion coverage %` = triton-fused compute time / total compute time, plus `triton_fused_ms` / `non_triton_ms` and a top non-fused kernel list (fusion-miss / fallback candidates). Lower coverage is worse.
 - Inductor Fusion Granularity: family-level fused/unfused time for `pointwise`, `reduce`, `library_or_gemm`, `communication`, `triton_other`, and `other`. Treat increased unfused `pointwise` time as the strongest missed-fusion signal; increased unfused `reduce` time is a secondary fusion/reduction signal. Do not mark vendor GEMM/conv/library rows as fusion defects without graph-break/fallback evidence.
-- Compile Segmentation + Host Launch Overhead: compiled region count, inside vs outside-region (eager) compute, recompilation indicators, and the host-launch-overhead metrics — `main_stream_gap_pct`, `avg_launch_self_us`, `launch_self_to_compute_ratio` — used for the cpp_wrapper signal.
+- Compile Segmentation + Host Launch Overhead: compiled region count, inside vs outside-region (eager) compute, recompilation indicators, and the host-launch-overhead metrics — `main_stream_gap_pct`, `avg_launch_self_us`, `launch_self_to_compute_ratio` — plus `cpp_wrapper_signal` (`state`, `source`, `confidence`, and observed `kernel_file` extensions when available).
 - Triton Kernel IO Efficiency: per kernel name, `io_efficiency` (folded bandwidth, NOT a 0–1 ratio) and `bandwidth_utilization = io_efficiency / theoretical_peak`. Theoretical peak comes from the MLU model (MLU590 → 2000, MLU580 → 1200). Lower utilization is worse.
 
 ### Host Summaries
@@ -270,8 +274,9 @@ Emitted only when the DB carries compiled-region annotations or `triton_*` kerne
 - For communication differences, interpret total time together with uncovered time. High total with low uncovered may be hidden by compute overlap.
 - For memcpy differences, separate direction/type changes, uncovered time, bytes, and bandwidth.
 - For compute gap or pure gap differences, consider scheduling, launch, synchronization, pipeline bubbles, device idle, host submission, or missing activity coverage.
-- For host-overhead differences, judge primarily by the device-stream (main compute stream) gap ratio, not host-side wall time. An increased main-stream gap ratio in current means the host is feeding the device less well. Confirm with `avg_launch_self_us` and `launch_self_to_compute_ratio`.
-- When current is host-bound (higher main-stream gap ratio with small kernels and higher per-launch host self-time) on a torch.compile workload, and `cpp_wrapper` looks disabled or unconfirmed, recommend enabling `cpp_wrapper` (inductor C++ wrapper codegen) first to cut per-launch host overhead. Do not recommend graph capture (CUDA graph / device-graph capture) as the only remedy; it is a complementary suggestion, not a substitute. The trace rarely records the config flag, so treat the wrapper mode as inferred.
+- For host-overhead differences, judge primarily by the device-stream (main compute stream) gap ratio, not host-side wall time. An increased main-stream gap ratio in current means the host is feeding the device less well. Confirm with `avg_launch_self_us`, `launch_self_to_compute_ratio`, and `cpp_wrapper_signal`.
+- For `cpp_wrapper`, read the trace signal first. `state=off` with source `explicit_trace_metadata` or `kernel_file_extension` is trace evidence for Python wrapper / disabled cpp_wrapper; `state=on` is trace evidence that cpp_wrapper is enabled; only `state=unknown` should be treated as inferred from host-gap metrics.
+- When current is host-bound on a torch.compile workload and `cpp_wrapper_signal.state=off`, recommend enabling `cpp_wrapper` first to cut per-launch host overhead. When state is `unknown`, recommend verifying/enabling it as a hypothesis. When state is `on`, do not cite disabled `cpp_wrapper` as the root cause; investigate graph breaks, synchronization, tiny kernels, or host framework work. Do not recommend graph capture as the only remedy; it is complementary unless the trace directly supports it.
 - For fusion-coverage differences, a drop in `fusion coverage %` or a rise in non-triton/eager compute time in current points to lost inductor fusion (graph breaks, fallback ops). Then inspect `Inductor Fusion Granularity Delta`: increased unfused `pointwise` time should be highlighted prominently, increased unfused `reduce` time should be highlighted next, and specific rows from `Highlighted Unfused Pointwise/Reduce Delta` should be cited as evidence. Do not treat vendor GEMM/conv library kernels as fusion defects; flag elementwise/reduction/pointwise fallbacks.
 - For triton kernel IO-efficiency differences, treat `io_efficiency` as a folded bandwidth value (not a percentage); compare `bandwidth_utilization` against the same MLU-model theoretical peak on both sides. A utilization drop in current is a memory-IO regression. Never compute `1 - io_efficiency` on the raw value.
 - For other activity differences, inspect notifier, atomic operation, memset, or related device task tables.

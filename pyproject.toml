@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "trace-analyzer"
-version = "0.2.90"
+version = "0.2.91"
 description = "Analyze PyTorch profiler Chrome Trace JSON files."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -15,6 +15,7 @@ classifiers = [
 dependencies = [
     "ijson>=3.2.3",
     "orjson>=3.11.9",
+    "pysimdjson>=6.0.0",
 ]
 
 [project.scripts]

@@ -153,6 +153,128 @@ KERNEL_METADATA_ALIASES = {
     "numstages": "num_stages",
 }
 
+CPP_WRAPPER_KEY_RE = re.compile(r"cpp\s*[_\-. ]?\s*wrapper|cppwrapper", re.IGNORECASE)
+CPP_WRAPPER_VALUE_RE = re.compile(
+    r"cpp\s*[_\-. ]?\s*wrapper\w*\s*[:=]\s*['\"]?"
+    r"(true|false|1|0|yes|no|on|off|enabled|disabled)",
+    re.IGNORECASE,
+)
+CPP_WRAPPER_ON_EXTENSIONS = {".cc", ".cpp", ".cxx", ".so", ".dylib", ".dll"}
+CPP_WRAPPER_OFF_EXTENSIONS = {".py", ".pyc"}
+
+
+def boolish_cpp_wrapper_state(value):
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on", "enabled", "enable"}:
+        return "on"
+    if text in {"0", "false", "no", "off", "disabled", "disable"}:
+        return "off"
+    match = CPP_WRAPPER_VALUE_RE.search(text)
+    if match:
+        return boolish_cpp_wrapper_state(match.group(1))
+    return None
+
+
+class CppWrapperDetector:
+    def __init__(self):
+        self.explicit = []
+        self.kernel_file_exts = collections.Counter()
+
+    def observe_kernel_file(self, value, source):
+        if not isinstance(value, str) or not value:
+            return
+        ext = os.path.splitext(value)[1].lower()
+        if not ext:
+            return
+        self.kernel_file_exts[ext] += 1
+
+    def observe_text(self, value, source):
+        if not isinstance(value, str):
+            return
+        state = boolish_cpp_wrapper_state(value)
+        if state:
+            self.explicit.append({"source": source, "state": state, "value": value[:200]})
+
+    def observe_mapping(self, value, source, depth=0):
+        if not isinstance(value, dict) or depth > 3:
+            return
+        for key, item in value.items():
+            norm_key = normalize_metadata_key(key)
+            if norm_key == "kernelfile":
+                self.observe_kernel_file(item, f"{source}.{key}")
+                continue
+            if CPP_WRAPPER_KEY_RE.search(str(key)):
+                state = boolish_cpp_wrapper_state(item)
+                if state:
+                    self.explicit.append(
+                        {"source": f"{source}.{key}", "state": state, "value": str(item)[:200]}
+                    )
+                continue
+            if isinstance(item, dict):
+                self.observe_mapping(item, f"{source}.{key}", depth + 1)
+            elif isinstance(item, str) and "cpp" in item.lower() and "wrapper" in item.lower():
+                self.observe_text(item, f"{source}.{key}")
+
+    def observe_event(self, event):
+        if not isinstance(event, dict):
+            return
+        name = event.get("name")
+        if isinstance(name, str) and "cpp" in name.lower() and "wrapper" in name.lower():
+            self.observe_text(name, "event.name")
+        args = event.get("args")
+        if isinstance(args, dict):
+            self.observe_mapping(args, "event.args")
+
+    def summary(self):
+        explicit_states = {item["state"] for item in self.explicit}
+        py_count = sum(self.kernel_file_exts.get(ext, 0) for ext in CPP_WRAPPER_OFF_EXTENSIONS)
+        cpp_count = sum(self.kernel_file_exts.get(ext, 0) for ext in CPP_WRAPPER_ON_EXTENSIONS)
+
+        evidence = self.explicit[:6]
+        if self.kernel_file_exts:
+            evidence.append(
+                {
+                    "source": "event.args.kernel_file",
+                    "state": "on" if cpp_count and not py_count else "off" if py_count and not cpp_count else "unknown",
+                    "value": dict(self.kernel_file_exts.most_common()),
+                }
+            )
+
+        if len(explicit_states) == 1:
+            state = next(iter(explicit_states))
+            source = "explicit_trace_metadata"
+            confidence = "high"
+        elif len(explicit_states) > 1:
+            state = "unknown"
+            source = "conflicting_explicit_trace_metadata"
+            confidence = "low"
+        elif cpp_count and not py_count:
+            state = "on"
+            source = "kernel_file_extension"
+            confidence = "medium"
+        elif py_count and not cpp_count:
+            state = "off"
+            source = "kernel_file_extension"
+            confidence = "medium"
+        elif py_count and cpp_count:
+            state = "unknown"
+            source = "mixed_kernel_file_extension"
+            confidence = "low"
+        else:
+            state = "unknown"
+            source = "not_found"
+            confidence = "unknown"
+
+        return {
+            "state": state,
+            "source": source,
+            "confidence": confidence,
+            "kernel_file_extensions": dict(self.kernel_file_exts.most_common()),
+            "evidence": evidence,
+        }
+
 
 def is_json_scalar(value):
     return value is None or isinstance(value, (str, int, float, bool))
@@ -256,6 +378,7 @@ class Converter:
         self.table_counts = collections.Counter()
         self.category_counts = collections.Counter()
         self.skipped_counts = collections.Counter()
+        self.cpp_wrapper_detector = CppWrapperDetector()
 
         if os.path.exists(out_path):
             os.remove(out_path)
@@ -826,6 +949,8 @@ class Converter:
             )
 
     def insert_meta(self, metadata, source_path, parser, max_events):
+        self.cpp_wrapper_detector.observe_mapping(metadata, "trace_header")
+        cpp_wrapper_signal = self.cpp_wrapper_detector.summary()
         compact = {
             k: v
             for k, v in metadata.items()
@@ -834,13 +959,19 @@ class Converter:
         compact["source_trace"] = source_path
         compact["parser"] = parser
         compact["max_events"] = max_events
+        compact["cpp_wrapper_signal"] = cpp_wrapper_signal
         self.cur.execute(
             "INSERT OR REPLACE INTO meta_information VALUES (?, ?)",
             ("torch_trace_metadata", compact_json(compact)),
         )
+        self.cur.execute(
+            "INSERT OR REPLACE INTO meta_information VALUES (?, ?)",
+            ("torch_compile_cpp_wrapper", compact_json(cpp_wrapper_signal)),
+        )
 
     def process_event(self, event):
         event = to_python(event)
+        self.cpp_wrapper_detector.observe_event(event)
         if event.get("ph") != "X":
             self.skipped_counts[f"ph:{event.get('ph')}"] += 1
             return

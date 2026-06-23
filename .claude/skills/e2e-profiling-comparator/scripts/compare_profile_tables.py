@@ -295,6 +295,14 @@ def build_comparison(baseline, current, limit):
                 "range": baseline.get("range"),
                 "device_name": nested_get(baseline, ("torch_compile", "device_name")),
                 "peak_bandwidth": nested_get(baseline, ("torch_compile", "peak_bandwidth")),
+                "cpp_wrapper_signal": nested_get(
+                    baseline,
+                    ("torch_compile", "segmentation", "cpp_wrapper_signal"),
+                )
+                or nested_get(
+                    baseline,
+                    ("torch_compile", "segmentation", "host_launch_overhead", "cpp_wrapper_signal"),
+                ),
             },
             "current": {
                 "label": current.get("label"),
@@ -302,6 +310,14 @@ def build_comparison(baseline, current, limit):
                 "range": current.get("range"),
                 "device_name": nested_get(current, ("torch_compile", "device_name")),
                 "peak_bandwidth": nested_get(current, ("torch_compile", "peak_bandwidth")),
+                "cpp_wrapper_signal": nested_get(
+                    current,
+                    ("torch_compile", "segmentation", "cpp_wrapper_signal"),
+                )
+                or nested_get(
+                    current,
+                    ("torch_compile", "segmentation", "host_launch_overhead", "cpp_wrapper_signal"),
+                ),
             },
             "delta_definition": "current - baseline",
         },
@@ -365,6 +381,16 @@ def print_markdown(payload, limit):
     print(f"- Baseline A: {cmp_info['baseline'].get('label')} ({cmp_info['baseline'].get('db')})")
     print(f"- Current B: {cmp_info['current'].get('label')} ({cmp_info['current'].get('db')})")
     print("- Delta: B - A")
+    for label, key in (("A", "baseline"), ("B", "current")):
+        sig = cmp_info[key].get("cpp_wrapper_signal") or {}
+        if sig:
+            state_text = {"on": "ON", "off": "OFF", "unknown": "unconfirmed"}.get(
+                sig.get("state"), "unconfirmed"
+            )
+            print(
+                f"- cpp_wrapper {label}: {state_text} "
+                f"(source: {sig.get('source', 'n/a')}, confidence: {sig.get('confidence', 'n/a')})"
+            )
 
     print_delta_table(
         "Device Overview Delta",

@@ -3,8 +3,10 @@
 
 import argparse
 import bisect
+import collections
 import json
 import math
+import os
 import re
 import sqlite3
 from pathlib import Path
@@ -24,6 +26,14 @@ COMPILE_REGION_REGEX = re.compile(
     re.IGNORECASE,
 )
 RECOMPILE_REGEX = re.compile(r"TorchDynamo Cache Lookup|recompile|guard", re.IGNORECASE)
+CPP_WRAPPER_KEY_RE = re.compile(r"cpp\s*[_\-. ]?\s*wrapper|cppwrapper", re.IGNORECASE)
+CPP_WRAPPER_VALUE_RE = re.compile(
+    r"cpp\s*[_\-. ]?\s*wrapper\w*\s*[:=]\s*['\"]?"
+    r"(true|false|1|0|yes|no|on|off|enabled|disabled)",
+    re.IGNORECASE,
+)
+CPP_WRAPPER_ON_EXTENSIONS = {".cc", ".cpp", ".cxx", ".so", ".dylib", ".dll"}
+CPP_WRAPPER_OFF_EXTENSIONS = {".py", ".pyc"}
 IO_EFF_KEYS = (
     "io_efficiency",
     "io_eff",
@@ -112,6 +122,130 @@ def get_name(strings, name_id):
 
 def simplify_name(name):
     return " ".join(str(name).replace("\n", " ").split())
+
+
+def normalize_metadata_key(key):
+    return re.sub(r"[^a-z0-9]+", "", str(key).lower())
+
+
+def boolish_cpp_wrapper_state(value):
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on", "enabled", "enable"}:
+        return "on"
+    if text in {"0", "false", "no", "off", "disabled", "disable"}:
+        return "off"
+    match = CPP_WRAPPER_VALUE_RE.search(text)
+    if match:
+        return boolish_cpp_wrapper_state(match.group(1))
+    return None
+
+
+def parse_json_maybe(value):
+    if not value:
+        return None
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return None
+
+
+class CppWrapperDetector:
+    def __init__(self):
+        self.explicit = []
+        self.kernel_file_exts = collections.Counter()
+
+    def observe_kernel_file(self, value, source):
+        if not isinstance(value, str) or not value:
+            return
+        ext = os.path.splitext(value)[1].lower()
+        if ext:
+            self.kernel_file_exts[ext] += 1
+
+    def observe_mapping(self, value, source, depth=0):
+        if not isinstance(value, dict) or depth > 3:
+            return
+        for key, item in value.items():
+            norm_key = normalize_metadata_key(key)
+            if norm_key == "kernelfile":
+                self.observe_kernel_file(item, f"{source}.{key}")
+                continue
+            if CPP_WRAPPER_KEY_RE.search(str(key)):
+                state = boolish_cpp_wrapper_state(item)
+                if state:
+                    self.explicit.append(
+                        {"source": f"{source}.{key}", "state": state, "value": str(item)[:200]}
+                    )
+                continue
+            if isinstance(item, dict):
+                self.observe_mapping(item, f"{source}.{key}", depth + 1)
+            elif isinstance(item, str) and "cpp" in item.lower() and "wrapper" in item.lower():
+                state = boolish_cpp_wrapper_state(item)
+                if state:
+                    self.explicit.append(
+                        {"source": f"{source}.{key}", "state": state, "value": item[:200]}
+                    )
+
+    def observe_json_text(self, value, source):
+        obj = parse_json_maybe(value)
+        if isinstance(obj, dict):
+            self.observe_mapping(obj, source)
+
+    def summary(self):
+        explicit_states = {item["state"] for item in self.explicit}
+        py_count = sum(self.kernel_file_exts.get(ext, 0) for ext in CPP_WRAPPER_OFF_EXTENSIONS)
+        cpp_count = sum(self.kernel_file_exts.get(ext, 0) for ext in CPP_WRAPPER_ON_EXTENSIONS)
+        evidence = self.explicit[:6]
+        if self.kernel_file_exts:
+            evidence.append(
+                {
+                    "source": "trace.args.kernel_file",
+                    "state": "on" if cpp_count and not py_count else "off" if py_count and not cpp_count else "unknown",
+                    "value": dict(self.kernel_file_exts.most_common()),
+                }
+            )
+        if len(explicit_states) == 1:
+            state, source, confidence = next(iter(explicit_states)), "explicit_trace_metadata", "high"
+        elif len(explicit_states) > 1:
+            state, source, confidence = "unknown", "conflicting_explicit_trace_metadata", "low"
+        elif cpp_count and not py_count:
+            state, source, confidence = "on", "kernel_file_extension", "medium"
+        elif py_count and not cpp_count:
+            state, source, confidence = "off", "kernel_file_extension", "medium"
+        elif py_count and cpp_count:
+            state, source, confidence = "unknown", "mixed_kernel_file_extension", "low"
+        else:
+            state, source, confidence = "unknown", "not_found", "unknown"
+        return {
+            "state": state,
+            "source": source,
+            "confidence": confidence,
+            "kernel_file_extensions": dict(self.kernel_file_exts.most_common()),
+            "evidence": evidence,
+        }
+
+
+def load_cpp_wrapper_detector(cur):
+    detector = CppWrapperDetector()
+    if not table_exists(cur, "meta_information"):
+        return detector
+    for meta_type, value in cur.execute("SELECT type, value FROM meta_information"):
+        if meta_type == "torch_compile_cpp_wrapper":
+            obj = parse_json_maybe(value)
+            if isinstance(obj, dict):
+                detector.observe_mapping(obj, f"meta_information.{meta_type}")
+                for ext, count in (obj.get("kernel_file_extensions") or {}).items():
+                    detector.kernel_file_exts[ext] += count
+                state = obj.get("state")
+                if state in {"on", "off"} and obj.get("source") == "explicit_trace_metadata":
+                    detector.explicit.append(
+                        {"source": f"meta_information.{meta_type}", "state": state, "value": obj.get("source")}
+                    )
+            continue
+        if "cpp" in str(value).lower() or "kernel_file" in str(value):
+            detector.observe_json_text(value, f"meta_information.{meta_type}")
+    return detector
 
 
 def empty_summary():
@@ -659,10 +793,6 @@ def highlight_unfused_reason(cls, family):
     return "fusion-sensitive kernel did not appear as triton-fused"
 
 
-def normalize_metadata_key(key):
-    return re.sub(r"[^a-z0-9]+", "", str(key).lower())
-
-
 def find_key(d, candidates):
     lowered = {k.lower(): k for k in d.keys()}
     for cand in candidates:
@@ -891,15 +1021,26 @@ def triton_fusion_summary(cur, strings, start, end, compute_rows, top=20):
 
 
 def compile_segmentation_summary(cur, strings, start, end, kernel_rows, stream_gap):
+    cpp_wrapper_detector = load_cpp_wrapper_detector(cur)
     regions_by_thread = {}
     region_inventory = {}
     recompile_count = 0
     if table_exists(cur, "Internal_operation_range_data"):
-        for pid, tid, r_start, r_end, name_id in cur.execute(
-            "SELECT processId, threadId, start, end, nameId FROM Internal_operation_range_data "
+        range_cols = table_columns(cur, "Internal_operation_range_data")
+        range_select = "processId, threadId, start, end, nameId"
+        if "extra" in range_cols:
+            range_select += ", extra"
+        for row in cur.execute(
+            f"SELECT {range_select} FROM Internal_operation_range_data "
             "WHERE start < :window_end AND end > :window_start",
             window_params(start, end),
         ):
+            if "extra" in range_cols:
+                pid, tid, r_start, r_end, name_id, extra = row
+                if extra and ("kernel_file" in extra or "cpp" in extra.lower()):
+                    cpp_wrapper_detector.observe_json_text(extra, "Internal_operation_range_data.extra")
+            else:
+                pid, tid, r_start, r_end, name_id = row
             name = simplify_name(get_name(strings, name_id))
             if RECOMPILE_REGEX.search(name):
                 recompile_count += 1
@@ -962,6 +1103,34 @@ def compile_segmentation_summary(cur, strings, start, end, kernel_rows, stream_g
             outside_cnt += 1
 
     device_compute_ns = inside_ns + outside_ns
+    if table_exists(cur, "device_task_kernel_data"):
+        kernel_cols = table_columns(cur, "device_task_kernel_data")
+        if "extra" in kernel_cols:
+            for (extra,) in cur.execute(
+                "SELECT extra FROM device_task_kernel_data "
+                "WHERE start < :window_end AND end > :window_start AND extra IS NOT NULL",
+                window_params(start, end),
+            ):
+                if extra and ("kernel_file" in extra or "cpp" in extra.lower()):
+                    cpp_wrapper_detector.observe_json_text(extra, "device_task_kernel_data.extra")
+
+    cpp_wrapper_signal = cpp_wrapper_detector.summary()
+    if cpp_wrapper_signal["state"] == "off":
+        cpp_note = (
+            "Trace evidence indicates cpp_wrapper is disabled; use host-launch metrics "
+            "to judge whether it is the active bottleneck."
+        )
+    elif cpp_wrapper_signal["state"] == "on":
+        cpp_note = (
+            "Trace evidence indicates cpp_wrapper is enabled; if the main-stream gap is "
+            "still high, investigate graph breaks, synchronization, tiny kernels, or host framework work."
+        )
+    else:
+        cpp_note = (
+            "No direct cpp_wrapper trace signal was found; interpret wrapper mode from "
+            "device-stream gap and host launch metrics only as a hypothesis."
+        )
+
     return {
         "has_compiled_regions": bool(region_inventory),
         "compiled_region_count": sum(v["count"] for v in region_inventory.values()),
@@ -978,7 +1147,10 @@ def compile_segmentation_summary(cur, strings, start, end, kernel_rows, stream_g
             "total_launch_self_ms": ms(total_launch_self_ns),
             "device_compute_ms": ms(device_compute_ns),
             "launch_self_to_compute_ratio": (total_launch_self_ns / device_compute_ns) if device_compute_ns else 0.0,
+            "cpp_wrapper_signal": cpp_wrapper_signal,
+            "note": cpp_note,
         },
+        "cpp_wrapper_signal": cpp_wrapper_signal,
         "region_inventory": sorted(
             ({"region": k, "count": v["count"], "host_ms": ms(v["host_ns"])} for k, v in region_inventory.items()),
             key=lambda r: -(r["host_ms"] or 0.0),
@@ -1328,6 +1500,21 @@ def print_torch_compile(side):
         f"avg launch self {hlo.get('avg_launch_self_us', 0.0):.2f} us, "
         f"launch/compute ratio {hlo.get('launch_self_to_compute_ratio', 0.0):.2f}"
     )
+    cpp_signal = hlo.get("cpp_wrapper_signal") or seg.get("cpp_wrapper_signal") or {}
+    if cpp_signal:
+        state_text = {
+            "on": "enabled / ON",
+            "off": "disabled / OFF",
+            "unknown": "unconfirmed",
+        }.get(cpp_signal.get("state"), "unconfirmed")
+        print(
+            f"- cpp_wrapper trace signal: {state_text} "
+            f"(source: {cpp_signal.get('source', 'n/a')}, confidence: {cpp_signal.get('confidence', 'n/a')})"
+        )
+        if cpp_signal.get("kernel_file_extensions"):
+            print(f"- kernel_file extensions: `{cpp_signal['kernel_file_extensions']}`")
+    if hlo.get("note"):
+        print(f"- interpretation: {hlo['note']}")
     print(
         f"- compiled regions: {seg.get('compiled_region_count', 0)}, "
         f"outside/eager compute {fmt_ms(seg.get('outside_region_compute_ms', 0.0))} ms "

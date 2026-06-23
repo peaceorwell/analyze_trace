@@ -39,7 +39,7 @@ Do not assume the bottleneck is communication, a specific kernel family, TCDP, o
 - `scripts/compute_breakdown.py`: top compute kernels and per-process/device compute skew.
 - `scripts/comm_breakdown.py`: communication kernel total/uncovered time, per-process/device exposure, and top long events.
 - `scripts/rank_compare.py`: cross-DB process/device span, compute, uncovered communication, and compute-gap skew.
-- `scripts/compile_segmentation.py`: torch.compile compiled-region inventory, inside/outside-region (eager) kernel split, recompilation indicators, and the host-launch-overhead / cpp_wrapper check driven by device-stream gap ratio. Supports `--format json`.
+- `scripts/compile_segmentation.py`: torch.compile compiled-region inventory, inside/outside-region (eager) kernel split, recompilation indicators, and the host-launch-overhead / cpp_wrapper check driven by device-stream gap ratio plus trace metadata (`cpp_wrapper` config keys or `kernel_file` evidence). Supports `--format json`.
 - `scripts/triton_fusion_coverage.py`: classifies compute kernels into triton-fused / other-triton / non-triton, fusion coverage ratio, Inductor fusion granularity by kernel family (pointwise/reduce/library/etc.), highlighted unfused pointwise/reduce candidates, top non-fused kernels, and per-rank coverage. Supports `--format json` and `--top`.
 - `scripts/triton_kernel_efficiency.py`: triton kernel IO efficiency from `device_task_kernel_data.extra`, treating `io_efficiency` as a folded-bandwidth value (not a 0–1 ratio) compared against device peak bandwidth, plus `output_code` dump (`--dump-dir`). Supports `--format json` and `--top`.
 - `scripts/query_common.py`: shared helpers and `--host-stack=<function_corr_id>` CLI.
@@ -78,9 +78,10 @@ The final `report.md` must use this exact high-level structure:
 
 1. `# AI 性能分析报告`
 2. `## 结论概览`
-   - 3-4 prioritized findings only.
+   - 2-4 prioritized findings only; prefer 3 unless the evidence clearly needs more.
    - Use one subsection per finding: `### 发现 N：short title`, followed by separate paragraphs `**结论：** ...`, `**证据：** ...`, and `**建议：** ...`.
    - Keep each `结论` / `证据` / `建议` paragraph to one short sentence. Merge overlapping findings instead of repeating the same cause from multiple script outputs.
+   - Treat host gap, launch overhead, and `cpp_wrapper` mode as one causal chain when they describe the same bottleneck; do not split them into separate findings.
    - Do not output sibling bullets like `- 结论` / `- 证据` / `- 建议`; that renders as a flat wall in the Web UI.
 3. `## 关键指标`
    - Compact Markdown table with metric, value, source file/log, and interpretation.
@@ -95,6 +96,9 @@ Default to a concise Web report. Target no more than 1200 Chinese characters bef
 section. Do not duplicate a full `主要发现` section after `结论概览`; put detailed branch findings,
 long evidence, raw tables, stack traces, and script logs into artifacts such as
 `phase2_<branch>_report.md` and `evidence_summary.md`, then cite those filenames from the report.
+If graph capture, multi-stream execution, or driver/runtime upgrades are only plausible follow-ups
+without direct trace evidence, keep them in `不确定性与下一步` instead of promoting them to top
+findings or primary actions.
 
 ## Setup And Inputs
 
@@ -444,7 +448,7 @@ Workflow:
 6. For notifier waits, verify same-queue predecessor before matched notifier place. A wait/place match uses `processId + deviceId + notifierId + extra.unique_val`; `queueId` is not part of notifier identity.
 7. If multiple DBs are involved and gap patterns differ by rank, check whether rank progress imbalance explains the gaps.
 8. Report the dominant subtype: host-side blocker, notifier dependency, previous kernel, memcpy/atomic, communication source task, out-of-range, or unknown.
-9. If the host-side blocker is per-kernel launch overhead (not a queue-sync wait), confirm it with the device-stream gap ratio from `device_timeline.py` (high main compute stream gap %). When the workload also uses torch.compile, hand off to the `compile-segmentation` cpp_wrapper check and apply its recommendation rule: recommend enabling `cpp_wrapper` first, not graph capture alone.
+9. If the host-side blocker is per-kernel launch overhead (not a queue-sync wait), confirm it with the device-stream gap ratio from `device_timeline.py` (high main compute stream gap %). When the workload also uses torch.compile, hand off to the `compile-segmentation` cpp_wrapper check and apply its recommendation rule: enable `cpp_wrapper` when the trace signal says it is off, verify it when unconfirmed, and look elsewhere when it is already on; do not recommend graph capture alone.
 
 Only attribute a host gap to framework-triggered host synchronization if the DB shows a concrete framework op triggering a synchronization API, such as:
 
@@ -495,10 +499,11 @@ Workflow:
    The script reports the observed compiled-region inventory (names decoded through `string_table`), inside vs outside-region (eager) compute split, recompilation indicators, the per-queue device-stream gap ratio, and the host-launch-overhead metrics. Report the observed region-name inventory first.
 2. Read segmentation: device compute time and kernel count inside compiled regions vs outside (eager/graph-break), and whether work is fragmented across many small regions. The script attributes each kernel by temporal containment of its `function_data` launch within compiled-region ranges.
 3. Read recompilation indicators (`TorchDynamo Cache Lookup`/guard ranges) as a sign of re-tracing on dynamic shapes.
-4. cpp_wrapper check (driven by device-stream gap ratio): the primary host-overhead signal is `host_launch_overhead.main_stream_gap_pct` — a high main compute stream gap ratio means the host is not keeping the device fed. Combine it with `avg_launch_self_us` (per-kernel host launch self-time) and `launch_self_to_compute_ratio`. The torch trace rarely records the `cpp_wrapper` config flag, so infer the wrapper mode:
-   - Python wrapper (cpp_wrapper off): high main-stream gap ratio + small kernels + high `avg_launch_self_us` + `launch_self_to_compute_ratio` near or above 1 (host launch self-time rivals device compute).
-   - cpp_wrapper on: low main-stream gap ratio and low per-launch host self-time.
-   - If the mode cannot be confirmed, say so and treat enabling/verifying `cpp_wrapper` as a recommendation, not a stated fact.
+4. cpp_wrapper check (trace signal first, device-stream gap second): read `host_launch_overhead.cpp_wrapper_signal` / `cpp_wrapper_signal` before making any inference.
+   - `state=off` means the trace indicates Python wrapper / `cpp_wrapper` disabled. This can come from an explicit trace key or from Inductor `kernel_file` evidence such as generated `.py` files.
+   - `state=on` means the trace indicates `cpp_wrapper` enabled. This can come from an explicit trace key or generated C++/shared-library style `kernel_file` evidence.
+   - `state=unknown` means the trace did not carry a direct signal; only then infer wrapper mode from high main-stream gap ratio, small kernels, high `avg_launch_self_us`, and high `launch_self_to_compute_ratio`.
+   - Always report the signal source and confidence. Do not write "无法从 trace 确认 cpp_wrapper" when `cpp_wrapper_signal.source` is `explicit_trace_metadata` or `kernel_file_extension`.
 5. Identify the largest outside-region (eager) kernels from `top_outside_region_kernels`.
 6. Report whether segmentation is material: large compute time or many kernels outside compiled regions, frequent recompilation, or many small fragmented regions.
 
@@ -508,12 +513,12 @@ Output contract:
 - `Compiled Region Inventory`: observed region names, region count, per-region host/device time.
 - `Segmentation Summary`: segment count, graph-break count, device compute time inside vs outside compiled regions, kernel count inside vs outside.
 - `Recompilation Indicators`: evidence of re-tracing/guards, if any.
-- `Host Launch Overhead / cpp_wrapper Check`: main compute stream gap ratio (key indicator), `avg_launch_self_us`, `launch_self_to_compute_ratio`, inferred wrapper mode (Python wrapper / cpp_wrapper / unconfirmed), and the device-stream gap evidence.
+- `Host Launch Overhead / cpp_wrapper Check`: main compute stream gap ratio (key indicator), `avg_launch_self_us`, `launch_self_to_compute_ratio`, trace-confirmed or inferred wrapper mode, `cpp_wrapper_signal.source/confidence`, and the device-stream gap evidence.
 - `Top Eager / Graph-Break Segments`: largest outside-region kernels (from `top_outside_region_kernels`).
-- `Candidate Causes`: Python wrapper host launch overhead (cpp_wrapper disabled), graph breaks fragmenting fusion, recompilation overhead, unsupported ops forcing eager fallback, dynamic shapes, or balanced/healthy compilation; each with evidence, counter-evidence, estimated impact, confidence, and missing evidence.
+- `Candidate Causes`: Python wrapper host launch overhead only when `cpp_wrapper_signal.state=off` or the mode is unconfirmed and gap metrics support it; graph breaks fragmenting fusion, recompilation overhead, unsupported ops forcing eager fallback, dynamic shapes, or balanced/healthy compilation; each with evidence, counter-evidence, estimated impact, confidence, and missing evidence.
 - `Interpretation` and `Next Step`.
 
-Recommendation rule: for a host-bound torch.compile workload with large device kernel bubbles, when `cpp_wrapper` is off or unconfirmed, recommend enabling `cpp_wrapper` (inductor C++ wrapper codegen) to cut per-launch host overhead. Do not recommend graph capture (CUDA graph / device-graph capture) as the only remedy — `cpp_wrapper` addresses host launch overhead more directly and with fewer capture constraints. Graph capture may be offered as a complementary suggestion, not a substitute.
+Recommendation rule: for a host-bound torch.compile workload with large device kernel bubbles, when `cpp_wrapper_signal.state=off`, recommend enabling `cpp_wrapper` (inductor C++ wrapper codegen) to cut per-launch host overhead. When the state is `unknown`, recommend verifying/enabling it as a hypothesis. When the state is `on`, do not cite disabled `cpp_wrapper` as the root cause; investigate graph breaks, synchronization, tiny kernels, or host framework work. Do not recommend graph capture (CUDA graph / device-graph capture) as the only remedy — it is complementary unless direct trace evidence shows capture is the missing mechanism.
 
 ### Branch: `triton-fusion-coverage`
 
@@ -618,7 +623,7 @@ Use the exact structure defined in `Final Report Contract`:
 
 Output contract:
 
-- `结论概览`: 3-4 prioritized findings. Use one `### 发现 N：short title` subsection per finding with separate `**结论：**`, `**证据：**`, and `**建议：**` paragraphs; each paragraph must be one short sentence.
+- `结论概览`: 2-4 prioritized findings, usually 3. Use one `### 发现 N：short title` subsection per finding with separate `**结论：**`, `**证据：**`, and `**建议：**` paragraphs; each paragraph must be one short sentence. Merge host gap / launch overhead / `cpp_wrapper` into one finding when they are the same causal path.
 - `关键指标`: compact table with 4-6 rows: metric, measured value/share, source artifact, and interpretation.
 - `优先行动`: 3-5 rows: priority, action, expected benefit, confidence, risk/cost, and validation method.
 - `不确定性与下一步`: missing data or unresolved hypotheses, plus the branch/input needed to resolve each and one recommended first next step.
