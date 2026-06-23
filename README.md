@@ -2,7 +2,7 @@
 
 Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/内网性能分析工具。它可以解析 `.json`、`.json.gz`、`.gz`、`.json.zip`、`.zip`、`.tar.gz` 和 `.tgz` trace 文件，统计 GPU kernel、Triton kernel、ATen Ops、CNCL/NCCL 通信算子，并提供单 trace 分析、双 trace 对比、历史管理、AI 分析和 Web 可视化界面。
 
-当前版本：`0.2.93`
+当前版本：`0.2.94`
 
 ## 主要功能
 
@@ -173,6 +173,8 @@ AI 分析默认关闭。开启后，已完成任务会出现 `AI 分析` 页签�
 
 - 单 trace skill：`.claude/skills/e2e-profiling-analyzer`
 - 对比 skill：`.claude/skills/e2e-profiling-comparator`
+
+单 trace skill 会在 trace 携带 Triton `output_code` 和 IO efficiency 元数据时调用 `.claude/skills/mlu-triton-optimize` 做静态代码级候选分析，识别 libdevice 替换、除法降低、碎片化 IO、reduce/retiling、grid flatten 等 MLU Triton 优化方向，并把结果合并到 AI 报告证据中。
 
 常用环境变量：
 

@@ -9,6 +9,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 ANALYZER_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts/triton_fusion_coverage.py"
 TRITON_EFFICIENCY_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts/triton_kernel_efficiency.py"
+TRITON_CODE_OPT_SCRIPT = ROOT / ".claude/skills/mlu-triton-optimize/scripts/analyze_triton_code.py"
 TRACE_CONVERTER_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts/torch_trace_to_cnperf_db.py"
 COMPILE_SEGMENTATION_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts/compile_segmentation.py"
 COLLECT_SCRIPT = ROOT / ".claude/skills/e2e-profiling-comparator/scripts/collect_profile_tables.py"
@@ -308,6 +309,77 @@ def test_triton_efficiency_script_reads_raw_trace_efficiency_keys(tmp_path):
     assert kernels[0]["avg_io_efficiency"] == pytest.approx(350.2)
     assert kernels[0]["bandwidth_utilization"] == pytest.approx(350.2 / 2000)
     assert Path(kernels[0]["output_code_file"]).exists()
+
+
+def test_mlu_triton_code_optimizer_flags_static_candidates(tmp_path):
+    module = load_module("mlu_triton_code_opt", TRITON_CODE_OPT_SCRIPT)
+    code_dir = tmp_path / "triton_output_code"
+    code_dir.mkdir()
+    code_file = code_dir / "triton_output_code_00_triton_poi_fused_test.txt"
+    code_file.write_text(
+        """
+import triton
+import triton.language as tl
+
+@triton.jit
+def triton_poi_fused_test(in_ptr0, in_ptr1, out_ptr, N:tl.constexpr, BLOCK:tl.constexpr):
+    pid0 = tl.program_id(0)
+    pid1 = tl.program_id(1)
+    offs = pid0 * BLOCK + tl.arange(0, BLOCK)
+    wrapped = offs % N
+    a = tl.load(in_ptr0 + wrapped, mask=offs < N, other=0.0).to(tl.float32)
+    b = tl.load(in_ptr1 + wrapped // 2, mask=offs < N, other=0.0).to(tl.float32)
+    c = tl.load(in_ptr1 + wrapped + BLOCK, mask=offs + BLOCK < N, other=0.0)
+    d = tl.load(in_ptr1 + wrapped + 2 * BLOCK, mask=offs + 2 * BLOCK < N, other=0.0)
+    y = a * tl.sigmoid(a) + tl.exp(b) / (tl.sqrt(a + 1.0) + 1.0)
+    z = tl.sum(y[:, None] + c[:, None], axis=1)
+    tl.store(out_ptr + wrapped, z.to(tl.float32), mask=offs < N)
+    tl.store(out_ptr + wrapped + BLOCK, d, mask=offs + BLOCK < N)
+""",
+        encoding="utf-8",
+    )
+    efficiency_json = tmp_path / "triton_kernel_efficiency.json"
+    efficiency_json.write_text(
+        json.dumps(
+            {
+                "profiles": [
+                    {
+                        "label": "trace",
+                        "top_low_bandwidth_kernels": [
+                            {
+                                "kernel_name": "triton_poi_fused_test",
+                                "output_code_file": str(code_file),
+                                "total_ms": 12.0,
+                                "avg_io_efficiency": 180.0,
+                                "bandwidth_utilization": 0.09,
+                                "improvement_target": 10.9,
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = module.analyze(str(code_dir), str(efficiency_json), top=10)
+    kernel = payload["kernels"][0]
+    categories = {finding["category"] for finding in kernel["findings"]}
+    strategies = {strategy for finding in kernel["findings"] for strategy in finding["strategy"].split(" / ")}
+    markdown = module.render_markdown(payload)
+
+    assert payload["has_findings"] is True
+    assert kernel["kernel_name"] == "triton_poi_fused_test"
+    assert kernel["bandwidth_utilization"] == pytest.approx(0.09)
+    assert "libdevice_math_candidate" in categories
+    assert "tensor_division_candidate" in categories
+    assert "index_div_mod_or_boundary_fold" in categories
+    assert "fragmented_or_pseudo_discrete_io" in categories
+    assert "reduce_layout_or_tiling_candidate" in categories
+    assert "grid_or_retiling_candidate" in categories
+    assert {"libdevice-opt", "div-to-mul", "bulk-io-opt", "reduce-opt", "retiling", "modify-grid"} <= strategies
+    assert "Triton Code Optimization Candidates" in markdown
+    assert "triton_poi_fused_test" in markdown
 
 
 def test_collect_profile_tables_emits_fusion_granularity():

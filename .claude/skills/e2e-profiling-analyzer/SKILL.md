@@ -42,6 +42,7 @@ Do not assume the bottleneck is communication, a specific kernel family, TCDP, o
 - `scripts/compile_segmentation.py`: torch.compile compiled-region inventory, inside/outside-region (eager) kernel split, recompilation indicators, custom-op ranges that contain many simple `aten::` ops, and the host-launch-overhead / cpp_wrapper check driven by device-stream gap ratio plus trace metadata (`cpp_wrapper` config keys or `kernel_file` evidence). Supports `--format json`.
 - `scripts/triton_fusion_coverage.py`: classifies compute kernels into triton-fused / other-triton / non-triton, fusion coverage ratio, Inductor fusion granularity by kernel family (pointwise/reduce/library/etc.), highlighted unfused pointwise/reduce candidates, top non-fused kernels, and per-rank coverage. Supports `--format json` and `--top`.
 - `scripts/triton_kernel_efficiency.py`: triton kernel IO efficiency from `device_task_kernel_data.extra`, treating `io_efficiency` as a folded-bandwidth value (not a 0–1 ratio) compared against device peak bandwidth, plus `output_code` dump (`--dump-dir`). Supports `--format json` and `--top`.
+- `../mlu-triton-optimize/scripts/analyze_triton_code.py`: static analysis of dumped Triton `output_code` for MLU optimization candidates such as libdevice math replacement, division lowering, fragmented IO, reduce layout/tiling, grid flattening, and dtype conversion cleanup. Supports `--format json|text`.
 - `scripts/query_common.py`: shared helpers and `--host-stack=<function_corr_id>` CLI.
 - `scripts/torch_trace_to_cnperf_db.py`: self-contained torch profiler Chrome trace converter. Requires Python module `simdjson` from package `pysimdjson`.
 - `references/profiling_concepts.md`: required concepts and causal models. Always load this before starting analysis.
@@ -581,9 +582,28 @@ Workflow:
    ```
 
    If the script reports `has_io_metadata=false`, skip this branch and record it under `Skipped Branches` with the missing-metadata reason. The script reports the observed metadata keys first, treats `io_efficiency` as folded bandwidth, and uses the MLU-model **theoretical (peak) bandwidth** — MLU590 → 2000, MLU580 → 1200 (GB/s) — falling back to `meta_information` `deviceInfo.m_dev_basic_info.max_bandwidth` only when the model is unknown. It computes `bandwidth_utilization = io_efficiency / peak_bandwidth` when comparable, and ranks by `improvement_target = total_ms * (1 - bandwidth_utilization)` (falling back to lowest folded bandwidth weighted by `total_ms` when utilization is unavailable). Check `peak_bandwidth_source`; if utilization looks impossible (e.g. > 1), treat units as mismatched and rely on the fallback ranking.
-2. For the top low-bandwidth kernels, open the dumped `output_code` files (under `triton_output_code/`) and characterize the access pattern: tensor shapes/strides, masking, non-contiguous or gather/scatter access, reduction shape, grid/block configuration, and load/store counts. Do not paste full generated source into the main report; cite the file.
-3. Classify the low-bandwidth cause per kernel: memory-bound small kernel, non-coalesced/strided access, redundant recompute, poor tiling/grid, register spill, or already efficient (folded bandwidth near peak).
-4. If multiple DBs are involved, compare per-rank folded bandwidth for the same kernel names.
+2. If the sibling `mlu-triton-optimize` skill is available, run its static code analyzer on the dumped `output_code`.
+
+   ```bash
+   TRITON_OPT_SKILL_DIR="$(dirname "$SKILL_DIR")/mlu-triton-optimize"
+   if [ -f "$TRITON_OPT_SKILL_DIR/scripts/analyze_triton_code.py" ]; then
+     python3 "$TRITON_OPT_SKILL_DIR/scripts/analyze_triton_code.py" \
+       --input-dir "$ANALYSIS_DIR/triton_output_code" \
+       --efficiency-json "$ANALYSIS_DIR/triton_kernel_efficiency.json" \
+       --format json \
+       > "$ANALYSIS_DIR/triton_code_optimization.json"
+     python3 "$TRITON_OPT_SKILL_DIR/scripts/analyze_triton_code.py" \
+       --input-dir "$ANALYSIS_DIR/triton_output_code" \
+       --efficiency-json "$ANALYSIS_DIR/triton_kernel_efficiency.json" \
+       --format text \
+       > "$ANALYSIS_DIR/triton_code_optimization.md"
+   fi
+   ```
+
+   Read `triton_code_optimization.json` when present. Use it as code-level evidence for MLU Triton optimization candidates, not as proof that a rewrite will improve performance.
+3. For the top low-bandwidth kernels, combine IO-efficiency metrics with `triton_code_optimization` findings. Characterize access pattern, masking, non-contiguous or gather/scatter access, reduction shape, grid/block configuration, load/store counts, libdevice/division candidates, and dtype conversion chains. Do not paste full generated source into the main report; cite the output-code file and the analyzer artifact.
+4. Classify the low-bandwidth cause per kernel: memory-bound small kernel, non-coalesced/strided access, redundant recompute, poor tiling/grid, register spill, expensive math/division, fragmented pseudo-discrete IO, reduce layout/tiling, or already efficient (folded bandwidth near peak).
+5. If multiple DBs are involved, compare per-rank folded bandwidth for the same kernel names.
 
 Output contract:
 
@@ -591,6 +611,7 @@ Output contract:
 - `IO Efficiency Summary`: number of triton kernels with metadata, distribution of folded/effective bandwidth (`io_efficiency`), the device peak bandwidth and its units, and bandwidth utilization when computable. State explicitly that `io_efficiency` is a bandwidth value, not a percentage.
 - `Top Low-Bandwidth Kernels`: `kernel_name`, `count`, `total_ms`, `io_efficiency` (folded bandwidth with units), `bandwidth_utilization` (`io_efficiency / peak_bandwidth`, when available), and `improvement_target`.
 - `Output Code Findings`: per top kernel, the access-pattern characterization with the `output_code` excerpt filename.
+- `Triton Code Optimization Candidates`: when `triton_code_optimization.json` exists, summarize high-priority candidates from the sibling `mlu-triton-optimize` analyzer, including strategy, evidence lines, and recommendation. Cite `triton_code_optimization.md/json`.
 - `Candidate Causes`: with evidence, counter-evidence, impact, confidence, and missing evidence.
 - `Interpretation` and `Next Step`.
 
@@ -609,11 +630,12 @@ Workflow:
 2. Merge evidence by causal path, not by script output.
 3. Separate confirmed findings from hypotheses.
 4. Before pruning to the final 2-4 findings, scan `compile_segmentation.json` for `custom_op_simple_aten.must_report=true`. When present, reserve one finding and one action row for the custom-op/simple-aten issue; this is a structural missed-fusion signal and should not be buried because its host-range duration is smaller than other exposed-time metrics.
-5. Estimate potential benefit using measured exposed time or skew. If benefits overlap, state that they are not additive.
-6. Prioritize recommendations by expected impact, confidence, and implementation scope.
-7. If custom-op/simple-aten is reserved, phrase the action as moving repeated simple `aten::` pointwise/view/reduce/copy/allocation work into the custom backend kernel, or restructuring the wrapper so Inductor can see and fuse it.
-8. Call out missing evidence and which branch or input would close it.
-9. Do not append raw table dumps to `report.md`. Keep audit details in stage reports or `evidence_summary.md`, and reference full output filenames.
+5. Also scan `triton_code_optimization.json` when present. If it has high-priority candidates on kernels with material `total_ms`, low `bandwidth_utilization`, or repeated patterns, merge the strongest candidate into the corresponding Triton IO-efficiency finding or add one focused finding. Keep the wording as a validation target unless runtime evidence confirms a speedup.
+6. Estimate potential benefit using measured exposed time or skew. If benefits overlap, state that they are not additive.
+7. Prioritize recommendations by expected impact, confidence, and implementation scope.
+8. If custom-op/simple-aten is reserved, phrase the action as moving repeated simple `aten::` pointwise/view/reduce/copy/allocation work into the custom backend kernel, or restructuring the wrapper so Inductor can see and fuse it.
+9. Call out missing evidence and which branch or input would close it.
+10. Do not append raw table dumps to `report.md`. Keep audit details in stage reports or `evidence_summary.md`, and reference full output filenames.
 
 Final `report.md` structure:
 
@@ -630,9 +652,9 @@ Output contract:
 
 - `结论概览`: 2-4 prioritized findings, usually 3. Use one `### 发现 N：short title` subsection per finding with separate `**结论：**`, `**证据：**`, and `**建议：**` paragraphs; each paragraph must be one short sentence. Merge host gap / launch overhead / `cpp_wrapper` into one finding when they are the same causal path. If `custom_op_simple_aten.must_report=true`, include a finding titled around "自定义算子内部仍有大量简单 aten 算子" or equivalent.
 - `关键指标`: compact table with 4-6 rows: metric, measured value/share, source artifact, and interpretation.
-- `优先行动`: 3-5 rows: priority, action, expected benefit, confidence, risk/cost, and validation method. If `custom_op_simple_aten.must_report=true`, include an action for the custom op using the exact custom op name and top nested aten names.
+- `优先行动`: 3-5 rows: priority, action, expected benefit, confidence, risk/cost, and validation method. If `custom_op_simple_aten.must_report=true`, include an action for the custom op using the exact custom op name and top nested aten names. If `triton_code_optimization.json` contributes an action, name the concrete Triton strategy such as `libdevice-opt`, `div-to-mul`, `bulk-io-opt`, `trans-opt`, `reduce-opt`, `retiling`, `modify-grid`, or `llc-cache-opt`, and cite the output-code artifact.
 - `不确定性与下一步`: missing data or unresolved hypotheses, plus the branch/input needed to resolve each and one recommended first next step.
-- `产物`: analysis directory, report path, stage report paths, generated DB paths, `evidence_summary.md`, and logs used as evidence.
+- `产物`: analysis directory, report path, stage report paths, generated DB paths, `evidence_summary.md`, `triton_code_optimization.md/json` when present, and logs used as evidence.
 
 ## Validation And Failure Handling
 
