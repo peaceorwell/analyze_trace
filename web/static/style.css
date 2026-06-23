@@ -1150,6 +1150,15 @@ body.result-reading-active { overflow: hidden; }
   color: inherit;
   text-decoration: none;
 }
+button.ai-artifact-inline-link {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+}
 .ai-artifact-inline-link code {
   color: var(--purple);
   cursor: pointer;
@@ -1158,6 +1167,13 @@ body.result-reading-active { overflow: hidden; }
 .ai-artifact-inline-link:hover code {
   background: var(--purple-soft);
   box-shadow: inset 0 -1px 0 var(--purple);
+}
+.ai-code-preview-link code::after {
+  content: " 查看";
+  color: var(--muted);
+  font-family: var(--font);
+  font-size: 11px;
+  font-weight: 700;
 }
 .markdown-body {
   overflow-wrap: anywhere;
@@ -1612,6 +1628,44 @@ body.result-reading-active { overflow: hidden; }
 .modal-title { font-size: 14px; font-weight: 600; margin-bottom: 14px; color: var(--text); display: flex; align-items: center; gap: 8px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 .confirm-message { color: var(--text2); line-height: 1.6; }
+.ai-code-modal {
+  width: min(1280px, 96vw);
+}
+.ai-code-modal-title {
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.ai-code-title-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ai-code-title-main small {
+  max-width: min(760px, 68vw);
+  overflow: hidden;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ai-code-title-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 8px;
+}
+.ai-code-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin: -4px 0 10px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
 
 .ai-prompt-modal {
   width: min(680px, calc(100vw - 32px));
@@ -3655,6 +3709,9 @@ pre.code-viewer {
 pre.code-viewer code {
   font-family: var(--mono); font-size: 12px; line-height: 1.65;
   white-space: pre; display: inline-block; min-width: 100%; color: var(--text2);
+}
+pre.ai-code-viewer {
+  max-height: min(74vh, 820px);
 }
 textarea.code-editor {
   margin: 0; padding: 16px;

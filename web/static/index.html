@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>torch profiler analyzer</title>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.2.99" />
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.2.100" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.css" />
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
@@ -12,7 +12,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js"></script>
-  <link rel="stylesheet" href="/static/style.css?v=0.2.99" />
+  <link rel="stylesheet" href="/static/style.css?v=0.2.100" />
   <script>
     // Apply saved theme or system preference before page paint to avoid flash
     (function() {
@@ -143,7 +143,7 @@
     <!-- ── Header ── -->
     <header v-if="authChecked && (!authRequired || currentUser)" class="header">
       <div class="header-brand" @click="$router.push('/')" style="cursor:pointer" title="返回上传页面">
-        <img class="header-logo" src="/static/favicon.svg?v=0.2.99" alt="" />
+        <img class="header-logo" src="/static/favicon.svg?v=0.2.100" alt="" />
         <span class="header-title">Torch Profiler Analyzer</span>
         <span class="header-version">v{{ appVersion }}</span>
       </div>
@@ -1119,6 +1119,40 @@
       </div>
     </div>
 
+    <!-- ── AI analysis code artifact viewer modal ── -->
+    <div v-if="showAiCodeViewer" class="modal-mask" @click.self="closeAiCodeViewer">
+      <div class="modal modal-wide ai-code-modal">
+        <div class="modal-title ai-code-modal-title">
+          <div class="ai-code-title-main">
+            <span>{{ aiCodeViewerFilename || '代码文件' }} - Python 代码查看</span>
+            <small>{{ aiCodeViewerPath }}</small>
+          </div>
+          <div class="ai-code-title-actions">
+            <button class="btn btn-sm btn-outline"
+                    :disabled="!aiCodeViewerContent"
+                    @click="copyAiCodeViewer">复制代码</button>
+            <button class="btn btn-sm btn-outline"
+                    :disabled="!aiCodeViewerPath"
+                    @click="downloadAiCodeViewer">下载文件</button>
+          </div>
+        </div>
+        <div v-if="aiCodeViewerLoading" class="info-box">
+          <span class="spinner-small"></span> 正在加载代码...
+        </div>
+        <div v-else-if="aiCodeViewerError" class="error-box">{{ aiCodeViewerError }}</div>
+        <template v-else>
+          <div class="ai-code-meta">
+            <span>{{ fmtBytes(aiCodeViewerSize) }}</span>
+            <span v-if="aiCodeViewerTruncated">文件较大，仅预览前半部分内容，可下载完整文件</span>
+          </div>
+          <pre class="code-viewer ai-code-viewer"><code class="language-python">{{ aiCodeViewerContent }}</code></pre>
+        </template>
+        <div class="modal-actions">
+          <button class="btn btn-outline" @click="closeAiCodeViewer">关闭</button>
+        </div>
+      </div>
+    </div>
+
     <!-- ── Error modal (selectable text) ── -->
     <div v-if="showErrorModal" class="modal-mask" @click.self="showErrorModal=false">
       <div class="modal">
@@ -1279,6 +1313,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=0.2.99"></script>
+  <script src="/static/app.js?v=0.2.100"></script>
 </body>
 </html>

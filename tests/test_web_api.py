@@ -70,7 +70,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.99",
+        "version": "0.2.100",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -1023,11 +1023,30 @@ def test_ai_analysis_artifact_download(client):
     (analysis_dir / "details.txt").write_text("Detail Artifact\n", encoding="utf-8")
     (analysis_dir / "trace_a.db").write_bytes(b"sqlite-db")
     (analysis_dir / "ai_analysis_status.json").write_text("{}", encoding="utf-8")
+    code_dir = analysis_dir / "triton_output_code"
+    code_dir.mkdir()
+    (code_dir / "kernel.py").write_text("def kernel():\n    return 1\n", encoding="utf-8")
+    (analysis_dir / "triton_output_code_00_kernel.txt").write_text("@triton.jit\ndef kernel():\n    pass\n", encoding="utf-8")
 
     text_response = client.get("/api/jobs/ai-artifact-job/ai-analysis/artifacts/details.txt")
     db_response = client.get("/api/jobs/ai-artifact-job/ai-analysis/artifacts/trace_a.db")
     internal_response = client.get("/api/jobs/ai-artifact-job/ai-analysis/artifacts/ai_analysis_status.json")
     traversal_response = client.get("/api/jobs/ai-artifact-job/ai-analysis/artifacts/%2E%2E/details.txt")
+    py_preview_response = client.get(
+        "/api/jobs/ai-artifact-job/ai-analysis/artifact-content/triton_output_code/kernel.py"
+    )
+    txt_preview_response = client.get(
+        "/api/jobs/ai-artifact-job/ai-analysis/artifact-content/triton_output_code_00_kernel.txt"
+    )
+    unsupported_preview_response = client.get(
+        "/api/jobs/ai-artifact-job/ai-analysis/artifact-content/details.txt"
+    )
+    internal_preview_response = client.get(
+        "/api/jobs/ai-artifact-job/ai-analysis/artifact-content/ai_analysis_status.json"
+    )
+    traversal_preview_response = client.get(
+        "/api/jobs/ai-artifact-job/ai-analysis/artifact-content/%2E%2E/details.txt"
+    )
 
     assert text_response.status_code == 200
     assert text_response.text == "Detail Artifact\n"
@@ -1036,6 +1055,14 @@ def test_ai_analysis_artifact_download(client):
     assert db_response.content == b"sqlite-db"
     assert internal_response.status_code == 400
     assert traversal_response.status_code == 400
+    assert py_preview_response.status_code == 200
+    assert py_preview_response.json()["content"] == "def kernel():\n    return 1\n"
+    assert py_preview_response.json()["language"] == "python"
+    assert txt_preview_response.status_code == 200
+    assert "@triton.jit" in txt_preview_response.json()["content"]
+    assert unsupported_preview_response.status_code == 400
+    assert internal_preview_response.status_code == 400
+    assert traversal_preview_response.status_code == 400
 
 
 def test_ai_analysis_reports_missing_claude_command(client, tmp_path, monkeypatch):

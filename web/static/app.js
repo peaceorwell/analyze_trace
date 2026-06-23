@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.99");
+const appVersion = ref("0.2.100");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -160,6 +160,14 @@ const showAiPromptModal = ref(false);
 const aiPromptForce = ref(false);
 const aiAnalysisPrompt = ref("");
 const aiArtifactsExpanded = ref(false);
+const showAiCodeViewer = ref(false);
+const aiCodeViewerLoading = ref(false);
+const aiCodeViewerError = ref("");
+const aiCodeViewerPath = ref("");
+const aiCodeViewerFilename = ref("");
+const aiCodeViewerContent = ref("");
+const aiCodeViewerSize = ref(0);
+const aiCodeViewerTruncated = ref(false);
 const aiDiagnosticsLoading = ref(false);
 const aiDiagnosticsError = ref("");
 const aiDiagnosticsResult = ref(null);
@@ -987,7 +995,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.2.99";
+  appVersion.value = cfg.version || "0.2.100";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -2654,7 +2662,7 @@ const aiArtifactSummary = computed(() =>
     .map(item => `${item.path} (${fmtBytes(item.size)})`)
     .join(" · ")
 );
-const AI_ARTIFACT_DOWNLOAD_EXT_RE = /\.(?:csv|db|json|log|md|text|tsv|txt|ya?ml)$/i;
+const AI_ARTIFACT_DOWNLOAD_EXT_RE = /\.(?:csv|db|json|log|md|py|text|tsv|txt|ya?ml)$/i;
 const normalizeAiArtifactDownloadPath = value => {
   const raw = String(value || "").trim().replace(/\\/g, "/");
   if (!raw || raw.startsWith("/") || /^[A-Za-z]:/.test(raw) || raw.includes("://")) return "";
@@ -2665,21 +2673,62 @@ const normalizeAiArtifactDownloadPath = value => {
   return raw;
 };
 const encodePathSegments = value => String(value || "").split("/").map(encodeURIComponent).join("/");
-const aiArtifactDownloadUrl = artifactOrPath => {
-  const path = normalizeAiArtifactDownloadPath(
+const resolveAiArtifactPath = artifactOrPath => {
+  const normalized = normalizeAiArtifactDownloadPath(
     typeof artifactOrPath === "string" ? artifactOrPath : artifactOrPath?.path,
   );
+  if (!normalized) return "";
+  const artifacts = aiAnalysisArtifacts.value || [];
+  const normalizedLower = normalized.toLowerCase();
+  const normalizedName = normalizedLower.split("/").pop();
+  const matched = artifacts.find(item => {
+    const path = String(item?.path || "").replace(/\\/g, "/");
+    const name = String(item?.name || "").toLowerCase();
+    const pathLower = path.toLowerCase();
+    return pathLower === normalizedLower
+      || pathLower.endsWith(`/${normalizedLower}`)
+      || name === normalizedName;
+  });
+  return matched?.path || normalized;
+};
+const isAiCodeArtifactPath = artifactOrPath => {
+  const path = resolveAiArtifactPath(artifactOrPath);
+  const lowered = path.toLowerCase();
+  const filename = lowered.split("/").pop() || lowered;
+  if (filename.endsWith(".py")) return true;
+  if (!filename.endsWith(".txt")) return false;
+  return lowered.includes("/triton_output_code/")
+    || filename.includes("triton_output_code")
+    || filename.startsWith("output_code_");
+};
+const aiArtifactDownloadUrl = artifactOrPath => {
+  const path = resolveAiArtifactPath(artifactOrPath);
   if (!selectedJobId.value || !path) return "";
   return `/api/jobs/${encodeURIComponent(selectedJobId.value)}/ai-analysis/artifacts/${encodePathSegments(path)}`;
+};
+const aiArtifactContentUrl = artifactOrPath => {
+  const path = resolveAiArtifactPath(artifactOrPath);
+  if (!selectedJobId.value || !path) return "";
+  return `/api/jobs/${encodeURIComponent(selectedJobId.value)}/ai-analysis/artifact-content/${encodePathSegments(path)}`;
 };
 const renderAiArtifactCode = code => {
   const url = aiArtifactDownloadUrl(code);
   if (!url) return "";
+  const path = resolveAiArtifactPath(code);
+  if (isAiCodeArtifactPath(path)) {
+    return `<button type="button" class="ai-artifact-inline-link ai-code-preview-link" data-ai-code-path="${escapeHtml(path)}" title="查看 Python 代码 ${escapeHtml(path)}"><code>${escapeHtml(code)}</code></button>`;
+  }
   return `<a class="ai-artifact-inline-link" href="${escapeHtml(url)}" download title="下载 ${escapeHtml(code)}"><code>${escapeHtml(code)}</code></a>`;
 };
 const aiAnalysisHtml = computed(() => renderMarkdown(aiAnalysisContent.value, {
   codeRenderer: renderAiArtifactCode,
 }));
+const highlightPythonCodeBlocks = () => nextTick(() => {
+  if (!window.hljs) return;
+  document.querySelectorAll('pre.code-viewer code.language-python').forEach((block) => {
+    window.hljs.highlightElement(block);
+  });
+});
 
 const aiAnalysisStatusText = status => ({
   not_started: "未开始",
@@ -2965,6 +3014,56 @@ const downloadAiAnalysisArtifact = artifact => {
   const a = document.createElement("a");
   a.href = url;
   a.download = artifact?.name || artifact?.path || "";
+  a.click();
+};
+
+const openAiCodeViewer = async artifactOrPath => {
+  const path = resolveAiArtifactPath(artifactOrPath);
+  const url = aiArtifactContentUrl(path);
+  if (!url) return;
+  showAiCodeViewer.value = true;
+  aiCodeViewerLoading.value = true;
+  aiCodeViewerError.value = "";
+  aiCodeViewerPath.value = path;
+  aiCodeViewerFilename.value = path.split("/").pop() || path;
+  aiCodeViewerContent.value = "";
+  aiCodeViewerSize.value = 0;
+  aiCodeViewerTruncated.value = false;
+  try {
+    const data = await fetchJson(url, { credentials: "include" }, "加载代码文件失败");
+    aiCodeViewerPath.value = data.path || path;
+    aiCodeViewerFilename.value = data.name || aiCodeViewerFilename.value;
+    aiCodeViewerContent.value = data.content || "";
+    aiCodeViewerSize.value = data.size || 0;
+    aiCodeViewerTruncated.value = Boolean(data.truncated);
+    highlightPythonCodeBlocks();
+  } catch (e) {
+    aiCodeViewerError.value = normalizeApiError(e, "加载代码文件失败");
+    showToast(aiCodeViewerError.value, "error");
+  } finally {
+    aiCodeViewerLoading.value = false;
+  }
+};
+
+const closeAiCodeViewer = () => {
+  showAiCodeViewer.value = false;
+  aiCodeViewerError.value = "";
+};
+
+const handleAiAnalysisReportClick = event => {
+  const trigger = event.target?.closest?.("[data-ai-code-path]");
+  if (!trigger) return;
+  event.preventDefault();
+  event.stopPropagation();
+  openAiCodeViewer(trigger.getAttribute("data-ai-code-path") || "");
+};
+
+const downloadAiCodeViewer = () => {
+  const url = aiArtifactDownloadUrl(aiCodeViewerPath.value);
+  if (!url) return;
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = aiCodeViewerFilename.value || aiCodeViewerPath.value;
   a.click();
 };
 
@@ -4931,13 +5030,7 @@ const viewTritonCode = async (codePath) => {
   tritonCodeContent.value = data.content;
   tritonCodeFilename.value = data.filename;
   showTritonCode.value = true;
-  nextTick(() => {
-    if (window.hljs) {
-      document.querySelectorAll('pre.code-viewer code.language-python').forEach((block) => {
-        window.hljs.highlightElement(block);
-      });
-    }
-  });
+  highlightPythonCodeBlocks();
 };
 
 const copyTextToClipboard = async (text) => {
@@ -4957,6 +5050,12 @@ const copyTritonCode = async () => {
   if (!tritonCodeContent.value) return;
   await copyTextToClipboard(tritonCodeContent.value);
   showToast("已复制到剪贴板", "success");
+};
+
+const copyAiCodeViewer = async () => {
+  if (!aiCodeViewerContent.value) return;
+  await copyTextToClipboard(aiCodeViewerContent.value);
+  showToast("代码已复制到剪贴板", "success");
 };
 
 const copyErrorModal = async () => {
@@ -5935,7 +6034,10 @@ const JobDetail = {
               ? '正在进行 AI 环境诊断，诊断通过后会自动开始分析。'
               : 'Claude Code 正在分析 trace，完成后这里会自动刷新。' }}
           </div>
-          <div v-if="aiAnalysisContent" class="ai-analysis-report markdown-body" v-html="aiAnalysisHtml"></div>
+          <div v-if="aiAnalysisContent"
+               class="ai-analysis-report markdown-body"
+               @click="handleAiAnalysisReportClick"
+               v-html="aiAnalysisHtml"></div>
           <div v-if="aiAnalysisVisibleArtifacts.length"
                :class="['ai-artifacts-panel', { collapsed: !aiArtifactsExpanded }]">
             <button type="button"
@@ -6188,6 +6290,7 @@ const JobDetail = {
       refreshAiAnalysis, startAiAnalysis, openAiPromptModal, closeAiPromptModal, confirmAiPromptModal,
       copyAiAnalysisReport,
       downloadAiAnalysisReport, changeAiAnalysisVersion, copyAiAnalysisArtifact, downloadAiAnalysisArtifact,
+      handleAiAnalysisReportClick,
       runAiDiagnostics, copyAiDiagnostics,
       openActionMenu, toggleActionMenu, closeActionMenu,
       switchTab,
@@ -6587,6 +6690,10 @@ const App = {
       tritonCodeEditing, tritonCodeEditContent,
       runCustomTriton, editTritonCode, cancelEditTritonCode,
       customRunStatus, allowCodeExecution,
+      showAiCodeViewer, aiCodeViewerLoading, aiCodeViewerError,
+      aiCodeViewerPath, aiCodeViewerFilename, aiCodeViewerContent,
+      aiCodeViewerSize, aiCodeViewerTruncated,
+      closeAiCodeViewer, copyAiCodeViewer, downloadAiCodeViewer,
       showGuide, showErrorModal, errorModalMsg, errorModalTitle,
       copyTritonCode, copyErrorModal,
       showAiPromptModal, aiAnalysisPrompt, aiPromptForce,

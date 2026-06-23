@@ -56,7 +56,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.99"
+APP_VERSION = "0.2.100"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -78,8 +78,9 @@ AI_ANALYSIS_VERSION_REPORT_FILE = "report.md"
 AI_ANALYSIS_USER_PROMPT_MAX_CHARS = 20000
 AI_ANALYSIS_ARTIFACT_MAX_BYTES = 256 * 1024
 AI_ANALYSIS_ARTIFACT_MAX_TOTAL_BYTES = 1024 * 1024
+AI_ANALYSIS_CODE_PREVIEW_MAX_BYTES = int(os.environ.get("TRACE_AI_CODE_PREVIEW_MAX_BYTES", str(2 * 1024 * 1024)))
 AI_ANALYSIS_ARTIFACT_EXTENSIONS = {
-    ".csv", ".json", ".log", ".md", ".text", ".tsv", ".txt", ".yaml", ".yml",
+    ".csv", ".json", ".log", ".md", ".py", ".text", ".tsv", ".txt", ".yaml", ".yml",
 }
 AI_ANALYSIS_DOWNLOAD_ARTIFACT_EXTENSIONS = AI_ANALYSIS_ARTIFACT_EXTENSIONS | {".db"}
 AI_ANALYSIS_INTERNAL_FILES = {
@@ -1886,6 +1887,29 @@ def _safe_ai_analysis_artifact_path(jid: str, rel_path: str) -> tuple[str, str]:
     if not os.path.isfile(full):
         raise HTTPException(404, "AI analysis artifact not found")
     return full, normalized
+
+
+def _is_ai_code_preview_artifact(normalized_path: str) -> bool:
+    lowered = normalized_path.replace("\\", "/").lower()
+    filename = os.path.basename(lowered)
+    ext = os.path.splitext(filename)[1]
+    if ext == ".py":
+        return True
+    if ext != ".txt":
+        return False
+    return (
+        "triton_output_code" in filename
+        or "/triton_output_code/" in f"/{lowered}"
+        or filename.startswith("output_code_")
+    )
+
+
+def _read_text_preview(path: str, max_bytes: int) -> tuple[str, bool, int]:
+    size = _path_size(path)
+    read_limit = min(size, max_bytes)
+    with open(path, "rb") as f:
+        data = f.read(read_limit)
+    return data.decode("utf-8", errors="replace"), size > read_limit, size
 
 
 def _parse_iso_datetime(value: str) -> Optional[datetime]:
@@ -7233,6 +7257,47 @@ async def download_job_ai_analysis_artifact(request: Request, jid: str, artifact
         media_type=media_type,
         headers={"Content-Disposition": _content_disposition(filename)},
     )
+
+
+@app.get("/api/jobs/{jid}/ai-analysis/artifact-content/{artifact_path:path}")
+async def read_job_ai_analysis_artifact_content(request: Request, jid: str, artifact_path: str):
+    db = await get_db()
+    try:
+        row = await load_accessible_job(db, request, jid, "id, label, status")
+    finally:
+        await db.close()
+    if not row:
+        raise HTTPException(404)
+
+    full_path, normalized_path = _safe_ai_analysis_artifact_path(jid, artifact_path)
+    if not _is_ai_code_preview_artifact(normalized_path):
+        raise HTTPException(400, "Unsupported AI analysis code preview type")
+
+    content, truncated, size = await asyncio.to_thread(
+        _read_text_preview,
+        full_path,
+        AI_ANALYSIS_CODE_PREVIEW_MAX_BYTES,
+    )
+
+    audit_db = await get_db()
+    try:
+        await write_audit(
+            audit_db, request, "job.ai_analysis_artifact_preview",
+            resource_type="job", resource_id=jid,
+            details={"path": normalized_path, "size": size, "truncated": truncated},
+        )
+        await audit_db.commit()
+    finally:
+        await audit_db.close()
+
+    return {
+        "path": normalized_path,
+        "name": os.path.basename(normalized_path),
+        "size": size,
+        "truncated": truncated,
+        "content": content,
+        "language": "python",
+    }
 
 
 @app.post("/api/ai/diagnostics")
