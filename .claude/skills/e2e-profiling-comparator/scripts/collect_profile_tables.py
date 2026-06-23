@@ -34,6 +34,28 @@ CPP_WRAPPER_VALUE_RE = re.compile(
 )
 CPP_WRAPPER_ON_EXTENSIONS = {".cc", ".cpp", ".cxx", ".so", ".dylib", ".dll"}
 CPP_WRAPPER_OFF_EXTENSIONS = {".py", ".pyc"}
+CUSTOM_OP_SYMBOL_RE = re.compile(r"^[A-Za-z_][\w.]*::[A-Za-z_]\w*")
+CUSTOM_OP_FRAME_RE = re.compile(
+    r"torch/_library/custom_ops\.py|backend_impl|wrapped_fn|torch/_ops\.py\(\d+\): redispatch",
+    re.IGNORECASE,
+)
+CUSTOM_OP_DISPATCH_RE = re.compile(r"torch/_ops\.py\(\d+\): __call__|PyCapsule", re.IGNORECASE)
+CUSTOM_OP_USER_PY_RE = re.compile(r"(?<!torch/)[\w./-]+\.py\(\d+\):\s*[A-Za-z_]\w*", re.IGNORECASE)
+EXCLUDED_CUSTOM_SYMBOL_PREFIXES = ("aten::", "c10::", "torch::", "torch_mlu::ops::")
+SIMPLE_ATEN_RE = re.compile(
+    r"^aten::("
+    r"add|sub|mul|div|pow|neg|abs|exp|log|sqrt|rsqrt|sigmoid|silu|gelu|relu|"
+    r"tanh|erf|clamp|where|masked|eq|ne|lt|le|gt|ge|maximum|minimum|"
+    r"empty|empty_like|zeros|zeros_like|ones|ones_like|full|full_like|fill_|zero_|copy_|clone|to|"
+    r"cat|stack|cumsum|cumprod|sum|mean|max|min|amax|amin|prod|softmax|_softmax|"
+    r"view|reshape|slice|select|unsqueeze|squeeze|transpose|permute|contiguous|"
+    r"expand|repeat|flatten|as_strided|index|gather|scatter|nonzero"
+    r")(\b|_|\.|$)",
+    re.IGNORECASE,
+)
+CUSTOM_SIMPLE_ATEN_MIN_AVG_PER_CALL = 5
+CUSTOM_SIMPLE_ATEN_MIN_TOTAL_COUNT = 50
+CUSTOM_SIMPLE_ATEN_MIN_UNIQUE_OPS = 3
 IO_EFF_KEYS = (
     "io_efficiency",
     "io_eff",
@@ -126,6 +148,44 @@ def simplify_name(name):
 
 def normalize_metadata_key(key):
     return re.sub(r"[^a-z0-9]+", "", str(key).lower())
+
+
+def custom_op_candidate_priority(name):
+    lowered = str(name).lower()
+    if CUSTOM_OP_SYMBOL_RE.search(name) and not lowered.startswith(EXCLUDED_CUSTOM_SYMBOL_PREFIXES):
+        return 0
+    if CUSTOM_OP_USER_PY_RE.search(name):
+        return 1
+    if CUSTOM_OP_FRAME_RE.search(name):
+        return 2
+    if CUSTOM_OP_DISPATCH_RE.search(name):
+        return 3
+    return None
+
+
+def is_simple_aten(name):
+    return bool(SIMPLE_ATEN_RE.search(str(name)))
+
+
+def custom_simple_aten_is_issue(group):
+    unique_ops = len(group["simple_aten_ops"])
+    avg_per_call = (
+        group["nested_simple_aten_count"] / group["range_count"] if group["range_count"] else 0.0
+    )
+    return (
+        unique_ops >= CUSTOM_SIMPLE_ATEN_MIN_UNIQUE_OPS
+        and (
+            avg_per_call >= CUSTOM_SIMPLE_ATEN_MIN_AVG_PER_CALL
+            or group["nested_simple_aten_count"] >= CUSTOM_SIMPLE_ATEN_MIN_TOTAL_COUNT
+        )
+    )
+
+
+def custom_simple_aten_reason(avg_per_call, total_count, unique_ops):
+    return (
+        f"{total_count:,} nested simple aten ops, avg {avg_per_call:.1f}/call, "
+        f"{unique_ops} unique simple op names"
+    )
 
 
 def boolish_cpp_wrapper_state(value):
@@ -1020,6 +1080,163 @@ def triton_fusion_summary(cur, strings, start, end, compute_rows, top=20):
     }
 
 
+def summarize_custom_op_simple_aten(cur, strings, start, end):
+    if not table_exists(cur, "Internal_operation_range_data"):
+        return {
+            "has_issue": False,
+            "highlighted_custom_ops": [],
+            "candidate_range_count": 0,
+            "simple_aten_range_count": 0,
+            "note": "Internal_operation_range_data table is absent.",
+        }
+
+    simple_by_thread = {}
+    candidates = []
+    for pid, tid, row_start, row_end, name_id in cur.execute(
+        "SELECT processId, threadId, start, end, nameId FROM Internal_operation_range_data "
+        "WHERE start < :window_end AND end > :window_start "
+        "ORDER BY processId, threadId, start",
+        window_params(start, end),
+    ):
+        if row_end <= row_start:
+            continue
+        clipped_start = max(row_start, start)
+        clipped_end = min(row_end, end)
+        if clipped_end <= clipped_start:
+            continue
+        name = simplify_name(get_name(strings, name_id))
+        priority = custom_op_candidate_priority(name)
+        if priority is not None:
+            candidates.append((priority, pid, tid, clipped_start, clipped_end, name))
+        if is_simple_aten(name):
+            simple_by_thread.setdefault((pid, tid), []).append((clipped_start, clipped_end, name))
+
+    for rows in simple_by_thread.values():
+        rows.sort(key=lambda item: item[0])
+    starts_by_thread = {key: [item[0] for item in rows] for key, rows in simple_by_thread.items()}
+
+    groups = {}
+    nonempty_candidate_count = 0
+    for priority, pid, tid, custom_start, custom_end, name in candidates:
+        rows = simple_by_thread.get((pid, tid), [])
+        if not rows:
+            continue
+        idx = bisect.bisect_left(starts_by_thread[(pid, tid)], custom_start)
+        nested = []
+        for aten_start, aten_end, aten_name in rows[idx:]:
+            if aten_start >= custom_end:
+                break
+            if aten_start >= custom_start and aten_end <= custom_end:
+                nested.append((aten_name, aten_end - aten_start))
+        if not nested:
+            continue
+        nonempty_candidate_count += 1
+        group = groups.setdefault(
+            name,
+            {
+                "custom_op_name": name,
+                "priority": priority,
+                "range_count": 0,
+                "total_host_ns": 0,
+                "nested_simple_aten_count": 0,
+                "nested_simple_aten_ns": 0,
+                "max_nested_simple_aten_per_call": 0,
+                "simple_aten_ops": collections.Counter(),
+                "simple_aten_ns_by_op": collections.Counter(),
+            },
+        )
+        group["priority"] = min(group["priority"], priority)
+        group["range_count"] += 1
+        group["total_host_ns"] += max(0, custom_end - custom_start)
+        group["nested_simple_aten_count"] += len(nested)
+        group["nested_simple_aten_ns"] += sum(duration for _, duration in nested)
+        group["max_nested_simple_aten_per_call"] = max(
+            group["max_nested_simple_aten_per_call"], len(nested)
+        )
+        for aten_name, duration in nested:
+            group["simple_aten_ops"][aten_name] += 1
+            group["simple_aten_ns_by_op"][aten_name] += duration
+
+    if not groups:
+        return {
+            "has_issue": False,
+            "highlighted_custom_ops": [],
+            "candidate_range_count": len(candidates),
+            "simple_aten_range_count": sum(len(rows) for rows in simple_by_thread.values()),
+            "note": "No custom-op range containing simple aten ops was found.",
+        }
+
+    best_priority_with_issue = None
+    for priority in sorted({group["priority"] for group in groups.values()}):
+        priority_groups = [group for group in groups.values() if group["priority"] == priority]
+        if any(custom_simple_aten_is_issue(group) for group in priority_groups):
+            best_priority_with_issue = priority
+            break
+    selected_priority = (
+        best_priority_with_issue
+        if best_priority_with_issue is not None
+        else min(group["priority"] for group in groups.values())
+    )
+
+    rows = []
+    for group in groups.values():
+        if group["priority"] != selected_priority:
+            continue
+        avg_per_call = (
+            group["nested_simple_aten_count"] / group["range_count"] if group["range_count"] else 0.0
+        )
+        unique_ops = len(group["simple_aten_ops"])
+        top_ops = []
+        for op_name, count in group["simple_aten_ops"].most_common(8):
+            top_ops.append(
+                {
+                    "name": op_name,
+                    "count": count,
+                    "total_ms": ms(group["simple_aten_ns_by_op"][op_name]),
+                }
+            )
+        rows.append(
+            {
+                "name": group["custom_op_name"],
+                "custom_op_name": group["custom_op_name"],
+                "range_count": group["range_count"],
+                "count": group["range_count"],
+                "total_host_ms": ms(group["total_host_ns"]),
+                "nested_simple_aten_count": group["nested_simple_aten_count"],
+                "nested_simple_aten_ms": ms(group["nested_simple_aten_ns"]),
+                "avg_simple_aten_per_call": avg_per_call,
+                "max_nested_simple_aten_per_call": group["max_nested_simple_aten_per_call"],
+                "unique_simple_aten_ops": unique_ops,
+                "top_simple_aten_ops": top_ops,
+                "highlight": custom_simple_aten_is_issue(group),
+                "reason": custom_simple_aten_reason(
+                    avg_per_call, group["nested_simple_aten_count"], unique_ops
+                ),
+            }
+        )
+    rows.sort(
+        key=lambda row: (
+            not row["highlight"],
+            -row["nested_simple_aten_count"],
+            -row["nested_simple_aten_ms"],
+            row["custom_op_name"],
+        )
+    )
+    return {
+        "has_issue": any(row["highlight"] for row in rows),
+        "selected_priority": selected_priority,
+        "candidate_range_count": len(candidates),
+        "candidate_ranges_with_simple_aten": nonempty_candidate_count,
+        "simple_aten_range_count": sum(len(rows) for rows in simple_by_thread.values()),
+        "highlighted_custom_ops": rows[:10],
+        "note": (
+            "Custom op ranges containing many simple aten calls usually mean the wrapper/backend custom op "
+            "still leaves pointwise, view, reduce, copy, or allocation work unfused; compare these rows "
+            "before/after custom-op or Inductor changes."
+        ),
+    }
+
+
 def compile_segmentation_summary(cur, strings, start, end, kernel_rows, stream_gap):
     cpp_wrapper_detector = load_cpp_wrapper_detector(cur)
     regions_by_thread = {}
@@ -1130,6 +1347,7 @@ def compile_segmentation_summary(cur, strings, start, end, kernel_rows, stream_g
             "No direct cpp_wrapper trace signal was found; interpret wrapper mode from "
             "device-stream gap and host launch metrics only as a hypothesis."
         )
+    custom_op_simple_aten = summarize_custom_op_simple_aten(cur, strings, start, end)
 
     return {
         "has_compiled_regions": bool(region_inventory),
@@ -1140,6 +1358,7 @@ def compile_segmentation_summary(cur, strings, start, end, kernel_rows, stream_g
         "outside_region_compute_ms": ms(outside_ns),
         "outside_region_kernel_count": outside_cnt,
         "outside_region_share_pct": (outside_ns / device_compute_ns * 100) if device_compute_ns else 0.0,
+        "custom_op_simple_aten": custom_op_simple_aten,
         "host_launch_overhead": {
             "main_stream_gap_pct": stream_gap.get("main_stream_gap_pct", 0.0),
             "launched_kernel_count": launched,
@@ -1558,6 +1777,25 @@ def print_torch_compile(side):
                 f"| {row['name']} | {row.get('fusion_family', '')} | {fmt_ms(row.get('total_ms', 0.0))} | "
                 f"{row.get('count', 0):,.0f} | {row.get('share_pct', 0.0):.2f}% | "
                 f"{row.get('highlight_reason', '')} |"
+            )
+    custom_simple = seg.get("custom_op_simple_aten") or {}
+    custom_rows = custom_simple.get("highlighted_custom_ops") or []
+    if custom_rows:
+        print("\n#### Custom Op Simple Aten Nesting")
+        print(f"- issue detected: {'yes' if custom_simple.get('has_issue') else 'no'}")
+        if custom_simple.get("note"):
+            print(f"- interpretation: {custom_simple['note']}")
+        print("| Custom op | Calls | Simple aten | Avg/call | Simple aten ms | Host ms | Top nested ops | Reason |")
+        print("|---|---:|---:|---:|---:|---:|---|---|")
+        for row in custom_rows[:10]:
+            top_ops = ", ".join(
+                f"{op['name']}({op['count']})" for op in row.get("top_simple_aten_ops", [])[:5]
+            )
+            print(
+                f"| {row['custom_op_name']} | {row['range_count']:,} | "
+                f"{row['nested_simple_aten_count']:,} | {row['avg_simple_aten_per_call']:.1f} | "
+                f"{fmt_ms(row.get('nested_simple_aten_ms', 0.0))} | "
+                f"{fmt_ms(row.get('total_host_ms', 0.0))} | {top_ops} | {row.get('reason', '')} |"
             )
     if ke.get("has_io_metadata") and ke.get("kernels"):
         print("\n#### Triton Kernel IO Efficiency (io_efficiency = folded bandwidth, not %)")

@@ -39,7 +39,7 @@ Do not assume the bottleneck is communication, a specific kernel family, TCDP, o
 - `scripts/compute_breakdown.py`: top compute kernels and per-process/device compute skew.
 - `scripts/comm_breakdown.py`: communication kernel total/uncovered time, per-process/device exposure, and top long events.
 - `scripts/rank_compare.py`: cross-DB process/device span, compute, uncovered communication, and compute-gap skew.
-- `scripts/compile_segmentation.py`: torch.compile compiled-region inventory, inside/outside-region (eager) kernel split, recompilation indicators, and the host-launch-overhead / cpp_wrapper check driven by device-stream gap ratio plus trace metadata (`cpp_wrapper` config keys or `kernel_file` evidence). Supports `--format json`.
+- `scripts/compile_segmentation.py`: torch.compile compiled-region inventory, inside/outside-region (eager) kernel split, recompilation indicators, custom-op ranges that contain many simple `aten::` ops, and the host-launch-overhead / cpp_wrapper check driven by device-stream gap ratio plus trace metadata (`cpp_wrapper` config keys or `kernel_file` evidence). Supports `--format json`.
 - `scripts/triton_fusion_coverage.py`: classifies compute kernels into triton-fused / other-triton / non-triton, fusion coverage ratio, Inductor fusion granularity by kernel family (pointwise/reduce/library/etc.), highlighted unfused pointwise/reduce candidates, top non-fused kernels, and per-rank coverage. Supports `--format json` and `--top`.
 - `scripts/triton_kernel_efficiency.py`: triton kernel IO efficiency from `device_task_kernel_data.extra`, treating `io_efficiency` as a folded-bandwidth value (not a 0–1 ratio) compared against device peak bandwidth, plus `output_code` dump (`--dump-dir`). Supports `--format json` and `--top`.
 - `scripts/query_common.py`: shared helpers and `--host-stack=<function_corr_id>` CLI.
@@ -236,7 +236,7 @@ Branch selection:
 - Run or recommend `compute-gap-root-cause` when `gap_summary.py` shows material total gap time, large individual gaps, or host/notifier/previous-task gap reasons.
 - Run or recommend `effective-compute-breakdown` when effective compute dominates total device time or Phase 1 suggests compute imbalance across ranks/devices.
 - Run `host-window-subphase` only when the user provided a host time window or explicitly asked for host-window subphase analysis.
-- Run or recommend `compile-segmentation` when the workload uses torch.compile/inductor and the DB carries compiled-region annotations (`Torch-Compiled Region`, `CompiledFunction`, `CompiledFunctionBackward`, `TorchDynamo Cache Lookup`, `inductor`, or similar) in `Internal_operation_range_data`, especially when compute gaps or ordinary non-compute work cluster at region boundaries, or many kernels run outside compiled regions.
+- Run or recommend `compile-segmentation` when the workload uses torch.compile/inductor and the DB carries compiled-region annotations (`Torch-Compiled Region`, `CompiledFunction`, `CompiledFunctionBackward`, `TorchDynamo Cache Lookup`, `inductor`, or similar) in `Internal_operation_range_data`, especially when compute gaps or ordinary non-compute work cluster at region boundaries, many kernels run outside compiled regions, or custom/user operators wrap many simple `aten::` pointwise/view/reduce/copy ops.
 - Run or recommend `triton-fusion-coverage` when compute is material and a non-trivial share of compute-kernel time comes from non-`triton`/non-fused kernels, indicating ops that fell back to library/eager execution instead of inductor fusion.
 - Run or recommend `triton-kernel-efficiency` only when triton kernels carry `output_code` and IO-efficiency metadata in their `extra` JSON. If that metadata is absent, skip this branch and record it under `Skipped Branches` with the missing-metadata reason.
 
@@ -496,7 +496,7 @@ Workflow:
      --format text > "$ANALYSIS_DIR/compile_segmentation.md"
    ```
 
-   The script reports the observed compiled-region inventory (names decoded through `string_table`), inside vs outside-region (eager) compute split, recompilation indicators, the per-queue device-stream gap ratio, and the host-launch-overhead metrics. Report the observed region-name inventory first.
+   The script reports the observed compiled-region inventory (names decoded through `string_table`), inside vs outside-region (eager) compute split, recompilation indicators, custom-op ranges that contain many simple `aten::` ops, the per-queue device-stream gap ratio, and the host-launch-overhead metrics. Report the observed region-name inventory first.
 2. Read segmentation: device compute time and kernel count inside compiled regions vs outside (eager/graph-break), and whether work is fragmented across many small regions. The script attributes each kernel by temporal containment of its `function_data` launch within compiled-region ranges.
 3. Read recompilation indicators (`TorchDynamo Cache Lookup`/guard ranges) as a sign of re-tracing on dynamic shapes.
 4. cpp_wrapper check (trace signal first, device-stream gap second): read `host_launch_overhead.cpp_wrapper_signal` / `cpp_wrapper_signal` before making any inference.
@@ -505,7 +505,8 @@ Workflow:
    - `state=unknown` means the trace did not carry a direct signal; only then infer wrapper mode from high main-stream gap ratio, small kernels, high `avg_launch_self_us`, and high `launch_self_to_compute_ratio`.
    - Always report the signal source and confidence. Do not write "无法从 trace 确认 cpp_wrapper" when `cpp_wrapper_signal.source` is `explicit_trace_metadata` or `kernel_file_extension`.
 5. Identify the largest outside-region (eager) kernels from `top_outside_region_kernels`.
-6. Report whether segmentation is material: large compute time or many kernels outside compiled regions, frequent recompilation, or many small fragmented regions.
+6. Read `custom_op_simple_aten`. If `has_issue=true`, promote it as an optimization candidate: a custom/user op is present but still executes many simple `aten::` pointwise/view/reduce/copy/allocation ops inside the wrapper, so those ops should be moved into the custom backend kernel or restructured to let Inductor fuse them. Cite the concrete `custom_op_name`, call count, nested simple aten count, average nested ops per call, and top nested `aten::` names.
+7. Report whether segmentation is material: large compute time or many kernels outside compiled regions, frequent recompilation, custom-op simple-aten nesting, or many small fragmented regions.
 
 Output contract:
 
@@ -513,9 +514,10 @@ Output contract:
 - `Compiled Region Inventory`: observed region names, region count, per-region host/device time.
 - `Segmentation Summary`: segment count, graph-break count, device compute time inside vs outside compiled regions, kernel count inside vs outside.
 - `Recompilation Indicators`: evidence of re-tracing/guards, if any.
+- `Custom Op Simple Aten Nesting`: custom/user ops that wrap many simple `aten::` ops; include nested count, average per call, top nested ops, and whether it is a likely missed-fusion/custom-kernel optimization.
 - `Host Launch Overhead / cpp_wrapper Check`: main compute stream gap ratio (key indicator), `avg_launch_self_us`, `launch_self_to_compute_ratio`, trace-confirmed or inferred wrapper mode, `cpp_wrapper_signal.source/confidence`, and the device-stream gap evidence.
 - `Top Eager / Graph-Break Segments`: largest outside-region kernels (from `top_outside_region_kernels`).
-- `Candidate Causes`: Python wrapper host launch overhead only when `cpp_wrapper_signal.state=off` or the mode is unconfirmed and gap metrics support it; graph breaks fragmenting fusion, recompilation overhead, unsupported ops forcing eager fallback, dynamic shapes, or balanced/healthy compilation; each with evidence, counter-evidence, estimated impact, confidence, and missing evidence.
+- `Candidate Causes`: Python wrapper host launch overhead only when `cpp_wrapper_signal.state=off` or the mode is unconfirmed and gap metrics support it; custom op wrapping many simple aten ops, graph breaks fragmenting fusion, recompilation overhead, unsupported ops forcing eager fallback, dynamic shapes, or balanced/healthy compilation; each with evidence, counter-evidence, estimated impact, confidence, and missing evidence.
 - `Interpretation` and `Next Step`.
 
 Recommendation rule: for a host-bound torch.compile workload with large device kernel bubbles, when `cpp_wrapper_signal.state=off`, recommend enabling `cpp_wrapper` (inductor C++ wrapper codegen) to cut per-launch host overhead. When the state is `unknown`, recommend verifying/enabling it as a hypothesis. When the state is `on`, do not cite disabled `cpp_wrapper` as the root cause; investigate graph breaks, synchronization, tiny kernels, or host framework work. Do not recommend graph capture (CUDA graph / device-graph capture) as the only remedy — it is complementary unless direct trace evidence shows capture is the missing mechanism.

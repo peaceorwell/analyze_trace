@@ -120,6 +120,53 @@ def compare_kernel_efficiency(baseline_rows, current_rows):
     return rows
 
 
+def compare_custom_op_simple_aten(baseline_rows, current_rows):
+    a_map = row_map(baseline_rows)
+    b_map = row_map(current_rows)
+    rows = []
+    for name in sorted(set(a_map) | set(b_map)):
+        a_item = a_map.get(name, {})
+        b_item = b_map.get(name, {})
+        nested = delta_values(
+            a_item.get("nested_simple_aten_count"), b_item.get("nested_simple_aten_count")
+        )
+        row = {
+            "name": name,
+            "nested_simple_aten_count": nested,
+            "nested_simple_aten_ms": delta_values(
+                a_item.get("nested_simple_aten_ms"), b_item.get("nested_simple_aten_ms")
+            ),
+            "avg_simple_aten_per_call": delta_values(
+                a_item.get("avg_simple_aten_per_call"), b_item.get("avg_simple_aten_per_call")
+            ),
+            "range_count": delta_values(a_item.get("range_count"), b_item.get("range_count")),
+            "total_host_ms": delta_values(a_item.get("total_host_ms"), b_item.get("total_host_ms")),
+            "unique_simple_aten_ops": delta_values(
+                a_item.get("unique_simple_aten_ops"), b_item.get("unique_simple_aten_ops")
+            ),
+            "top_simple_aten_ops_A": a_item.get("top_simple_aten_ops", []),
+            "top_simple_aten_ops_B": b_item.get("top_simple_aten_ops", []),
+            "status": classify_delta(nested["delta"]),
+            "presence": (
+                "both"
+                if name in a_map and name in b_map
+                else "current_only"
+                if name in b_map
+                else "baseline_only"
+            ),
+        }
+        rows.append(row)
+    rows.sort(
+        key=lambda row: (
+            row["status"] != "regression",
+            -row["nested_simple_aten_count"]["delta"],
+            -row["nested_simple_aten_ms"]["delta"],
+            row["name"],
+        )
+    )
+    return rows
+
+
 def compare_overview(baseline, current):
     rows = []
     baseline_duration = num(nested_get(baseline, ("range", "duration_ms"), 0.0))
@@ -285,6 +332,20 @@ def build_comparison(baseline, current, limit):
             nested_get(baseline, ("torch_compile", "kernel_efficiency", "kernels"), []) or [],
             nested_get(current, ("torch_compile", "kernel_efficiency", "kernels"), []) or [],
         ),
+        "custom_op_simple_aten": compare_custom_op_simple_aten(
+            nested_get(
+                baseline,
+                ("torch_compile", "segmentation", "custom_op_simple_aten", "highlighted_custom_ops"),
+                [],
+            )
+            or [],
+            nested_get(
+                current,
+                ("torch_compile", "segmentation", "custom_op_simple_aten", "highlighted_custom_ops"),
+                [],
+            )
+            or [],
+        ),
     }
 
     return {
@@ -419,6 +480,19 @@ def print_markdown(payload, limit):
         "total_ms",
         limit=limit,
     )
+    custom_rows = [r for r in tc.get("custom_op_simple_aten", []) if r.get("status") == "regression"]
+    if custom_rows:
+        print("\n## Custom Op Simple Aten Nesting Delta")
+        print("| Custom op | Aten A | Aten B | Delta | Avg/call A | Avg/call B | Presence | Status |")
+        print("|---|---:|---:|---:|---:|---:|---|---|")
+        for row in custom_rows[:limit]:
+            count = row["nested_simple_aten_count"]
+            avg = row["avg_simple_aten_per_call"]
+            print(
+                f"| {row['name']} | {fmt(count.get('baseline'))} | {fmt(count.get('current'))} | "
+                f"{fmt(count.get('delta'))} | {fmt(avg.get('baseline'))} | {fmt(avg.get('current'))} | "
+                f"{row.get('presence', '')} | {row.get('status', '')} |"
+            )
     print_delta_table(
         "Non-Fused Kernels Delta (total_ms)",
         [r for r in tc.get("non_fused_kernels", []) if r.get("status") == "regression"],

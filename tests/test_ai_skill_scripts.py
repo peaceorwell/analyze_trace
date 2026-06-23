@@ -62,6 +62,68 @@ def make_kernel_db(path):
     conn.close()
 
 
+def make_custom_op_simple_aten_db(path):
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE string_table(ID INTEGER PRIMARY KEY, string TEXT)")
+    conn.execute(
+        """
+        CREATE TABLE Internal_operation_range_data(
+            processId INTEGER,
+            threadId INTEGER,
+            start INTEGER,
+            end INTEGER,
+            nameId INTEGER
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE device_task_kernel_data(
+            processId INTEGER,
+            deviceId INTEGER,
+            queueId INTEGER,
+            correlationId INTEGER,
+            nameId INTEGER,
+            start INTEGER,
+            end INTEGER,
+            isComputation INTEGER
+        )
+        """
+    )
+    strings = [
+        (1, "lego_fastop::mlu_xmm_fwd"),
+        (2, "aten::mul"),
+        (3, "aten::slice"),
+        (4, "aten::empty_like"),
+        (5, "aten::select"),
+        (6, "aten::zero_"),
+        (7, "aten::to"),
+        (8, "MLUUnion1BMMEXGEMM"),
+    ]
+    conn.executemany("INSERT INTO string_table(ID, string) VALUES(?, ?)", strings)
+    conn.execute(
+        "INSERT INTO Internal_operation_range_data VALUES(?, ?, ?, ?, ?)",
+        (1, 1, 0, 1_000_000, 1),
+    )
+    for idx, name_id in enumerate([2, 3, 4, 5, 6, 7]):
+        start = 100_000 + idx * 100_000
+        conn.execute(
+            "INSERT INTO Internal_operation_range_data VALUES(?, ?, ?, ?, ?)",
+            (1, 1, start, start + 50_000, name_id),
+        )
+    conn.execute(
+        """
+        INSERT INTO device_task_kernel_data(
+            processId, deviceId, queueId, correlationId, nameId, start, end, isComputation
+        )
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (1, 0, 0, 1, 8, 0, 500_000, 1),
+    )
+    conn.commit()
+    conn.close()
+
+
 def test_analyzer_highlights_unfused_pointwise_and_reduce(tmp_path):
     module = load_module("triton_fusion_coverage", ANALYZER_SCRIPT)
     db_path = tmp_path / "trace.db"
@@ -178,6 +240,22 @@ def test_compile_segmentation_reads_cpp_wrapper_signal_from_converted_db(tmp_pat
     assert payload["cpp_wrapper_signal"]["state"] == "off"
     assert payload["host_launch_overhead"]["cpp_wrapper_signal"]["state"] == "off"
     assert "Trace evidence indicates cpp_wrapper is disabled" in payload["host_launch_overhead"]["note"]
+
+
+def test_compile_segmentation_highlights_custom_op_with_simple_aten(tmp_path):
+    module = load_module("compile_segmentation_custom_simple_aten", COMPILE_SEGMENTATION_SCRIPT)
+    db_path = tmp_path / "trace.db"
+    make_custom_op_simple_aten_db(db_path)
+
+    payload = module.analyze_db(str(db_path))
+    summary = payload["custom_op_simple_aten"]
+    row = summary["highlighted_custom_ops"][0]
+
+    assert summary["has_issue"] is True
+    assert row["custom_op_name"] == "lego_fastop::mlu_xmm_fwd"
+    assert row["nested_simple_aten_count"] == 6
+    assert row["avg_simple_aten_per_call"] == pytest.approx(6.0)
+    assert {item["name"] for item in row["top_simple_aten_ops"]} >= {"aten::mul", "aten::slice"}
 
 
 def test_triton_efficiency_script_reads_raw_trace_efficiency_keys(tmp_path):
@@ -331,6 +409,31 @@ def test_collect_profile_tables_compile_summary_keeps_cpp_wrapper_signal(tmp_pat
     assert summary["host_launch_overhead"]["cpp_wrapper_signal"]["kernel_file_extensions"][".py"] == 3
 
 
+def test_collect_profile_tables_compile_summary_highlights_custom_op_simple_aten(tmp_path):
+    module = load_module("collect_profile_tables_custom_simple_aten", COLLECT_SCRIPT)
+    db_path = tmp_path / "trace.db"
+    make_custom_op_simple_aten_db(db_path)
+    conn = sqlite3.connect(db_path)
+    strings = module.load_strings(conn.cursor())
+
+    summary = module.compile_segmentation_summary(
+        conn.cursor(),
+        strings,
+        0,
+        1_000_000,
+        [],
+        {"main_stream_gap_pct": 0.0},
+    )
+    conn.close()
+    custom_summary = summary["custom_op_simple_aten"]
+    row = custom_summary["highlighted_custom_ops"][0]
+
+    assert custom_summary["has_issue"] is True
+    assert row["custom_op_name"] == "lego_fastop::mlu_xmm_fwd"
+    assert row["nested_simple_aten_count"] == 6
+    assert row["avg_simple_aten_per_call"] == pytest.approx(6.0)
+
+
 def test_compare_profile_tables_reports_unfused_pointwise_delta():
     module = load_module("compare_profile_tables", COMPARE_SCRIPT)
     baseline = {
@@ -345,7 +448,12 @@ def test_compare_profile_tables_reports_unfused_pointwise_delta():
                     "families": [{"name": "pointwise", "family": "pointwise", "unfused_ms": 0.0, "total_ms": 1.0, "count": 1}],
                     "top_unfused_fusion_sensitive": [],
                 }
-            }
+            },
+            "segmentation": {
+                "custom_op_simple_aten": {
+                    "highlighted_custom_ops": []
+                }
+            },
         },
     }
     current = {
@@ -362,7 +470,22 @@ def test_compare_profile_tables_reports_unfused_pointwise_delta():
                         {"name": "aten::add_elementwise_kernel", "fusion_family": "pointwise", "total_ms": 5.0, "count": 2}
                     ],
                 }
-            }
+            },
+            "segmentation": {
+                "custom_op_simple_aten": {
+                    "highlighted_custom_ops": [
+                        {
+                            "name": "lego_fastop::mlu_xmm_fwd",
+                            "custom_op_name": "lego_fastop::mlu_xmm_fwd",
+                            "range_count": 16,
+                            "nested_simple_aten_count": 304,
+                            "nested_simple_aten_ms": 1.03,
+                            "avg_simple_aten_per_call": 19.0,
+                            "unique_simple_aten_ops": 8,
+                        }
+                    ]
+                }
+            },
         },
     }
 
@@ -382,3 +505,7 @@ def test_compare_profile_tables_reports_unfused_pointwise_delta():
     assert family_rows["pointwise"]["status"] == "regression"
     assert sensitive_rows[0]["name"] == "aten::add_elementwise_kernel"
     assert sensitive_rows[0]["status"] == "regression"
+    custom_rows = comparison["torch_compile_delta"]["custom_op_simple_aten"]
+    assert custom_rows[0]["name"] == "lego_fastop::mlu_xmm_fwd"
+    assert custom_rows[0]["nested_simple_aten_count"]["delta"] == pytest.approx(304)
+    assert custom_rows[0]["status"] == "regression"
