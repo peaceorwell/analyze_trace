@@ -323,7 +323,15 @@ import triton
 import triton.language as tl
 
 @triton.jit
-def triton_poi_fused_test(in_ptr0, in_ptr1, out_ptr, N:tl.constexpr = 256, BLOCK:tl.constexpr = 128):
+def triton_poi_fused_test(
+    in_ptr0,
+    in_ptr1,
+    out_ptr,
+    N:tl.constexpr = 256,
+    BLOCK:tl.constexpr = 128,
+    BLOCK_M:tl.constexpr = 16,
+    BLOCK_N:tl.constexpr = 512,
+):
     pid0 = tl.program_id(0)
     pid1 = tl.program_id(1)
     offs = pid0 * BLOCK + tl.arange(0, BLOCK)
@@ -427,6 +435,9 @@ def triton_poi_fused_second(in_ptr0, out_ptr, N:tl.constexpr = 256, BLOCK:tl.con
     assert kernel["num_warps"] == [2]
     assert kernel["num_stages"] == [1]
     assert kernel["loop_count"] >= 1
+    assert kernel["tiling_config"]["program_axes"] == [0, 1]
+    assert kernel["tiling_config"]["skew_ratio"] >= 8
+    assert kernel["tiling_config"]["has_grouping_hint"] is False
     assert "libdevice_math_candidate" in categories
     assert "tensor_division_candidate" in categories
     assert "index_div_mod_or_boundary_fold" in categories
@@ -438,6 +449,11 @@ def triton_poi_fused_second(in_ptr0, out_ptr, N:tl.constexpr = 256, BLOCK:tl.con
     assert "pipeline_stage_candidate" in categories
     assert "scalar_broadcast_read_candidate" in categories
     assert "autotune_or_meta_parameter_candidate" in categories
+    assert "helion_tiling_config_sweep_candidate" in categories
+    assert "pid_grouping_or_l2_swizzle_candidate" in categories
+    assert "tile_shape_balance_candidate" in categories
+    assert "indexing_strategy_sweep_candidate" in categories
+    assert "range_config_sweep_candidate" in categories
     assert "reduce_layout_or_tiling_candidate" in categories
     assert "grid_or_retiling_candidate" in categories
     assert {
@@ -449,6 +465,13 @@ def triton_poi_fused_second(in_ptr0, out_ptr, N:tl.constexpr = 256, BLOCK:tl.con
         "modify-grid",
         "roofline",
         "autotune",
+        "helion-style-tiling-sweep",
+        "pid-grouping",
+        "tile-shape-sweep",
+        "block-size-balance",
+        "indexing-strategy",
+        "block-pointer",
+        "range-config",
         "num-warps",
         "mlu-task-mapping",
         "vectorize",

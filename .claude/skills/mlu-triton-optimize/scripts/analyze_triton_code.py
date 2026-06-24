@@ -42,6 +42,7 @@ NUM_STAGES_RE = re.compile(r"\bnum_stages\b[\"']?\s*(?:=|:)\s*(\d+)")
 DOT_RE = re.compile(r"\btl\.dot\s*\(")
 PROGRAM_ID_RE = re.compile(r"\btl\.program_id\s*\(\s*(\d+)")
 NUM_PROGRAMS_RE = re.compile(r"\btl\.num_programs\s*\(")
+PID_GROUPING_HINT_RE = re.compile(r"\b(?:GROUP(?:_SIZE|_M|_N)?|group_size|swizzle|l2_group(?:ing)?)\b", re.I)
 CONVERSION_RE = re.compile(r"\.to\s*\(\s*tl\.(?:float32|float16|bfloat16|int(?:8|16|32)|uint(?:8|16|32))")
 SINGLE_DIV_RE = re.compile(r"(?<!/)/(?!/)")
 FLOOR_DIV_OR_MOD_RE = re.compile(r"(//|%)")
@@ -168,6 +169,10 @@ def _has_broadcast_shape(code: str) -> bool:
     return any(token in code for token in ("[:, None]", "[None, :]", "None]", "None,"))
 
 
+def _is_power_of_two(value: int) -> bool:
+    return value > 0 and (value & (value - 1)) == 0
+
+
 def _split_comma_expr(expr: str) -> list[str]:
     items: list[str] = []
     current: list[str] = []
@@ -254,6 +259,74 @@ def _estimate_domain_elements(code: str, symbols: dict[str, int]) -> tuple[int |
             product *= value
         return product, f"arange={'x'.join(arange_labels)}"
     return None, ""
+
+
+def _static_extents_from_list(regex: re.Pattern[str], code: str, symbols: dict[str, int]) -> list[int]:
+    extents: list[int] = []
+    for match in regex.finditer(code):
+        for part in _split_comma_expr(match.group(1)):
+            value = _eval_static_dim(part, symbols)
+            if value:
+                extents.append(value)
+    return extents
+
+
+def _tiling_config_summary(
+    *,
+    code: str,
+    symbols: dict[str, int],
+    block_symbols: dict[str, int],
+    block_values: list[int],
+    program_axes: list[int],
+    num_warps: list[int],
+    num_stages: list[int],
+    loop_count: int,
+    static_range_count: int,
+    tl_range_count: int,
+    block_ptr_count: int,
+    autotune_count: int,
+) -> dict[str, Any]:
+    arange_extents = [
+        value
+        for token in ARANGE_STOP_RE.findall(code)
+        if (value := _eval_static_dim(token, symbols))
+    ]
+    block_shape_extents = _static_extents_from_list(BLOCK_SHAPE_RE, code, symbols)
+    tile_values = sorted({value for value in [*block_values, *block_shape_extents] if value > 0})
+    tile_product = None
+    if block_values:
+        product = 1
+        for value in block_values:
+            product *= value
+        tile_product = product
+    elif block_shape_extents:
+        product = 1
+        for value in block_shape_extents:
+            product *= value
+        tile_product = product
+    min_tile = min(tile_values) if tile_values else None
+    max_tile = max(tile_values) if tile_values else None
+    skew_ratio = round(max_tile / min_tile, 3) if min_tile and max_tile else None
+    return {
+        "block_symbols": block_symbols,
+        "block_values": block_values,
+        "block_shape_extents": block_shape_extents,
+        "arange_extents": arange_extents,
+        "tile_product": tile_product,
+        "min_tile": min_tile,
+        "max_tile": max_tile,
+        "skew_ratio": skew_ratio,
+        "power_of_two_values": [value for value in tile_values if _is_power_of_two(value)],
+        "non_power_of_two_values": [value for value in tile_values if not _is_power_of_two(value)],
+        "program_axes": program_axes,
+        "has_grouping_hint": bool(PID_GROUPING_HINT_RE.search(code)),
+        "has_block_ptr": block_ptr_count > 0,
+        "has_autotune": autotune_count > 0,
+        "num_warps": sorted(set(num_warps)),
+        "num_stages": sorted(set(num_stages)),
+        "loop_count": loop_count,
+        "range_loop_count": static_range_count + tl_range_count,
+    }
 
 
 def _estimate_line_elements(line: str, symbols: dict[str, int], domain_elements: int | None) -> int | None:
@@ -551,6 +624,21 @@ def analyze_code_file(path: Path, meta: dict[str, Any]) -> dict[str, Any]:
     static_range_count = _count(STATIC_RANGE_RE, code)
     tl_range_count = _count(TL_RANGE_RE, code)
     scalar_loop_headers, scalar_loop_lines = _loop_scalar_io_lines(lines)
+    program_axes = sorted({int(axis) for axis in PROGRAM_ID_RE.findall(code)})
+    tiling_config = _tiling_config_summary(
+        code=code,
+        symbols=symbols,
+        block_symbols=block_symbols,
+        block_values=block_values,
+        program_axes=program_axes,
+        num_warps=num_warps,
+        num_stages=num_stages,
+        loop_count=loop_count,
+        static_range_count=static_range_count,
+        tl_range_count=tl_range_count,
+        block_ptr_count=block_ptr_count,
+        autotune_count=autotune_count,
+    )
 
     if (
         roofline == "memory_tilted"
@@ -776,7 +864,6 @@ def analyze_code_file(path: Path, meta: dict[str, Any]) -> dict[str, Any]:
             )
         )
 
-    program_axes = sorted({int(axis) for axis in PROGRAM_ID_RE.findall(code)})
     if len(program_axes) >= 2 or NUM_PROGRAMS_RE.search(code):
         score = impact + len(program_axes)
         findings.append(
@@ -813,6 +900,95 @@ def analyze_code_file(path: Path, meta: dict[str, Any]) -> dict[str, Any]:
                 evidence=f"未检测到 @triton.autotune/triton.Config；{meta_text}。",
                 lines=_interesting_lines(lines, re.compile(r"num_warps|num_stages|triton\.Config|program_id|tl\.sum|tl\.dot")),
                 recommendation="把 BLOCK、num_warps、num_stages、grid 展平方式作为小规模 sweep 项；MLU 上重点验证 num_warps=1(Block) 与 4(Union1)，BLOCK_* 可尝试非 2 次幂；以单 kernel benchmark 或重采 trace 验证。",
+            )
+        )
+    if (
+        autotune_count == 0
+        and total_ms >= 0.5
+        and (
+            block_values
+            or reduce_count
+            or dot_count
+            or len(program_axes) >= 2
+            or (bandwidth_utilization is not None and bandwidth_utilization <= 0.7)
+        )
+    ):
+        evidence_parts = []
+        if block_symbols:
+            evidence_parts.append(f"BLOCK 配置 {block_symbols}")
+        if program_axes:
+            evidence_parts.append(f"program_id axes={program_axes}")
+        if num_warps:
+            evidence_parts.append(f"num_warps={sorted(set(num_warps))}")
+        if num_stages:
+            evidence_parts.append(f"num_stages={sorted(set(num_stages))}")
+        if tiling_config.get("skew_ratio"):
+            evidence_parts.append(f"tile skew≈{tiling_config['skew_ratio']}")
+        evidence_text = "，".join(evidence_parts) or "存在 material Triton kernel，但缺少显式 tiling config 信息"
+        findings.append(
+            _make_finding(
+                category="helion_tiling_config_sweep_candidate",
+                strategy="helion-style-tiling-sweep / autotune",
+                score=impact + 1.7,
+                evidence=f"{evidence_text}；未检测到 @triton.autotune/triton.Config。",
+                lines=_interesting_lines(lines, re.compile(r"BLOCK|program_id|num_warps|num_stages|triton\.Config")),
+                recommendation="参考 Helion 的 config-space 视角，把 `block_sizes`、loop order/flatten、range unroll/stage、indexing strategy、PID mapping/L2 grouping、num_warps/num_stages 作为一组小矩阵 sweep；每轮只保留少量高收益候选并用单 kernel benchmark 或重采 trace 验证。",
+            )
+        )
+    if len(program_axes) >= 2 and not tiling_config.get("has_grouping_hint"):
+        findings.append(
+            _make_finding(
+                category="pid_grouping_or_l2_swizzle_candidate",
+                strategy="pid-grouping / l2-reuse",
+                score=impact + 1.5,
+                evidence=f"多维 program_id axes={program_axes}，未检测到 GROUP/swizzle/L2 grouping 类提示。",
+                lines=_interesting_lines(lines, re.compile(r"program_id|num_programs|pid")),
+                recommendation="若相邻 program 复用同一输入 tile，可验证 Helion/Triton 常见的 PID reorder、L2 grouping 或 swizzle；目标是让连续 program 命中相同主维 tile，减少重复读和 cache 抖动。",
+            )
+        )
+    skew_ratio = tiling_config.get("skew_ratio")
+    if block_values and total_ms >= 0.5 and (
+        (isinstance(skew_ratio, (int, float)) and skew_ratio >= 8)
+        or (tiling_config.get("min_tile") is not None and tiling_config["min_tile"] <= 32 and len(block_values) >= 2)
+    ):
+        findings.append(
+            _make_finding(
+                category="tile_shape_balance_candidate",
+                strategy="tile-shape-sweep / block-size-balance",
+                score=impact + 1.3,
+                evidence=(
+                    f"BLOCK 值 {block_symbols}，min={tiling_config.get('min_tile')}，"
+                    f"max={tiling_config.get('max_tile')}，skew≈{skew_ratio or '-'}。"
+                ),
+                lines=_interesting_lines(lines, re.compile(r"BLOCK|tl\.arange|block_shape")),
+                recommendation="将 tile shape 从单个 BLOCK 调参扩展为二维/多维组合验证：平衡连续维吞吐、reduce/广播维复用和 NRAM 压力；不要默认 GPU 风格 2 次幂，MLU 上可加入有限个非 2 次幂候选。",
+            )
+        )
+    if (
+        block_ptr_count == 0
+        and total_ms >= 0.5
+        and (load_count + store_count) >= 5
+        and (len(program_axes) >= 2 or block_values or NUM_PROGRAMS_RE.search(code))
+    ):
+        findings.append(
+            _make_finding(
+                category="indexing_strategy_sweep_candidate",
+                strategy="indexing-strategy / block-pointer",
+                score=impact + 1.1,
+                evidence=f"未使用 block pointer；tl.load/tl.store 共 {load_count + store_count} 处，并存在 tiling/grid 信号。",
+                lines=_interesting_lines(lines, re.compile(r"tl\.(?:load|store)|tl\.arange|program_id")),
+                recommendation="把 scalar pointer arithmetic、block pointer/tensor descriptor、连续 bulk IO + 片上重排列为 indexing strategy 对照项；优先让最低维连续、mask 简单、重复地址计算更少。",
+            )
+        )
+    if total_ms >= 0.5 and (tl_range_count or static_range_count):
+        findings.append(
+            _make_finding(
+                category="range_config_sweep_candidate",
+                strategy="range-config / soft-pipeline",
+                score=impact + 1.0,
+                evidence=f"检测到 tl.range x{tl_range_count}, tl.static_range x{static_range_count}。",
+                lines=_interesting_lines(lines, re.compile(r"tl\.(?:range|static_range)|num_stages|for\s+")),
+                recommendation="将 range unroll、num_stages、multi-buffer、flatten loop 作为组合验证项；如果循环同时包含 load/compute/store，用 pipeline trace 或 MLUIR 确认是否真正形成软流水。",
             )
         )
     if (block_ptr_count or advance_count) and (load_count + store_count) >= 2:
@@ -867,6 +1043,7 @@ def analyze_code_file(path: Path, meta: dict[str, Any]) -> dict[str, Any]:
         "tl_range_count": tl_range_count,
         "block_symbols": block_symbols,
         "block_values": block_values,
+        "tiling_config": tiling_config,
         "estimated_profile": estimated_profile,
         "priority": priority if findings else "none",
         "priority_score": priority_score if findings else 0.0,

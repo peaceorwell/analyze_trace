@@ -42,7 +42,7 @@ Use a source-informed, validation-first flow. The goal is not to prove that a re
 2. **Classify with static Roofline signals**: estimate IO bytes, approximate scalar/vector operation count, arithmetic intensity, IO throughput, and compute throughput from generated code. Treat the result as a direction signal: memory-shaped, compute-shaped, or balanced.
 3. **Inspect memory access shape**: look for contiguous bulk IO, pseudo-gather, true gather, block pointer/tensor descriptor usage, mask/other paths, cache hints, and repeated load/store patterns.
 4. **Inspect compute shape**: look for libdevice-eligible math, division lowering opportunities, dtype conversion chains, reductions, and expensive scalarized index arithmetic.
-5. **Inspect mapping/tuning shape**: look for multi-dimensional `program_id`, `tl.num_programs`, `num_warps`, `num_stages`, missing autotune/config signals, and tile/block sizes that should be swept.
+5. **Inspect mapping/tuning shape**: look for multi-dimensional `program_id`, `tl.num_programs`, `num_warps`, `num_stages`, missing autotune/config signals, and tile/block sizes that should be swept. Treat tiling as a config space, not a single `BLOCK_*` knob.
 6. **Report as validation targets**: recommendations should say what to benchmark or trace next, not claim guaranteed speedup.
 
 Focus on optimization opportunities visible from generated Triton code:
@@ -54,7 +54,7 @@ Focus on optimization opportunities visible from generated Triton code:
 - **Reduce layout and tiling**: `tl.sum`, `tl.max`, `tl.min`, `tl.reduce`, especially reductions over axis 1 or repeated reductions that may benefit from retiling or transpose-to-pooling-friendly layout.
 - **Grid/retiling issues**: multi-dimensional program IDs, complex `tl.num_programs`, or block parameters that suggest poor core mapping. Recommend checking one-dimensional grid flattening and block-size consistency.
 - **Block pointer / tensor descriptor shape**: missing `tl.make_block_ptr` on obviously bulk-like IO, or existing block pointers with suspicious `block_shape`, `order`, or stride usage. Recommend descriptor/bulk-IO validation only when supported by the current MLU Triton stack.
-- **Autotune/meta-parameter sweep**: when a material kernel has reductions, low bandwidth utilization, multi-axis grid, `tl.dot`, or complex tiling but no visible `@triton.autotune` / `triton.Config`, recommend sweeping `BLOCK_*`, `num_warps`, `num_stages`, and grid flattening.
+- **Autotune/meta-parameter sweep**: when a material kernel has reductions, low bandwidth utilization, multi-axis grid, `tl.dot`, or complex tiling but no visible `@triton.autotune` / `triton.Config`, recommend sweeping `BLOCK_*`, `num_warps`, `num_stages`, grid flattening, loop/range config, indexing strategy, and PID/L2 grouping.
 - **Cache hint validation**: for true table/index/gather operands with reuse, consider `cache_modifier` / `eviction_policy` experiments; do not use cache hints as a substitute for regularizing pseudo-gather.
 - **dtype conversion chains**: repeated `.to(tl.float32)`, `.to(tl.float16)`, `.to(tl.bfloat16)`, `.to(tl.int*)` conversions around math or stores. Recommend removing redundant conversions or using fast conversion helpers where available.
 - **Static IO/compute estimate**: infer domain or tile size from `size_hints`, `block_shape`, or `tl.arange`; count `tl.load` / `tl.store` bytes and scalar `tl.*` arithmetic/comparison/math/reduce operations. Report estimated IO throughput, compute throughput, and arithmetic intensity as heuristic signals, not hardware counters.
@@ -71,11 +71,24 @@ Fold these Cambricon Triton 101 rules into the candidate analysis when source ev
 - **Group repeated scalar/broadcast reads**: when the kernel repeatedly reads scalar-like on-chip values and broadcasts them, reduce read count or group consecutive scalar reads. `tl.static_range` alone does not guarantee the generated load sequence is latency-friendly.
 - **Validate with compiler/profiler evidence**: use MLUIR/Linalg to confirm whether accesses became continuous or `gather.vector`, use `TRITON_PRINT_PIPELINE=true` to inspect software-pipeline decisions, and use cnperf/kernel benchmark to validate any source-level rewrite.
 
+## Helion-Inspired Tiling Config Heuristics
+
+Community Helion treats Triton performance tuning as a bounded configuration search rather than hand-picking one block size. Reuse that mental model when reviewing generated `output_code`:
+
+- **Promote config families, not isolated knobs**: analyze `BLOCK_*` / tile shape, loop order or loop flattening, `tl.range` unroll/stage choices, indexing strategy, `num_warps`, `num_stages`, and PID mapping as one search space. If a material kernel has no `@triton.autotune` / `triton.Config`, recommend a small sweep matrix instead of one magic value.
+- **Check tile-shape balance**: very skewed tiles, very small dimensions, or unused-looking `BLOCK_*` values can produce too many programs, poor vector occupancy, or excessive NRAM pressure. Recommend bounded sweeps that include a few MLU-friendly non-power-of-two values, while keeping continuous dimensions large enough for bulk IO.
+- **Check PID ordering and L2 reuse**: multi-axis `tl.program_id` without grouping/swizzle hints should be reviewed for program ordering. If neighboring programs reuse the same input tile, suggest PID reorder / L2 grouping validation before changing math.
+- **Check indexing strategy as a config**: scalar pointer arithmetic, modulo/floor-div index reconstruction, block pointer/tensor descriptor, and bulk IO + on-chip reshape are alternative implementations of the same logical tile. Recommend comparing them when load/store count is high or address expressions look regular.
+- **Check loop/range config**: `tl.range` / `tl.static_range` loops should be reviewed for unroll, `num_stages`, multi-buffering, and flattening. A loop with IO and compute but no effective stage configuration is a pipeline candidate; a loop with scalar-like load/store is a vectorization candidate.
+- **Check persistent/grid capping choices**: if grid dimensions can grow too large, use a persistent-kernel style that caps programs by core count and iterates inside the kernel. This is especially useful when larger tile sizes reduce launch/scheduling overhead without exceeding NRAM.
+- **Keep the search bounded**: prefer 4-12 targeted configs per kernel, chosen from the static signals above and ranked by observed duration/BW utilization. Every proposed config must include a benchmark or re-trace validation method.
+
 ## Reference Heuristics
 
 These heuristics are intentionally lightweight and stable enough for Web-side automation:
 
 - Triton official examples emphasize program ordering, block/tile shape, and autotune knobs (`BLOCK_*`, `num_warps`, `num_stages`) because memory reuse and launch mapping can dominate source-equivalent kernels.
+- Helion-style config search is useful for generated kernels because it names the real tuning axes explicitly: block sizes, loop order/flattening, indexing mode, range config, PID mapping, `num_warps`, and `num_stages`.
 - Triton `tl.load` supports cache and eviction hints; only suggest them for reused true-gather/table operands after ruling out regular bulk IO.
 - Roofline-style reasoning separates memory-shaped and compute-shaped kernels using arithmetic intensity. Use it to choose which optimization family to validate first.
 - Vendor Triton optimization guides generally start with profiling context, then inspect IR/source, tune meta-parameters, and only then check lower-level generated code. Keep the final report aligned with that order.
