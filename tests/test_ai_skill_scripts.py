@@ -14,6 +14,7 @@ TRACE_CONVERTER_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts/t
 COMPILE_SEGMENTATION_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts/compile_segmentation.py"
 COLLECT_SCRIPT = ROOT / ".claude/skills/e2e-profiling-comparator/scripts/collect_profile_tables.py"
 COMPARE_SCRIPT = ROOT / ".claude/skills/e2e-profiling-comparator/scripts/compare_profile_tables.py"
+E2E_ANALYZER_SKILL = ROOT / ".claude/skills/e2e-profiling-analyzer/SKILL.md"
 
 
 def load_module(name, path):
@@ -631,3 +632,14 @@ def test_compare_profile_tables_reports_unfused_pointwise_delta():
     assert custom_rows[0]["report_priority_B"] == "high"
     assert custom_rows[0]["must_report"] is True
     assert custom_rows[0]["status"] == "regression"
+
+
+def test_e2e_analyzer_skill_keeps_one_final_report_contract():
+    text = E2E_ANALYZER_SKILL.read_text(encoding="utf-8")
+
+    assert text.count("## Final Report Contract") == 1
+    assert text.count("The final `report.md` must use this exact high-level structure:") == 1
+    assert text.count("Final `report.md` structure:") == 0
+    assert text.count("Output contract:\n\n- `结论概览`") == 0
+    assert "Report Readability Gate" in text
+    assert "Follow only the `Final Report Contract` above" in text

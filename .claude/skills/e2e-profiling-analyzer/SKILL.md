@@ -106,6 +106,23 @@ If graph capture, multi-stream execution, or driver/runtime upgrades are only pl
 without direct trace evidence, keep them in `不确定性与下一步` instead of promoting them to top
 findings or primary actions.
 
+Before writing `report.md`, apply this Report Readability Gate:
+
+- Use one report structure only: the high-level structure above. Do not invent `主要发现`,
+  `详细分析`, `执行摘要`, or other parallel top-level summaries.
+- Keep the optional metadata below the H1 compact: either a 2-4 row table or short bullets.
+  Do not write consecutive bold metadata lines without a blank line between them.
+- Keep finding titles short and factual. Do not put the full metric, evidence chain, and root
+  cause into the title. Use "主要瓶颈" / "证据指向" unless the direct evidence proves a root cause.
+- Each `**结论：**`, `**证据：**`, and `**建议：**` paragraph must be one paragraph and no more
+  than two clauses. Move long call chains, raw percentages, and long file lists to stage artifacts.
+- Avoid repeating the same number in `结论概览`, `关键指标`, and `不确定性与下一步`; cite it once
+  where it is most useful.
+- If Triton `output_code` or IO-efficiency metadata is missing, mention it only as a data gap in
+  `不确定性与下一步`, not as a main bottleneck or primary action.
+- Check that every top-level heading appears at most once, Markdown tables have a header separator
+  row, and the report contains no raw stdout/stderr blocks unless it is a failure report.
+
 ## Setup And Inputs
 
 Create all generated artifacts under one analysis directory.
@@ -641,26 +658,12 @@ Workflow:
 9. Call out missing evidence and which branch or input would close it.
 10. Do not append raw table dumps to `report.md`. Keep audit details in stage reports or `evidence_summary.md`, and reference full output filenames.
 
-Final `report.md` structure:
+Final report writing:
 
-Use the exact structure defined in `Final Report Contract`:
-
-1. `# AI 性能分析报告`
-2. `## 结论概览`
-3. `## 关键指标`
-4. `## 优先行动`
-5. `## Triton Kernel 代码优化` (only when `triton_code_optimization.json.has_findings=true`)
-6. `## 不确定性与下一步`
-7. `## 产物`
-
-Output contract:
-
-- `结论概览`: 2-4 prioritized findings, usually 3. Use one `### 发现 N：short title` subsection per finding with separate `**结论：**`, `**证据：**`, and `**建议：**` paragraphs; each paragraph must be one short sentence. Merge host gap / launch overhead / `cpp_wrapper` into one finding when they are the same causal path. If `custom_op_simple_aten.must_report=true`, include a finding titled around "自定义算子内部仍有大量简单 aten 算子" or equivalent.
-- `关键指标`: compact table with 4-7 rows: metric, measured value/share, source artifact, and interpretation. If `triton_code_optimization.json.has_findings=true`, include a row such as `Triton code 候选` with `final_report_guidance.summary_cn` or the top strategies.
-- `优先行动`: 3-5 rows: priority, action, expected benefit, confidence, risk/cost, and validation method. If `custom_op_simple_aten.must_report=true`, include an action for the custom op using the exact custom op name and top nested aten names. If `triton_code_optimization.json` contributes an action, name the concrete Triton strategy such as `libdevice-opt`, `div-to-mul`, `bulk-io-opt`, `trans-opt`, `reduce-opt`, `retiling`, `modify-grid`, or `llc-cache-opt`, and cite the output-code artifact.
-- `Triton Kernel 代码优化`: include only when `triton_code_optimization.json.has_findings=true`. Use `final_report_guidance.required_table_md` or an equivalent compact table with all candidates from the JSON. The section must be top-level `##`, not nested below `优先行动` or `不确定性与下一步`.
-- `不确定性与下一步`: missing data or unresolved hypotheses, plus the branch/input needed to resolve each and one recommended first next step.
-- `产物`: analysis directory, report path, stage report paths, generated DB paths, `evidence_summary.md`, `triton_code_optimization.md/json` when present, and logs used as evidence.
+- Follow only the `Final Report Contract` above. Do not restate, reinterpret, or duplicate the
+  final structure in Phase 3.
+- Apply the Report Readability Gate before writing `report.md`.
+- If the draft violates the gate, rewrite the final report once instead of appending a correction.
 
 ## Validation And Failure Handling
 
