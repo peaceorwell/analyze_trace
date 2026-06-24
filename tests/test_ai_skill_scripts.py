@@ -407,6 +407,7 @@ def triton_poi_fused_second(in_ptr0, out_ptr, N:tl.constexpr, BLOCK:tl.constexpr
     assert "| Kernel | 代码文件 | 耗时 | BW 利用率 |" in guidance["required_table_md"]
     assert "triton_poi_fused_test" in guidance["required_table_md"]
     assert "triton_poi_fused_second" in guidance["required_table_md"]
+    assert "• " in guidance["required_table_md"]
     assert kernel["kernel_name"] == "triton_poi_fused_test"
     assert kernel["bandwidth_utilization"] == pytest.approx(0.09)
     assert "libdevice_math_candidate" in categories

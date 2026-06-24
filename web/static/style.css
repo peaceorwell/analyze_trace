@@ -1293,6 +1293,17 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
   font-weight: 800;
 }
 .markdown-body tr:last-child td { border-bottom: 0; }
+.markdown-body .md-cell-list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text2);
+}
+.markdown-body .md-cell-list li {
+  margin: 2px 0;
+  padding-left: 0;
+  line-height: 1.55;
+}
+.markdown-body .md-cell-list li + li { margin-top: 4px; }
 .markdown-body .md-collapsible-section {
   margin: 14px 0 0;
   border: 1px solid var(--border);

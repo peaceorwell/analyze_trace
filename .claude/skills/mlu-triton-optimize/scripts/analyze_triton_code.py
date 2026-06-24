@@ -386,7 +386,11 @@ def _md_multiline_cell(value: Any) -> str:
     items = _split_report_items(value)
     if not items:
         return "-"
-    return "<br>".join(_md_cell(item) for item in items)
+    bullets = []
+    for item in items:
+        cleaned = re.sub(r"^\s*(?:[-*+]|\d+\.|•)\s+", "", _md_cell(item))
+        bullets.append(f"• {cleaned}")
+    return "<br>".join(bullets)
 
 
 def _to_float(value: Any, default: float = 0.0) -> float:

@@ -56,7 +56,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.104"
+APP_VERSION = "0.2.105"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -2029,7 +2029,11 @@ def _format_ai_table_cell(value: object) -> str:
     items = _split_ai_table_items(value)
     if not items:
         return "-"
-    return "<br>".join(items)
+    bullets = []
+    for item in items:
+        cleaned = re.sub(r"^\s*(?:[-*+]|\d+\.|•)\s+", "", item)
+        bullets.append(f"• {cleaned}")
+    return "<br>".join(bullets)
 
 
 def _format_ai_finding_blocks(items: list[tuple[str, str]]) -> Optional[list[str]]:

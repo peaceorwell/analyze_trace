@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.104");
+const appVersion = ref("0.2.105");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -995,7 +995,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.2.104";
+  appVersion.value = cfg.version || "0.2.105";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -4617,6 +4617,30 @@ const isMarkdownTableSep = line => {
   return cells.length > 1 && cells.every(cell => /^:?-{3,}:?$/.test(cell));
 };
 
+const splitMarkdownTableCellItems = cell => {
+  const raw = String(cell ?? "").trim();
+  if (!raw) return [];
+  const normalized = raw
+    .replace(/&lt;br\s*\/?&gt;/gi, "<br>")
+    .replace(/<br\s*\/?>/gi, "\n");
+  const parts = normalized
+    .split(/\n+/)
+    .map(part => part.trim())
+    .filter(Boolean);
+  if (parts.length <= 1) return [];
+  return parts
+    .map(part => part.replace(/^\s*(?:[-*+]|\d+\.|•)\s+/, "").trim())
+    .filter(Boolean);
+};
+
+const renderMarkdownTableCell = (cell, options = {}) => {
+  const items = splitMarkdownTableCellItems(cell);
+  if (items.length > 1) {
+    return `<ul class="md-cell-list">${items.map(item => `<li>${renderInlineMarkdown(item, options)}</li>`).join("")}</ul>`;
+  }
+  return renderInlineMarkdown(cell, options);
+};
+
 const normalizeMarkdownHeadingTitle = value => String(value || "")
   .replace(/[`*_~]/g, "")
   .trim();
@@ -4710,7 +4734,7 @@ function renderMarkdown(markdown, options = {}) {
       }
       html.push(
         `<div class="md-table-wrap"><table><thead><tr>${headers.map(cell => `<th>${renderInlineMarkdown(cell, options)}</th>`).join("")}</tr></thead>`
-        + `<tbody>${rows.map(row => `<tr>${headers.map((_, index) => `<td>${renderInlineMarkdown(row[index] || "", options)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`
+        + `<tbody>${rows.map(row => `<tr>${headers.map((_, index) => `<td>${renderMarkdownTableCell(row[index] || "", options)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`
       );
       continue;
     }

@@ -70,7 +70,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.104",
+        "version": "0.2.105",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -321,8 +321,8 @@ def test_ai_report_injects_triton_code_optimization_section(isolated_server):
     assert "### Triton Kernel 代码优化候选" not in finalized
     assert "`triton_x`" in finalized
     assert "`triton_y`" in finalized
-    assert "发现张量除法<br>发现 dtype 往返转换" in finalized
-    assert "验证 reciprocal + multiply<br>消除重复 dtype 转换" in finalized
+    assert "• 发现张量除法<br>• 发现 dtype 往返转换" in finalized
+    assert "• 验证 reciprocal + multiply<br>• 消除重复 dtype 转换" in finalized
     assert "old_top_level" not in finalized
     assert "stale" not in finalized
 
