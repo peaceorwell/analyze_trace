@@ -70,7 +70,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.106",
+        "version": "0.2.107",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -325,6 +325,79 @@ def test_ai_report_injects_triton_code_optimization_section(isolated_server):
     assert "• 验证 reciprocal + multiply<br>• 消除重复 dtype 转换" in finalized
     assert "old_top_level" not in finalized
     assert "stale" not in finalized
+
+
+def test_ai_report_injects_triton_code_section_from_legacy_kernels(isolated_server):
+    jid = "ai-triton-section-legacy-job"
+    analysis_dir = Path(isolated_server.ai_analysis_dir(jid))
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+    (analysis_dir / "triton_code_optimization.json").write_text(
+        json.dumps(
+            {
+                "has_findings": True,
+                "summary": {
+                    "scanned_files": 2,
+                    "kernels_with_findings": 1,
+                    "finding_count": 2,
+                    "top_strategies": [
+                        {"strategy": "bulk-io-opt", "count": 1},
+                        {"strategy": "canonicalize", "count": 1},
+                    ],
+                },
+                "final_report_guidance": {},
+                "kernels": [
+                    {
+                        "kernel_name": "triton_poi_fused_x",
+                        "file": "/tmp/triton_output_code_00_triton_poi_fused_x.txt",
+                        "total_ms": 3.2,
+                        "bandwidth_utilization": 0.25,
+                        "priority": "high",
+                        "findings": [
+                            {
+                                "strategy": "bulk-io-opt",
+                                "evidence": "tl.load x6, tl.store x1，可能存在碎片化访存。",
+                                "recommendation": "优先改成连续 bulk IO。",
+                            },
+                            {
+                                "strategy": "canonicalize / libdevice-opt",
+                                "evidence": "发现 .to(tl.*) 转换 x8。",
+                                "recommendation": "消除重复 dtype 往返转换。",
+                            },
+                        ],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    raw = """
+# AI 性能分析报告
+
+## 优先行动
+
+- action
+
+## Triton Kernel 代码优化
+
+> stale empty section
+
+## 不确定性与下一步
+
+- next
+""".lstrip()
+
+    finalized = isolated_server._finalize_ai_report_markdown(jid, raw)
+
+    assert "## Triton Kernel 代码优化\n" in finalized
+    assert "扫描 2 个 Triton output_code，1 个 kernel 存在代码级候选，共 2 条优化信号" in finalized
+    assert "`triton_poi_fused_x`" in finalized
+    assert "`triton_output_code_00_triton_poi_fused_x.txt`" in finalized
+    assert "3.20 ms" in finalized
+    assert "25.0%" in finalized
+    assert "• tl.load x6, tl.store x1，可能存在碎片化访存" in finalized
+    assert "• 发现 .to(tl.*) 转换 x8" in finalized
+    assert "stale empty section" not in finalized
 
 
 def test_claude_command_normalizes_legacy_permission_args(isolated_server, monkeypatch):

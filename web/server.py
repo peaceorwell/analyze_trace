@@ -56,7 +56,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.106"
+APP_VERSION = "0.2.107"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -2036,6 +2036,94 @@ def _format_ai_table_cell(value: object) -> str:
     return "<br>".join(bullets)
 
 
+def _split_triton_strategy_text(value: object) -> list[str]:
+    if isinstance(value, (list, tuple, set)):
+        raw_items = value
+    else:
+        raw_items = re.split(r"\s*/\s*|\s*,\s*", str(value or ""))
+    items: list[str] = []
+    for item in raw_items:
+        text = str(item or "").strip()
+        if text and text not in items:
+            items.append(text)
+    return items
+
+
+def _triton_candidates_from_kernels(kernels: object) -> list[dict]:
+    if not isinstance(kernels, list):
+        return []
+
+    candidates: list[dict] = []
+    for kernel in kernels:
+        if not isinstance(kernel, dict):
+            continue
+        findings = kernel.get("findings") or []
+        if not isinstance(findings, list):
+            findings = []
+
+        strategies: list[str] = []
+        evidence_items: list[str] = []
+        recommendation_items: list[str] = []
+        for finding in findings:
+            if not isinstance(finding, dict):
+                continue
+            for strategy in _split_triton_strategy_text(finding.get("strategy")):
+                if strategy not in strategies:
+                    strategies.append(strategy)
+            evidence = finding.get("evidence")
+            if evidence and len(evidence_items) < 3:
+                evidence_items.append(str(evidence))
+            recommendation = finding.get("recommendation")
+            if recommendation and len(recommendation_items) < 2:
+                recommendation_items.append(str(recommendation))
+
+        if not findings and not kernel.get("kernel_name"):
+            continue
+        candidates.append({
+            "kernel_name": kernel.get("kernel_name") or "-",
+            "file": kernel.get("file") or kernel.get("output_code_file") or "-",
+            "priority": kernel.get("priority"),
+            "total_ms": kernel.get("total_ms"),
+            "bandwidth_utilization": kernel.get("bandwidth_utilization"),
+            "strategies": strategies,
+            "evidence_items": evidence_items,
+            "recommendation_items": recommendation_items,
+            "evidence": "; ".join(evidence_items),
+            "recommendation": recommendation_items[0] if recommendation_items else "",
+        })
+    return candidates
+
+
+def _triton_code_summary_from_payload(payload: dict, candidates: list[dict]) -> str:
+    summary = payload.get("summary") or {}
+    if not isinstance(summary, dict):
+        summary = {}
+    scanned = summary.get("scanned_files")
+    kernels = summary.get("kernels_with_findings")
+    findings = summary.get("finding_count")
+    strategies_raw = summary.get("top_strategies") or []
+    strategies = []
+    if isinstance(strategies_raw, list):
+        for item in strategies_raw[:4]:
+            if isinstance(item, dict):
+                strategy = item.get("strategy")
+            else:
+                strategy = item
+            if strategy:
+                strategies.append(str(strategy))
+
+    if scanned is None:
+        scanned = len(candidates)
+    if kernels is None:
+        kernels = len(candidates)
+    base = f"扫描 {scanned} 个 Triton output_code，{kernels} 个 kernel 存在代码级候选"
+    if findings is not None:
+        base += f"，共 {findings} 条优化信号"
+    if strategies:
+        base += f"，主要方向为 {', '.join(strategies)}"
+    return base + "。"
+
+
 def _format_ai_finding_blocks(items: list[tuple[str, str]]) -> Optional[list[str]]:
     if len(items) < 3:
         return None
@@ -2146,6 +2234,13 @@ def _build_triton_code_optimization_section(jid: str) -> str:
     guidance = payload.get("final_report_guidance") or {}
     summary = guidance.get("summary_cn") or ""
     candidates = guidance.get("candidates") or []
+    if not isinstance(candidates, list):
+        candidates = []
+    kernel_candidates = _triton_candidates_from_kernels(payload.get("kernels"))
+    if kernel_candidates and len(kernel_candidates) > len(candidates):
+        candidates = kernel_candidates
+    if not summary and candidates:
+        summary = _triton_code_summary_from_payload(payload, candidates)
     if candidates:
         table_lines = [
             "| Kernel | 代码文件 | 耗时 | BW 利用率 | 主要方向 | 证据 | 建议 |",
