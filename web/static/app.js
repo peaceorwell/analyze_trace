@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.105");
+const appVersion = ref("0.2.106");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -995,7 +995,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.2.105";
+  appVersion.value = cfg.version || "0.2.106";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -2711,11 +2711,15 @@ const aiArtifactContentUrl = artifactOrPath => {
   if (!selectedJobId.value || !path) return "";
   return `/api/jobs/${encodeURIComponent(selectedJobId.value)}/ai-analysis/artifact-content/${encodePathSegments(path)}`;
 };
-const renderAiArtifactCode = code => {
+const isTritonCodeOptimizationFileCell = context =>
+  normalizeMarkdownHeadingTitle(context?.sectionTitle) === "Triton Kernel 代码优化"
+  && normalizeMarkdownHeadingTitle(context?.columnHeader) === "代码文件";
+
+const renderAiArtifactCode = (code, context = {}) => {
   const url = aiArtifactDownloadUrl(code);
   if (!url) return "";
   const path = resolveAiArtifactPath(code);
-  if (isAiCodeArtifactPath(path)) {
+  if (isAiCodeArtifactPath(path) && isTritonCodeOptimizationFileCell(context)) {
     return `<button type="button" class="ai-artifact-inline-link ai-code-preview-link" data-ai-code-path="${escapeHtml(path)}" title="查看 Python 代码 ${escapeHtml(path)}" aria-label="查看 Python 代码 ${escapeHtml(path)}">查看代码</button>`;
   }
   return `<a class="ai-artifact-inline-link" href="${escapeHtml(url)}" download title="下载 ${escapeHtml(code)}"><code>${escapeHtml(code)}</code></a>`;
@@ -4583,7 +4587,7 @@ const renderInlineMarkdown = (text, options = {}) => {
   };
   let value = String(text ?? "");
   value = value.replace(/`([^`]+)`/g, (_, code) => {
-    const custom = options.codeRenderer?.(code);
+    const custom = options.codeRenderer?.(code, options.inlineContext || {});
     return stash(custom || `<code>${escapeHtml(code)}</code>`);
   });
   value = value.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => {
@@ -4633,12 +4637,13 @@ const splitMarkdownTableCellItems = cell => {
     .filter(Boolean);
 };
 
-const renderMarkdownTableCell = (cell, options = {}) => {
+const renderMarkdownTableCell = (cell, options = {}, context = {}) => {
   const items = splitMarkdownTableCellItems(cell);
   if (items.length > 1) {
-    return `<ul class="md-cell-list">${items.map(item => `<li>${renderInlineMarkdown(item, options)}</li>`).join("")}</ul>`;
+    const cellOptions = { ...options, inlineContext: context };
+    return `<ul class="md-cell-list">${items.map(item => `<li>${renderInlineMarkdown(item, cellOptions)}</li>`).join("")}</ul>`;
   }
-  return renderInlineMarkdown(cell, options);
+  return renderInlineMarkdown(cell, { ...options, inlineContext: context });
 };
 
 const normalizeMarkdownHeadingTitle = value => String(value || "")
@@ -4650,6 +4655,7 @@ function renderMarkdown(markdown, options = {}) {
   const html = [];
   let i = 0;
   const collapsedSections = new Set(options.collapsedSections || []);
+  let currentSectionTitle = options.currentSectionTitle || "";
   const isTableStartAt = index => index + 1 < lines.length && isMarkdownTableSep(lines[index + 1]);
   const isHorizontalRule = line => /^[-*_]\s*[-*_]\s*[-*_][\s\-*_]*$/.test(line.trim());
   const isListStart = line => /^\s*[-*+]\s+/.test(line) || /^\s*\d+\.\s+/.test(line);
@@ -4692,6 +4698,7 @@ function renderMarkdown(markdown, options = {}) {
     if (heading) {
       const level = heading[1].length;
       const title = normalizeMarkdownHeadingTitle(heading[2]);
+      if (level === 2) currentSectionTitle = title;
       if (level === 2 && collapsedSections.has(title)) {
         const start = i + 1;
         let end = start;
@@ -4734,7 +4741,12 @@ function renderMarkdown(markdown, options = {}) {
       }
       html.push(
         `<div class="md-table-wrap"><table><thead><tr>${headers.map(cell => `<th>${renderInlineMarkdown(cell, options)}</th>`).join("")}</tr></thead>`
-        + `<tbody>${rows.map(row => `<tr>${headers.map((_, index) => `<td>${renderMarkdownTableCell(row[index] || "", options)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`
+        + `<tbody>${rows.map(row => `<tr>${headers.map((header, index) => `<td>${renderMarkdownTableCell(row[index] || "", options, {
+          sectionTitle: currentSectionTitle,
+          columnHeader: normalizeMarkdownHeadingTitle(header),
+          columnIndex: index,
+          tableHeaders: headers,
+        })}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`
       );
       continue;
     }
