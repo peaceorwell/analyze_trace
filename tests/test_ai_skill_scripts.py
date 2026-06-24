@@ -332,10 +332,15 @@ def triton_poi_fused_test(in_ptr0, in_ptr1, out_ptr, N:tl.constexpr = 256, BLOCK
     b = tl.load(in_ptr1 + wrapped // 2, mask=offs < N, other=0.0).to(tl.float32)
     c = tl.load(in_ptr1 + wrapped + BLOCK, mask=offs + BLOCK < N, other=0.0)
     d = tl.load(in_ptr1 + wrapped + 2 * BLOCK, mask=offs + 2 * BLOCK < N, other=0.0)
-    y = a * tl.sigmoid(a) + tl.exp(b) / (tl.sqrt(a + 1.0) + 1.0)
+    scalar = 0.0
+    for i in tl.range(0, 4):
+        scalar += tl.load(in_ptr0 + i)
+    y = a * tl.sigmoid(a) + tl.exp(b) / (tl.sqrt(a + 1.0) + 1.0) + scalar
     z = tl.sum(y[:, None] + c[:, None], axis=1)
     tl.store(out_ptr + wrapped, z.to(tl.float32), mask=offs < N)
     tl.store(out_ptr + wrapped + BLOCK, d, mask=offs + BLOCK < N)
+
+launch_config = {"num_warps": 2, "num_stages": 1}
 """,
         encoding="utf-8",
     )
@@ -419,12 +424,19 @@ def triton_poi_fused_second(in_ptr0, out_ptr, N:tl.constexpr = 256, BLOCK:tl.con
     assert "• " in guidance["required_table_md"]
     assert kernel["kernel_name"] == "triton_poi_fused_test"
     assert kernel["bandwidth_utilization"] == pytest.approx(0.09)
+    assert kernel["num_warps"] == [2]
+    assert kernel["num_stages"] == [1]
+    assert kernel["loop_count"] >= 1
     assert "libdevice_math_candidate" in categories
     assert "tensor_division_candidate" in categories
     assert "index_div_mod_or_boundary_fold" in categories
     assert "fragmented_or_pseudo_discrete_io" in categories
     assert "roofline_memory_tilted" in categories
     assert "block_pointer_or_bulk_io_candidate" in categories
+    assert "mlu_num_warps_mapping_candidate" in categories
+    assert "vectorization_scalar_loop_candidate" in categories
+    assert "pipeline_stage_candidate" in categories
+    assert "scalar_broadcast_read_candidate" in categories
     assert "autotune_or_meta_parameter_candidate" in categories
     assert "reduce_layout_or_tiling_candidate" in categories
     assert "grid_or_retiling_candidate" in categories
@@ -437,6 +449,12 @@ def triton_poi_fused_second(in_ptr0, out_ptr, N:tl.constexpr = 256, BLOCK:tl.con
         "modify-grid",
         "roofline",
         "autotune",
+        "num-warps",
+        "mlu-task-mapping",
+        "vectorize",
+        "scalar-read-opt",
+        "soft-pipeline",
+        "num-stages",
     } <= strategies
     assert "Triton Code Optimization Candidates" in markdown
     assert "Final report placement" in markdown

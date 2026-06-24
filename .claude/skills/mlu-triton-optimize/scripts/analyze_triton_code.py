@@ -37,14 +37,17 @@ MAKE_BLOCK_PTR_RE = re.compile(r"\btl\.make_block_ptr\s*\(")
 ADVANCE_RE = re.compile(r"\btl\.advance\s*\(")
 CACHE_HINT_RE = re.compile(r"\b(?:cache_modifier|eviction_policy)\s*=")
 AUTOTUNE_RE = re.compile(r"\b(?:triton\.Config|@triton\.(?:autotune|heuristics))\b")
-NUM_WARPS_RE = re.compile(r"\bnum_warps\s*=\s*(\d+)")
-NUM_STAGES_RE = re.compile(r"\bnum_stages\s*=\s*(\d+)")
+NUM_WARPS_RE = re.compile(r"\bnum_warps\b[\"']?\s*(?:=|:)\s*(\d+)")
+NUM_STAGES_RE = re.compile(r"\bnum_stages\b[\"']?\s*(?:=|:)\s*(\d+)")
 DOT_RE = re.compile(r"\btl\.dot\s*\(")
 PROGRAM_ID_RE = re.compile(r"\btl\.program_id\s*\(\s*(\d+)")
 NUM_PROGRAMS_RE = re.compile(r"\btl\.num_programs\s*\(")
 CONVERSION_RE = re.compile(r"\.to\s*\(\s*tl\.(?:float32|float16|bfloat16|int(?:8|16|32)|uint(?:8|16|32))")
 SINGLE_DIV_RE = re.compile(r"(?<!/)/(?!/)")
 FLOOR_DIV_OR_MOD_RE = re.compile(r"(//|%)")
+LOOP_RE = re.compile(r"\bfor\s+([A-Za-z_]\w*)\s+in\s+(?:(tl)\.)?(range|static_range)\s*\(([^)]*)\)")
+STATIC_RANGE_RE = re.compile(r"\btl\.static_range\s*\(")
+TL_RANGE_RE = re.compile(r"\btl\.range\s*\(")
 INDEX_WORD_RE = re.compile(r"\b(?:idx|index|indices|offset|offsets|offs|mask|arange)\b", re.I)
 GATHER_WORD_RE = re.compile(r"\b(?:index|indices|idx|lookup|table|gather|embedding)\b", re.I)
 EVEN_ODD_HALF_RE = re.compile(r"\b(?:even|odd|first|second|half|interleave|strided|stride)\b", re.I)
@@ -118,6 +121,51 @@ def _numeric_symbols(text: str) -> dict[str, int]:
         except ValueError:
             continue
     return symbols
+
+
+def _block_symbols(symbols: dict[str, int]) -> dict[str, int]:
+    return {name: value for name, value in symbols.items() if "BLOCK" in name}
+
+
+def _loop_scalar_io_lines(lines: list[str], limit: int = 5) -> tuple[list[str], list[str]]:
+    """Find loops that look scalarized rather than vectorized.
+
+    Persistent kernels also use loops, so this only reports cases where the
+    loop induction variable appears directly in tl.load/tl.store without an
+    obvious tl.arange vector on that same memory line.
+    """
+    headers: list[str] = []
+    evidence: list[str] = []
+    for idx, line in enumerate(lines):
+        match = LOOP_RE.search(line)
+        if not match:
+            continue
+        var_name = match.group(1)
+        window = lines[idx + 1: idx + 12]
+        loop_hits = []
+        for body_line in window:
+            stripped = body_line.strip()
+            if not stripped:
+                continue
+            if LOOP_RE.search(stripped) and loop_hits:
+                break
+            if not (LOAD_RE.search(stripped) or STORE_RE.search(stripped)):
+                continue
+            if not re.search(rf"\b{re.escape(var_name)}\b", stripped):
+                continue
+            if "tl.arange" in stripped:
+                continue
+            loop_hits.append(stripped)
+        if loop_hits:
+            headers.append(line.strip())
+            evidence.extend([line.strip(), *loop_hits[:2]])
+        if len(evidence) >= limit:
+            break
+    return headers[:limit], evidence[:limit]
+
+
+def _has_broadcast_shape(code: str) -> bool:
+    return any(token in code for token in ("[:, None]", "[None, :]", "None]", "None,"))
 
 
 def _split_comma_expr(expr: str) -> list[str]:
@@ -496,6 +544,13 @@ def analyze_code_file(path: Path, meta: dict[str, Any]) -> dict[str, Any]:
     dot_count = _count(DOT_RE, code)
     num_warps = [int(value) for value in NUM_WARPS_RE.findall(code)]
     num_stages = [int(value) for value in NUM_STAGES_RE.findall(code)]
+    symbols = _numeric_symbols(code)
+    block_symbols = _block_symbols(symbols)
+    block_values = sorted(set(block_symbols.values()))
+    loop_count = len(LOOP_RE.findall(code))
+    static_range_count = _count(STATIC_RANGE_RE, code)
+    tl_range_count = _count(TL_RANGE_RE, code)
+    scalar_loop_headers, scalar_loop_lines = _loop_scalar_io_lines(lines)
 
     if (
         roofline == "memory_tilted"
@@ -581,6 +636,68 @@ def analyze_code_file(path: Path, meta: dict[str, Any]) -> dict[str, Any]:
             )
         )
 
+    unsupported_warps = sorted({value for value in num_warps if value not in (1, 4)})
+    if unsupported_warps:
+        findings.append(
+            _make_finding(
+                category="mlu_num_warps_mapping_candidate",
+                strategy="num-warps / mlu-task-mapping",
+                score=impact + 2.5,
+                evidence=f"检测到 MLU Triton 不推荐的 num_warps={unsupported_warps}；当前 MLU 映射通常只支持 1(Block) 或 4(Union1)。",
+                lines=_interesting_lines(lines, NUM_WARPS_RE),
+                recommendation="将 num_warps 纳入验证项：SIMD/点式 kernel 先试 1；可利用 Move/Compute/IO 流重叠或更大单 program 工作量时再试 4，并确认没有 silent fallback。",
+            )
+        )
+
+    if scalar_loop_lines:
+        findings.append(
+            _make_finding(
+                category="vectorization_scalar_loop_candidate",
+                strategy="vectorize / scalar-read-opt",
+                score=impact + 2.0 + min(len(scalar_loop_headers), 2),
+                evidence=f"发现 {len(scalar_loop_headers)} 个循环内标量式 tl.load/tl.store 访问，可能没有充分利用 MLU SIMD 向量化。",
+                lines=scalar_loop_lines,
+                recommendation="优先改成 `tl.arange` 驱动的块向量 load/compute/store；若是重复读取片上标量再广播，尝试 hoist 或连续分组读取，避免单标量读延迟成为瓶颈。",
+            )
+        )
+
+    if loop_count and (any(value <= 1 for value in num_stages) or (not num_stages and TL_RANGE_RE.search(code))):
+        stage_text = sorted(set(num_stages)) if num_stages else "missing"
+        findings.append(
+            _make_finding(
+                category="pipeline_stage_candidate",
+                strategy="soft-pipeline / num-stages",
+                score=impact + 1.4,
+                evidence=f"检测到循环 x{loop_count}，num_stages={stage_text}，可能未启用有效软流水。",
+                lines=_interesting_lines(lines, re.compile(r"for\s+.+(?:tl\.)?(?:range|static_range)|num_stages")),
+                recommendation="对含 load/compute/store 的 persistent 或循环 kernel，验证 num_stages=2-4；用 `TRITON_PRINT_PIPELINE=true` 查看 stage 拆分、delay 和被跳过流水的原因。",
+            )
+        )
+
+    if block_values and min(block_values) <= 64 and total_ms >= 0.5 and not loop_count:
+        findings.append(
+            _make_finding(
+                category="persistent_kernel_or_grid_limit_candidate",
+                strategy="persistent-kernel / block-size-sweep",
+                score=impact + 1.0,
+                evidence=f"检测到较小 BLOCK 配置 {block_symbols}，且 kernel 无内部循环；大 shape 下可能带来过多 grid/job。",
+                lines=_interesting_lines(lines, re.compile(r"BLOCK|program_id|grid\s*=")),
+                recommendation="MLU 可优先 sweep 更大的非 2 次幂 BLOCK_*；若 grid 维度可能接近 65535，考虑 persistent kernel：grid 按核心数封顶，任务在 kernel 内循环处理。",
+            )
+        )
+
+    if _has_broadcast_shape(code) and load_count >= 3 and total_ms >= 0.5:
+        findings.append(
+            _make_finding(
+                category="scalar_broadcast_read_candidate",
+                strategy="scalar-read-opt / canonicalize",
+                score=impact + 1.1,
+                evidence="检测到广播形状与多次 load 同时出现，可能存在重复片上标量读或广播后大规模计算。",
+                lines=_interesting_lines(lines, re.compile(r"\[:,\s*None\]|\[None,\s*:\]|tl\.load")),
+                recommendation="检查是否能把标量/低维 operand 连续读取并复用，或在广播前完成倒数、dtype 转换等低维计算，减少广播后的重复读和重复算。",
+            )
+        )
+
     fragmented_lines = _interesting_lines(lines, re.compile(r"tl\.(?:load|store)\s*\(|even|odd|half|interleave|stride", re.I))
     if load_count >= 4 or store_count >= 2 or (EVEN_ODD_HALF_RE.search(code) and load_count >= 2):
         score = impact + min(load_count + store_count, 8) / 2.0
@@ -591,7 +708,7 @@ def analyze_code_file(path: Path, meta: dict[str, Any]) -> dict[str, Any]:
                 score=score,
                 evidence=f"tl.load x{load_count}, tl.store x{store_count}，可能存在碎片化或规则离散访存。",
                 lines=fragmented_lines[:4],
-                recommendation="检查是否为前后半段、奇偶、固定 stride/reshape 等伪离散访存；若地址映射可编译期推导，优先改成连续 bulk IO + 片上 slice/cat/broadcast。",
+                recommendation="检查是否为前后半段、奇偶、固定 stride/reshape 等伪离散访存；若地址映射可编译期推导，优先改成连续 bulk IO + 片上 slice/cat/broadcast。全离散 gather/scatter 代价高；若只能生成最低维连续 gather.vector，确认连续维是否达到约 512B。",
             )
         )
     if (
@@ -695,7 +812,7 @@ def analyze_code_file(path: Path, meta: dict[str, Any]) -> dict[str, Any]:
                 score=impact + 1.2,
                 evidence=f"未检测到 @triton.autotune/triton.Config；{meta_text}。",
                 lines=_interesting_lines(lines, re.compile(r"num_warps|num_stages|triton\.Config|program_id|tl\.sum|tl\.dot")),
-                recommendation="把 BLOCK、num_warps、num_stages、grid 展平方式作为小规模 sweep 项；以单 kernel benchmark 或重采 trace 验证，不直接假设生成配置最优。",
+                recommendation="把 BLOCK、num_warps、num_stages、grid 展平方式作为小规模 sweep 项；MLU 上重点验证 num_warps=1(Block) 与 4(Union1)，BLOCK_* 可尝试非 2 次幂；以单 kernel benchmark 或重采 trace 验证。",
             )
         )
     if (block_ptr_count or advance_count) and (load_count + store_count) >= 2:
@@ -743,6 +860,13 @@ def analyze_code_file(path: Path, meta: dict[str, Any]) -> dict[str, Any]:
         "cache_hint_count": cache_hint_count,
         "autotune_count": autotune_count,
         "dot_count": dot_count,
+        "num_warps": sorted(set(num_warps)),
+        "num_stages": sorted(set(num_stages)),
+        "loop_count": loop_count,
+        "static_range_count": static_range_count,
+        "tl_range_count": tl_range_count,
+        "block_symbols": block_symbols,
+        "block_values": block_values,
         "estimated_profile": estimated_profile,
         "priority": priority if findings else "none",
         "priority_score": priority_score if findings else 0.0,

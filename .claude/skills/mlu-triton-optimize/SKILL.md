@@ -59,6 +59,18 @@ Focus on optimization opportunities visible from generated Triton code:
 - **dtype conversion chains**: repeated `.to(tl.float32)`, `.to(tl.float16)`, `.to(tl.bfloat16)`, `.to(tl.int*)` conversions around math or stores. Recommend removing redundant conversions or using fast conversion helpers where available.
 - **Static IO/compute estimate**: infer domain or tile size from `size_hints`, `block_shape`, or `tl.arange`; count `tl.load` / `tl.store` bytes and scalar `tl.*` arithmetic/comparison/math/reduce operations. Report estimated IO throughput, compute throughput, and arithmetic intensity as heuristic signals, not hardware counters.
 
+## Cambricon Triton 101 Heuristics
+
+Fold these Cambricon Triton 101 rules into the candidate analysis when source evidence supports them:
+
+- **Prefer vectorized block operations**: MLU SIMD execution benefits strongly from `tl.arange`-based vectorized load/compute/store. Flag loops over `range` / `tl.range` / `tl.static_range` that repeatedly load or store one scalar-like element, especially when the loop index appears directly in `tl.load` / `tl.store`.
+- **Regularize memory before tuning cache hints**: continuous IO is preferred. Treat even/odd, first/second half, modulo/floor-div offset, fixed-stride, and reshape-like addressing as pseudo-discrete unless proven otherwise. If the logical mapping is regular, recommend contiguous bulk IO followed by on-chip `slice` / `cat` / `broadcast` reshaping. Full discrete gather/scatter is expensive; lowest-dimension contiguous gather-vector may be acceptable when the contiguous dimension is at least about `512B`.
+- **Use MLU task mapping intentionally**: on current MLU Triton stacks, `num_warps=1` maps to Block task and `num_warps=4` maps to Union1 task. Other values are unsupported or may silently fall back; report them as validation risks. For SIMD-heavy kernels, start with `1`; for kernels that can use Move/Compute/IO stream overlap or larger per-program work, benchmark `4`.
+- **Tune block size for MLU, not GPU defaults**: MLU often benefits from larger non-power-of-two `BLOCK_*` values, bounded by NRAM. Very small blocks can inflate grid count and launch/scheduling overhead. If grid dimensions may exceed `65535`, recommend larger blocks or a persistent-kernel pattern that caps grid by core count and iterates inside the kernel.
+- **Use soft pipeline where loops carry IO and compute**: `num_stages=1` means no useful pipelining for the target loop. For persistent or looped kernels with load/compute/store streams, validate `num_stages` around 2-4; higher values can increase resource pressure and must be benchmarked.
+- **Group repeated scalar/broadcast reads**: when the kernel repeatedly reads scalar-like on-chip values and broadcasts them, reduce read count or group consecutive scalar reads. `tl.static_range` alone does not guarantee the generated load sequence is latency-friendly.
+- **Validate with compiler/profiler evidence**: use MLUIR/Linalg to confirm whether accesses became continuous or `gather.vector`, use `TRITON_PRINT_PIPELINE=true` to inspect software-pipeline decisions, and use cnperf/kernel benchmark to validate any source-level rewrite.
+
 ## Reference Heuristics
 
 These heuristics are intentionally lightweight and stable enough for Web-side automation:
