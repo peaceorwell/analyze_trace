@@ -33,6 +33,13 @@ MATH_PATTERNS = [
 REDUCE_RE = re.compile(r"\btl\.(?:sum|max|min|reduce)\s*\(")
 LOAD_RE = re.compile(r"\btl\.load\s*\(")
 STORE_RE = re.compile(r"\btl\.store\s*\(")
+MAKE_BLOCK_PTR_RE = re.compile(r"\btl\.make_block_ptr\s*\(")
+ADVANCE_RE = re.compile(r"\btl\.advance\s*\(")
+CACHE_HINT_RE = re.compile(r"\b(?:cache_modifier|eviction_policy)\s*=")
+AUTOTUNE_RE = re.compile(r"\b(?:triton\.Config|@triton\.(?:autotune|heuristics))\b")
+NUM_WARPS_RE = re.compile(r"\bnum_warps\s*=\s*(\d+)")
+NUM_STAGES_RE = re.compile(r"\bnum_stages\s*=\s*(\d+)")
+DOT_RE = re.compile(r"\btl\.dot\s*\(")
 PROGRAM_ID_RE = re.compile(r"\btl\.program_id\s*\(\s*(\d+)")
 NUM_PROGRAMS_RE = re.compile(r"\btl\.num_programs\s*\(")
 CONVERSION_RE = re.compile(r"\.to\s*\(\s*tl\.(?:float32|float16|bfloat16|int(?:8|16|32)|uint(?:8|16|32))")
@@ -258,6 +265,23 @@ def _format_rate(value: float | int | None, unit: str) -> str:
     return f"{float(value):.2f} {unit}"
 
 
+def _format_intensity(value: float | int | None) -> str:
+    if value is None:
+        return "-"
+    return f"{float(value):.2f} ops/B"
+
+
+def _roofline_hint(compute_ops: int, io_bytes: int) -> tuple[str, float | None]:
+    if not compute_ops or not io_bytes:
+        return "unknown", None
+    intensity = compute_ops / io_bytes
+    if intensity < 4:
+        return "memory_tilted", intensity
+    if intensity > 40:
+        return "compute_tilted", intensity
+    return "balanced", intensity
+
+
 def _estimate_static_profile(code: str, lines: list[str], total_ms: float) -> dict[str, Any]:
     symbols = _numeric_symbols(code)
     domain_elements, domain_source = _estimate_domain_elements(code, symbols)
@@ -297,10 +321,12 @@ def _estimate_static_profile(code: str, lines: list[str], total_ms: float) -> di
     io_bytes = read_bytes + write_bytes
     io_gbps = io_bytes / duration_s / 1e9 if duration_s and io_bytes else None
     compute_gops = compute_ops / duration_s / 1e9 if duration_s and compute_ops else None
+    roofline_hint, arithmetic_intensity = _roofline_hint(compute_ops, io_bytes)
     confidence = "medium" if domain_elements and not unknown_io else "low"
     summary = (
         f"IO {_format_bytes(io_bytes)} / {_format_rate(io_gbps, 'GB/s')}；"
-        f"计算 {_format_ops(compute_ops)} / {_format_rate(compute_gops, 'GOPS')}"
+        f"计算 {_format_ops(compute_ops)} / {_format_rate(compute_gops, 'GOPS')}；"
+        f"AI {_format_intensity(arithmetic_intensity)}"
     )
     notes = ["静态估算，未执行 kernel。"]
     if domain_source:
@@ -320,6 +346,8 @@ def _estimate_static_profile(code: str, lines: list[str], total_ms: float) -> di
         "compute_ops": compute_ops or None,
         "io_gbps": io_gbps,
         "compute_gops": compute_gops,
+        "arithmetic_intensity_ops_per_byte": arithmetic_intensity,
+        "roofline_hint": roofline_hint,
         "arithmetic_ops": arithmetic_ops,
         "comparison_ops": comparison_ops,
         "math_ops": math_ops,
@@ -453,7 +481,53 @@ def analyze_code_file(path: Path, meta: dict[str, Any]) -> dict[str, Any]:
     if bandwidth_utilization is not None:
         impact += max(0.0, min(1.0, 1.0 - bandwidth_utilization)) * 4.0
 
+    estimated_profile = _estimate_static_profile(code, lines, total_ms)
     findings: list[dict[str, Any]] = []
+    roofline = estimated_profile.get("roofline_hint")
+    arithmetic_intensity = estimated_profile.get("arithmetic_intensity_ops_per_byte")
+
+    load_count = _count(LOAD_RE, code)
+    store_count = _count(STORE_RE, code)
+    reduce_count = _count(REDUCE_RE, code)
+    block_ptr_count = _count(MAKE_BLOCK_PTR_RE, code)
+    advance_count = _count(ADVANCE_RE, code)
+    cache_hint_count = _count(CACHE_HINT_RE, code)
+    autotune_count = _count(AUTOTUNE_RE, code)
+    dot_count = _count(DOT_RE, code)
+    num_warps = [int(value) for value in NUM_WARPS_RE.findall(code)]
+    num_stages = [int(value) for value in NUM_STAGES_RE.findall(code)]
+
+    if (
+        roofline == "memory_tilted"
+        and total_ms >= 0.5
+        and bandwidth_utilization is not None
+        and bandwidth_utilization <= 0.6
+        and (load_count + store_count) >= 2
+    ):
+        findings.append(
+            _make_finding(
+                category="roofline_memory_tilted",
+                strategy="roofline / bulk-io-opt",
+                score=impact + 2.5,
+                evidence=(
+                    f"静态算术强度约 {_format_intensity(arithmetic_intensity)}，"
+                    f"BW 利用率 {_fmt_util(bandwidth_utilization)}，更像内存/访存形态受限。"
+                ),
+                lines=_interesting_lines(lines, re.compile(r"tl\.(?:load|store)\s*\(")),
+                recommendation="优先排查地址连续性、冗余 load/store、mask/other 路径和片上重排；先把访存形态做规整，再评估数学函数替换。",
+            )
+        )
+    elif roofline == "compute_tilted" and total_ms >= 0.5:
+        findings.append(
+            _make_finding(
+                category="roofline_compute_tilted",
+                strategy="roofline / compute-op-reduction",
+                score=impact + 1.5,
+                evidence=f"静态算术强度约 {_format_intensity(arithmetic_intensity)}，计算操作密度较高。",
+                lines=_interesting_lines(lines, re.compile(r"tl\.(?:sigmoid|exp|log|sqrt|erf|tanh|(?:math\.)?pow|sum|max|min|reduce)\s*\(")),
+                recommendation="优先验证 libdevice fast math、除法降级、reduce 重排或代数化简；只有运行时数据确认后再扩大到其他 kernel。",
+            )
+        )
 
     libdevice_hits = []
     if "tl.extra.mlu.libdevice" not in code:
@@ -507,8 +581,6 @@ def analyze_code_file(path: Path, meta: dict[str, Any]) -> dict[str, Any]:
             )
         )
 
-    load_count = _count(LOAD_RE, code)
-    store_count = _count(STORE_RE, code)
     fragmented_lines = _interesting_lines(lines, re.compile(r"tl\.(?:load|store)\s*\(|even|odd|half|interleave|stride", re.I))
     if load_count >= 4 or store_count >= 2 or (EVEN_ODD_HALF_RE.search(code) and load_count >= 2):
         score = impact + min(load_count + store_count, 8) / 2.0
@@ -520,6 +592,21 @@ def analyze_code_file(path: Path, meta: dict[str, Any]) -> dict[str, Any]:
                 evidence=f"tl.load x{load_count}, tl.store x{store_count}，可能存在碎片化或规则离散访存。",
                 lines=fragmented_lines[:4],
                 recommendation="检查是否为前后半段、奇偶、固定 stride/reshape 等伪离散访存；若地址映射可编译期推导，优先改成连续 bulk IO + 片上 slice/cat/broadcast。",
+            )
+        )
+    if (
+        block_ptr_count == 0
+        and (load_count + store_count) >= 5
+        and (bandwidth_utilization is None or bandwidth_utilization <= 0.6)
+    ):
+        findings.append(
+            _make_finding(
+                category="block_pointer_or_bulk_io_candidate",
+                strategy="bulk-io-opt / tensor-descriptor",
+                score=impact + min(load_count + store_count, 8) / 3.0,
+                evidence=f"未检测到 tl.make_block_ptr；tl.load x{load_count}, tl.store x{store_count}。",
+                lines=fragmented_lines[:4],
+                recommendation="在当前 MLU Triton 支持的前提下，评估 block pointer/tensor descriptor 或连续 bulk IO，减少重复地址计算和碎片访存。",
             )
         )
 
@@ -540,8 +627,18 @@ def analyze_code_file(path: Path, meta: dict[str, Any]) -> dict[str, Any]:
                 recommendation="如果源表较小且跨 program 复用，验证 `cache_modifier=\".cg\"`；若是固定规则映射，优先走 bulk-io 而不是 cache hint。",
             )
         )
+    if gather_lines and cache_hint_count == 0:
+        findings.append(
+            _make_finding(
+                category="cache_hint_validation_candidate",
+                strategy="cache-hint-validation",
+                score=impact + min(len(gather_lines), 2),
+                evidence="存在 table/index 类 load，但未检测到 cache_modifier/eviction_policy。",
+                lines=gather_lines[:4],
+                recommendation="若该 operand 跨 program 重复读取且容量较小，可把 cache hint 作为 micro-benchmark 验证项；不应替代地址规整。",
+            )
+        )
 
-    reduce_count = _count(REDUCE_RE, code)
     if reduce_count:
         axis1 = bool(re.search(r"tl\.(?:sum|max|min|reduce)\s*\([^)]*axis\s*=\s*1", code))
         score = impact + min(reduce_count, 5)
@@ -575,6 +672,43 @@ def analyze_code_file(path: Path, meta: dict[str, Any]) -> dict[str, Any]:
                 recommendation="检查能否展平成一维 grid，并让并行轴分块与核心数/num_warps 匹配；同时复查 BLOCK_* 是否实际参与 offset/mask。",
             )
         )
+    if (
+        autotune_count == 0
+        and total_ms >= 0.5
+        and (
+            reduce_count
+            or dot_count
+            or len(program_axes) >= 2
+            or (bandwidth_utilization is not None and bandwidth_utilization <= 0.5)
+        )
+    ):
+        meta_bits = []
+        if num_warps:
+            meta_bits.append(f"num_warps={sorted(set(num_warps))}")
+        if num_stages:
+            meta_bits.append(f"num_stages={sorted(set(num_stages))}")
+        meta_text = "，".join(meta_bits) if meta_bits else "未检测到 num_warps/num_stages 显式信息"
+        findings.append(
+            _make_finding(
+                category="autotune_or_meta_parameter_candidate",
+                strategy="autotune / retiling",
+                score=impact + 1.2,
+                evidence=f"未检测到 @triton.autotune/triton.Config；{meta_text}。",
+                lines=_interesting_lines(lines, re.compile(r"num_warps|num_stages|triton\.Config|program_id|tl\.sum|tl\.dot")),
+                recommendation="把 BLOCK、num_warps、num_stages、grid 展平方式作为小规模 sweep 项；以单 kernel benchmark 或重采 trace 验证，不直接假设生成配置最优。",
+            )
+        )
+    if (block_ptr_count or advance_count) and (load_count + store_count) >= 2:
+        findings.append(
+            _make_finding(
+                category="block_pointer_shape_review",
+                strategy="tensor-descriptor / retiling",
+                score=impact + 0.8,
+                evidence=f"检测到 tl.make_block_ptr x{block_ptr_count}, tl.advance x{advance_count}。",
+                lines=_interesting_lines(lines, re.compile(r"make_block_ptr|tl\.advance|block_shape|order\s*=")),
+                recommendation="复查 block_shape/order/stride 是否贴合连续维和复用维；block pointer 已存在时，优化重点转向 tile 大小和 program ordering。",
+            )
+        )
 
     conversion_count = _count(CONVERSION_RE, code)
     if conversion_count >= 2:
@@ -593,7 +727,6 @@ def analyze_code_file(path: Path, meta: dict[str, Any]) -> dict[str, Any]:
     findings.sort(key=lambda item: item["score"], reverse=True)
     priority_score = round(sum(item["score"] for item in findings[:3]) + impact, 3)
     priority = _severity(priority_score)
-    estimated_profile = _estimate_static_profile(code, lines, total_ms)
     return {
         "kernel_name": kernel_name,
         "file": str(path),
@@ -606,6 +739,10 @@ def analyze_code_file(path: Path, meta: dict[str, Any]) -> dict[str, Any]:
         "load_count": load_count,
         "store_count": store_count,
         "reduce_count": reduce_count,
+        "block_ptr_count": block_ptr_count,
+        "cache_hint_count": cache_hint_count,
+        "autotune_count": autotune_count,
+        "dot_count": dot_count,
         "estimated_profile": estimated_profile,
         "priority": priority if findings else "none",
         "priority_score": priority_score if findings else 0.0,

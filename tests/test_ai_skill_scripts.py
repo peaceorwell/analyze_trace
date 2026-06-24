@@ -401,6 +401,8 @@ def triton_poi_fused_second(in_ptr0, out_ptr, N:tl.constexpr = 256, BLOCK:tl.con
     assert guidance["candidates"][0]["kernel_name"] == "triton_poi_fused_test"
     assert guidance["candidates"][0]["estimated_profile"]["io_bytes"] > 0
     assert guidance["candidates"][0]["estimated_profile"]["compute_ops"] > 0
+    assert guidance["candidates"][0]["estimated_profile"]["arithmetic_intensity_ops_per_byte"] > 0
+    assert guidance["candidates"][0]["estimated_profile"]["roofline_hint"] == "memory_tilted"
     assert guidance["candidates"][0]["evidence_items"]
     assert guidance["candidates"][0]["recommendation_items"]
     assert len(guidance["candidates"]) == 2
@@ -410,6 +412,7 @@ def triton_poi_fused_second(in_ptr0, out_ptr, N:tl.constexpr = 256, BLOCK:tl.con
     assert "| Kernel | 代码文件 | 耗时 | BW 利用率 | 主要方向 | 证据 | 建议 |" not in guidance["required_table_md"]
     assert "IO " in guidance["required_table_md"]
     assert "计算 " in guidance["required_table_md"]
+    assert "AI " in guidance["required_table_md"]
     assert "方向：" in guidance["required_table_md"]
     assert "triton_poi_fused_test" in guidance["required_table_md"]
     assert "triton_poi_fused_second" in guidance["required_table_md"]
@@ -420,9 +423,21 @@ def triton_poi_fused_second(in_ptr0, out_ptr, N:tl.constexpr = 256, BLOCK:tl.con
     assert "tensor_division_candidate" in categories
     assert "index_div_mod_or_boundary_fold" in categories
     assert "fragmented_or_pseudo_discrete_io" in categories
+    assert "roofline_memory_tilted" in categories
+    assert "block_pointer_or_bulk_io_candidate" in categories
+    assert "autotune_or_meta_parameter_candidate" in categories
     assert "reduce_layout_or_tiling_candidate" in categories
     assert "grid_or_retiling_candidate" in categories
-    assert {"libdevice-opt", "div-to-mul", "bulk-io-opt", "reduce-opt", "retiling", "modify-grid"} <= strategies
+    assert {
+        "libdevice-opt",
+        "div-to-mul",
+        "bulk-io-opt",
+        "reduce-opt",
+        "retiling",
+        "modify-grid",
+        "roofline",
+        "autotune",
+    } <= strategies
     assert "Triton Code Optimization Candidates" in markdown
     assert "Final report placement" in markdown
     assert "Required Final Report Snippet" in markdown

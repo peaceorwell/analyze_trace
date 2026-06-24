@@ -36,6 +36,15 @@ If no `output_code` files exist, the skill should report `has_findings=false` an
 
 ## Analysis Scope
 
+Use a source-informed, validation-first flow. The goal is not to prove that a rewrite is faster from source alone, but to identify the most plausible validation targets:
+
+1. **Prioritize by runtime context**: use `total_ms`, bandwidth utilization, and repeated patterns from `triton_kernel_efficiency.json`; ignore tiny kernels unless they repeat enough to matter.
+2. **Classify with static Roofline signals**: estimate IO bytes, approximate scalar/vector operation count, arithmetic intensity, IO throughput, and compute throughput from generated code. Treat the result as a direction signal: memory-shaped, compute-shaped, or balanced.
+3. **Inspect memory access shape**: look for contiguous bulk IO, pseudo-gather, true gather, block pointer/tensor descriptor usage, mask/other paths, cache hints, and repeated load/store patterns.
+4. **Inspect compute shape**: look for libdevice-eligible math, division lowering opportunities, dtype conversion chains, reductions, and expensive scalarized index arithmetic.
+5. **Inspect mapping/tuning shape**: look for multi-dimensional `program_id`, `tl.num_programs`, `num_warps`, `num_stages`, missing autotune/config signals, and tile/block sizes that should be swept.
+6. **Report as validation targets**: recommendations should say what to benchmark or trace next, not claim guaranteed speedup.
+
 Focus on optimization opportunities visible from generated Triton code:
 
 - **libdevice math replacement**: `tl.sigmoid`, `tl.exp`, `tl.log`, `tl.sqrt`, `tl.erf`, `tl.tanh`, `tl.pow`, `x * tl.sigmoid(x)`, and similar compute-heavy patterns that may map better to `tl.extra.mlu.libdevice.fast_*`.
@@ -44,8 +53,21 @@ Focus on optimization opportunities visible from generated Triton code:
 - **True gather / repeated lookup**: index/table-like loads that are not compile-time regular. Recommend validating reuse and considering `cache_modifier=".cg"` only when it is a small reused operand.
 - **Reduce layout and tiling**: `tl.sum`, `tl.max`, `tl.min`, `tl.reduce`, especially reductions over axis 1 or repeated reductions that may benefit from retiling or transpose-to-pooling-friendly layout.
 - **Grid/retiling issues**: multi-dimensional program IDs, complex `tl.num_programs`, or block parameters that suggest poor core mapping. Recommend checking one-dimensional grid flattening and block-size consistency.
+- **Block pointer / tensor descriptor shape**: missing `tl.make_block_ptr` on obviously bulk-like IO, or existing block pointers with suspicious `block_shape`, `order`, or stride usage. Recommend descriptor/bulk-IO validation only when supported by the current MLU Triton stack.
+- **Autotune/meta-parameter sweep**: when a material kernel has reductions, low bandwidth utilization, multi-axis grid, `tl.dot`, or complex tiling but no visible `@triton.autotune` / `triton.Config`, recommend sweeping `BLOCK_*`, `num_warps`, `num_stages`, and grid flattening.
+- **Cache hint validation**: for true table/index/gather operands with reuse, consider `cache_modifier` / `eviction_policy` experiments; do not use cache hints as a substitute for regularizing pseudo-gather.
 - **dtype conversion chains**: repeated `.to(tl.float32)`, `.to(tl.float16)`, `.to(tl.bfloat16)`, `.to(tl.int*)` conversions around math or stores. Recommend removing redundant conversions or using fast conversion helpers where available.
-- **Static IO/compute estimate**: infer domain or tile size from `size_hints`, `block_shape`, or `tl.arange`; count `tl.load` / `tl.store` bytes and scalar `tl.*` arithmetic/comparison/math/reduce operations. Report the resulting estimated IO throughput and compute throughput as a heuristic signal, not a hardware counter.
+- **Static IO/compute estimate**: infer domain or tile size from `size_hints`, `block_shape`, or `tl.arange`; count `tl.load` / `tl.store` bytes and scalar `tl.*` arithmetic/comparison/math/reduce operations. Report estimated IO throughput, compute throughput, and arithmetic intensity as heuristic signals, not hardware counters.
+
+## Reference Heuristics
+
+These heuristics are intentionally lightweight and stable enough for Web-side automation:
+
+- Triton official examples emphasize program ordering, block/tile shape, and autotune knobs (`BLOCK_*`, `num_warps`, `num_stages`) because memory reuse and launch mapping can dominate source-equivalent kernels.
+- Triton `tl.load` supports cache and eviction hints; only suggest them for reused true-gather/table operands after ruling out regular bulk IO.
+- Roofline-style reasoning separates memory-shaped and compute-shaped kernels using arithmetic intensity. Use it to choose which optimization family to validate first.
+- Vendor Triton optimization guides generally start with profiling context, then inspect IR/source, tune meta-parameters, and only then check lower-level generated code. Keep the final report aligned with that order.
+- Recent auto-tuning/agentic Triton work uses static rules plus profiling feedback loops; therefore every recommendation should include a concrete benchmark or re-trace validation method.
 
 ## Output Expectations
 
