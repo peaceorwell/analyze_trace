@@ -45,6 +45,7 @@ Focus on optimization opportunities visible from generated Triton code:
 - **Reduce layout and tiling**: `tl.sum`, `tl.max`, `tl.min`, `tl.reduce`, especially reductions over axis 1 or repeated reductions that may benefit from retiling or transpose-to-pooling-friendly layout.
 - **Grid/retiling issues**: multi-dimensional program IDs, complex `tl.num_programs`, or block parameters that suggest poor core mapping. Recommend checking one-dimensional grid flattening and block-size consistency.
 - **dtype conversion chains**: repeated `.to(tl.float32)`, `.to(tl.float16)`, `.to(tl.bfloat16)`, `.to(tl.int*)` conversions around math or stores. Recommend removing redundant conversions or using fast conversion helpers where available.
+- **Static IO/compute estimate**: infer domain or tile size from `size_hints`, `block_shape`, or `tl.arange`; count `tl.load` / `tl.store` bytes and scalar `tl.*` arithmetic/comparison/math/reduce operations. Report the resulting estimated IO throughput and compute throughput as a heuristic signal, not a hardware counter.
 
 ## Output Expectations
 
@@ -53,12 +54,12 @@ The JSON output must be machine-readable and include:
 - `has_findings`: whether actionable candidates were found.
 - `summary`: scanned file count, finding count, and top strategy names.
 - `final_report_guidance`: concise Chinese guidance for the parent E2E report, including whether the candidates must be surfaced, whether they should be promoted to a top finding/action, suggested placement, top strategies, candidate summaries, and `required_table_md`, a compact Markdown table with all detected Triton code candidates that can be copied into the final report.
-- `kernels`: sorted by priority, each containing `kernel_name`, `file`, optional IO-efficiency metrics, `priority`, `priority_score`, and `findings`.
+- `kernels`: sorted by priority, each containing `kernel_name`, `file`, optional IO-efficiency metrics, `estimated_profile`, `priority`, `priority_score`, and `findings`.
 
 The Markdown output should be short enough to read in the final AI report:
 
 - A compact summary.
-- A top-candidate table.
+- A top-candidate table with estimated throughput and merged optimization direction/recommendation. Do not use a separate evidence column in the final table.
 - Per-kernel findings with evidence lines and recommendations.
 
 ## Integration With E2E Reports

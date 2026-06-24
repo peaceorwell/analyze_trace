@@ -41,6 +41,32 @@ FLOOR_DIV_OR_MOD_RE = re.compile(r"(//|%)")
 INDEX_WORD_RE = re.compile(r"\b(?:idx|index|indices|offset|offsets|offs|mask|arange)\b", re.I)
 GATHER_WORD_RE = re.compile(r"\b(?:index|indices|idx|lookup|table|gather|embedding)\b", re.I)
 EVEN_ODD_HALF_RE = re.compile(r"\b(?:even|odd|first|second|half|interleave|strided|stride)\b", re.I)
+SIZE_HINTS_RE = re.compile(r"\bsize_hints\s*=\s*\[([^\]]+)\]")
+BLOCK_SHAPE_RE = re.compile(r"\bblock_shape\s*=\s*\[([^\]]+)\]")
+ARANGE_STOP_RE = re.compile(r"\btl\.arange\s*\(\s*0\s*,\s*([A-Za-z_]\w*|\d+)")
+NUMERIC_SYMBOL_RE = re.compile(r"\b([A-Z][A-Z0-9_]*)\s*(?::\s*tl\.constexpr\s*)?=\s*(\d+)\b")
+DTYPE_RE = re.compile(
+    r"\btl\.(float64|float32|float16|bfloat16|int64|uint64|int32|uint32|int16|uint16|int8|uint8|bool)\b"
+)
+ARITHMETIC_OP_RE = re.compile(r"(?<![<>=!*/])(?:\*\*|//|[+\-*/%])(?![=>/*])")
+COMPARISON_OP_RE = re.compile(r"(?:==|!=|<=|>=|(?<![<])<(?![<=])|(?<![>])>(?![>=]))")
+
+
+DTYPE_BYTES = {
+    "float64": 8,
+    "int64": 8,
+    "uint64": 8,
+    "float32": 4,
+    "int32": 4,
+    "uint32": 4,
+    "float16": 2,
+    "bfloat16": 2,
+    "int16": 2,
+    "uint16": 2,
+    "int8": 1,
+    "uint8": 1,
+    "bool": 1,
+}
 
 
 def _read_text(path: Path) -> str:
@@ -75,6 +101,234 @@ def _interesting_lines(lines: list[str], regex: re.Pattern[str], limit: int = 4)
 
 def _count(regex: re.Pattern[str], text: str) -> int:
     return len(regex.findall(text))
+
+
+def _numeric_symbols(text: str) -> dict[str, int]:
+    symbols: dict[str, int] = {}
+    for name, value in NUMERIC_SYMBOL_RE.findall(text):
+        try:
+            symbols[name] = int(value)
+        except ValueError:
+            continue
+    return symbols
+
+
+def _split_comma_expr(expr: str) -> list[str]:
+    items: list[str] = []
+    current: list[str] = []
+    depth = 0
+    for char in expr:
+        if char in "([":
+            depth += 1
+        elif char in ")]" and depth > 0:
+            depth -= 1
+        if char == "," and depth == 0:
+            item = "".join(current).strip()
+            if item:
+                items.append(item)
+            current = []
+            continue
+        current.append(char)
+    item = "".join(current).strip()
+    if item:
+        items.append(item)
+    return items
+
+
+def _eval_static_dim(expr: str, symbols: dict[str, int]) -> int | None:
+    text = str(expr or "").strip()
+    if not text:
+        return None
+    if re.fullmatch(r"\d+", text):
+        return int(text)
+    for name, value in symbols.items():
+        text = re.sub(rf"\b{re.escape(name)}\b", str(value), text)
+    if not re.fullmatch(r"[0-9\s+\-*/()%]+", text):
+        return None
+    try:
+        value = eval(text, {"__builtins__": {}}, {})  # noqa: S307 - restricted numeric expression
+    except Exception:
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def _expr_product(expr: str, symbols: dict[str, int]) -> tuple[int | None, str]:
+    parts = _split_comma_expr(expr)
+    if not parts:
+        return None, ""
+    product = 1
+    labels = []
+    for part in parts:
+        value = _eval_static_dim(part, symbols)
+        if value is None:
+            labels.append(part)
+            product = 0
+        else:
+            labels.append(str(value))
+            if product:
+                product *= value
+    return (product or None), "x".join(labels)
+
+
+def _estimate_domain_elements(code: str, symbols: dict[str, int]) -> tuple[int | None, str]:
+    for match in SIZE_HINTS_RE.finditer(code):
+        product, label = _expr_product(match.group(1), symbols)
+        if product:
+            return product, f"size_hints={label}"
+    for match in BLOCK_SHAPE_RE.finditer(code):
+        product, label = _expr_product(match.group(1), symbols)
+        if product:
+            return product, f"block_shape={label}"
+    arange_values = []
+    arange_labels = []
+    for token in ARANGE_STOP_RE.findall(code):
+        value = _eval_static_dim(token, symbols)
+        arange_labels.append(str(value) if value else token)
+        if value:
+            arange_values.append(value)
+        else:
+            arange_values = []
+            break
+    if arange_values:
+        product = 1
+        for value in arange_values:
+            product *= value
+        return product, f"arange={'x'.join(arange_labels)}"
+    return None, ""
+
+
+def _estimate_line_elements(line: str, symbols: dict[str, int], domain_elements: int | None) -> int | None:
+    match = BLOCK_SHAPE_RE.search(line)
+    if match:
+        product, _ = _expr_product(match.group(1), symbols)
+        if product:
+            return product
+    aranges = ARANGE_STOP_RE.findall(line)
+    if aranges:
+        product = 1
+        for token in aranges:
+            value = _eval_static_dim(token, symbols)
+            if value is None:
+                product = 0
+                break
+            product *= value
+        if product:
+            return product
+    return domain_elements
+
+
+def _dtype_bytes_for_line(line: str, default: int = 4) -> int:
+    matches = DTYPE_RE.findall(line)
+    if not matches:
+        return default
+    # Prefer the narrowest explicit dtype on the line; it is usually closer to
+    # the memory operand width after generated Triton casts are expanded.
+    return min(DTYPE_BYTES.get(dtype, default) for dtype in matches)
+
+
+def _format_bytes(value: float | int | None) -> str:
+    if value is None:
+        return "-"
+    number = float(value)
+    for unit in ("B", "KB", "MB", "GB"):
+        if abs(number) < 1024 or unit == "GB":
+            return f"{number:.2f} {unit}" if unit != "B" else f"{number:.0f} {unit}"
+        number /= 1024
+    return f"{number:.2f} GB"
+
+
+def _format_ops(value: float | int | None) -> str:
+    if value is None:
+        return "-"
+    number = float(value)
+    for unit in ("ops", "Kops", "Mops", "Gops"):
+        if abs(number) < 1000 or unit == "Gops":
+            return f"{number:.2f} {unit}" if unit != "ops" else f"{number:.0f} {unit}"
+        number /= 1000
+    return f"{number:.2f} Gops"
+
+
+def _format_rate(value: float | int | None, unit: str) -> str:
+    if value is None:
+        return "-"
+    return f"{float(value):.2f} {unit}"
+
+
+def _estimate_static_profile(code: str, lines: list[str], total_ms: float) -> dict[str, Any]:
+    symbols = _numeric_symbols(code)
+    domain_elements, domain_source = _estimate_domain_elements(code, symbols)
+    load_lines = [line for line in lines if LOAD_RE.search(line)]
+    store_lines = [line for line in lines if STORE_RE.search(line)]
+
+    read_bytes = 0
+    write_bytes = 0
+    estimated_inputs = 0
+    estimated_outputs = 0
+    unknown_io = False
+    for line in load_lines:
+        elements = _estimate_line_elements(line, symbols, domain_elements)
+        if elements is None:
+            unknown_io = True
+            continue
+        estimated_inputs += elements
+        read_bytes += elements * _dtype_bytes_for_line(line)
+    for line in store_lines:
+        elements = _estimate_line_elements(line, symbols, domain_elements)
+        if elements is None:
+            unknown_io = True
+            continue
+        estimated_outputs += elements
+        write_bytes += elements * _dtype_bytes_for_line(line)
+
+    arithmetic_ops = _count(ARITHMETIC_OP_RE, code)
+    comparison_ops = _count(COMPARISON_OP_RE, code)
+    math_ops = sum(_count(regex, code) for _, regex, _ in MATH_PATTERNS)
+    reduce_ops = _count(REDUCE_RE, code)
+    conversion_ops = _count(CONVERSION_RE, code)
+    op_weight = arithmetic_ops + comparison_ops + conversion_ops + math_ops * 4 + reduce_ops * 4
+    element_base = domain_elements or max(estimated_inputs, estimated_outputs, 1)
+    compute_ops = element_base * op_weight if op_weight else 0
+
+    duration_s = total_ms / 1000.0 if total_ms > 0 else None
+    io_bytes = read_bytes + write_bytes
+    io_gbps = io_bytes / duration_s / 1e9 if duration_s and io_bytes else None
+    compute_gops = compute_ops / duration_s / 1e9 if duration_s and compute_ops else None
+    confidence = "medium" if domain_elements and not unknown_io else "low"
+    summary = (
+        f"IO {_format_bytes(io_bytes)} / {_format_rate(io_gbps, 'GB/s')}；"
+        f"计算 {_format_ops(compute_ops)} / {_format_rate(compute_gops, 'GOPS')}"
+    )
+    notes = ["静态估算，未执行 kernel。"]
+    if domain_source:
+        notes.append(f"规模来源：{domain_source}。")
+    if unknown_io:
+        notes.append("部分 load/store 形状含动态符号，IO 量可能低估。")
+    return {
+        "estimate_scope": "static_per_kernel",
+        "confidence": confidence,
+        "domain_elements": domain_elements,
+        "domain_source": domain_source,
+        "input_elements": estimated_inputs or None,
+        "output_elements": estimated_outputs or None,
+        "read_bytes": read_bytes or None,
+        "write_bytes": write_bytes or None,
+        "io_bytes": io_bytes or None,
+        "compute_ops": compute_ops or None,
+        "io_gbps": io_gbps,
+        "compute_gops": compute_gops,
+        "arithmetic_ops": arithmetic_ops,
+        "comparison_ops": comparison_ops,
+        "math_ops": math_ops,
+        "reduce_ops": reduce_ops,
+        "conversion_ops": conversion_ops,
+        "summary": summary,
+        "mac_summary": summary,
+        "notes": notes,
+    }
 
 
 def _severity(score: float) -> str:
@@ -339,6 +593,7 @@ def analyze_code_file(path: Path, meta: dict[str, Any]) -> dict[str, Any]:
     findings.sort(key=lambda item: item["score"], reverse=True)
     priority_score = round(sum(item["score"] for item in findings[:3]) + impact, 3)
     priority = _severity(priority_score)
+    estimated_profile = _estimate_static_profile(code, lines, total_ms)
     return {
         "kernel_name": kernel_name,
         "file": str(path),
@@ -351,6 +606,7 @@ def analyze_code_file(path: Path, meta: dict[str, Any]) -> dict[str, Any]:
         "load_count": load_count,
         "store_count": store_count,
         "reduce_count": reduce_count,
+        "estimated_profile": estimated_profile,
         "priority": priority if findings else "none",
         "priority_score": priority_score if findings else 0.0,
         "findings": findings,
@@ -391,6 +647,27 @@ def _md_multiline_cell(value: Any) -> str:
         cleaned = re.sub(r"^\s*(?:[-*+]|\d+\.|•)\s+", "", _md_cell(item))
         bullets.append(f"• {cleaned}")
     return "<br>".join(bullets)
+
+
+def _estimated_profile_summary(profile: Any) -> str:
+    if not isinstance(profile, dict):
+        return "-"
+    summary = profile.get("summary") or profile.get("mac_summary")
+    return _md_cell(summary or "-")
+
+
+def _candidate_action_items(candidate: dict[str, Any]) -> list[str]:
+    items: list[str] = []
+    strategies = candidate.get("strategies") or []
+    if isinstance(strategies, str):
+        strategy_text = strategies
+    else:
+        strategy_text = ", ".join(str(strategy) for strategy in strategies if strategy)
+    if strategy_text:
+        items.append(f"方向：{strategy_text}")
+    recommendations = candidate.get("recommendation_items") or candidate.get("recommendation")
+    items.extend(_split_report_items(recommendations))
+    return items
 
 
 def _to_float(value: Any, default: float = 0.0) -> float:
@@ -454,6 +731,7 @@ def _final_report_guidance(kernels: list[dict[str, Any]], scanned_files: int) ->
             "priority": kernel.get("priority"),
             "total_ms": kernel.get("total_ms"),
             "bandwidth_utilization": kernel.get("bandwidth_utilization"),
+            "estimated_profile": kernel.get("estimated_profile"),
             "strategies": sorted({
                 strategy
                 for finding in findings[:3]
@@ -476,8 +754,8 @@ def _final_report_guidance(kernels: list[dict[str, Any]], scanned_files: int) ->
     table_lines = [
         "## Triton Kernel 代码优化",
         "",
-        "| Kernel | 代码文件 | 耗时 | BW 利用率 | 主要方向 | 证据 | 建议 |",
-        "|---|---|---:|---:|---|---|---|",
+        "| Kernel | 代码文件 | 耗时 | BW 利用率 | 估算吞吐 | 优化方向与建议 |",
+        "|---|---|---:|---:|---|---|",
     ]
     for candidate in candidates:
         code_file = Path(str(candidate.get("file") or "")).name
@@ -487,9 +765,8 @@ def _final_report_guidance(kernels: list[dict[str, Any]], scanned_files: int) ->
             f"`{_md_cell(code_file)}` | "
             f"{_fmt_ms(candidate.get('total_ms'))} ms | "
             f"{_fmt_util(candidate.get('bandwidth_utilization'))} | "
-            f"{_md_cell(', '.join(candidate.get('strategies') or []))} | "
-            f"{_md_multiline_cell(candidate.get('evidence_items') or candidate.get('evidence'))} | "
-            f"{_md_multiline_cell(candidate.get('recommendation_items') or candidate.get('recommendation'))} |"
+            f"{_estimated_profile_summary(candidate.get('estimated_profile'))} | "
+            f"{_md_multiline_cell(_candidate_action_items(candidate))} |"
         )
 
     return {
@@ -578,18 +855,22 @@ def render_markdown(payload: dict[str, Any]) -> str:
             "",
             "## Top Candidate Kernels",
             "",
-            "| Priority | Kernel | Total ms | BW util | Main strategies | Evidence |",
+            "| Priority | Kernel | Total ms | BW util | Estimated throughput | Optimization direction and recommendation |",
             "|---|---|---:|---:|---|---|",
         ]
     )
     for kernel in payload["kernels"]:
-        strategies = []
-        for finding in kernel["findings"][:3]:
-            strategies.append(finding["strategy"])
-        evidence = "; ".join(f"{f['category']}({f['severity']})" for f in kernel["findings"][:3])
+        strategies = [finding["strategy"] for finding in kernel["findings"][:3]]
+        recommendation_items = [finding["recommendation"] for finding in kernel["findings"][:2]]
+        action_items = _candidate_action_items({
+            "strategies": strategies,
+            "recommendation_items": recommendation_items,
+        })
         lines.append(
             f"| {kernel['priority']} | `{kernel['kernel_name']}` | {_fmt_ms(kernel['total_ms'])} | "
-            f"{_fmt_util(kernel.get('bandwidth_utilization'))} | {', '.join(strategies)} | {evidence} |"
+            f"{_fmt_util(kernel.get('bandwidth_utilization'))} | "
+            f"{_estimated_profile_summary(kernel.get('estimated_profile'))} | "
+            f"{_md_multiline_cell(action_items)} |"
         )
 
     lines.extend(["", "## Details", ""])

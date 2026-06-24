@@ -323,7 +323,7 @@ import triton
 import triton.language as tl
 
 @triton.jit
-def triton_poi_fused_test(in_ptr0, in_ptr1, out_ptr, N:tl.constexpr, BLOCK:tl.constexpr):
+def triton_poi_fused_test(in_ptr0, in_ptr1, out_ptr, N:tl.constexpr = 256, BLOCK:tl.constexpr = 128):
     pid0 = tl.program_id(0)
     pid1 = tl.program_id(1)
     offs = pid0 * BLOCK + tl.arange(0, BLOCK)
@@ -346,7 +346,7 @@ import triton
 import triton.language as tl
 
 @triton.jit
-def triton_poi_fused_second(in_ptr0, out_ptr, N:tl.constexpr, BLOCK:tl.constexpr):
+def triton_poi_fused_second(in_ptr0, out_ptr, N:tl.constexpr = 256, BLOCK:tl.constexpr = 128):
     pid0 = tl.program_id(0)
     offs = pid0 * BLOCK + tl.arange(0, BLOCK)
     x = tl.load(in_ptr0 + offs, mask=offs < N, other=0.0).to(tl.float32)
@@ -399,12 +399,18 @@ def triton_poi_fused_second(in_ptr0, out_ptr, N:tl.constexpr, BLOCK:tl.constexpr
     assert guidance["promote_to_finding"] is True
     assert "Triton output_code" in guidance["summary_cn"]
     assert guidance["candidates"][0]["kernel_name"] == "triton_poi_fused_test"
+    assert guidance["candidates"][0]["estimated_profile"]["io_bytes"] > 0
+    assert guidance["candidates"][0]["estimated_profile"]["compute_ops"] > 0
     assert guidance["candidates"][0]["evidence_items"]
     assert guidance["candidates"][0]["recommendation_items"]
     assert len(guidance["candidates"]) == 2
     assert guidance["required_section_title"] == "Triton Kernel 代码优化"
     assert guidance["required_table_md"].startswith("## Triton Kernel 代码优化")
-    assert "| Kernel | 代码文件 | 耗时 | BW 利用率 |" in guidance["required_table_md"]
+    assert "| Kernel | 代码文件 | 耗时 | BW 利用率 | 估算吞吐 | 优化方向与建议 |" in guidance["required_table_md"]
+    assert "| Kernel | 代码文件 | 耗时 | BW 利用率 | 主要方向 | 证据 | 建议 |" not in guidance["required_table_md"]
+    assert "IO " in guidance["required_table_md"]
+    assert "计算 " in guidance["required_table_md"]
+    assert "方向：" in guidance["required_table_md"]
     assert "triton_poi_fused_test" in guidance["required_table_md"]
     assert "triton_poi_fused_second" in guidance["required_table_md"]
     assert "• " in guidance["required_table_md"]

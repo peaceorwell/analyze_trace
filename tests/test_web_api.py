@@ -70,7 +70,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.107",
+        "version": "0.2.108",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -257,6 +257,9 @@ def test_ai_report_injects_triton_code_optimization_section(isolated_server):
                             "file": "triton_x.py",
                             "total_ms": 1.23,
                             "bandwidth_utilization": 0.4,
+                            "estimated_profile": {
+                                "summary": "IO 12.00 MB / 9.76 GB/s；计算 1.20 Gops / 975.61 GOPS"
+                            },
                             "strategies": ["div-to-mul"],
                             "evidence": "发现张量除法；发现 dtype 往返转换。",
                             "recommendation": "验证 reciprocal + multiply; 消除重复 dtype 转换。",
@@ -266,6 +269,9 @@ def test_ai_report_injects_triton_code_optimization_section(isolated_server):
                             "file": "triton_y.py",
                             "total_ms": 0.45,
                             "bandwidth_utilization": 0.25,
+                            "estimated_profile": {
+                                "summary": "IO 2.00 MB / 4.44 GB/s；计算 0.10 Gops / 222.22 GOPS"
+                            },
                             "strategies": ["bulk-io-opt"],
                             "evidence": "离散 load 较多",
                             "recommendation": "验证连续 bulk IO",
@@ -275,9 +281,9 @@ def test_ai_report_injects_triton_code_optimization_section(isolated_server):
                         [
                             "### Triton Kernel 代码优化候选",
                             "",
-                            "| Kernel | 代码文件 | 耗时 | BW 利用率 | 主要方向 | 证据 | 建议 |",
-                            "|---|---|---:|---:|---|---|---|",
-                            "| `triton_x` | `triton_x.py` | 1.23 ms | 40.0% | div-to-mul | 发现张量除法 | 验证 reciprocal + multiply |",
+                            "| Kernel | 代码文件 | 耗时 | BW 利用率 | 估算吞吐 | 优化方向与建议 |",
+                            "|---|---|---:|---:|---|---|",
+                            "| `triton_x` | `triton_x.py` | 1.23 ms | 40.0% | IO 12.00 MB / 9.76 GB/s；计算 1.20 Gops / 975.61 GOPS | 方向：div-to-mul<br>验证 reciprocal + multiply |",
                         ]
                     ),
                 },
@@ -301,9 +307,9 @@ def test_ai_report_injects_triton_code_optimization_section(isolated_server):
 
 ## Triton Kernel 代码优化
 
-| Kernel | 代码文件 | 耗时 | BW 利用率 | 主要方向 | 证据 | 建议 |
-|---|---|---:|---:|---|---|---|
-| `old_top_level` | `old.py` | 0.01 ms | 1.0% | old | old | old |
+| Kernel | 代码文件 | 耗时 | BW 利用率 | 估算吞吐 | 优化方向与建议 |
+|---|---|---:|---:|---|---|
+| `old_top_level` | `old.py` | 0.01 ms | 1.0% | old | old |
 
 ## 不确定性与下一步
 
@@ -321,8 +327,11 @@ def test_ai_report_injects_triton_code_optimization_section(isolated_server):
     assert "### Triton Kernel 代码优化候选" not in finalized
     assert "`triton_x`" in finalized
     assert "`triton_y`" in finalized
-    assert "• 发现张量除法<br>• 发现 dtype 往返转换" in finalized
+    assert "估算吞吐" in finalized
+    assert "IO 12.00 MB / 9.76 GB/s；计算 1.20 Gops / 975.61 GOPS" in finalized
+    assert "方向：div-to-mul" in finalized
     assert "• 验证 reciprocal + multiply<br>• 消除重复 dtype 转换" in finalized
+    assert "| Kernel | 代码文件 | 耗时 | BW 利用率 | 主要方向 | 证据 | 建议 |" not in finalized
     assert "old_top_level" not in finalized
     assert "stale" not in finalized
 
@@ -351,6 +360,9 @@ def test_ai_report_injects_triton_code_section_from_legacy_kernels(isolated_serv
                         "file": "/tmp/triton_output_code_00_triton_poi_fused_x.txt",
                         "total_ms": 3.2,
                         "bandwidth_utilization": 0.25,
+                        "estimated_profile": {
+                            "summary": "IO 8.00 MB / 2.50 GB/s；计算 0.80 Gops / 250.00 GOPS"
+                        },
                         "priority": "high",
                         "findings": [
                             {
@@ -395,8 +407,8 @@ def test_ai_report_injects_triton_code_section_from_legacy_kernels(isolated_serv
     assert "`triton_output_code_00_triton_poi_fused_x.txt`" in finalized
     assert "3.20 ms" in finalized
     assert "25.0%" in finalized
-    assert "• tl.load x6, tl.store x1，可能存在碎片化访存" in finalized
-    assert "• 发现 .to(tl.*) 转换 x8" in finalized
+    assert "IO 8.00 MB / 2.50 GB/s；计算 0.80 Gops / 250.00 GOPS" in finalized
+    assert "方向：bulk-io-opt, canonicalize, libdevice-opt" in finalized
     assert "stale empty section" not in finalized
 
 

@@ -622,7 +622,7 @@ Workflow:
    ```
 
    Read `triton_code_optimization.json` when present. Use it as code-level evidence for MLU Triton optimization candidates, not as proof that a rewrite will improve performance.
-3. For the top low-bandwidth kernels, combine IO-efficiency metrics with `triton_code_optimization` findings. Characterize access pattern, masking, non-contiguous or gather/scatter access, reduction shape, grid/block configuration, load/store counts, libdevice/division candidates, and dtype conversion chains. Do not paste full generated source into the main report; cite the output-code file and the analyzer artifact.
+3. For the top low-bandwidth kernels, combine IO-efficiency metrics with `triton_code_optimization` findings. Characterize access pattern, masking, non-contiguous or gather/scatter access, reduction shape, grid/block configuration, load/store counts, static IO/compute throughput estimates, libdevice/division candidates, and dtype conversion chains. Do not paste full generated source into the main report; cite the output-code file and the analyzer artifact.
 4. Classify the low-bandwidth cause per kernel: memory-bound small kernel, non-coalesced/strided access, redundant recompute, poor tiling/grid, register spill, expensive math/division, fragmented pseudo-discrete IO, reduce layout/tiling, or already efficient (folded bandwidth near peak).
 5. If multiple DBs are involved, compare per-rank folded bandwidth for the same kernel names.
 
@@ -632,7 +632,7 @@ Output contract:
 - `IO Efficiency Summary`: number of triton kernels with metadata, distribution of folded/effective bandwidth (`io_efficiency`), the device peak bandwidth and its units, and bandwidth utilization when computable. State explicitly that `io_efficiency` is a bandwidth value, not a percentage.
 - `Top Low-Bandwidth Kernels`: `kernel_name`, `count`, `total_ms`, `io_efficiency` (folded bandwidth with units), `bandwidth_utilization` (`io_efficiency / peak_bandwidth`, when available), and `improvement_target`.
 - `Output Code Findings`: per top kernel, the access-pattern characterization with the `output_code` excerpt filename.
-- `Triton Code Optimization Candidates`: when `triton_code_optimization.json` exists, summarize high-priority candidates from the sibling `mlu-triton-optimize` analyzer, including strategy, evidence lines, and recommendation. Cite `triton_code_optimization.md/json`.
+- `Triton Code Optimization Candidates`: when `triton_code_optimization.json` exists, summarize high-priority candidates from the sibling `mlu-triton-optimize` analyzer, including static estimated throughput plus the merged optimization direction and recommendation. Cite `triton_code_optimization.md/json`.
 - `Candidate Causes`: with evidence, counter-evidence, impact, confidence, and missing evidence.
 - `Interpretation` and `Next Step`.
 
@@ -651,7 +651,7 @@ Workflow:
 2. Merge evidence by causal path, not by script output.
 3. Separate confirmed findings from hypotheses.
 4. Before pruning to the final 2-4 findings, scan `compile_segmentation.json` for `custom_op_simple_aten.must_report=true`. When present, reserve one finding and one action row for the custom-op/simple-aten issue; this is a structural missed-fusion signal and should not be buried because its host-range duration is smaller than other exposed-time metrics.
-5. Also scan `triton_code_optimization.json` when present. If `has_findings=true`, read `final_report_guidance` first and include a dedicated top-level `## Triton Kernel 代码优化` section using `final_report_guidance.required_table_md` or an equivalent table. The table must include all candidates from `triton_code_optimization.json`, and name concrete kernels, measured time, BW utilization when available, strategy names, evidence, and validation-oriented recommendation. Place this section after `## 优先行动` and before `## 不确定性与下一步`. Still include a `关键指标` row with scanned file count, candidate kernel count, top strategies, and source file. Keep wording as a validation target unless runtime evidence confirms a speedup.
+5. Also scan `triton_code_optimization.json` when present. If `has_findings=true`, read `final_report_guidance` first and include a dedicated top-level `## Triton Kernel 代码优化` section using `final_report_guidance.required_table_md` or an equivalent table. The table must include all candidates from `triton_code_optimization.json`, and name concrete kernels, measured time, BW utilization when available, static estimated throughput, and merged strategy/recommendation. Do not add a separate `证据` column. Place this section after `## 优先行动` and before `## 不确定性与下一步`. Still include a `关键指标` row with scanned file count, candidate kernel count, top strategies, and source file. Keep wording as a validation target unless runtime evidence confirms a speedup.
 6. Estimate potential benefit using measured exposed time or skew. If benefits overlap, state that they are not additive.
 7. Prioritize recommendations by expected impact, confidence, and implementation scope.
 8. If custom-op/simple-aten is reserved, phrase the action as moving repeated simple `aten::` pointwise/view/reduce/copy/allocation work into the custom backend kernel, or restructuring the wrapper so Inductor can see and fuse it.

@@ -56,7 +56,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.107"
+APP_VERSION = "0.2.108"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -2036,6 +2036,42 @@ def _format_ai_table_cell(value: object) -> str:
     return "<br>".join(bullets)
 
 
+def _format_triton_estimated_profile(profile: object) -> str:
+    if not isinstance(profile, dict):
+        return "-"
+    summary = profile.get("summary") or profile.get("mac_summary")
+    if summary:
+        return str(summary).replace("|", "\\|")
+    parts = []
+    try:
+        io_gbps = profile.get("io_gbps")
+        if io_gbps is not None:
+            parts.append(f"IO {float(io_gbps):.2f} GB/s")
+    except (TypeError, ValueError):
+        pass
+    try:
+        compute_gops = profile.get("compute_gops")
+        if compute_gops is not None:
+            parts.append(f"计算 {float(compute_gops):.2f} GOPS")
+    except (TypeError, ValueError):
+        pass
+    return "；".join(parts) if parts else "-"
+
+
+def _triton_action_items(candidate: dict) -> list[str]:
+    items: list[str] = []
+    raw_strategies = candidate.get("strategies") or []
+    if isinstance(raw_strategies, str):
+        strategies = raw_strategies
+    else:
+        strategies = ", ".join(str(strategy) for strategy in raw_strategies if strategy)
+    if strategies:
+        items.append(f"方向：{strategies}")
+    recommendations = candidate.get("recommendation_items") or candidate.get("recommendation")
+    items.extend(_split_ai_table_items(recommendations))
+    return items
+
+
 def _split_triton_strategy_text(value: object) -> list[str]:
     if isinstance(value, (list, tuple, set)):
         raw_items = value
@@ -2085,6 +2121,7 @@ def _triton_candidates_from_kernels(kernels: object) -> list[dict]:
             "priority": kernel.get("priority"),
             "total_ms": kernel.get("total_ms"),
             "bandwidth_utilization": kernel.get("bandwidth_utilization"),
+            "estimated_profile": kernel.get("estimated_profile"),
             "strategies": strategies,
             "evidence_items": evidence_items,
             "recommendation_items": recommendation_items,
@@ -2243,8 +2280,8 @@ def _build_triton_code_optimization_section(jid: str) -> str:
         summary = _triton_code_summary_from_payload(payload, candidates)
     if candidates:
         table_lines = [
-            "| Kernel | 代码文件 | 耗时 | BW 利用率 | 主要方向 | 证据 | 建议 |",
-            "|---|---|---:|---:|---|---|---|",
+            "| Kernel | 代码文件 | 耗时 | BW 利用率 | 估算吞吐 | 优化方向与建议 |",
+            "|---|---|---:|---:|---|---|",
         ]
         for candidate in candidates:
             kernel_name = str(candidate.get("kernel_name") or "-").replace("|", "\\|")
@@ -2259,17 +2296,10 @@ def _build_triton_code_optimization_section(jid: str) -> str:
                 bw_text = f"{float(bw_util) * 100:.1f}%"
             except (TypeError, ValueError):
                 bw_text = "-"
-            raw_strategies = candidate.get("strategies") or []
-            if isinstance(raw_strategies, str):
-                strategies = raw_strategies
-            else:
-                strategies = ", ".join(str(strategy) for strategy in raw_strategies)
-            strategies = (strategies or "-").replace("|", "\\|")
-            evidence = _format_ai_table_cell(candidate.get("evidence_items") or candidate.get("evidence"))
-            recommendation = _format_ai_table_cell(candidate.get("recommendation_items") or candidate.get("recommendation"))
+            estimated = _format_triton_estimated_profile(candidate.get("estimated_profile"))
+            action = _format_ai_table_cell(_triton_action_items(candidate))
             table_lines.append(
-                f"| `{kernel_name}` | `{code_file}` | {total_text} | {bw_text} | "
-                f"{strategies} | {evidence} | {recommendation} |"
+                f"| `{kernel_name}` | `{code_file}` | {total_text} | {bw_text} | {estimated} | {action} |"
             )
     else:
         table_md = guidance.get("required_table_md") or ""
@@ -2980,7 +3010,7 @@ def _render_claude_prompt(
         "- `## 结论概览` 不要输出平铺的 `- 结论` / `- 证据` / `- 建议` 同级列表。",
         "- 每个关键发现请使用 `### 发现 N：一句话标题`，下面分别写 `**结论：** ...`、`**证据：** ...`、`**建议：** ...`，每段只写一句短句。",
         "- 不要同时写一套详细的 `主要发现` / `主要回退` 来重复 `结论概览`；详细证据、脚本输出、长表格和调用栈放到产物文件中引用。",
-        "- 例外：如果生成了 `triton_code_optimization.json` 且其中 `has_findings=true`，必须在最终报告正文中加入独立顶级章节 `## Triton Kernel 代码优化`，展示 `final_report_guidance.candidates` / `required_table_md` 中的全部候选，位置放在 `## 优先行动` 之后、`## 不确定性与下一步` 之前，不要只把它放到 `## 产物`。",
+        "- 例外：如果生成了 `triton_code_optimization.json` 且其中 `has_findings=true`，必须在最终报告正文中加入独立顶级章节 `## Triton Kernel 代码优化`，展示 `final_report_guidance.candidates` / `required_table_md` 中的全部候选，包含静态估算吞吐与合并后的优化方向/建议，不要新增单独的 `证据` 列；位置放在 `## 优先行动` 之后、`## 不确定性与下一步` 之前，不要只把它放到 `## 产物`。",
         "- 尽量引用现有 CSV / console 摘要 / trace 中的可验证数字。",
         "- 对不确定结论明确写出依据和不确定性。",
         "- 最后给出可执行优化建议，按收益和排查成本排序。",
