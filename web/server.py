@@ -56,7 +56,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.2.113"
+APP_VERSION = "0.2.114"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -6538,76 +6538,113 @@ async def list_job_groups(
 ):
     db = await get_db()
 
-    clauses = []
-    where_params = []
-    access_sql, access_params = _job_access_clause(request, "j")
-    if access_sql:
-        clauses.append(access_sql)
-        where_params.extend(access_params)
-    if project_id == "__none__":
-        clauses.append("j.project_id IS NULL")
-    elif project_id:
-        await validate_project_access(db, request, project_id)
-        clauses.append("j.project_id = ?")
-        where_params.append(project_id)
+    q_text = (q or "").strip()
+    like = f"%{q_text.lower()}%"
 
-    search_sql, search_params = _job_search_clause("j", q, include_project_name=True)
-    if search_sql:
-        clauses.append(search_sql)
-        where_params.extend(search_params)
+    groups: list[dict] = []
 
-    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    if project_id != "__none__":
+        if project_id:
+            await validate_project_access(db, request, project_id)
 
-    count_cursor = await db.execute(
-        f"""
-        SELECT COUNT(*) FROM (
-            SELECT j.project_id
-            FROM jobs j
-            LEFT JOIN projects p ON p.id = j.project_id
-            {where_sql}
-            GROUP BY j.project_id
-        )
-        """,
-        where_params,
-    )
-    total = (await count_cursor.fetchone())[0]
+        project_clauses = []
+        project_params: list = []
+        project_access_sql, project_access_params = _project_access_clause(request, "p")
+        if project_access_sql:
+            project_clauses.append(project_access_sql)
+            project_params.extend(project_access_params)
+        if project_id:
+            project_clauses.append("p.id = ?")
+            project_params.append(project_id)
 
-    group_rows = await (
-        await db.execute(
-            f"""
-            SELECT
-                j.project_id,
-                COALESCE(p.name, '未分组') AS label,
-                COUNT(*) AS job_count
-            FROM jobs j
-            LEFT JOIN projects p ON p.id = j.project_id
-            {where_sql}
-            GROUP BY j.project_id
-            ORDER BY
-                CASE WHEN j.project_id IS NULL THEN 1 ELSE 0 END,
-                p.name COLLATE NOCASE
-            LIMIT ? OFFSET ?
-            """,
-            (*where_params, limit, offset),
-        )
-    ).fetchall()
+        job_count_clauses = ["j.project_id = p.id"]
+        job_count_params: list = []
+        job_access_sql, job_access_params = _job_access_clause(request, "j")
+        if job_access_sql:
+            job_count_clauses.append(job_access_sql)
+            job_count_params.extend(job_access_params)
+        if q_text:
+            job_count_clauses.append(
+                "("
+                "LOWER(COALESCE(j.label, '')) LIKE ? OR "
+                "LOWER(COALESCE(j.file_a_name, '')) LIKE ? OR "
+                "LOWER(COALESCE(j.file_b_name, '')) LIKE ? OR "
+                "LOWER(COALESCE(p.name, '')) LIKE ?"
+                ")"
+            )
+            job_count_params.extend([like, like, like, like])
+            project_clauses.append(
+                "("
+                "LOWER(COALESCE(p.name, '')) LIKE ? OR EXISTS ("
+                "SELECT 1 FROM jobs j "
+                "WHERE j.project_id = p.id"
+                f"{' AND ' + job_access_sql if job_access_sql else ''}"
+                " AND ("
+                "LOWER(COALESCE(j.label, '')) LIKE ? OR "
+                "LOWER(COALESCE(j.file_a_name, '')) LIKE ? OR "
+                "LOWER(COALESCE(j.file_b_name, '')) LIKE ?"
+                ")"
+                ")"
+                ")"
+            )
+            project_params.append(like)
+            project_params.extend(job_access_params)
+            project_params.extend([like, like, like])
 
-    if not group_rows:
-        await db.close()
-        return {"data": [], "total": total, "limit": limit, "offset": offset}
+        project_where_sql = f"WHERE {' AND '.join(project_clauses)}" if project_clauses else ""
+        job_count_where_sql = " AND ".join(job_count_clauses)
 
-    await db.close()
-
-    data = []
-    for row in group_rows:
-        group_id = row["project_id"] or "__none__"
-        data.append(
+        project_rows = await (
+            await db.execute(
+                f"""
+                SELECT
+                    p.id,
+                    p.name AS label,
+                    (
+                        SELECT COUNT(*)
+                        FROM jobs j
+                        WHERE {job_count_where_sql}
+                    ) AS job_count
+                FROM projects p
+                {project_where_sql}
+                ORDER BY p.name COLLATE NOCASE
+                """,
+                (*job_count_params, *project_params),
+            )
+        ).fetchall()
+        groups.extend(
             {
-                "id": group_id,
+                "id": row["id"],
                 "label": row["label"],
                 "job_count": row["job_count"],
             }
+            for row in project_rows
         )
+
+    if not project_id or project_id == "__none__":
+        ungrouped_clauses = ["j.project_id IS NULL"]
+        ungrouped_params: list = []
+        access_sql, access_params = _job_access_clause(request, "j")
+        if access_sql:
+            ungrouped_clauses.append(access_sql)
+            ungrouped_params.extend(access_params)
+        search_sql, search_params = _job_search_clause("j", q_text, include_project_name=False)
+        if search_sql:
+            ungrouped_clauses.append(search_sql)
+            ungrouped_params.extend(search_params)
+        ungrouped_where_sql = " AND ".join(ungrouped_clauses)
+        cursor = await db.execute(
+            f"SELECT COUNT(*) FROM jobs j WHERE {ungrouped_where_sql}",
+            ungrouped_params,
+        )
+        ungrouped_count = (await cursor.fetchone())[0]
+        if ungrouped_count:
+            groups.append({"id": "__none__", "label": "未分组", "job_count": ungrouped_count})
+
+    await db.close()
+
+    total = len(groups)
+    data = groups[offset:offset + limit]
 
     return {"data": data, "total": total, "limit": limit, "offset": offset}
 

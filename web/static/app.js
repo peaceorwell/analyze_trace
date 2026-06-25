@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.113");
+const appVersion = ref("0.2.114");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -995,7 +995,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.2.113";
+  appVersion.value = cfg.version || "0.2.114";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -1110,6 +1110,14 @@ const loadProjects = async () => {
     const message = normalizeApiError(e, "加载项目失败");
     console.error("loadProjects error:", e);
     if (e?.authExpired) showToast(message, "error");
+  }
+};
+
+const clearProjectFilterIfJobIsHidden = job => {
+  if (!filterProject.value || !job) return;
+  const jobProjectId = job.project_id || "__none__";
+  if (filterProject.value !== jobProjectId) {
+    filterProject.value = "";
   }
 };
 
@@ -2597,6 +2605,7 @@ const loadJob = async id => {
     return false;
   }
   selectedJob.value = data;
+  clearProjectFilterIfJobIsHidden(data);
   resultTable.value = { fields: [], rows: [], total: 0, filtered_total: 0, limit: tableLimit.value, offset: tableOffset.value };
   resultTableFile.value = "";
   consoleSearch.value = "";

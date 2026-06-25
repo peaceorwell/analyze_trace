@@ -70,7 +70,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.113",
+        "version": "0.2.114",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -2277,6 +2277,47 @@ def test_job_groups_paginate_by_visible_groups(client):
     second_page = client.get("/api/job-groups?limit=2&offset=2")
     assert second_page.status_code == 200
     assert [group["id"] for group in second_page.json()["data"]] == ["__none__"]
+
+
+def test_job_groups_include_empty_projects(client):
+    async def insert_rows():
+        db = await web_db.get_db()
+        try:
+            await db.executemany(
+                "INSERT INTO projects(id, name) VALUES(?,?)",
+                [("project-empty", "Alpha Empty"), ("project-filled", "Beta Filled")],
+            )
+            await db.executemany(
+                "INSERT INTO jobs(id, project_id, label, mode, status) VALUES(?,?,?,?,?)",
+                [
+                    ("job-filled", "project-filled", "filled", "single", "done"),
+                    ("job-none", None, "none", "single", "done"),
+                ],
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_rows())
+
+    response = client.get("/api/job-groups")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 3
+    assert [group["id"] for group in payload["data"]] == ["project-empty", "project-filled", "__none__"]
+    assert [group["job_count"] for group in payload["data"]] == [0, 1, 1]
+
+    filtered = client.get("/api/job-groups?project_id=project-empty")
+    assert filtered.status_code == 200
+    assert filtered.json()["data"] == [
+        {"id": "project-empty", "label": "Alpha Empty", "job_count": 0}
+    ]
+
+    searched = client.get("/api/job-groups?q=alpha")
+    assert searched.status_code == 200
+    assert searched.json()["data"] == [
+        {"id": "project-empty", "label": "Alpha Empty", "job_count": 0}
+    ]
 
 
 def test_job_groups_search_returns_matching_visible_groups(client):
