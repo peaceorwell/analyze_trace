@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.115");
+const appVersion = ref("0.2.116");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -995,7 +995,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.2.115";
+  appVersion.value = cfg.version || "0.2.116";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -3299,9 +3299,13 @@ const activateCsvTab = async (filename, { updateRoute = true, savePrevious = tru
 const canDrillKernelTypeRow = row =>
   isKernelTypeTab.value && Boolean(row?.type);
 
+const isKernelTypeDrillCell = (field, row) =>
+  field === "type" && canDrillKernelTypeRow(row);
+
 const drillDownKernelType = async row => {
   if (!canDrillKernelTypeRow(row)) return;
   const type = String(row.type || "").trim();
+  if (!type) return;
   const targetFile = selectedJob.value?.mode === "compare"
     ? "all_kernels_cmp.csv"
     : "all_kernels_avg.csv";
@@ -3310,10 +3314,7 @@ const drillDownKernelType = async row => {
     showToast(`未找到 ${targetFile}`, "error");
     return;
   }
-  if (!fields.includes("family")) {
-    showToast("目标 Kernel 表缺少 family 字段，请重新分析/对比后再下钻", "error");
-    return;
-  }
+  const canFilterFamily = fields.includes("family");
   const sortField = selectedJob.value?.mode === "compare" && fields.includes("delta_dur_ms")
     ? "delta_dur_ms"
     : (fields.includes("avg_dur_ms") ? "avg_dur_ms" : "");
@@ -3323,15 +3324,19 @@ const drillDownKernelType = async row => {
     tableOffset: 0,
     sortCol: sortField,
     sortAsc: false,
-    colFilters: { family: type },
-    colFilterOps: { family: "~" },
-    visibleColumns: fields.filter(field => field !== "family"),
+    tableSearch: canFilterFamily ? "" : type,
+    colFilters: canFilterFamily ? { family: type } : {},
+    colFilterOps: canFilterFamily ? { family: "~" } : {},
+    visibleColumns: canFilterFamily ? fields.filter(field => field !== "family") : fields,
   };
   const memory = readResultMemory(selectedJobId.value);
   memory.tabs = { ...(memory.tabs || {}), [targetFile]: state };
   writeResultMemory(selectedJobId.value, memory);
   await activateCsvTab(targetFile);
-  showToast(`已下钻到 ${type} 相关 Kernel`, "success");
+  showToast(
+    canFilterFamily ? `已下钻到 ${type} 相关 Kernel` : `已用搜索下钻到 ${type} 相关 Kernel`,
+    "success",
+  );
 };
 
 const prevTablePage = () => {
@@ -6248,7 +6253,15 @@ const JobDetail = {
                   <td v-for="f in displayedFields" :key="f"
                       :class="deltaCellClass(f, row[f])"
                       :title="row[f]">
-                    <template v-if="f === 'triton_code_file' && row[f]">
+                    <template v-if="isKernelTypeDrillCell(f, row)">
+                      <button type="button"
+                              class="table-cell-link kernel-type-drill-link"
+                              :title="'下钻到 ' + row[f] + ' 相关 Kernel'"
+                              @click.stop="drillDownKernelType(row)">
+                        {{ row[f] }}
+                      </button>
+                    </template>
+                    <template v-else-if="f === 'triton_code_file' && row[f]">
                       <button class="btn btn-xs btn-perfetto mb-1"
                               @click.stop="viewTritonCode(row[f])">
                         查看代码
@@ -6350,7 +6363,8 @@ const JobDetail = {
       tableLimit, tableOffset, tableTotalRows, tablePageStart, tablePageEnd,
       tablePageSizeOptions, customTableLimit, changeTableLimit, showAllTableRows,
       resultTableLoading, resultTableError, preparingResultTab, prevTablePage, nextTablePage,
-      hasColFilters, colSums, isKernelTypeTab, canDrillKernelTypeRow, drillDownKernelType,
+      hasColFilters, colSums, isKernelTypeTab, canDrillKernelTypeRow,
+      isKernelTypeDrillCell, drillDownKernelType,
       isTritonStepTab, tritonStatus, allowFileDownload, allowCodeExecution,
       claudeAnalysisEnabled, aiAnalysisMeta, aiAnalysisLoading, aiAnalysisStarting,
       aiAnalysisError, aiAnalysisContent, aiAnalysisArtifacts, aiAnalysisVisibleArtifacts,

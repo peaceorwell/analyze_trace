@@ -1613,6 +1613,28 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
 .data-table tbody tr.drill-row:hover td {
   background-color: var(--purple-bg) !important;
 }
+.table-cell-link {
+  display: inline-block;
+  max-width: 100%;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--purple-l);
+  font: inherit;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: baseline;
+}
+.table-cell-link:hover {
+  color: var(--purple);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.kernel-type-drill-link {
+  font-family: var(--mono);
+  font-weight: 600;
+}
 
 /* All CSV tables - scrollable container */
 .csv-table-wrap {
