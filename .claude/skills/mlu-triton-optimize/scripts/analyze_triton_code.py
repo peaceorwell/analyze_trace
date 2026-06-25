@@ -1076,6 +1076,65 @@ def _split_report_items(value: Any) -> list[str]:
     return items
 
 
+TRITON_101_EXPERIENCE: dict[str, str] = {
+    "fragmented_or_pseudo_discrete_io": "Triton 101：优先把规则离散访存规整为连续 bulk IO，再用片上 slice/cat/broadcast 恢复逻辑布局。",
+    "block_pointer_or_bulk_io_candidate": "Triton 101：对 bulk-like 访存验证 block pointer / tensor descriptor，减少重复地址计算和碎片 load/store。",
+    "vectorization_scalar_loop_candidate": "Triton 101：循环内标量式 load/store 优先改成 tl.arange 驱动的块向量 load/compute/store。",
+    "mlu_num_warps_mapping_candidate": "Triton 101：MLU 上重点验证 num_warps=1(Block) 与 4(Union1)，其他取值需确认没有 fallback。",
+    "pipeline_stage_candidate": "Triton 101：含 load/compute/store 的循环验证 num_stages=2-4 软流水，并用 pipeline/IR 证据确认生效。",
+    "persistent_kernel_or_grid_limit_candidate": "Triton 101：大 grid 或小 BLOCK 场景验证更大/非 2 次幂 BLOCK，以及按核心数封顶的 persistent kernel。",
+    "scalar_broadcast_read_candidate": "Triton 101：低维标量或广播 operand 先连续读取并复用，避免广播后重复读和重复计算。",
+    "dtype_conversion_chain": "Triton 101：消除 dtype 往返转换；必要时验证 Cambricon fast_float2* / libdevice helper。",
+}
+
+
+HELION_EXPERIENCE: dict[str, str] = {
+    "helion_tiling_config_sweep_candidate": "Helion：把 BLOCK/tile shape、indexing strategy、PID mapping、num_warps/num_stages 作为组合配置矩阵，而不是单点调参。",
+    "pid_grouping_or_l2_swizzle_candidate": "Helion：多维 PID 场景验证 PID reorder / L2 grouping，让相邻 program 复用同一主维 tile。",
+    "tile_shape_balance_candidate": "Helion：验证 tile-shape balance，兼顾连续维吞吐、reduce/广播维复用和 NRAM 压力。",
+    "indexing_strategy_sweep_candidate": "Helion：把 scalar pointer、block pointer/tensor descriptor、bulk IO + 片上重排作为 indexing strategy 对照项。",
+    "range_config_sweep_candidate": "Helion：把 range unroll、num_stages、multi-buffer 和 loop flattening 作为一组 loop config 验证。",
+    "autotune_or_meta_parameter_candidate": "Helion：缺少 autotune/config 时，用 4-12 个有边界的配置候选做 benchmark，而不是给一个 magic BLOCK。",
+}
+
+
+def _experience_items_from_findings(findings: list[dict[str, Any]]) -> list[str]:
+    items: list[str] = []
+    seen: set[str] = set()
+    for source in (TRITON_101_EXPERIENCE, HELION_EXPERIENCE):
+        for finding in findings:
+            category = str(finding.get("category") or "")
+            item = source.get(category)
+            if item and item not in seen:
+                seen.add(item)
+                items.append(item)
+                break
+    for source in (TRITON_101_EXPERIENCE, HELION_EXPERIENCE):
+        for finding in findings:
+            category = str(finding.get("category") or "")
+            item = source.get(category)
+            if item and item not in seen:
+                seen.add(item)
+                items.append(item)
+            if len(items) >= 4:
+                return items
+    return items
+
+
+def _summary_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    selected = list(findings[:3])
+    selected_ids = {id(item) for item in selected}
+    for source in (TRITON_101_EXPERIENCE, HELION_EXPERIENCE):
+        if any(source.get(str(item.get("category") or "")) for item in selected):
+            continue
+        for finding in findings:
+            if source.get(str(finding.get("category") or "")) and id(finding) not in selected_ids:
+                selected.append(finding)
+                selected_ids.add(id(finding))
+                break
+    return selected
+
+
 def _md_multiline_cell(value: Any) -> str:
     items = _split_report_items(value)
     if not items:
@@ -1087,11 +1146,24 @@ def _md_multiline_cell(value: Any) -> str:
     return "<br>".join(bullets)
 
 
-def _estimated_profile_summary(profile: Any) -> str:
+def _estimated_compute_rate_summary(profile: Any) -> str:
     if not isinstance(profile, dict):
         return "-"
-    summary = profile.get("summary") or profile.get("mac_summary")
-    return _md_cell(summary or "-")
+    compute_ops = profile.get("compute_ops")
+    compute_gops = profile.get("compute_gops")
+    parts: list[str] = []
+    if compute_ops:
+        parts.append(f"计算量 {_format_ops(compute_ops)}")
+    if compute_gops:
+        parts.append(f"速率 {_format_rate(compute_gops, 'GOPS')}")
+    if parts:
+        return _md_cell("；".join(parts))
+
+    # Backward compatibility for historical payloads whose summary mixed IO/BW
+    # and compute estimates. Final reports should only surface compute rate here.
+    summary = str(profile.get("summary") or profile.get("mac_summary") or "")
+    match = re.search(r"(计算\s*[^；;]+(?:[/／]\s*[^；;]+)?)", summary)
+    return _md_cell(match.group(1) if match else "-")
 
 
 def _candidate_action_items(candidate: dict[str, Any]) -> list[str]:
@@ -1103,6 +1175,7 @@ def _candidate_action_items(candidate: dict[str, Any]) -> list[str]:
         strategy_text = ", ".join(str(strategy) for strategy in strategies if strategy)
     if strategy_text:
         items.append(f"方向：{strategy_text}")
+    items.extend(candidate.get("experience_items") or [])
     recommendations = candidate.get("recommendation_items") or candidate.get("recommendation")
     items.extend(_split_report_items(recommendations))
     return items
@@ -1159,10 +1232,26 @@ def _final_report_guidance(kernels: list[dict[str, Any]], scanned_files: int) ->
         )
     else:
         summary_cn += " 当前候选绝对耗时较小，建议放在主要瓶颈修复后的下一步验证。"
+    experience_sources = []
+    if any(
+        TRITON_101_EXPERIENCE.get(str(finding.get("category") or ""))
+        for kernel in kernels
+        for finding in kernel.get("findings", [])
+    ):
+        experience_sources.append("Cambricon Triton 101")
+    if any(
+        HELION_EXPERIENCE.get(str(finding.get("category") or ""))
+        for kernel in kernels
+        for finding in kernel.get("findings", [])
+    ):
+        experience_sources.append("Helion 配置搜索")
+    if experience_sources:
+        summary_cn += f" 已显式合入 {'、'.join(experience_sources)} 经验。"
 
     candidates = []
     for kernel in kernels:
         findings = kernel.get("findings", [])
+        summary_findings = _summary_findings(findings)
         candidates.append({
             "kernel_name": kernel.get("kernel_name"),
             "file": kernel.get("file"),
@@ -1172,9 +1261,10 @@ def _final_report_guidance(kernels: list[dict[str, Any]], scanned_files: int) ->
             "estimated_profile": kernel.get("estimated_profile"),
             "strategies": sorted({
                 strategy
-                for finding in findings[:3]
+                for finding in summary_findings
                 for strategy in _split_strategies(finding.get("strategy", ""))
             }),
+            "experience_items": _experience_items_from_findings(findings),
             "evidence": "; ".join(finding.get("evidence", "") for finding in findings[:2] if finding.get("evidence")),
             "evidence_items": [
                 _clean_report_text(finding.get("evidence", ""))
@@ -1184,7 +1274,7 @@ def _final_report_guidance(kernels: list[dict[str, Any]], scanned_files: int) ->
             "recommendation": findings[0].get("recommendation", "") if findings else "",
             "recommendation_items": [
                 _clean_report_text(finding.get("recommendation", ""))
-                for finding in findings[:2]
+                for finding in summary_findings[:4]
                 if finding.get("recommendation")
             ],
         })
@@ -1192,7 +1282,7 @@ def _final_report_guidance(kernels: list[dict[str, Any]], scanned_files: int) ->
     table_lines = [
         "## Triton Kernel 代码优化",
         "",
-        "| Kernel | 代码文件 | 耗时 | BW 利用率 | 估算吞吐 | 优化方向与建议 |",
+        "| Kernel | 代码文件 | 耗时 | BW 利用率 | 计算速率估算 | 优化方向与建议 |",
         "|---|---|---:|---:|---|---|",
     ]
     for candidate in candidates:
@@ -1203,7 +1293,7 @@ def _final_report_guidance(kernels: list[dict[str, Any]], scanned_files: int) ->
             f"`{_md_cell(code_file)}` | "
             f"{_fmt_ms(candidate.get('total_ms'))} ms | "
             f"{_fmt_util(candidate.get('bandwidth_utilization'))} | "
-            f"{_estimated_profile_summary(candidate.get('estimated_profile'))} | "
+            f"{_estimated_compute_rate_summary(candidate.get('estimated_profile'))} | "
             f"{_md_multiline_cell(_candidate_action_items(candidate))} |"
         )
 
@@ -1293,7 +1383,7 @@ def render_markdown(payload: dict[str, Any]) -> str:
             "",
             "## Top Candidate Kernels",
             "",
-            "| Priority | Kernel | Total ms | BW util | Estimated throughput | Optimization direction and recommendation |",
+            "| Priority | Kernel | Total ms | BW util | Estimated compute rate | Optimization direction and recommendation |",
             "|---|---|---:|---:|---|---|",
         ]
     )
@@ -1307,7 +1397,7 @@ def render_markdown(payload: dict[str, Any]) -> str:
         lines.append(
             f"| {kernel['priority']} | `{kernel['kernel_name']}` | {_fmt_ms(kernel['total_ms'])} | "
             f"{_fmt_util(kernel.get('bandwidth_utilization'))} | "
-            f"{_estimated_profile_summary(kernel.get('estimated_profile'))} | "
+            f"{_estimated_compute_rate_summary(kernel.get('estimated_profile'))} | "
             f"{_md_multiline_cell(action_items)} |"
         )
 

@@ -106,7 +106,8 @@ The JSON output must be machine-readable and include:
 The Markdown output should be short enough to read in the final AI report:
 
 - A compact summary.
-- A top-candidate table with estimated throughput and merged optimization direction/recommendation. Do not use a separate evidence column in the final table.
+- A top-candidate table with observed BW utilization, estimated compute rate, and merged optimization direction/recommendation. Do not recompute or restate IO throughput in the table when BW utilization is already available. Do not use a separate evidence column in the final table.
+- When Cambricon Triton 101 or Helion-inspired heuristics are triggered, surface them explicitly in the merged recommendation as bullets prefixed with `Triton 101：` or `Helion：`; do not hide them behind generic strategy names such as `retiling` or `canonicalize`.
 - Per-kernel findings with evidence lines and recommendations.
 
 ## Integration With E2E Reports

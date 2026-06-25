@@ -421,15 +421,21 @@ def triton_poi_fused_second(in_ptr0, out_ptr, N:tl.constexpr = 256, BLOCK:tl.con
     assert len(guidance["candidates"]) == 2
     assert guidance["required_section_title"] == "Triton Kernel 代码优化"
     assert guidance["required_table_md"].startswith("## Triton Kernel 代码优化")
-    assert "| Kernel | 代码文件 | 耗时 | BW 利用率 | 估算吞吐 | 优化方向与建议 |" in guidance["required_table_md"]
+    assert "| Kernel | 代码文件 | 耗时 | BW 利用率 | 计算速率估算 | 优化方向与建议 |" in guidance["required_table_md"]
     assert "| Kernel | 代码文件 | 耗时 | BW 利用率 | 主要方向 | 证据 | 建议 |" not in guidance["required_table_md"]
-    assert "IO " in guidance["required_table_md"]
-    assert "计算 " in guidance["required_table_md"]
-    assert "AI " in guidance["required_table_md"]
+    assert "计算量 " in guidance["required_table_md"]
+    assert "GB/s" not in guidance["required_table_md"]
+    assert "AI " not in guidance["required_table_md"]
     assert "方向：" in guidance["required_table_md"]
+    assert "Triton 101：" in guidance["required_table_md"]
+    assert "Helion：" in guidance["required_table_md"]
+    assert "Cambricon Triton 101" in guidance["summary_cn"]
+    assert "Helion 配置搜索" in guidance["summary_cn"]
     assert "triton_poi_fused_test" in guidance["required_table_md"]
     assert "triton_poi_fused_second" in guidance["required_table_md"]
     assert "• " in guidance["required_table_md"]
+    assert any(item.startswith("Triton 101：") for item in guidance["candidates"][0]["experience_items"])
+    assert any(item.startswith("Helion：") for item in guidance["candidates"][0]["experience_items"])
     assert kernel["kernel_name"] == "triton_poi_fused_test"
     assert kernel["bandwidth_utilization"] == pytest.approx(0.09)
     assert kernel["num_warps"] == [2]

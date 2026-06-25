@@ -70,7 +70,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.2.111",
+        "version": "0.2.113",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -281,9 +281,9 @@ def test_ai_report_injects_triton_code_optimization_section(isolated_server):
                         [
                             "### Triton Kernel 代码优化候选",
                             "",
-                            "| Kernel | 代码文件 | 耗时 | BW 利用率 | 估算吞吐 | 优化方向与建议 |",
+                            "| Kernel | 代码文件 | 耗时 | BW 利用率 | 计算速率估算 | 优化方向与建议 |",
                             "|---|---|---:|---:|---|---|",
-                            "| `triton_x` | `triton_x.py` | 1.23 ms | 40.0% | IO 12.00 MB / 9.76 GB/s；计算 1.20 Gops / 975.61 GOPS | 方向：div-to-mul<br>验证 reciprocal + multiply |",
+                            "| `triton_x` | `triton_x.py` | 1.23 ms | 40.0% | 计算 1.20 Gops / 975.61 GOPS | 方向：div-to-mul<br>验证 reciprocal + multiply |",
                         ]
                     ),
                 },
@@ -307,7 +307,7 @@ def test_ai_report_injects_triton_code_optimization_section(isolated_server):
 
 ## Triton Kernel 代码优化
 
-| Kernel | 代码文件 | 耗时 | BW 利用率 | 估算吞吐 | 优化方向与建议 |
+| Kernel | 代码文件 | 耗时 | BW 利用率 | 计算速率估算 | 优化方向与建议 |
 |---|---|---:|---:|---|---|
 | `old_top_level` | `old.py` | 0.01 ms | 1.0% | old | old |
 
@@ -327,8 +327,9 @@ def test_ai_report_injects_triton_code_optimization_section(isolated_server):
     assert "### Triton Kernel 代码优化候选" not in finalized
     assert "`triton_x`" in finalized
     assert "`triton_y`" in finalized
-    assert "估算吞吐" in finalized
-    assert "IO 12.00 MB / 9.76 GB/s；计算 1.20 Gops / 975.61 GOPS" in finalized
+    assert "计算速率估算" in finalized
+    assert "计算 1.20 Gops / 975.61 GOPS" in finalized
+    assert "IO 12.00 MB / 9.76 GB/s" not in finalized
     assert "方向：div-to-mul" in finalized
     assert "• 验证 reciprocal + multiply<br>• 消除重复 dtype 转换" in finalized
     assert "| Kernel | 代码文件 | 耗时 | BW 利用率 | 主要方向 | 证据 | 建议 |" not in finalized
@@ -407,7 +408,8 @@ def test_ai_report_injects_triton_code_section_from_legacy_kernels(isolated_serv
     assert "`triton_output_code_00_triton_poi_fused_x.txt`" in finalized
     assert "3.20 ms" in finalized
     assert "25.0%" in finalized
-    assert "IO 8.00 MB / 2.50 GB/s；计算 0.80 Gops / 250.00 GOPS" in finalized
+    assert "计算 0.80 Gops / 250.00 GOPS" in finalized
+    assert "IO 8.00 MB / 2.50 GB/s" not in finalized
     assert "方向：bulk-io-opt, canonicalize, libdevice-opt" in finalized
     assert "stale empty section" not in finalized
 
