@@ -59,6 +59,7 @@ const historyJobsOffset = ref(0);
 const historyJobsLoading = ref(false);
 const historySearch = ref("");
 const filterProject = ref(localStorage.getItem("tpa-filter-project") || "");
+const historyProjectView = ref(localStorage.getItem("tpa-history-project-view") || "all");
 const storedSidebarTab = localStorage.getItem("tpa-sidebar-tab") || "jobs";
 const sidebarTab    = ref(storedSidebarTab === "compare" ? "jobs" : storedSidebarTab);
 const selectedJobId = ref(null);
@@ -129,7 +130,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.3.9");
+const appVersion = ref("0.3.10");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -575,6 +576,48 @@ const historyProjectGroups = computed(() => historyGroups.value);
 const historyAllJobCount = computed(() =>
   historyProjectGroups.value.reduce((sum, group) => sum + Number(group.job_count || 0), 0)
 );
+const projectViewStats = computed(() => {
+  const allProjects = projects.value.filter(project => project.id);
+  return {
+    all: allProjects.length,
+    favorite: allProjects.filter(project => project.is_favorite).length,
+    mine: allProjects.filter(project => project.is_owner).length,
+    shared: allProjects.filter(project => project.is_public && !project.is_owner).length,
+  };
+});
+const projectQuickViews = computed(() => [
+  {
+    id: "all",
+    label: "全部项目",
+    hint: "所有可访问内容",
+    icon: "⌘",
+    count: projectViewStats.value.all,
+  },
+  {
+    id: "favorite",
+    label: "收藏",
+    hint: "常用项目入口",
+    icon: "★",
+    count: projectViewStats.value.favorite,
+  },
+  {
+    id: "mine",
+    label: "我创建的",
+    hint: "个人负责项目",
+    icon: "◇",
+    count: projectViewStats.value.mine,
+  },
+  {
+    id: "shared",
+    label: "共享给我的",
+    hint: "团队公开项目",
+    icon: "↗",
+    count: projectViewStats.value.shared,
+  },
+]);
+const activeProjectView = computed(() =>
+  projectQuickViews.value.find(view => view.id === historyProjectView.value) || projectQuickViews.value[0]
+);
 const activeHistoryProject = computed(() => {
   if (!filterProject.value) return null;
   if (filterProject.value === "__none__") return { id: "__none__", label: "未分组", job_count: historyJobsTotal.value };
@@ -583,13 +626,15 @@ const activeHistoryProject = computed(() => {
   return group || (project ? { id: project.id, label: project.name, job_count: 0 } : null);
 });
 const historyListTitle = computed(() =>
-  activeHistoryProject.value?.label || "全部任务"
+  activeHistoryProject.value?.label || activeProjectView.value?.label || "全部任务"
 );
 const historyListSubtitle = computed(() => {
   const q = historySearch.value.trim();
   if (q && filterProject.value) return `当前项目内搜索 "${q}"`;
-  if (q) return `全局搜索 "${q}"`;
-  return filterProject.value ? "当前项目" : "最近更新";
+  if (q) return `${activeProjectView.value?.label || "全部项目"}内搜索 "${q}"`;
+  if (filterProject.value) return "当前项目";
+  if (historyProjectView.value === "all") return "最近更新";
+  return activeProjectView.value?.hint || "快捷视图";
 });
 const selectedCompareJobs = computed(() =>
   compareSelection.value
@@ -1030,7 +1075,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.3.9";
+  appVersion.value = cfg.version || "0.3.10";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -1135,6 +1180,9 @@ const logout = async () => {
 const loadProjects = async () => {
   try {
     projects.value = await fetchJson("/api/projects", { credentials: "include" }, "加载项目失败");
+    if (!["all", "favorite", "mine", "shared"].includes(historyProjectView.value)) {
+      historyProjectView.value = "all";
+    }
     if (
       filterProject.value &&
       filterProject.value !== "__none__" &&
@@ -1150,10 +1198,13 @@ const loadProjects = async () => {
 };
 
 const clearProjectFilterIfJobIsHidden = job => {
-  if (!filterProject.value || !job) return;
+  if (!job) return;
   const jobProjectId = job.project_id || "__none__";
-  if (filterProject.value !== jobProjectId) {
+  if (filterProject.value && filterProject.value !== jobProjectId) {
     filterProject.value = "";
+  }
+  if (historyProjectView.value !== "all") {
+    historyProjectView.value = "all";
   }
 };
 
@@ -2442,6 +2493,7 @@ const loadHistoryGroups = async () => {
   historyGroupsLoading.value = true;
   const params = new URLSearchParams();
   if (filterProject.value) params.set("project_id", filterProject.value);
+  else if (historyProjectView.value !== "all") params.set("project_view", historyProjectView.value);
   if (historySearch.value.trim()) params.set("q", historySearch.value.trim());
   params.set("limit", String(historyGroupsLimit.value));
   params.set("offset", String(historyGroupsOffset.value));
@@ -2485,6 +2537,7 @@ const loadHistoryJobs = async () => {
   historyJobsLoading.value = true;
   const params = new URLSearchParams();
   if (filterProject.value) params.set("project_id", filterProject.value);
+  else if (historyProjectView.value !== "all") params.set("project_view", historyProjectView.value);
   if (historySearch.value.trim()) params.set("q", historySearch.value.trim());
   params.set("limit", String(historyJobsLimit.value));
   params.set("offset", String(historyJobsOffset.value));
@@ -4224,8 +4277,49 @@ const toggleHistoryBulkMode = () => {
   if (!historyBulkMode.value) historySelection.value = [];
 };
 
+const resolveProjectMeta = projectOrGroup => {
+  if (!projectOrGroup?.id || projectOrGroup.id === "__none__") return projectOrGroup || null;
+  return projects.value.find(project => project.id === projectOrGroup.id)
+    || historyProjectGroups.value.find(group => group.id === projectOrGroup.id)
+    || projectOrGroup;
+};
+
+const selectHistoryProjectView = viewId => {
+  const nextView = ["all", "favorite", "mine", "shared"].includes(viewId) ? viewId : "all";
+  historyProjectView.value = nextView;
+  filterProject.value = "";
+};
+
 const selectHistoryProject = projectId => {
+  historyProjectView.value = "all";
   filterProject.value = projectId || "";
+};
+
+const toggleProjectFavorite = async (projectOrGroup, event) => {
+  event?.preventDefault?.();
+  event?.stopPropagation?.();
+  const project = resolveProjectMeta(projectOrGroup);
+  if (!project?.id || project.id === "__none__") return;
+  const nextFavorite = project.is_favorite ? 0 : 1;
+  try {
+    const r = await fetch(`/api/projects/${encodeURIComponent(project.id)}/favorite`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ is_favorite: Boolean(nextFavorite) }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
+    projects.value = projects.value.map(item => item.id === data.id ? { ...item, ...data } : item);
+    historyGroups.value = historyGroups.value.map(group =>
+      group.id === data.id ? { ...group, ...data, label: data.name || group.label } : group
+    );
+    if (historyProjectView.value === "favorite" && !nextFavorite && !filterProject.value) {
+      await refreshSidebarData();
+    }
+  } catch (e) {
+    showToast("更新收藏失败: " + (e.message || "未知错误"), "error");
+  }
 };
 
 const toggleHistorySelection = job => {
@@ -6727,6 +6821,14 @@ const App = {
       refreshSidebarData();
     });
 
+    watch(historyProjectView, () => {
+      historyGroupsOffset.value = 0;
+      historyJobsOffset.value = 0;
+      historySelection.value = [];
+      localStorage.setItem("tpa-history-project-view", historyProjectView.value);
+      refreshSidebarData();
+    });
+
     watch(historySearch, () => {
       clearTimeout(historySearchTimer);
       historySearchTimer = setTimeout(() => {
@@ -6820,12 +6922,14 @@ const App = {
       historyGroupsTotal, historyGroupsLimit, historyGroupsOffset, historyGroupsLoading,
       historyJobs, historyJobsTotal, historyJobsLimit, historyJobsOffset, historyJobsLoading,
       historyProjectGroups, historyAllJobCount, activeHistoryProject, historyListTitle, historyListSubtitle,
+      projectQuickViews, activeProjectView, historyProjectView,
       historySearch, filterProject, sidebarTab, selectedJobId, selectedJob,
       collapsedGroups, groupedJobs, loadedHistoryJobIds,
       prevPage, nextPage, navigateToJob, loadHistoryGroupJobs,
       historyBulkMode, historySelection, toggleHistoryBulkMode,
       toggleSelectLoadedHistoryJobs, clearHistorySelection,
-      handleHistoryJobClick, selectHistoryProject, openBulkMoveProject, bulkDeleteFiles, bulkDeleteJobs,
+      handleHistoryJobClick, selectHistoryProject, selectHistoryProjectView, toggleProjectFavorite,
+      openBulkMoveProject, bulkDeleteFiles, bulkDeleteJobs,
 
       // Compare
       compareSelection, selectedCompareJobs, compareLabel, compareProjectId,

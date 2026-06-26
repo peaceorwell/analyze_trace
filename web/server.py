@@ -56,7 +56,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.3.9"
+APP_VERSION = "0.3.10"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -580,9 +580,46 @@ def _job_access_clause(request: Request, alias: str = "") -> tuple[str, list[str
     )
 
 
+def _favorite_user_token(request: Request) -> str:
+    return current_user_token(request) or "local"
+
+
+def _project_favorite_select(alias: str = "p") -> str:
+    return (
+        "CASE WHEN EXISTS ("
+        "SELECT 1 FROM project_favorites pf "
+        f"WHERE pf.project_id = {alias}.id AND pf.user_token = ?"
+        ") THEN 1 ELSE 0 END AS is_favorite"
+    )
+
+
+def _project_view_clause(request: Request, view: Optional[str], alias: str = "p") -> tuple[str, list[str]]:
+    view = (view or "all").strip().lower()
+    if view not in {"all", "favorite", "mine", "shared"}:
+        view = "all"
+    prefix = f"{alias}." if alias else ""
+    token = current_user_token(request)
+    if view == "favorite":
+        return (
+            "EXISTS (SELECT 1 FROM project_favorites pf_view "
+            f"WHERE pf_view.project_id = {prefix}id AND pf_view.user_token = ?)",
+            [_favorite_user_token(request)],
+        )
+    if view == "mine":
+        if not token:
+            return "", []
+        return f"{prefix}user_token = ?", [token]
+    if view == "shared":
+        if token:
+            return f"({prefix}is_public = 1 AND COALESCE({prefix}user_token, '') <> ?)", [token]
+        return f"{prefix}is_public = 1", []
+    return "", []
+
+
 def _project_response(row: dict, request: Request) -> dict:
     data = dict(row)
     data["is_public"] = 1 if data.get("is_public") else 0
+    data["is_favorite"] = 1 if data.get("is_favorite") else 0
     token = current_user_token(request)
     data["is_owner"] = True if not token else data.get("user_token") == token
     data["visibility"] = "shared" if data["is_public"] else "personal"
@@ -5914,10 +5951,11 @@ async def list_projects(request: Request):
     access_sql, access_params = _project_access_clause(request)
     where_sql = f"WHERE {access_sql}" if access_sql else ""
     rows = await (await db.execute(f"""
-        SELECT * FROM projects
+        SELECT p.*, {_project_favorite_select("p")}
+        FROM projects p
         {where_sql}
-        ORDER BY is_public DESC, created_at DESC
-    """, access_params)).fetchall()
+        ORDER BY is_favorite DESC, p.is_public DESC, p.created_at DESC
+    """, (_favorite_user_token(request), *access_params))).fetchall()
     await db.close()
     return [_project_response(dict(r), request) for r in rows]
 
@@ -5938,7 +5976,10 @@ async def create_project(request: Request, body: dict):
         details={"name": body.get("name", "新项目"), "is_public": is_public},
     )
     await db.commit()
-    cursor = await db.execute("SELECT * FROM projects WHERE id=?", (pid,))
+    cursor = await db.execute(
+        f"SELECT p.*, {_project_favorite_select('p')} FROM projects p WHERE p.id=?",
+        (_favorite_user_token(request), pid),
+    )
     row = await cursor.fetchone()
     await db.close()
     return _project_response(dict(row), request)
@@ -5971,10 +6012,47 @@ async def update_project(request: Request, pid: str, body: dict):
         },
     )
     await db.commit()
-    cursor = await db.execute("SELECT * FROM projects WHERE id=?", (pid,))
+    cursor = await db.execute(
+        f"SELECT p.*, {_project_favorite_select('p')} FROM projects p WHERE p.id=?",
+        (_favorite_user_token(request), pid),
+    )
     row = await cursor.fetchone()
     await db.close()
     return _project_response(dict(row), request)
+
+
+@app.put("/api/projects/{pid}/favorite")
+async def update_project_favorite(request: Request, pid: str, body: dict):
+    db = await get_db()
+    try:
+        await validate_project_access(db, request, pid)
+
+        favorite_token = _favorite_user_token(request)
+        is_favorite = 1 if body.get("is_favorite") else 0
+        if is_favorite:
+            await db.execute(
+                "INSERT OR IGNORE INTO project_favorites(project_id, user_token) VALUES(?, ?)",
+                (pid, favorite_token),
+            )
+        else:
+            await db.execute(
+                "DELETE FROM project_favorites WHERE project_id=? AND user_token=?",
+                (pid, favorite_token),
+            )
+        await write_audit(
+            db, request, "project.favorite",
+            resource_type="project", resource_id=pid,
+            details={"is_favorite": is_favorite},
+        )
+        await db.commit()
+        cursor = await db.execute(
+            f"SELECT p.*, {_project_favorite_select('p')} FROM projects p WHERE p.id=?",
+            (favorite_token, pid),
+        )
+        refreshed = await cursor.fetchone()
+        return _project_response(dict(refreshed), request)
+    finally:
+        await db.close()
 
 
 @app.delete("/api/projects/{pid}", status_code=204)
@@ -6019,6 +6097,9 @@ async def delete_project(request: Request, pid: str):
 
     # Delete jobs from main table
     await db.execute("DELETE FROM jobs WHERE project_id=?", (pid,))
+
+    # Remove personal shortcuts to this project.
+    await db.execute("DELETE FROM project_favorites WHERE project_id=?", (pid,))
 
     # Delete the project
     await db.execute("DELETE FROM projects WHERE id=?", (pid,))
@@ -6230,6 +6311,7 @@ async def _with_file_exists(rows, request: Optional[Request] = None):
 async def list_jobs(
     request: Request,
     project_id: Optional[str] = None,
+    project_view: Optional[str] = None,
     q: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
@@ -6248,6 +6330,11 @@ async def list_jobs(
         await validate_project_access(db, request, project_id)
         clauses.append("j.project_id = ?")
         params.append(project_id)
+    else:
+        view_sql, view_params = _project_view_clause(request, project_view, "p")
+        if view_sql:
+            clauses.append(view_sql)
+            params.extend(view_params)
     search_sql, search_params = _job_search_clause("j", q, include_project_name=True)
     if search_sql:
         clauses.append(search_sql)
@@ -6592,6 +6679,7 @@ async def storage_summary(request: Request):
 async def list_job_groups(
     request: Request,
     project_id: Optional[str] = None,
+    project_view: Optional[str] = None,
     q: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
@@ -6600,6 +6688,9 @@ async def list_job_groups(
 
     q_text = (q or "").strip()
     like = f"%{q_text.lower()}%"
+    active_project_view = (project_view or "all").strip().lower()
+    if active_project_view not in {"all", "favorite", "mine", "shared"}:
+        active_project_view = "all"
 
     groups: list[dict] = []
 
@@ -6616,6 +6707,11 @@ async def list_job_groups(
         if project_id:
             project_clauses.append("p.id = ?")
             project_params.append(project_id)
+        elif active_project_view != "all":
+            view_sql, view_params = _project_view_clause(request, active_project_view, "p")
+            if view_sql:
+                project_clauses.append(view_sql)
+                project_params.extend(view_params)
 
         job_count_clauses = ["j.project_id = p.id"]
         job_count_params: list = []
@@ -6660,6 +6756,9 @@ async def list_job_groups(
                 SELECT
                     p.id,
                     p.name AS label,
+                    p.user_token,
+                    p.is_public,
+                    {_project_favorite_select("p")},
                     (
                         SELECT COUNT(*)
                         FROM jobs j
@@ -6667,9 +6766,9 @@ async def list_job_groups(
                     ) AS job_count
                 FROM projects p
                 {project_where_sql}
-                ORDER BY p.name COLLATE NOCASE
+                ORDER BY is_favorite DESC, p.name COLLATE NOCASE
                 """,
-                (*job_count_params, *project_params),
+                (_favorite_user_token(request), *job_count_params, *project_params),
             )
         ).fetchall()
         groups.extend(
@@ -6677,11 +6776,15 @@ async def list_job_groups(
                 "id": row["id"],
                 "label": row["label"],
                 "job_count": row["job_count"],
+                "is_public": 1 if row["is_public"] else 0,
+                "is_owner": True if not current_user_token(request) else row["user_token"] == current_user_token(request),
+                "is_favorite": 1 if row["is_favorite"] else 0,
+                "visibility": "shared" if row["is_public"] else "personal",
             }
             for row in project_rows
         )
 
-    if not project_id or project_id == "__none__":
+    if (not project_id or project_id == "__none__") and (project_id == "__none__" or active_project_view == "all"):
         ungrouped_clauses = ["j.project_id IS NULL"]
         ungrouped_params: list = []
         access_sql, access_params = _job_access_clause(request, "j")

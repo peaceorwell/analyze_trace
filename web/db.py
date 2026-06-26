@@ -73,6 +73,13 @@ async def init_db():
                 created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
             );
 
+            CREATE TABLE IF NOT EXISTS project_favorites (
+                project_id   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                user_token   TEXT NOT NULL,
+                created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(project_id, user_token)
+            );
+
             CREATE TABLE IF NOT EXISTS jobs (
                 id               TEXT PRIMARY KEY,
                 project_id       TEXT REFERENCES projects(id) ON DELETE CASCADE,
@@ -241,6 +248,7 @@ async def init_db():
             CREATE INDEX IF NOT EXISTS idx_deleted_jobs_project ON deleted_jobs(project_id);
             CREATE INDEX IF NOT EXISTS idx_deleted_jobs_deleted_at ON deleted_jobs(deleted_at);
             CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_token);
+            CREATE INDEX IF NOT EXISTS idx_project_favorites_user ON project_favorites(user_token, created_at);
             CREATE INDEX IF NOT EXISTS idx_jobs_user ON jobs(user_token);
             CREATE INDEX IF NOT EXISTS idx_jobs_project_created ON jobs(project_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_jobs_mode_status_created ON jobs(mode, status, created_at);

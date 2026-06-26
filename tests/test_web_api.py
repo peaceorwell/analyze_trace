@@ -70,7 +70,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.3.9",
+        "version": "0.3.10",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -1985,6 +1985,30 @@ def test_ldap_auth_requires_login_and_isolates_user_data(isolated_server, monkey
         assert bob_projects.status_code == 200
         assert {item["id"] for item in bob_projects.json()} == {"bob-project", shared_project["id"]}
 
+        favorite = test_client.put(
+            f"/api/projects/{shared_project['id']}/favorite",
+            json={"is_favorite": True},
+        )
+        assert favorite.status_code == 200
+        assert favorite.json()["is_favorite"] == 1
+        assert favorite.json()["is_owner"] is False
+
+        favorite_groups = test_client.get("/api/job-groups?project_view=favorite")
+        assert favorite_groups.status_code == 200
+        assert [item["id"] for item in favorite_groups.json()["data"]] == [shared_project["id"]]
+
+        favorite_jobs = test_client.get("/api/jobs?project_view=favorite")
+        assert favorite_jobs.status_code == 200
+        assert [item["id"] for item in favorite_jobs.json()["data"]] == ["shared-job"]
+
+        mine_groups = test_client.get("/api/job-groups?project_view=mine")
+        assert mine_groups.status_code == 200
+        assert [item["id"] for item in mine_groups.json()["data"]] == ["bob-project"]
+
+        shared_groups = test_client.get("/api/job-groups?project_view=shared")
+        assert shared_groups.status_code == 200
+        assert [item["id"] for item in shared_groups.json()["data"]] == [shared_project["id"]]
+
         assert test_client.get("/api/jobs/alice-job").status_code == 404
         shared_detail = test_client.get("/api/jobs/shared-job")
         assert shared_detail.status_code == 200
@@ -2340,15 +2364,25 @@ def test_job_groups_include_empty_projects(client):
 
     filtered = client.get("/api/job-groups?project_id=project-empty")
     assert filtered.status_code == 200
-    assert filtered.json()["data"] == [
-        {"id": "project-empty", "label": "Alpha Empty", "job_count": 0}
-    ]
+    filtered_data = filtered.json()["data"]
+    assert len(filtered_data) == 1
+    assert {
+        "id": filtered_data[0]["id"],
+        "label": filtered_data[0]["label"],
+        "job_count": filtered_data[0]["job_count"],
+    } == {"id": "project-empty", "label": "Alpha Empty", "job_count": 0}
+    assert filtered_data[0]["visibility"] == "personal"
+    assert filtered_data[0]["is_favorite"] == 0
 
     searched = client.get("/api/job-groups?q=alpha")
     assert searched.status_code == 200
-    assert searched.json()["data"] == [
-        {"id": "project-empty", "label": "Alpha Empty", "job_count": 0}
-    ]
+    searched_data = searched.json()["data"]
+    assert len(searched_data) == 1
+    assert {
+        "id": searched_data[0]["id"],
+        "label": searched_data[0]["label"],
+        "job_count": searched_data[0]["job_count"],
+    } == {"id": "project-empty", "label": "Alpha Empty", "job_count": 0}
 
 
 def test_job_groups_search_returns_matching_visible_groups(client):

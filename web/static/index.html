@@ -184,8 +184,12 @@
           {{ sidebarCollapsed ? '›' : '‹' }}
         </button>
         <div class="sidebar-content" v-show="!sidebarCollapsed">
-        <div class="sidebar-tabs">
-          <button class="tab active" @click="sidebarTab='jobs'">历史</button>
+        <div class="sidebar-titlebar">
+          <div>
+            <strong>工作区</strong>
+            <small>Trace workspace</small>
+          </div>
+          <span>{{ historyJobsTotal }}</span>
         </div>
 
         <!-- History tab -->
@@ -193,26 +197,28 @@
           <div class="history-sidebar-search">
             <input v-model="historySearch" class="input input-sm w-full" placeholder="搜索任务、文件或项目..." />
           </div>
+          <div class="sidebar-quick-grid">
+            <button
+              v-for="view in projectQuickViews"
+              :key="view.id"
+              :class="['sidebar-quick-item', !filterProject && historyProjectView === view.id ? 'active' : '']"
+              type="button"
+              @click="selectHistoryProjectView(view.id)"
+            >
+              <span class="sidebar-quick-icon">{{ view.icon }}</span>
+              <span class="sidebar-quick-main">
+                <strong>{{ view.label }}</strong>
+                <small>{{ view.hint }}</small>
+              </span>
+              <span class="sidebar-quick-count">{{ view.count }}</span>
+            </button>
+          </div>
           <button class="sidebar-compare-launch" type="button" @click="openCompareModal">
             <span class="sidebar-compare-launch-icon">A/B</span>
             <span class="sidebar-compare-launch-main">
               <strong>新建对比</strong>
-              <small>选择同项目内的两个结果</small>
+              <small>先选项目，再选两个结果</small>
             </span>
-          </button>
-
-          <div class="sidebar-section-title">视图</div>
-          <button
-            :class="['project-nav-item', !filterProject ? 'active' : '']"
-            type="button"
-            @click="selectHistoryProject('')"
-          >
-            <span class="project-nav-icon">全部</span>
-            <span class="project-nav-main">
-              <span class="project-nav-name">全部任务</span>
-              <small>最近上传和共享的记录</small>
-            </span>
-            <span class="project-nav-count">{{ !filterProject ? historyJobsTotal : historyAllJobCount }}</span>
           </button>
 
           <div class="sidebar-section-title project-list-title">
@@ -221,25 +227,34 @@
           </div>
           <div class="project-nav-list">
             <div v-if="historyGroupsLoading" class="sidebar-loading compact">加载项目...</div>
-            <button
+            <div
               v-for="group in historyProjectGroups"
               :key="group.id"
               :class="['project-nav-item', filterProject===group.id ? 'active' : '']"
-              type="button"
+              role="button"
+              tabindex="0"
               @click="selectHistoryProject(group.id)"
+              @keydown.enter.prevent="selectHistoryProject(group.id)"
             >
-              <span class="project-nav-icon">{{ group.id === '__none__' ? '未分' : '项' }}</span>
+              <span :class="['project-nav-icon', group.is_public ? 'shared' : '', group.id === '__none__' ? 'ungrouped' : '']">
+                {{ group.id === '__none__' ? '未' : (group.is_public ? '共' : '项') }}
+              </span>
               <span class="project-nav-main">
                 <span class="project-nav-name">{{ group.label }}</span>
-                <small v-if="group.id !== '__none__'">
-                  {{ projects.find(p => p.id === group.id)?.is_public ? '共享项目' : '项目' }}
-                </small>
+                <small v-if="group.id !== '__none__'">{{ group.is_public ? (group.is_owner ? '我创建 · 已共享' : '共享给我') : '我创建' }}</small>
                 <small v-else>未归类任务</small>
               </span>
+              <button
+                v-if="group.id !== '__none__'"
+                :class="['project-favorite-btn', group.is_favorite ? 'active' : '']"
+                type="button"
+                :title="group.is_favorite ? '取消收藏' : '收藏项目'"
+                @click="toggleProjectFavorite(group, $event)"
+              >{{ group.is_favorite ? '★' : '☆' }}</button>
               <span class="project-nav-count">{{ group.job_count }}</span>
-            </button>
+            </div>
             <div v-if="!historyGroupsLoading && historyProjectGroups.length===0" class="empty-tip compact">
-              {{ historySearch ? '暂无匹配项目' : '暂无项目' }}
+              {{ historySearch ? '暂无匹配项目' : (historyProjectView === 'favorite' ? '暂无收藏项目' : '暂无项目') }}
             </div>
           </div>
 
