@@ -56,7 +56,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.3.2"
+APP_VERSION = "0.3.3"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -1385,6 +1385,7 @@ def _report_csv_sections(jid: str, mode: str) -> list[str]:
         "all_kernels_cmp.csv": "Kernel 对比",
         "triton_kernels_avg.csv": "Triton Kernel",
         "triton_kernels_cmp.csv": "Triton Kernel 对比",
+        "non_triton_kernel_efficiency_avg.csv": "非 Triton Kernel 效率",
         "aten_ops_avg.csv": "Aten Ops",
         "aten_ops_cmp.csv": "Aten Ops 对比",
         "cncl_ops_avg.csv": "CNCL Ops",
@@ -1393,7 +1394,14 @@ def _report_csv_sections(jid: str, mode: str) -> list[str]:
     preferred = (
         ["kernel_types_cmp.csv", "all_kernels_cmp.csv", "triton_kernels_cmp.csv", "aten_ops_cmp.csv", "cncl_ops_cmp.csv"]
         if mode == "compare"
-        else ["kernel_types_avg.csv", "all_kernels_avg.csv", "triton_kernels_avg.csv", "aten_ops_avg.csv", "cncl_ops_avg.csv"]
+        else [
+            "kernel_types_avg.csv",
+            "all_kernels_avg.csv",
+            "triton_kernels_avg.csv",
+            "non_triton_kernel_efficiency_avg.csv",
+            "aten_ops_avg.csv",
+            "cncl_ops_avg.csv",
+        ]
     )
     sections = []
     for filename in preferred:
@@ -1472,6 +1480,7 @@ def _ordered_result_csv_names(rdir: str) -> list[str]:
     names = []
     for name in ["all_kernels_avg.csv", "all_kernels_cmp.csv",
                  "triton_kernels_avg.csv", "triton_kernels_cmp.csv",
+                 "non_triton_kernel_efficiency_avg.csv",
                  "aten_ops_avg.csv", "aten_ops_cmp.csv",
                  "kernel_types_avg.csv", "kernel_types_cmp.csv",
                  "cncl_ops_avg.csv", "cncl_ops_cmp.csv"]:
@@ -3425,6 +3434,7 @@ def collect_results(jid: str) -> dict:
     files = {}
     for name in ["all_kernels_avg.csv", "all_kernels_cmp.csv",
                  "triton_kernels_avg.csv", "triton_kernels_cmp.csv",
+                 "non_triton_kernel_efficiency_avg.csv",
                  "aten_ops_avg.csv", "aten_ops_cmp.csv",
                  "kernel_types_avg.csv", "kernel_types_cmp.csv",
                  "cncl_ops_avg.csv", "cncl_ops_cmp.csv"]:

@@ -79,6 +79,13 @@ _FAST_TRACE_JSON_BYTES_DEFAULT = 256 * 1024 * 1024
 _EVENT_KERNEL = 1
 _EVENT_ATEN = 2
 _EVENT_CNCL = 3
+_EVENT_KERNEL_EFFICIENCY = 4
+_KERNEL_EFFICIENCY_COUNTER_NAMES = {
+    "Compute Efficiency(%)",
+    "IO Efficiency(%)",
+    "OP Efficiency(%)",
+}
+_KERNEL_EFFICIENCY_TS_TOLERANCE_US = 0.25
 
 
 def extract_step_number(name: str):
@@ -178,6 +185,67 @@ def safe_float(value):
         return float(match.group(0))
     except ValueError:
         return None
+
+
+def _iter_metric_values(value):
+    """Yield (key, value) pairs from nested profiler metadata."""
+    if isinstance(value, dict):
+        for key, child in value.items():
+            yield str(key), child
+            yield from _iter_metric_values(child)
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            yield from _iter_metric_values(child)
+
+
+def _metric_from_args(args, predicate):
+    if not isinstance(args, dict):
+        return None
+    for key, value in _iter_metric_values(args):
+        key_lower = key.lower()
+        if predicate(key_lower):
+            parsed = safe_float(value)
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def _metric_key_has_all(key, *tokens):
+    return all(token in key for token in tokens)
+
+
+def _compute_efficiency_from_args(args):
+    return _metric_from_args(
+        args,
+        lambda key: _metric_key_has_all(key, "compute", "efficiency"),
+    )
+
+
+def _op_efficiency_from_args(args):
+    return _metric_from_args(
+        args,
+        lambda key: _metric_key_has_all(key, "op", "efficiency"),
+    )
+
+
+def _io_efficiency_pct_from_args(args):
+    return _metric_from_args(
+        args,
+        lambda key: (
+            _metric_key_has_all(key, "io", "efficiency")
+            and ("%" in key or "pct" in key or "percent" in key)
+        ),
+    )
+
+
+def _io_efficiency_gbps_from_args(args):
+    return _metric_from_args(
+        args,
+        lambda key: (
+            _metric_key_has_all(key, "io", "efficiency")
+            and ("gb/s" in key or "gbps" in key)
+        ),
+    )
 
 
 def auto_classify_kernels(avg_kernels: dict, kernel_families: dict | None = None) -> tuple:
@@ -605,6 +673,8 @@ def parse_trace(trace_file, *, keep_triton_code=False, progress_callback=None):
     step_to_kernels      = defaultdict(lambda: defaultdict(lambda: {"count": 0, "dur_ms": 0.0}))
     step_to_aten         = defaultdict(lambda: defaultdict(lambda: {"count": 0, "dur_ms": 0.0}))
     step_to_cncl         = defaultdict(lambda: defaultdict(lambda: {"count": 0, "dur_ms": 0.0}))
+    step_to_non_triton_kernel_events = defaultdict(list)
+    step_to_kernel_efficiency_counters = defaultdict(list)
     family_cache = {}
     parse_events_seen = 0
     parse_records_seen = 0
@@ -671,6 +741,7 @@ def parse_trace(trace_file, *, keep_triton_code=False, progress_callback=None):
             cat == "kernel"
             or name.startswith("aten::")
             or (cat == "gpu_user_annotation" and (name.startswith("cncl") or name.startswith("nccl")))
+            or name in _KERNEL_EFFICIENCY_COUNTER_NAMES
         )
 
     def compact_record(e, name, cat, interval):
@@ -700,9 +771,18 @@ def parse_trace(trace_file, *, keep_triton_code=False, progress_callback=None):
                 triton_code_hash,
                 triton_code_signature_hash,
                 triton_output_code if keep_triton_code else None,
+                _compute_efficiency_from_args(args),
+                _io_efficiency_pct_from_args(args),
+                _op_efficiency_from_args(args),
+                _io_efficiency_gbps_from_args(args),
+                e.get("tid"),
             )
         if name.startswith("aten::"):
             return (_EVENT_ATEN, name, ts, dur_ms)
+        if name in _KERNEL_EFFICIENCY_COUNTER_NAMES:
+            args = e.get("args", {}) or {}
+            value = safe_float(args.get("utils")) if isinstance(args, dict) else None
+            return (_EVENT_KERNEL_EFFICIENCY, name, ts, value, e.get("tid"))
         return (_EVENT_CNCL, name, ts, dur_ms)
 
     def aggregate_record(record, step):
@@ -721,6 +801,11 @@ def parse_trace(trace_file, *, keep_triton_code=False, progress_callback=None):
                 triton_code_hash,
                 triton_code_signature_hash,
                 triton_output_code,
+                compute_efficiency,
+                io_efficiency_pct,
+                op_efficiency,
+                io_efficiency_gbps,
+                tid,
             ) = record
             step_to_kernels[step][name]["count"] += 1
             step_to_kernels[step][name]["dur_ms"] += dur_ms
@@ -747,6 +832,30 @@ def parse_trace(trace_file, *, keep_triton_code=False, progress_callback=None):
                     "triton_code_hash":    triton_code_hash,
                     "triton_code_signature_hash": triton_code_signature_hash,
                     "triton_output_code":  triton_output_code,
+                })
+            else:
+                step_to_non_triton_kernel_events[step].append({
+                    "kernel_name":              name,
+                    "family":                   family,
+                    "start_ts":                 _ts,
+                    "end_ts":                   _ts + dur_ms * 1000 if has_dur else _ts,
+                    "dur(ms)":                  dur_ms if has_dur else None,
+                    "compute_efficiency":       compute_efficiency,
+                    "io_efficiency":            io_efficiency_pct,
+                    "op_efficiency":            op_efficiency,
+                    "io_efficiency_gbps":       io_efficiency_gbps,
+                    "tid":                      tid,
+                })
+            return
+
+        if kind == _EVENT_KERNEL_EFFICIENCY:
+            _, counter_name, ts, value, tid = record
+            if value is not None:
+                step_to_kernel_efficiency_counters[step].append({
+                    "name": counter_name,
+                    "ts": ts,
+                    "value": value,
+                    "tid": tid,
                 })
             return
 
@@ -870,11 +979,70 @@ def parse_trace(trace_file, *, keep_triton_code=False, progress_callback=None):
                 continue
             aggregate_record(record, step)
 
+        def build_non_triton_kernel_efficiency():
+            counter_field = {
+                "Compute Efficiency(%)": "compute_efficiency",
+                "IO Efficiency(%)": "io_efficiency",
+                "OP Efficiency(%)": "op_efficiency",
+            }
+            result = defaultdict(list)
+            for step, kernels in step_to_non_triton_kernel_events.items():
+                counters_by_tid = defaultdict(list)
+                for counter in step_to_kernel_efficiency_counters.get(step, []):
+                    counters_by_tid[counter.get("tid")].append(counter)
+                for counters in counters_by_tid.values():
+                    counters.sort(key=lambda item: item["ts"])
+
+                ts_cache = {
+                    tid: [counter["ts"] for counter in counters]
+                    for tid, counters in counters_by_tid.items()
+                }
+
+                for kernel in kernels:
+                    metrics = {
+                        "compute_efficiency": kernel.get("compute_efficiency"),
+                        "io_efficiency": kernel.get("io_efficiency"),
+                        "op_efficiency": kernel.get("op_efficiency"),
+                        "io_efficiency_gbps": kernel.get("io_efficiency_gbps"),
+                    }
+                    counters = counters_by_tid.get(kernel.get("tid"), [])
+                    ts_values = ts_cache.get(kernel.get("tid"), [])
+                    if counters and ts_values:
+                        start = kernel["start_ts"]
+                        end = max(kernel.get("end_ts") or start, start)
+                        left = bisect.bisect_left(ts_values, start - _KERNEL_EFFICIENCY_TS_TOLERANCE_US)
+                        right = bisect.bisect_right(ts_values, start + _KERNEL_EFFICIENCY_TS_TOLERANCE_US)
+                        candidates = counters[left:right]
+                        if not candidates:
+                            left = bisect.bisect_left(ts_values, start)
+                            right = bisect.bisect_right(ts_values, end)
+                            candidates = counters[left:right]
+
+                        values = defaultdict(list)
+                        for counter in candidates:
+                            field = counter_field.get(counter["name"])
+                            if field:
+                                values[field].append(counter["value"])
+                        for field, field_values in values.items():
+                            if metrics.get(field) is None and field_values:
+                                metrics[field] = max(field_values)
+
+                    if not any(value not in (None, 0, 0.0) for value in metrics.values()):
+                        continue
+                    result[step].append({
+                        "kernel_name": kernel["kernel_name"],
+                        "family": kernel["family"],
+                        "dur(ms)": kernel.get("dur(ms)"),
+                        **metrics,
+                    })
+            return result
+
         return {
             "step_to_triton":       step_to_triton,
             "step_to_kernels":      step_to_kernels,
             "step_to_aten":         step_to_aten,
             "step_to_cncl":         step_to_cncl,
+            "step_to_non_triton_kernel_efficiency": build_non_triton_kernel_efficiency(),
             "step_durations":       step_durations,
             "step_ranges":          step_ranges,
             "kernel_families":      kernel_families,
@@ -996,6 +1164,7 @@ def filter_parsed_steps(parsed, steps, *, require_match=True):
     filtered["step_to_kernels"] = filter_mapping("step_to_kernels")
     filtered["step_to_aten"] = filter_mapping("step_to_aten")
     filtered["step_to_cncl"] = filter_mapping("step_to_cncl")
+    filtered["step_to_non_triton_kernel_efficiency"] = filter_mapping("step_to_non_triton_kernel_efficiency")
 
     kernel_names = set()
     for step in selected_set:
@@ -1038,6 +1207,7 @@ def compute_avgs(parsed):
         step_to_kernels      = parsed["step_to_kernels"]
         step_to_aten         = parsed["step_to_aten"]
         step_to_cncl         = parsed["step_to_cncl"]
+        step_to_non_triton_kernel_efficiency = parsed.get("step_to_non_triton_kernel_efficiency", defaultdict(list))
         step_durations       = parsed["step_durations"]
         step_ranges          = parsed.get("step_ranges", {})
         kernel_families      = parsed.get("kernel_families", {})
@@ -1046,9 +1216,16 @@ def compute_avgs(parsed):
             step_to_triton, step_to_kernels, _, step_to_aten, step_to_cncl, step_durations = parsed
         else:
             step_to_triton, step_to_kernels, step_to_aten, step_to_cncl, step_durations = parsed
+        step_to_non_triton_kernel_efficiency = defaultdict(list)
         step_ranges = {}
         kernel_families = {}
-    all_steps = sorted(set(step_durations) | set(step_to_kernels) | set(step_to_aten) | set(step_to_cncl))
+    all_steps = sorted(
+        set(step_durations)
+        | set(step_to_kernels)
+        | set(step_to_aten)
+        | set(step_to_cncl)
+        | set(step_to_non_triton_kernel_efficiency)
+    )
     n_steps   = len(all_steps)
     mean      = lambda vals: sum(vals) / n_steps if n_steps else 0.0
 
@@ -1157,6 +1334,97 @@ def compute_avgs(parsed):
         }
     avg_triton = dict(sorted(avg_triton.items(), key=lambda x: -x[1]["avg_dur_ms"]))
 
+    # Non-Triton kernel efficiency aggregation.  These metrics can be emitted as
+    # Chrome trace counter events instead of kernel args, so parse_trace already
+    # associates them with nearby non-Triton kernel intervals.
+    step_non_triton_eff_agg = defaultdict(lambda: defaultdict(lambda: {
+        "family": "",
+        "count": 0,
+        "dur_ms": 0.0,
+        "compute_eff_sum": 0.0,
+        "compute_eff_count": 0,
+        "io_eff_sum": 0.0,
+        "io_eff_count": 0,
+        "op_eff_sum": 0.0,
+        "op_eff_count": 0,
+        "io_eff_gbps_sum": 0.0,
+        "io_eff_gbps_count": 0,
+    }))
+    for step, kernels in step_to_non_triton_kernel_efficiency.items():
+        for kernel in kernels:
+            name = kernel["kernel_name"]
+            stats = step_non_triton_eff_agg[step][name]
+            stats["family"] = kernel.get("family") or kernel_families.get(name) or extract_kernel_family(name)
+            stats["count"] += 1
+            stats["dur_ms"] += kernel.get("dur(ms)") or 0.0
+            for source_key, sum_key, count_key in (
+                ("compute_efficiency", "compute_eff_sum", "compute_eff_count"),
+                ("io_efficiency", "io_eff_sum", "io_eff_count"),
+                ("op_efficiency", "op_eff_sum", "op_eff_count"),
+                ("io_efficiency_gbps", "io_eff_gbps_sum", "io_eff_gbps_count"),
+            ):
+                value = kernel.get(source_key)
+                if value is not None:
+                    stats[sum_key] += value
+                    stats[count_key] += 1
+
+    all_non_triton_eff_names = set()
+    for step in all_steps:
+        all_non_triton_eff_names.update(step_non_triton_eff_agg[step])
+
+    avg_non_triton_kernel_efficiency = {}
+    for name in all_non_triton_eff_names:
+        compute_sum = sum(
+            step_non_triton_eff_agg[s].get(name, {"compute_eff_sum": 0.0})["compute_eff_sum"]
+            for s in all_steps
+        )
+        compute_count = sum(
+            step_non_triton_eff_agg[s].get(name, {"compute_eff_count": 0})["compute_eff_count"]
+            for s in all_steps
+        )
+        io_sum = sum(
+            step_non_triton_eff_agg[s].get(name, {"io_eff_sum": 0.0})["io_eff_sum"]
+            for s in all_steps
+        )
+        io_count = sum(
+            step_non_triton_eff_agg[s].get(name, {"io_eff_count": 0})["io_eff_count"]
+            for s in all_steps
+        )
+        op_sum = sum(
+            step_non_triton_eff_agg[s].get(name, {"op_eff_sum": 0.0})["op_eff_sum"]
+            for s in all_steps
+        )
+        op_count = sum(
+            step_non_triton_eff_agg[s].get(name, {"op_eff_count": 0})["op_eff_count"]
+            for s in all_steps
+        )
+        io_gbps_sum = sum(
+            step_non_triton_eff_agg[s].get(name, {"io_eff_gbps_sum": 0.0})["io_eff_gbps_sum"]
+            for s in all_steps
+        )
+        io_gbps_count = sum(
+            step_non_triton_eff_agg[s].get(name, {"io_eff_gbps_count": 0})["io_eff_gbps_count"]
+            for s in all_steps
+        )
+        family = ""
+        for step in all_steps:
+            stats = step_non_triton_eff_agg[step].get(name)
+            if stats and stats.get("family"):
+                family = stats["family"]
+                break
+        avg_non_triton_kernel_efficiency[name] = {
+            "family": family or kernel_families.get(name) or extract_kernel_family(name),
+            "avg_count": mean([step_non_triton_eff_agg[s].get(name, {"count": 0})["count"] for s in all_steps]),
+            "avg_dur_ms": mean([step_non_triton_eff_agg[s].get(name, {"dur_ms": 0.0})["dur_ms"] for s in all_steps]),
+            "avg_compute_efficiency": (compute_sum / compute_count) if compute_count else None,
+            "avg_io_efficiency": (io_sum / io_count) if io_count else None,
+            "avg_op_efficiency": (op_sum / op_count) if op_count else None,
+            "avg_io_efficiency_gbps": (io_gbps_sum / io_gbps_count) if io_gbps_count else None,
+        }
+    avg_non_triton_kernel_efficiency = dict(
+        sorted(avg_non_triton_kernel_efficiency.items(), key=lambda x: -x[1]["avg_dur_ms"])
+    )
+
     return {
         "all_steps":      all_steps,
         "n_steps":        n_steps,
@@ -1168,6 +1436,7 @@ def compute_avgs(parsed):
         "avg_aten":       avg_stats(step_to_aten, all_steps),
         "avg_cncl":       avg_stats(step_to_cncl, all_steps),
         "avg_triton":     avg_triton,
+        "avg_non_triton_kernel_efficiency": avg_non_triton_kernel_efficiency,
         "step_to_triton": step_to_triton,
         "step_ranges":    step_ranges,
         "kernel_families": kernel_families,
@@ -1321,6 +1590,39 @@ def _write_triton_avg_csv(path, avg_triton):
                 "avg_io_efficiency": fmt3(s["avg_io_eff"]),
             })
     print(f"Wrote {path} ({len(avg_triton)} rows)")
+
+
+def _write_non_triton_kernel_efficiency_avg_csv(path, avg_efficiency):
+    """Write non-Triton kernel hardware efficiency metrics when present."""
+    fields = [
+        "kernel_name",
+        "family",
+        "avg_count",
+        "avg_dur_ms",
+        "avg_us_per_call",
+        "avg_compute_efficiency",
+        "avg_io_efficiency",
+        "avg_op_efficiency",
+        "avg_io_efficiency_gbps",
+    ]
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        for name, s in avg_efficiency.items():
+            cnt = s["avg_count"]
+            dur = s["avg_dur_ms"]
+            writer.writerow({
+                "kernel_name": name,
+                "family": s.get("family", ""),
+                "avg_count": fmt3(cnt),
+                "avg_dur_ms": fmt3(dur),
+                "avg_us_per_call": fmt3(dur / cnt * 1000) if cnt > 0 else "",
+                "avg_compute_efficiency": fmt3(s.get("avg_compute_efficiency")),
+                "avg_io_efficiency": fmt3(s.get("avg_io_efficiency")),
+                "avg_op_efficiency": fmt3(s.get("avg_op_efficiency")),
+                "avg_io_efficiency_gbps": fmt3(s.get("avg_io_efficiency_gbps")),
+            })
+    print(f"Wrote {path} ({len(avg_efficiency)} rows)")
 
 
 def _write_kernel_types_csv(path, kernel_type_names, kt_avgs):
@@ -1589,6 +1891,10 @@ def write_single(data, args):
         data.get("kernel_families", {}),
     )
     _write_triton_avg_csv(os.path.join(args.output_dir, "triton_kernels_avg.csv"), data["avg_triton"])
+    _write_non_triton_kernel_efficiency_avg_csv(
+        os.path.join(args.output_dir, "non_triton_kernel_efficiency_avg.csv"),
+        data.get("avg_non_triton_kernel_efficiency", {}),
+    )
     write_avg_csv(os.path.join(args.output_dir, "aten_ops_avg.csv"),    data["avg_aten"],    "op_name")
     _write_kernel_types_csv(os.path.join(args.output_dir, "kernel_types_avg.csv"), data["KERNEL_TYPES"], data["kt_avgs"])
     write_avg_csv(os.path.join(args.output_dir, "cncl_ops_avg.csv"),    data["avg_cncl"],    "op_name")

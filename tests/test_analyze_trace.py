@@ -337,6 +337,40 @@ class TestComputeAvgs:
 
         assert avgs["avg_triton"]["triton_poi_fused_add"]["avg_io_eff"] is None
 
+    def test_non_triton_kernel_efficiency_counters_are_collected(self, tmp_path):
+        matmul_name = "void MLUFusedMatMulGemmU1Ex<half>(...)"
+        trace_path = tmp_path / "trace.json"
+        trace_path.write_text(json.dumps({
+            "traceEvents": [
+                {"name": "ProfilerStep#0", "cat": "user_annotation", "ts": 1000, "dur": 1000},
+                {"name": matmul_name, "cat": "kernel", "ts": 1100, "dur": 100, "tid": 7, "args": {}},
+                {"name": "Compute Efficiency(%)", "ph": "C", "ts": 1100, "tid": 7, "args": {"utils": 40.0}},
+                {"name": "IO Efficiency(%)", "ph": "C", "ts": 1100, "tid": 7, "args": {"utils": 18.0}},
+                {"name": "OP Efficiency(%)", "ph": "C", "ts": 1100, "tid": 7, "args": {"utils": 34.0}},
+                {"name": "Compute Efficiency(%)", "ph": "C", "ts": 1200, "tid": 7, "args": {"utils": 0.0}},
+                {"name": "IO Efficiency(%)", "ph": "C", "ts": 1200, "tid": 7, "args": {"utils": 0.0}},
+                {"name": "OP Efficiency(%)", "ph": "C", "ts": 1200, "tid": 7, "args": {"utils": 0.0}},
+                {
+                    "name": "triton_poi_fused_add",
+                    "cat": "kernel",
+                    "ts": 1300,
+                    "dur": 100,
+                    "tid": 8,
+                    "args": {"IO efficiency(GB/s)": "100 GB/s"},
+                },
+                {"name": "Compute Efficiency(%)", "ph": "C", "ts": 1300, "tid": 8, "args": {"utils": 99.0}},
+            ],
+        }))
+
+        avgs = compute_avgs(parse_trace(str(trace_path)))
+
+        row = avgs["avg_non_triton_kernel_efficiency"][matmul_name]
+        assert row["family"] == "gemm"
+        assert row["avg_compute_efficiency"] == 40.0
+        assert row["avg_io_efficiency"] == 18.0
+        assert row["avg_op_efficiency"] == 34.0
+        assert "triton_poi_fused_add" not in avgs["avg_non_triton_kernel_efficiency"]
+
     def test_triton_metadata_keeps_stable_match_fingerprints(self, tmp_path):
         trace_path = tmp_path / "trace.json"
         trace_path.write_text(json.dumps({
@@ -756,6 +790,17 @@ class TestEndToEnd:
                     "avg_io_eff": 9,
                 },
             },
+            "avg_non_triton_kernel_efficiency": {
+                "matmul_kernel": {
+                    "family": "gemm",
+                    "avg_count": 4,
+                    "avg_dur_ms": 8,
+                    "avg_compute_efficiency": 40,
+                    "avg_io_efficiency": 18,
+                    "avg_op_efficiency": 34,
+                    "avg_io_efficiency_gbps": None,
+                },
+            },
             "avg_aten": {
                 "aten::mm": {"avg_count": 2, "avg_dur_ms": 4},
             },
@@ -774,6 +819,7 @@ class TestEndToEnd:
         for name in [
             "all_kernels_avg.csv",
             "triton_kernels_avg.csv",
+            "non_triton_kernel_efficiency_avg.csv",
             "aten_ops_avg.csv",
             "kernel_types_avg.csv",
             "cncl_ops_avg.csv",

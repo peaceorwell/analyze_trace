@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.3.2");
+const appVersion = ref("0.3.3");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -601,6 +601,7 @@ const availableTabs = computed(() => {
     "all_kernels_cmp.csv":      "Kernel 对比",
     "triton_kernels_avg.csv":   "Triton",
     "triton_kernels_cmp.csv":   "Triton 对比",
+    "non_triton_kernel_efficiency_avg.csv": "非 Triton 效率",
     "aten_ops_avg.csv":         "Aten Ops",
     "aten_ops_cmp.csv":         "Aten 对比",
     "cncl_ops_avg.csv":         "CNCL Ops",
@@ -638,6 +639,7 @@ const CHART_SOURCE_CONFIGS = [
   { file: "kernel_types_avg.csv", label: "Kernel 类型", mode: "single", nameField: "type", defaultMetric: "avg_dur_ms" },
   { file: "all_kernels_avg.csv", label: "所有 Kernel", mode: "single", nameField: "kernel_name", defaultMetric: "avg_dur_ms" },
   { file: "triton_kernels_avg.csv", label: "Triton Kernel", mode: "single", nameField: "kernel_name", defaultMetric: "avg_dur_ms" },
+  { file: "non_triton_kernel_efficiency_avg.csv", label: "非 Triton 效率", mode: "single", nameField: "kernel_name", defaultMetric: "avg_dur_ms" },
   { file: "aten_ops_avg.csv", label: "Aten Ops", mode: "single", nameField: "op_name", defaultMetric: "avg_dur_ms" },
   { file: "cncl_ops_avg.csv", label: "CNCL Ops", mode: "single", nameField: "op_name", defaultMetric: "avg_dur_ms" },
 ];
@@ -671,6 +673,9 @@ const CHART_METRIC_DEFS = [
   { key: "avg_io_gb_A", label: "A IO 量", unit: "GB" },
   { key: "avg_io_gb_B", label: "B IO 量", unit: "GB" },
   { key: "avg_io_efficiency", label: "IO 效率", unit: "" },
+  { key: "avg_compute_efficiency", label: "Compute 效率", unit: "%" },
+  { key: "avg_op_efficiency", label: "OP 效率", unit: "%" },
+  { key: "avg_io_efficiency_gbps", label: "IO 效率", unit: "GB/s" },
 ];
 
 const chartSourceOptions = computed(() => {
@@ -995,7 +1000,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.3.2";
+  appVersion.value = cfg.version || "0.3.3";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
