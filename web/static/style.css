@@ -116,8 +116,9 @@ body {
   display: flex; align-items: center; justify-content: space-between;
   padding: 0 20px; height: 48px;
   background-color: var(--surface); border-bottom: 1px solid var(--border);
+  position: relative;
 }
-.header-brand { display: flex; align-items: center; gap: 10px; }
+.header-brand { display: flex; align-items: center; gap: 10px; position: relative; z-index: 1; }
 .header-logo {
   width: 28px; height: 28px; flex-shrink: 0;
   filter: drop-shadow(0 2px 6px rgba(99,102,241,.20));
@@ -138,7 +139,23 @@ body {
   font-weight: 700;
   line-height: 1.2;
 }
-.header-actions { display: flex; gap: 6px; align-items: center; }
+.header-motto {
+  position: absolute;
+  left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  white-space: nowrap;
+  color: var(--text3);
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  opacity: .48;
+}
+[data-theme="light"] .header-motto {
+  color: #64748b;
+  opacity: .56;
+}
+.header-actions { display: flex; gap: 6px; align-items: center; position: relative; z-index: 1; }
 .header-more-menu .action-menu { min-width: 142px; }
 
 .header-actions .btn-outline {
@@ -180,6 +197,10 @@ body {
   box-shadow: 0 1px 8px rgba(249,115,22,.3);
 }
 .header-actions .btn-primary:hover:not(:disabled) { background: var(--orange-d); opacity: 1; }
+
+@media (max-width: 1180px) {
+  .header-motto { display: none; }
+}
 
 /* ── Theme toggle button ── */
 .theme-toggle {
@@ -391,19 +412,6 @@ body {
   flex: 1; gap: 14px; padding: 40px 16px;
 }
 .empty-main-icon { font-size: 40px; margin-bottom: 4px; filter: grayscale(.4) opacity(.7); }
-.empty-main-motto {
-  display: inline-flex; align-items: center; gap: 8px;
-  padding: 7px 14px; border-radius: 999px;
-  border: 1px solid rgba(99,102,241,.22);
-  background: linear-gradient(180deg, rgba(99,102,241,.12), rgba(99,102,241,.05));
-  color: var(--text); font-size: 17px; font-weight: 800;
-  box-shadow: 0 10px 24px rgba(99,102,241,.08);
-}
-.empty-main-motto::before,
-.empty-main-motto::after {
-  content: ""; width: 6px; height: 6px; border-radius: 50%;
-  background: var(--purple-l); opacity: .72;
-}
 .empty-main-title { font-size: 15px; color: var(--text2); font-weight: 500; }
 .empty-action-grid {
   display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
