@@ -737,8 +737,8 @@ body {
 .empty-main-icon { font-size: 40px; margin-bottom: 4px; filter: grayscale(.4) opacity(.7); }
 .empty-main-title { font-size: 15px; color: var(--text2); font-weight: 500; }
 .empty-action-grid {
-  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px; width: min(720px, 100%);
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px; width: min(960px, 100%);
 }
 .empty-action-card {
   min-width: 0; text-align: left; cursor: pointer;
@@ -986,6 +986,7 @@ select.input { appearance: none; cursor: pointer; }
 @media (max-width: 1180px) {
   .quick-compare-cols { grid-template-columns: minmax(260px, 1fr) 1fr; }
   .quick-compare-cols .btn { grid-column: span 2; }
+  .empty-action-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); width: min(720px, 100%); }
 }
 
 @media (max-width: 720px) {

@@ -2,11 +2,11 @@
 
 Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/内网性能分析工具，并兼容 TensorFlow Chrome Trace。它可以解析 `.json`、`.json.gz`、`.gz`、`.json.zip`、`.zip`、`.tar.gz` 和 `.tgz` trace 文件，统计 GPU kernel、Triton kernel、ATen Ops、TensorFlow Ops、CNCL/NCCL 通信算子，并提供单 trace 分析、双 trace 对比、历史管理、AI 分析和 Web 可视化界面。
 
-当前版本：`0.3.10`
+当前版本：`0.3.11`
 
 ## 主要功能
 
-- **上传与对比**：单文件、批量上传、两个 trace 快速对比，以及基于历史任务的 A/B / 批量基线对比。
+- **上传与对比**：单个 trace 分析、两个 trace 直接对比、多个 trace 逐个分析，以及基于历史任务的 A/B / 批量基线对比。
 - **结果阅读**：默认进入性能总览，提供摘要卡片、Top 回退/改善、图表下钻、控制台全屏阅读和全量 CSV 表格能力。
 - **定位细节**：Kernel 类型、所有 Kernel、Triton、ATen Ops、TF Ops、CNCL Ops、Triton Step 等页签支持搜索、筛选、排序、列显隐、分页和下载。
 - **Step 重分析**：完成任务后可指定 step 派生新分析；对比任务支持 A/B 分别指定不同 step。
@@ -78,7 +78,7 @@ python web/server.py
 
 ## 推荐使用路径
 
-1. 首页上传单 trace，或切到快速对比上传 A/B。
+1. 首页按场景选择 `单个`、`两个` 或 `多个` 上传模式；多个 trace 会逐个生成分析任务。
 2. 先看 `性能总览`：总耗时、Top 回退/改善和占比图通常能定位第一批问题。
 3. 需要证据时下钻到 `所有 Kernel`、`Triton`、`ATen Ops`、`TF Ops` 或 `CNCL Ops`，再下载当前页 CSV。
 4. 需要自然语言总结时打开 `AI 分析`，可补充 Prompt；报告会保留多个版本。
@@ -88,10 +88,11 @@ python web/server.py
 
 ### 提交分析
 
-Web 首页有两种上传模式：
+Web 首页有三种上传模式：
 
-- `单文件/批量`：拖拽或选择一个或多个 trace 文件，批量提交后每个文件生成一个任务。
-- `快速对比`：同时上传 A/B 两个 trace，直接生成对比任务。
+- `单个`：拖拽或选择一个 trace 文件，生成单 trace 分析任务。
+- `两个`：同时上传 A/B 两个 trace，直接生成对比任务。
+- `多个`：拖拽或选择多个 trace 文件，系统会逐个分析，每个文件生成一个独立任务。
 - 大 trace 分析期间，任务页会持续显示当前阶段和已用时间；如果正在解析 10GB+ trace，等待几十秒到数分钟是正常现象。
 
 支持的输入格式：

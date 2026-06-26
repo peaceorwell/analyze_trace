@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>torch profiler analyzer</title>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.3.9" />
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.3.11" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.css" />
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
@@ -12,7 +12,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js"></script>
-  <link rel="stylesheet" href="/static/style.css?v=0.3.9" />
+  <link rel="stylesheet" href="/static/style.css?v=0.3.11" />
   <script>
     // Apply saved theme or system preference before page paint to avoid flash
     (function() {
@@ -143,7 +143,7 @@
     <!-- ── Header ── -->
     <header v-if="authChecked && (!authRequired || currentUser)" class="header">
       <div class="header-brand" @click="$router.push('/')" style="cursor:pointer" title="返回上传页面">
-        <img class="header-logo" src="/static/favicon.svg?v=0.3.9" alt="" />
+        <img class="header-logo" src="/static/favicon.svg?v=0.3.11" alt="" />
         <span class="header-title">Torch Profiler Analyzer</span>
         <span class="header-version">v{{ appVersion }}</span>
       </div>
@@ -1338,11 +1338,11 @@
         <div class="modal-title">使用指南</div>
         <div class="guide-content">
           <section class="guide-section">
-            <h3>1. 上传与快速对比</h3>
+            <h3>1. 上传与对比</h3>
             <ul>
-              <li>首页默认支持 <strong>单文件/批量</strong> 和 <strong>快速对比</strong> 两种入口；常用格式包括 <code>.json</code>、<code>.json.gz</code>、<code>.gz</code>、<code>.json.zip</code>、<code>.zip</code>、<code>.tar.gz</code>、<code>.tgz</code></li>
+              <li>首页提供 <strong>单个</strong>、<strong>两个</strong>、<strong>多个</strong> 三种上传模式；常用格式包括 <code>.json</code>、<code>.json.gz</code>、<code>.gz</code>、<code>.json.zip</code>、<code>.zip</code>、<code>.tar.gz</code>、<code>.tgz</code></li>
               <li>上传时选择项目和别名即可；如果只想看指定 step，先完成原始分析，再用任务右上角 <strong>指定 Step 重分析</strong> 生成新条目</li>
-              <li>两个新 trace 直接用 <strong>快速对比</strong>；已有历史任务则点击左侧 <strong>新建对比</strong>，先选项目再选 A/B</li>
+              <li><strong>两个</strong> 模式会直接生成 A/B 对比任务；<strong>多个</strong> 模式会逐个分析每个 trace；已有历史任务则点击左侧 <strong>新建对比</strong>，先选项目再选 A/B</li>
             </ul>
           </section>
           <section class="guide-section">
@@ -1395,6 +1395,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=0.3.9"></script>
+  <script src="/static/app.js?v=0.3.11"></script>
 </body>
 </html>

@@ -71,7 +71,8 @@ let preSearchExpandedGroups = null;
 // ── Upload form ─────────────────────────────────────────────────────────
 const fileA    = ref(null);
 const fileAName = ref("");
-const quickUploadMode = ref(localStorage.getItem("tpa-upload-mode") || "single");
+const storedUploadMode = localStorage.getItem("tpa-upload-mode") || "single";
+const quickUploadMode = ref(["single", "compare", "multi"].includes(storedUploadMode) ? storedUploadMode : "single");
 const quickFileA = ref(null);
 const quickFileB = ref(null);
 const quickFileAName = ref("");
@@ -130,7 +131,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.3.10");
+const appVersion = ref("0.3.11");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -1075,7 +1076,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.3.10";
+  appVersion.value = cfg.version || "0.3.11";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -3934,7 +3935,11 @@ const buildChart = async () => {
 const setUploadFiles = files => {
   const picked = Array.from(files || []);
   if (!picked.length) return;
-  uploadQueue.value = picked.map((file, index) => ({
+  const nextFiles = quickUploadMode.value === "multi" ? picked : picked.slice(0, 1);
+  if (quickUploadMode.value === "single" && picked.length > 1) {
+    showToast("单个模式只会使用第一个文件；如需逐个分析多个 trace，请切到“多个”。", "info");
+  }
+  uploadQueue.value = nextFiles.map((file, index) => ({
     id: `${Date.now()}-${index}-${file.name}`,
     file,
     name: file.name,
@@ -3944,8 +3949,8 @@ const setUploadFiles = files => {
     error: "",
     jobId: "",
   }));
-  fileA.value = picked[0];
-  fileAName.value = picked.length === 1 ? picked[0].name : `${picked.length} 个文件`;
+  fileA.value = nextFiles[0];
+  fileAName.value = nextFiles.length === 1 ? nextFiles[0].name : `${nextFiles.length} 个文件`;
 };
 
 const patchUploadQueueItem = (id, patch) => {
@@ -3969,9 +3974,14 @@ const clearFile = () => {
 };
 
 const setQuickUploadMode = mode => {
-  if (!["single", "compare"].includes(mode) || submitting.value) return;
+  if (!["single", "compare", "multi"].includes(mode) || submitting.value) return;
   quickUploadMode.value = mode;
   localStorage.setItem("tpa-upload-mode", mode);
+  if (mode === "single" && uploadQueue.value.length > 1) {
+    uploadQueue.value = uploadQueue.value.slice(0, 1);
+    fileA.value = uploadQueue.value[0]?.file || null;
+    fileAName.value = uploadQueue.value[0]?.name || "";
+  }
 };
 
 const setQuickCompareFile = (slot, files) => {
@@ -4126,7 +4136,7 @@ const submitQuickCompare = () => new Promise(resolve => {
       let detail = "服务器错误";
       try { detail = JSON.parse(xhr.responseText).detail || detail; } catch (e) {}
       quickCompareStatus.value = "error";
-      showToast("快速对比提交失败: " + detail, "error");
+      showToast("两文件对比提交失败: " + detail, "error");
       resolve(null);
       return;
     }
@@ -4137,14 +4147,14 @@ const submitQuickCompare = () => new Promise(resolve => {
     await refreshSidebarData();
     sidebarTab.value = "jobs";
     router.push({ path: `/job/${job.id}` });
-    showToast("已提交快速对比任务", "success");
+    showToast("已提交两文件对比任务", "success");
     resolve(job);
   };
   xhr.onerror = () => {
     submitting.value = false;
     uploadProgress.value = 0;
     quickCompareStatus.value = "error";
-    showToast("快速对比提交失败: 网络错误", "error");
+    showToast("两文件对比提交失败: 网络错误", "error");
     resolve(null);
   };
   xhr.open("POST", "/api/jobs");
@@ -5808,21 +5818,25 @@ const Home = {
         <div class="upload-mode-toggle">
           <button :class="['mode-toggle-btn', quickUploadMode==='single'?'active':'']"
                   :disabled="submitting"
-                  @click="setQuickUploadMode('single')">单文件/批量</button>
+                  @click="setQuickUploadMode('single')">单个</button>
           <button :class="['mode-toggle-btn', quickUploadMode==='compare'?'active':'']"
                   :disabled="submitting"
-                  @click="setQuickUploadMode('compare')">快速对比</button>
+                  @click="setQuickUploadMode('compare')">两个</button>
+          <button :class="['mode-toggle-btn', quickUploadMode==='multi'?'active':'']"
+                  :disabled="submitting"
+                  @click="setQuickUploadMode('multi')">多个</button>
         </div>
       </div>
 
-      <div v-if="quickUploadMode==='single'" class="submit-cols">
+      <div v-if="quickUploadMode==='single' || quickUploadMode==='multi'" class="submit-cols">
         <div class="upload-box upload-box-sm" @dragover.prevent @drop.prevent="onDrop">
-          <input type="file" ref="fileInputA" accept=".json,.json.gz,.gz,.zip,.tar.gz,.tgz" multiple @change="onFileChange" hidden />
+          <input type="file" ref="fileInputA" accept=".json,.json.gz,.gz,.zip,.tar.gz,.tgz" :multiple="quickUploadMode==='multi'" @change="onFileChange" hidden />
           <div @click="$refs.fileInputA.click()" class="upload-inner">
             <div class="upload-icon">📂</div>
             <div class="upload-label">
-              <span>{{ fileAName || '选择文件' }}</span>
+              <span>{{ fileAName || (quickUploadMode==='multi' ? '选择多个文件' : '选择单个文件') }}</span>
               <small v-if="uploadQueue.length===1">{{ uploadQueue[0].meta }}</small>
+              <small v-else-if="quickUploadMode==='multi' && uploadQueue.length">将逐个生成分析任务</small>
             </div>
           </div>
           <button v-if="fileAName" class="upload-clear" @click.stop="clearFile">✕</button>
@@ -5836,10 +5850,10 @@ const Home = {
         </div>
         <div class="form-row">
           <label>别名</label>
-          <input v-model="form.label" class="input" placeholder="可选" />
+          <input v-model="form.label" class="input" :placeholder="quickUploadMode==='multi' ? '可选，将自动追加文件名' : '可选'" />
         </div>
         <button class="btn btn-primary" :disabled="uploadQueue.length===0 || submitting" @click="submitJob">
-          {{ submitting ? '提交中 ' + uploadProgress + '%' : (uploadQueue.length > 1 ? '批量提交' : '提交分析') }}
+          {{ submitting ? '提交中 ' + uploadProgress + '%' : (quickUploadMode==='multi' ? '逐个分析' : '提交分析') }}
         </button>
       </div>
 
@@ -5884,7 +5898,7 @@ const Home = {
         </button>
       </div>
 
-      <div v-if="quickUploadMode==='single' && uploadQueue.length" class="upload-queue">
+      <div v-if="(quickUploadMode==='single' || quickUploadMode==='multi') && uploadQueue.length" class="upload-queue">
         <div v-for="item in uploadQueue" :key="item.id" class="upload-queue-item">
           <span class="upload-queue-main">
             <span class="upload-queue-name" :title="item.name">{{ item.name }}</span>
@@ -5916,12 +5930,16 @@ const Home = {
       <div class="empty-main-title">上传 trace 开始分析，或从左侧历史记录继续</div>
       <div class="empty-action-grid">
         <button class="empty-action-card" type="button" @click="openSingleUploadPicker">
-          <strong>上传单文件/批量</strong>
-          <span>分析一个或多个 trace，自动进入任务队列</span>
+          <strong>上传单个 trace</strong>
+          <span>快速分析一个 PyTorch 或 TensorFlow trace</span>
         </button>
         <button class="empty-action-card" type="button" @click="setQuickUploadMode('compare')">
-          <strong>上传两个 trace 快速对比</strong>
+          <strong>上传两个 trace 对比</strong>
           <span>直接生成 A/B 对比任务</span>
+        </button>
+        <button class="empty-action-card" type="button" @click="openMultiUploadPicker">
+          <strong>上传多个 trace</strong>
+          <span>多个文件会逐个分析，分别生成任务</span>
         </button>
         <button class="empty-action-card" type="button" @click="sidebarTab='jobs'">
           <strong>{{ historyGroupsTotal ? '查看历史与共享项目' : '等待历史记录' }}</strong>
@@ -5949,13 +5967,18 @@ const Home = {
       await nextTick();
       fileInputA.value?.click();
     };
+    const openMultiUploadPicker = async () => {
+      setQuickUploadMode("multi");
+      await nextTick();
+      fileInputA.value?.click();
+    };
     return {
       fileInputA, fileAName, fileA, quickUploadMode,
       quickFileA, quickFileB, quickFileAName, quickFileBName,
       uploadQueue, submitting, uploadProgress,
       form, projects, projectOptionLabel, selectedJob,
       historyGroupsTotal, sidebarTab, showGuide, uploadFileMeta,
-      openSingleUploadPicker,
+      openSingleUploadPicker, openMultiUploadPicker,
       setQuickUploadMode,
       onDrop, onFileChange, clearFile, submitJob,
       onQuickDrop, onQuickFileChange, clearQuickCompareFile, submitQuickCompare,
