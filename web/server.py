@@ -56,7 +56,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.3.7"
+APP_VERSION = "0.3.8"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -6230,6 +6230,7 @@ async def _with_file_exists(rows, request: Optional[Request] = None):
 async def list_jobs(
     request: Request,
     project_id: Optional[str] = None,
+    q: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
 ):
@@ -6237,25 +6238,39 @@ async def list_jobs(
 
     clauses = []
     params = []
-    access_sql, access_params = _job_access_clause(request)
+    access_sql, access_params = _job_access_clause(request, "j")
     if access_sql:
         clauses.append(access_sql)
         params.extend(access_params)
     if project_id == "__none__":
-        clauses.append("project_id IS NULL")
+        clauses.append("j.project_id IS NULL")
     elif project_id:
         await validate_project_access(db, request, project_id)
-        clauses.append("project_id = ?")
+        clauses.append("j.project_id = ?")
         params.append(project_id)
+    search_sql, search_params = _job_search_clause("j", q, include_project_name=True)
+    if search_sql:
+        clauses.append(search_sql)
+        params.extend(search_params)
     where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
 
-    count_cursor = await db.execute(f"SELECT COUNT(*) as total FROM jobs {where_sql}", params)
+    count_cursor = await db.execute(
+        f"""
+        SELECT COUNT(*) as total
+        FROM jobs j
+        LEFT JOIN projects p ON p.id = j.project_id
+        {where_sql}
+        """,
+        params,
+    )
     total = (await count_cursor.fetchone())[0]
 
     rows = await (await db.execute(f"""
-            SELECT * FROM jobs
+            SELECT j.*, p.name AS project_name
+            FROM jobs j
+            LEFT JOIN projects p ON p.id = j.project_id
             {where_sql}
-            ORDER BY COALESCE(is_pinned, 0) DESC, created_at DESC
+            ORDER BY COALESCE(j.is_pinned, 0) DESC, j.created_at DESC
             LIMIT ? OFFSET ?
         """, (*params, limit, offset))).fetchall()
 

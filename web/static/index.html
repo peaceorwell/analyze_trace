@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>torch profiler analyzer</title>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.3.7" />
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.3.8" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.css" />
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
@@ -12,7 +12,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js"></script>
-  <link rel="stylesheet" href="/static/style.css?v=0.3.7" />
+  <link rel="stylesheet" href="/static/style.css?v=0.3.8" />
   <script>
     // Apply saved theme or system preference before page paint to avoid flash
     (function() {
@@ -143,7 +143,7 @@
     <!-- ── Header ── -->
     <header v-if="authChecked && (!authRequired || currentUser)" class="header">
       <div class="header-brand" @click="$router.push('/')" style="cursor:pointer" title="返回上传页面">
-        <img class="header-logo" src="/static/favicon.svg?v=0.3.7" alt="" />
+        <img class="header-logo" src="/static/favicon.svg?v=0.3.8" alt="" />
         <span class="header-title">Torch Profiler Analyzer</span>
         <span class="header-version">v{{ appVersion }}</span>
       </div>
@@ -191,26 +191,65 @@
 
         <!-- History tab -->
         <div v-if="sidebarTab==='jobs'" class="sidebar-body">
-          <div class="project-filter">
-            <select v-model="filterProject" class="input input-sm w-full">
-              <option value="">全部项目</option>
-              <option value="__none__">未分组</option>
-              <option v-for="p in projects" :key="p.id" :value="p.id">{{ projectOptionLabel(p) }}</option>
-            </select>
-            <input v-model="historySearch" class="input input-sm mt-1" placeholder="搜索任务、文件或项目..." />
-            <div v-if="selectedFilterProject" class="project-actions">
-              <div class="project-action-meta">
-                <span :class="['project-scope-badge', selectedFilterProject.is_public ? 'shared' : 'personal']">
-                  {{ selectedFilterProject.is_public ? '共享项目' : '个人项目' }}
-                </span>
-              </div>
-              <template v-if="selectedFilterProject.is_owner">
-                <button class="btn btn-xs btn-outline mt-1 w-full" @click="openRenameModal(selectedFilterProject)">重命名</button>
-                <button v-if="!selectedFilterProject.is_public" class="btn btn-xs btn-outline mt-1 w-full" @click="shareProject(selectedFilterProject)">转为共享</button>
-                <button class="btn btn-xs btn-danger mt-1 w-full" @click="deleteProject(filterProject)">删除项目</button>
-              </template>
+          <div class="history-sidebar-search">
+            <input v-model="historySearch" class="input input-sm w-full" placeholder="搜索任务、文件或项目..." />
+          </div>
+
+          <div class="sidebar-section-title">视图</div>
+          <button
+            :class="['project-nav-item', !filterProject ? 'active' : '']"
+            type="button"
+            @click="selectHistoryProject('')"
+          >
+            <span class="project-nav-icon">全部</span>
+            <span class="project-nav-main">
+              <span class="project-nav-name">全部任务</span>
+              <small>最近上传和共享的记录</small>
+            </span>
+            <span class="project-nav-count">{{ !filterProject ? historyJobsTotal : historyAllJobCount }}</span>
+          </button>
+
+          <div class="sidebar-section-title project-list-title">
+            <span>项目</span>
+            <small>{{ historyGroupsTotal }} 个</small>
+          </div>
+          <div class="project-nav-list">
+            <div v-if="historyGroupsLoading" class="sidebar-loading compact">加载项目...</div>
+            <button
+              v-for="group in historyProjectGroups"
+              :key="group.id"
+              :class="['project-nav-item', filterProject===group.id ? 'active' : '']"
+              type="button"
+              @click="selectHistoryProject(group.id)"
+            >
+              <span class="project-nav-icon">{{ group.id === '__none__' ? '未分' : '项' }}</span>
+              <span class="project-nav-main">
+                <span class="project-nav-name">{{ group.label }}</span>
+                <small v-if="group.id !== '__none__'">
+                  {{ projects.find(p => p.id === group.id)?.is_public ? '共享项目' : '项目' }}
+                </small>
+                <small v-else>未归类任务</small>
+              </span>
+              <span class="project-nav-count">{{ group.job_count }}</span>
+            </button>
+            <div v-if="!historyGroupsLoading && historyProjectGroups.length===0" class="empty-tip compact">
+              {{ historySearch ? '暂无匹配项目' : '暂无项目' }}
             </div>
           </div>
+
+          <div v-if="selectedFilterProject" class="project-actions project-actions-compact">
+            <div class="project-action-meta">
+              <span :class="['project-scope-badge', selectedFilterProject.is_public ? 'shared' : 'personal']">
+                {{ selectedFilterProject.is_public ? '共享项目' : '个人项目' }}
+              </span>
+            </div>
+            <template v-if="selectedFilterProject.is_owner">
+              <button class="btn btn-xs btn-outline" @click="openRenameModal(selectedFilterProject)">重命名</button>
+              <button v-if="!selectedFilterProject.is_public" class="btn btn-xs btn-outline" @click="shareProject(selectedFilterProject)">转共享</button>
+              <button class="btn btn-xs btn-danger" @click="deleteProject(filterProject)">删除</button>
+            </template>
+          </div>
+
           <div v-if="historyGroupsTotal > 0 || historyBulkMode" class="bulk-toolbar">
             <button :class="['btn', 'btn-xs', historyBulkMode ? 'btn-primary' : 'btn-outline']" @click="toggleHistoryBulkMode">
               {{ historyBulkMode ? '退出多选' : '多选' }}
@@ -226,46 +265,43 @@
             <button class="btn btn-xs btn-danger" @click="bulkDeleteJobs" :disabled="historySelection.length===0">删任务</button>
           </div>
 
-          <!-- Group by project -->
-          <div v-for="group in groupedJobs" :key="group.id || group.label" class="job-group">
-            <div class="folder-header" @click="toggleGroup(group.id)">
-              <span class="group-caret">{{ collapsedGroups[group.id] ? '▼' : '▶' }}</span>
-              <span class="group-name">{{ group.label }}</span>
-              <span class="group-count">{{ group.job_count }}</span>
-            </div>
-            <div v-if="collapsedGroups[group.id]">
-              <div v-if="group.jobs_loading && !group.jobs_loaded" class="group-loading">加载中...</div>
-              <div
-                v-for="job in group.jobs" :key="job.id"
-                :class="['job-item', selectedJobId===job.id ? 'selected' : '',
-                         historySelection.includes(job.id) ? 'bulk-selected' : '']"
-                @click="handleHistoryJobClick(job)"
-              >
-                <div class="job-item-top">
-                  <input v-if="historyBulkMode" type="checkbox" :checked="historySelection.includes(job.id)" readonly />
-                  <span class="job-status" :class="'status-'+job.status">{{ statusIcon(job.status) }}</span>
-                  <span class="job-label">{{ job.label || job.id.slice(0,8) }}</span>
-                  <span v-if="job.is_pinned" class="job-pin-badge">置顶</span>
-                  <span class="job-mode-badge" :class="'mode-'+job.mode">{{ job.mode==='compare'?'对比':'单文件' }}</span>
-                </div>
-                <div class="job-item-meta">{{ fmtDate(job.created_at) }}</div>
+          <div class="history-task-panel">
+            <div class="history-task-head">
+              <div>
+                <strong>{{ historyListTitle }}</strong>
+                <small>{{ historyListSubtitle }}</small>
               </div>
-              <button
-                v-if="group.jobs_loaded && group.jobs_offset < group.jobs_total"
-                class="btn btn-xs btn-outline group-load-more"
-                :disabled="group.jobs_loading"
-                @click.stop="loadHistoryGroupJobs(group.id)"
-              >
-                {{ group.jobs_loading ? '加载中...' : '加载更多' }}
-              </button>
+              <span>{{ historyJobsTotal }}</span>
+            </div>
+            <div v-if="historyJobsLoading" class="sidebar-loading">加载任务...</div>
+            <div
+              v-for="job in historyJobs"
+              :key="job.id"
+              :class="['job-item', selectedJobId===job.id ? 'selected' : '',
+                       historySelection.includes(job.id) ? 'bulk-selected' : '']"
+              @click="handleHistoryJobClick(job)"
+            >
+              <div class="job-item-top">
+                <input v-if="historyBulkMode" type="checkbox" :checked="historySelection.includes(job.id)" readonly />
+                <span class="job-status" :class="'status-'+job.status">{{ statusIcon(job.status) }}</span>
+                <span class="job-label">{{ job.label || job.id.slice(0,8) }}</span>
+                <span v-if="job.is_pinned" class="job-pin-badge">置顶</span>
+                <span class="job-mode-badge" :class="'mode-'+job.mode">{{ job.mode==='compare'?'对比':'单文件' }}</span>
+              </div>
+              <div class="job-item-meta">
+                <span>{{ fmtDate(job.created_at) }}</span>
+                <span v-if="!filterProject && job.project_name" class="job-project-inline">{{ job.project_name }}</span>
+              </div>
+            </div>
+            <div v-if="!historyJobsLoading && historyJobs.length===0" class="empty-tip">
+              {{ historySearch ? '暂无匹配任务' : (filterProject ? '该项目暂无任务' : '暂无历史记录') }}
             </div>
           </div>
-          <div v-if="historyGroupsLoading" class="sidebar-loading">加载中...</div>
-          <div v-else-if="groupedJobs.length===0" class="empty-tip">{{ historySearch ? '暂无匹配记录' : '暂无历史记录' }}</div>
-          <div v-if="historyGroupsTotal > historyGroupsLimit" class="pagination">
-            <button class="btn btn-xs btn-outline" @click="prevPage" :disabled="historyGroupsOffset === 0">上一页</button>
-            <span class="page-info">{{ historyGroupsOffset + 1 }}-{{ Math.min(historyGroupsOffset + historyGroupsLimit, historyGroupsTotal) }} / {{ historyGroupsTotal }}</span>
-            <button class="btn btn-xs btn-outline" @click="nextPage" :disabled="historyGroupsOffset + historyGroupsLimit >= historyGroupsTotal">下一页</button>
+
+          <div v-if="historyJobsTotal > historyJobsLimit" class="pagination">
+            <button class="btn btn-xs btn-outline" @click="prevPage" :disabled="historyJobsOffset === 0">上一页</button>
+            <span class="page-info">{{ historyJobsOffset + 1 }}-{{ Math.min(historyJobsOffset + historyJobsLimit, historyJobsTotal) }} / {{ historyJobsTotal }}</span>
+            <button class="btn btn-xs btn-outline" @click="nextPage" :disabled="historyJobsOffset + historyJobsLimit >= historyJobsTotal">下一页</button>
           </div>
         </div>
 
@@ -1317,6 +1353,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=0.3.7"></script>
+  <script src="/static/app.js?v=0.3.8"></script>
 </body>
 </html>

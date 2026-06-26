@@ -70,7 +70,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.3.7",
+        "version": "0.3.8",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -2380,6 +2380,39 @@ def test_job_groups_search_returns_matching_visible_groups(client):
     assert payload["total"] == 2
     assert [group["id"] for group in payload["data"]] == ["project-b", "__none__"]
     assert [group["job_count"] for group in payload["data"]] == [1, 1]
+
+
+def test_jobs_search_includes_project_name_and_returns_project_label(client):
+    async def insert_rows():
+        db = await web_db.get_db()
+        try:
+            await db.executemany(
+                "INSERT INTO projects(id, name) VALUES(?,?)",
+                [("project-a", "Alpha Team"), ("project-b", "Beta Team")],
+            )
+            await db.executemany(
+                "INSERT INTO jobs(id, project_id, label, mode, status, file_a_name, created_at) VALUES(?,?,?,?,?,?,?)",
+                [
+                    ("job-a", "project-a", "baseline", "single", "done", "trace-a.json", "2026-05-18 10:00:00"),
+                    ("job-b", "project-b", "target", "single", "done", "trace-b.json", "2026-05-18 11:00:00"),
+                ],
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_rows())
+
+    by_project = client.get("/api/jobs?q=alpha")
+    assert by_project.status_code == 200
+    payload = by_project.json()
+    assert payload["total"] == 1
+    assert payload["data"][0]["id"] == "job-a"
+    assert payload["data"][0]["project_name"] == "Alpha Team"
+
+    by_file = client.get("/api/jobs?project_id=project-b&q=trace-b")
+    assert by_file.status_code == 200
+    assert [item["id"] for item in by_file.json()["data"]] == ["job-b"]
 
 
 def test_group_jobs_load_lazily_with_search_and_pagination(client):

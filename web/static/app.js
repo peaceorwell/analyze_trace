@@ -48,10 +48,15 @@ const toggleTheme = () => {
 const projects      = ref([]);
 const historyGroups = ref([]);
 const historyGroupsTotal = ref(0);
-const historyGroupsLimit = ref(100);
+const historyGroupsLimit = ref(200);
 const historyGroupsOffset = ref(0);
 const historyGroupsLoading = ref(false);
 const historyGroupJobsLimit = 50;
+const historyJobs = ref([]);
+const historyJobsTotal = ref(0);
+const historyJobsLimit = ref(100);
+const historyJobsOffset = ref(0);
+const historyJobsLoading = ref(false);
 const historySearch = ref("");
 const filterProject = ref(localStorage.getItem("tpa-filter-project") || "");
 const sidebarTab    = ref(localStorage.getItem("tpa-sidebar-tab") || "jobs");
@@ -123,7 +128,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.3.7");
+const appVersion = ref("0.3.8");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -559,11 +564,31 @@ let pollTimer = null;
 
 const groupedJobs = computed(() => historyGroups.value);
 const loadedHistoryJobs = computed(() =>
-  historyGroups.value.flatMap(group => group.jobs || [])
+  historyJobs.value
 );
 const loadedHistoryJobIds = computed(() =>
   loadedHistoryJobs.value.map(job => job.id)
 );
+const historyProjectGroups = computed(() => historyGroups.value);
+const historyAllJobCount = computed(() =>
+  historyProjectGroups.value.reduce((sum, group) => sum + Number(group.job_count || 0), 0)
+);
+const activeHistoryProject = computed(() => {
+  if (!filterProject.value) return null;
+  if (filterProject.value === "__none__") return { id: "__none__", label: "未分组", job_count: historyJobsTotal.value };
+  const group = historyProjectGroups.value.find(item => item.id === filterProject.value);
+  const project = projects.value.find(item => item.id === filterProject.value);
+  return group || (project ? { id: project.id, label: project.name, job_count: 0 } : null);
+});
+const historyListTitle = computed(() =>
+  activeHistoryProject.value?.label || "全部任务"
+);
+const historyListSubtitle = computed(() => {
+  const q = historySearch.value.trim();
+  if (q && filterProject.value) return `当前项目内搜索 "${q}"`;
+  if (q) return `全局搜索 "${q}"`;
+  return filterProject.value ? "当前项目" : "最近更新";
+});
 const selectedCompareJobs = computed(() =>
   compareSelection.value
     .map(id => compareSelectionDetails.value[id])
@@ -1003,7 +1028,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.3.7";
+  appVersion.value = cfg.version || "0.3.8";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -1097,6 +1122,7 @@ const logout = async () => {
   appInitialized = false;
   projects.value = [];
   historyGroups.value = [];
+  historyJobs.value = [];
   compareJobs.value = [];
   selectedJobId.value = null;
   selectedJob.value = null;
@@ -2388,6 +2414,7 @@ const deleteSelectedStorageFiles = async () => {
 };
 
 let historyGroupsController = null;
+let historyJobsController = null;
 let compareJobsController = null;
 let resultTableController = null;
 let loadJobRequestSeq = 0;
@@ -2439,24 +2466,47 @@ const loadHistoryGroups = async () => {
     }));
     historyGroupsTotal.value = data.total || 0;
 
-    if (historySearch.value.trim()) {
-      collapsedGroups.value = Object.fromEntries(
-        historyGroups.value.map(group => [group.id, true])
-      );
-    } else if (!historyGroups.value.some(group => collapsedGroups.value[group.id]) && historyGroups.value.length) {
-      collapsedGroups.value = {
-        ...collapsedGroups.value,
-        [historyGroups.value[0].id]: true,
-      };
-    }
-    const expandedGroups = historyGroups.value.filter(group => collapsedGroups.value[group.id]);
-    await Promise.all(expandedGroups.map(group => loadHistoryGroupJobs(group.id, true)));
   } catch (e) {
     if (e.name !== "AbortError") showToast(normalizeApiError(e, "加载历史记录失败"), "error");
   } finally {
     if (historyGroupsController === controller) {
       historyGroupsLoading.value = false;
       historyGroupsController = null;
+    }
+  }
+};
+
+const loadHistoryJobs = async () => {
+  if (historyJobsController) historyJobsController.abort();
+  const controller = new AbortController();
+  historyJobsController = controller;
+  historyJobsLoading.value = true;
+  const params = new URLSearchParams();
+  if (filterProject.value) params.set("project_id", filterProject.value);
+  if (historySearch.value.trim()) params.set("q", historySearch.value.trim());
+  params.set("limit", String(historyJobsLimit.value));
+  params.set("offset", String(historyJobsOffset.value));
+  try {
+    const r = await fetch(`/api/jobs?${params}`, {
+      credentials: "include",
+      signal: controller.signal,
+    });
+    const data = await readJsonResponse(r, {});
+    if (!r.ok) {
+      throw new ApiRequestError(apiErrorMessage(r, data, "加载历史任务失败"), {
+        status: r.status,
+        authExpired: r.status === 401,
+      });
+    }
+    if (historyJobsController !== controller) return;
+    historyJobs.value = data.data || [];
+    historyJobsTotal.value = data.total || 0;
+  } catch (e) {
+    if (e.name !== "AbortError") showToast(normalizeApiError(e, "加载历史任务失败"), "error");
+  } finally {
+    if (historyJobsController === controller) {
+      historyJobsLoading.value = false;
+      historyJobsController = null;
     }
   }
 };
@@ -2566,7 +2616,7 @@ const loadCompareJobs = async () => {
 };
 
 const refreshSidebarData = async () => {
-  await Promise.all([loadHistoryGroups(), loadCompareJobs()]);
+  await Promise.all([loadHistoryGroups(), loadHistoryJobs(), loadCompareJobs()]);
 };
 
 const initializeAppData = async () => {
@@ -4158,6 +4208,10 @@ const toggleHistoryBulkMode = () => {
   if (!historyBulkMode.value) historySelection.value = [];
 };
 
+const selectHistoryProject = projectId => {
+  filterProject.value = projectId || "";
+};
+
 const toggleHistorySelection = job => {
   if (job.is_owner === false) {
     showToast("只能批量操作自己创建的任务", "error");
@@ -5453,16 +5507,16 @@ const createProject = async () => {
 };
 
 const prevPage = () => {
-  if (historyGroupsOffset.value > 0) {
-    historyGroupsOffset.value = Math.max(0, historyGroupsOffset.value - historyGroupsLimit.value);
-    loadHistoryGroups();
+  if (historyJobsOffset.value > 0) {
+    historyJobsOffset.value = Math.max(0, historyJobsOffset.value - historyJobsLimit.value);
+    loadHistoryJobs();
   }
 };
 
 const nextPage = () => {
-  if (historyGroupsOffset.value + historyGroupsLimit.value < historyGroupsTotal.value) {
-    historyGroupsOffset.value += historyGroupsLimit.value;
-    loadHistoryGroups();
+  if (historyJobsOffset.value + historyJobsLimit.value < historyJobsTotal.value) {
+    historyJobsOffset.value += historyJobsLimit.value;
+    loadHistoryJobs();
   }
 };
 
@@ -6610,11 +6664,9 @@ const App = {
 
     watch(filterProject, () => {
       historyGroupsOffset.value = 0;
+      historyJobsOffset.value = 0;
       compareJobsOffset.value = 0;
       historySelection.value = [];
-      if (filterProject.value) {
-        collapsedGroups.value[filterProject.value] = true;
-      }
       localStorage.setItem("tpa-filter-project", filterProject.value);
       refreshSidebarData();
     });
@@ -6622,17 +6674,10 @@ const App = {
     watch(historySearch, () => {
       clearTimeout(historySearchTimer);
       historySearchTimer = setTimeout(() => {
-        const searching = Boolean(historySearch.value.trim());
-        if (searching && preSearchExpandedGroups === null) {
-          preSearchExpandedGroups = { ...collapsedGroups.value };
-        }
-        if (!searching && preSearchExpandedGroups !== null) {
-          collapsedGroups.value = preSearchExpandedGroups;
-          preSearchExpandedGroups = null;
-        }
         historyGroupsOffset.value = 0;
+        historyJobsOffset.value = 0;
         historySelection.value = [];
-        loadHistoryGroups();
+        Promise.all([loadHistoryGroups(), loadHistoryJobs()]);
       }, 250);
     });
 
@@ -6729,12 +6774,14 @@ const App = {
       projects,
       selectedFilterProject, projectOptionLabel,
       historyGroupsTotal, historyGroupsLimit, historyGroupsOffset, historyGroupsLoading,
+      historyJobs, historyJobsTotal, historyJobsLimit, historyJobsOffset, historyJobsLoading,
+      historyProjectGroups, historyAllJobCount, activeHistoryProject, historyListTitle, historyListSubtitle,
       historySearch, filterProject, sidebarTab, selectedJobId, selectedJob,
       collapsedGroups, groupedJobs, loadedHistoryJobIds,
       prevPage, nextPage, navigateToJob, loadHistoryGroupJobs,
       historyBulkMode, historySelection, toggleHistoryBulkMode,
       toggleSelectLoadedHistoryJobs, clearHistorySelection,
-      handleHistoryJobClick, openBulkMoveProject, bulkDeleteFiles, bulkDeleteJobs,
+      handleHistoryJobClick, selectHistoryProject, openBulkMoveProject, bulkDeleteFiles, bulkDeleteJobs,
 
       // Compare
       compareSelection, selectedCompareJobs, compareLabel, compareProjectId,

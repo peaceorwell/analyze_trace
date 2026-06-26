@@ -296,8 +296,88 @@ body {
 }
 .sidebar-tabs .tab.active { color: var(--purple-l); border-bottom-color: var(--purple); font-weight: 600; }
 .sidebar-tabs .tab:hover:not(.active) { color: var(--text2); }
-.sidebar-body { flex: 1; overflow-y: auto; padding: 10px 8px; }
+.sidebar-body {
+  flex: 1; overflow-y: auto; padding: 10px 8px;
+  display: flex; flex-direction: column; gap: 8px;
+}
 .project-filter { margin-bottom: 10px; }
+
+.history-sidebar-search { margin-bottom: 2px; }
+.sidebar-section-title {
+  display: flex; align-items: center; justify-content: space-between;
+  margin: 3px 2px 0; color: var(--text3);
+  font-size: 10px; font-weight: 800; letter-spacing: .02em;
+}
+.sidebar-section-title small {
+  font-size: 10px; font-weight: 700; color: var(--text3);
+}
+.project-list-title { margin-top: 4px; }
+.project-nav-list {
+  display: flex; flex-direction: column; gap: 4px;
+  max-height: min(320px, 34vh); overflow-y: auto;
+  padding-right: 2px;
+}
+.project-nav-item {
+  width: 100%; min-width: 0;
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center; gap: 8px;
+  padding: 8px 9px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--card);
+  color: var(--text2); cursor: pointer; text-align: left;
+  font-family: var(--sans); transition: background-color .15s, border-color .15s, box-shadow .15s, transform .15s;
+}
+.project-nav-item:hover {
+  border-color: rgba(99,102,241,.25);
+  background: var(--card2);
+  box-shadow: 0 6px 18px rgba(15,23,42,.04);
+}
+.project-nav-item.active {
+  border-color: rgba(99,102,241,.38);
+  background: linear-gradient(180deg, rgba(99,102,241,.12), rgba(99,102,241,.06));
+  box-shadow: inset 3px 0 0 var(--purple), 0 8px 20px rgba(99,102,241,.08);
+}
+.project-nav-icon {
+  width: 28px; height: 24px; border-radius: 999px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 10px; font-weight: 800;
+  background: var(--purple-bg); color: var(--purple-l);
+  flex-shrink: 0;
+}
+.project-nav-main { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.project-nav-name {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12px; font-weight: 800; color: var(--text2);
+}
+.project-nav-item.active .project-nav-name { color: var(--text); }
+.project-nav-main small {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 10px; color: var(--text3);
+}
+.project-nav-count {
+  min-width: 24px; height: 22px; padding: 0 7px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 999px; background: var(--surface);
+  color: var(--purple-l); font-size: 11px; font-weight: 800;
+}
+.history-task-panel {
+  border-top: 1px solid var(--border);
+  padding-top: 8px; margin-top: 2px;
+}
+.history-task-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; margin: 0 2px 6px;
+}
+.history-task-head div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.history-task-head strong {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12px; color: var(--text); font-weight: 800;
+}
+.history-task-head small { font-size: 10px; color: var(--text3); }
+.history-task-head > span {
+  flex-shrink: 0; color: var(--text3); font-size: 10px; font-weight: 800;
+  background: var(--card2); border: 1px solid var(--border); border-radius: 999px;
+  padding: 2px 7px;
+}
 
 .folder-header {
   display: flex; align-items: center; gap: 5px;
@@ -333,7 +413,17 @@ body {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .job-item.selected .job-label { color: var(--text); font-weight: 500; }
-.job-item-meta { font-size: 10px; color: var(--text3); margin-top: 2px; padding-left: 17px; font-family: var(--mono); }
+.job-item-meta {
+  display: flex; align-items: center; gap: 6px; min-width: 0;
+  font-size: 10px; color: var(--text3); margin-top: 3px; padding-left: 17px; font-family: var(--mono);
+}
+.job-project-inline {
+  min-width: 0; max-width: 62%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--sans); font-size: 10px; font-weight: 700;
+  color: var(--text3); background: var(--card2);
+  border: 1px solid var(--border); border-radius: 999px; padding: 1px 6px;
+}
 .group-loading,
 .sidebar-loading {
   color: var(--text3); font-size: 11px;
@@ -410,10 +500,16 @@ body {
 .selected-compare-remove:hover { color: var(--red); }
 .tip-text { font-size: 11px; color: var(--text3); padding: 4px 2px; line-height: 1.5; }
 .empty-tip { text-align: center; color: var(--text3); padding: 24px 0; font-size: 12px; }
+.empty-tip.compact { padding: 12px 0; font-size: 11px; }
 .pagination { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 8px 0; }
 .page-info { font-size: 11px; color: var(--text3); }
 .project-actions { padding: 2px 0; }
+.project-actions-compact {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 5px;
+  margin-top: -1px;
+}
 .project-action-meta { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+.project-actions-compact .project-action-meta { margin-top: 0; }
 .project-scope-badge {
   display: inline-flex; align-items: center; height: 20px; padding: 0 8px;
   border-radius: 999px; font-size: 11px; font-weight: 700;
