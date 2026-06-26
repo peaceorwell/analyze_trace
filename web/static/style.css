@@ -391,6 +391,19 @@ body {
   flex: 1; gap: 14px; padding: 40px 16px;
 }
 .empty-main-icon { font-size: 40px; margin-bottom: 4px; filter: grayscale(.4) opacity(.7); }
+.empty-main-motto {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 7px 14px; border-radius: 999px;
+  border: 1px solid rgba(99,102,241,.22);
+  background: linear-gradient(180deg, rgba(99,102,241,.12), rgba(99,102,241,.05));
+  color: var(--text); font-size: 17px; font-weight: 800;
+  box-shadow: 0 10px 24px rgba(99,102,241,.08);
+}
+.empty-main-motto::before,
+.empty-main-motto::after {
+  content: ""; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--purple-l); opacity: .72;
+}
 .empty-main-title { font-size: 15px; color: var(--text2); font-weight: 500; }
 .empty-action-grid {
   display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));

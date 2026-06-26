@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.2.116");
+const appVersion = ref("0.2.117");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -995,7 +995,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.2.116";
+  appVersion.value = cfg.version || "0.2.117";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -5701,6 +5701,7 @@ const Home = {
     <!-- Empty state -->
     <div v-if="!selectedJob" class="empty-main">
       <div class="empty-main-icon">📊</div>
+      <div class="empty-main-motto">让热点显形，让细节说话</div>
       <div class="empty-main-title">上传 trace 开始分析，或从左侧历史记录继续</div>
       <div class="empty-action-grid">
         <button class="empty-action-card" type="button" @click="openSingleUploadPicker">
