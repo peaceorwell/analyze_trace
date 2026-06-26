@@ -56,7 +56,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.3.4"
+APP_VERSION = "0.3.5"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -1388,11 +1388,20 @@ def _report_csv_sections(jid: str, mode: str) -> list[str]:
         "non_triton_kernel_efficiency_avg.csv": "非 Triton Kernel 效率",
         "aten_ops_avg.csv": "Aten Ops",
         "aten_ops_cmp.csv": "Aten Ops 对比",
+        "tf_ops_avg.csv": "TensorFlow Ops",
+        "tf_ops_cmp.csv": "TensorFlow Ops 对比",
         "cncl_ops_avg.csv": "CNCL Ops",
         "cncl_ops_cmp.csv": "CNCL Ops 对比",
     }
     preferred = (
-        ["kernel_types_cmp.csv", "all_kernels_cmp.csv", "triton_kernels_cmp.csv", "aten_ops_cmp.csv", "cncl_ops_cmp.csv"]
+        [
+            "kernel_types_cmp.csv",
+            "all_kernels_cmp.csv",
+            "triton_kernels_cmp.csv",
+            "aten_ops_cmp.csv",
+            "tf_ops_cmp.csv",
+            "cncl_ops_cmp.csv",
+        ]
         if mode == "compare"
         else [
             "kernel_types_avg.csv",
@@ -1400,6 +1409,7 @@ def _report_csv_sections(jid: str, mode: str) -> list[str]:
             "triton_kernels_avg.csv",
             "non_triton_kernel_efficiency_avg.csv",
             "aten_ops_avg.csv",
+            "tf_ops_avg.csv",
             "cncl_ops_avg.csv",
         ]
     )
@@ -1482,6 +1492,7 @@ def _ordered_result_csv_names(rdir: str) -> list[str]:
                  "triton_kernels_avg.csv", "triton_kernels_cmp.csv",
                  "non_triton_kernel_efficiency_avg.csv",
                  "aten_ops_avg.csv", "aten_ops_cmp.csv",
+                 "tf_ops_avg.csv", "tf_ops_cmp.csv",
                  "kernel_types_avg.csv", "kernel_types_cmp.csv",
                  "cncl_ops_avg.csv", "cncl_ops_cmp.csv"]:
         if os.path.exists(os.path.join(rdir, name)):
@@ -3436,6 +3447,7 @@ def collect_results(jid: str) -> dict:
                  "triton_kernels_avg.csv", "triton_kernels_cmp.csv",
                  "non_triton_kernel_efficiency_avg.csv",
                  "aten_ops_avg.csv", "aten_ops_cmp.csv",
+                 "tf_ops_avg.csv", "tf_ops_cmp.csv",
                  "kernel_types_avg.csv", "kernel_types_cmp.csv",
                  "cncl_ops_avg.csv", "cncl_ops_cmp.csv"]:
         full = os.path.join(rdir, name)

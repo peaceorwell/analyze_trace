@@ -1,14 +1,14 @@
 # Torch Profiler Analyzer
 
-Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/内网性能分析工具。它可以解析 `.json`、`.json.gz`、`.gz`、`.json.zip`、`.zip`、`.tar.gz` 和 `.tgz` trace 文件，统计 GPU kernel、Triton kernel、ATen Ops、CNCL/NCCL 通信算子，并提供单 trace 分析、双 trace 对比、历史管理、AI 分析和 Web 可视化界面。
+Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/内网性能分析工具，并兼容 TensorFlow Chrome Trace。它可以解析 `.json`、`.json.gz`、`.gz`、`.json.zip`、`.zip`、`.tar.gz` 和 `.tgz` trace 文件，统计 GPU kernel、Triton kernel、ATen Ops、TensorFlow Ops、CNCL/NCCL 通信算子，并提供单 trace 分析、双 trace 对比、历史管理、AI 分析和 Web 可视化界面。
 
-当前版本：`0.3.4`
+当前版本：`0.3.5`
 
 ## 主要功能
 
 - **上传与对比**：单文件、批量上传、两个 trace 快速对比，以及基于历史任务的 A/B / 批量基线对比。
 - **结果阅读**：默认进入性能总览，提供摘要卡片、Top 回退/改善、图表下钻、控制台全屏阅读和全量 CSV 表格能力。
-- **定位细节**：Kernel 类型、所有 Kernel、Triton、ATen Ops、CNCL Ops、Triton Step 等页签支持搜索、筛选、排序、列显隐、分页和下载。
+- **定位细节**：Kernel 类型、所有 Kernel、Triton、ATen Ops、TF Ops、CNCL Ops、Triton Step 等页签支持搜索、筛选、排序、列显隐、分页和下载。
 - **Step 重分析**：完成任务后可指定 step 派生新分析；对比任务支持 A/B 分别指定不同 step。
 - **AI 分析**：Claude Code + 自定义 skill 生成 Markdown 报告，支持补充 Prompt、环境诊断、进度/耗时、历史版本、下载和完成通知。
 - **团队协作**：LDAP 用户隔离、个人/共享项目、管理员统计，以及独立的 **灵感社区**（Issue 风格帖子、回复、图片、@ 候选、邮件通知）。
@@ -80,7 +80,7 @@ python web/server.py
 
 1. 首页上传单 trace，或切到快速对比上传 A/B。
 2. 先看 `性能总览`：总耗时、Top 回退/改善和占比图通常能定位第一批问题。
-3. 需要证据时下钻到 `所有 Kernel`、`Triton`、`ATen Ops` 或 `CNCL Ops`，再下载当前页 CSV。
+3. 需要证据时下钻到 `所有 Kernel`、`Triton`、`ATen Ops`、`TF Ops` 或 `CNCL Ops`，再下载当前页 CSV。
 4. 需要自然语言总结时打开 `AI 分析`，可补充 Prompt；报告会保留多个版本。
 5. 工具问题、优化建议或经验沉淀放到 `灵感社区`，被 @ 的同事会收到邮件。
 

@@ -528,7 +528,7 @@ class TestComputeAvgs:
         }))
 
         avgs = compute_avgs(parse_trace(str(trace_path)))
-        _, kernel_count, compute_kernel_dur, _, _, _, _, collective_count, collective_dur = avgs["step_stats"][0]
+        _, kernel_count, compute_kernel_dur, _, _, _, _, _, _, collective_count, collective_dur = avgs["step_stats"][0]
 
         assert kernel_count == 2
         assert compute_kernel_dur == 30.0
@@ -536,6 +536,60 @@ class TestComputeAvgs:
         assert collective_dur == 20.0
         assert "collective" not in avgs["KERNEL_TYPES"]
         assert avgs["kt_avgs"]["collective"] == (1.0, 20.0)
+
+    def test_tensorflow_trace_uses_session_run_group_and_tf_ops(self, tmp_path):
+        trace_path = tmp_path / "sample.tf.trace.json"
+        trace_path.write_text(json.dumps({
+            "traceEvents": [
+                {"name": "SessionRun", "ph": "X", "ts": 1000, "dur": 1000, "args": {"group_id": "0"}},
+                {
+                    "name": "MatMul",
+                    "ph": "X",
+                    "pid": 501,
+                    "tid": 7,
+                    "ts": 1100,
+                    "dur": 100,
+                    "args": {"group_id": "0", "long_name": "dense/MatMul:MatMul"},
+                },
+                {
+                    "name": "void MLUMatMulGemm",
+                    "ph": "X",
+                    "pid": 1,
+                    "tid": 1,
+                    "ts": 1200,
+                    "dur": 200,
+                    "args": {"group_id": "0", "tf_op": "dense/MatMul:MatMul", "correlation_id": "1"},
+                },
+                {
+                    "name": "cnInvokeKernel",
+                    "ph": "X",
+                    "pid": 501,
+                    "tid": 7,
+                    "ts": 1190,
+                    "dur": 10,
+                    "args": {"group_id": "0", "correlation_id": "1"},
+                },
+                {
+                    "name": "MemcpyH2D",
+                    "ph": "X",
+                    "pid": 1,
+                    "tid": 1,
+                    "ts": 1300,
+                    "dur": 50,
+                    "args": {"group_id": "0", "tf_op": "dense/MatMul:MatMul", "correlation_id": "2"},
+                },
+            ],
+        }))
+
+        parsed = parse_trace(str(trace_path))
+
+        assert parsed["step_durations"][0] == 1.0
+        assert parsed["step_to_kernels"][0]["void MLUMatMulGemm"]["count"] == 1
+        assert parsed["step_to_kernels"][0]["MemcpyH2D"]["count"] == 1
+        assert "cnInvokeKernel" not in parsed["step_to_kernels"][0]
+        assert parsed["step_to_tf_ops"][0]["dense/MatMul:MatMul"]["count"] == 1
+        avgs = compute_avgs(parsed)
+        assert avgs["avg_tf_ops"]["dense/MatMul:MatMul"]["avg_dur_ms"] == pytest.approx(0.1)
 
 
 class TestWriteAvgCsv:
@@ -863,6 +917,9 @@ class TestEndToEnd:
             "avg_aten": {
                 "aten::mm": {"avg_count": 2, "avg_dur_ms": 4},
             },
+            "avg_tf_ops": {
+                "dense/MatMul:MatMul": {"avg_count": 1, "avg_dur_ms": 6},
+            },
             "avg_cncl": {},
             "KERNEL_TYPES": ["gemm"],
             "kt_avgs": {"gemm": (10, 20), "other": (0, 0), "collective": (0, 0)},
@@ -880,6 +937,7 @@ class TestEndToEnd:
             "triton_kernels_avg.csv",
             "non_triton_kernel_efficiency_avg.csv",
             "aten_ops_avg.csv",
+            "tf_ops_avg.csv",
             "kernel_types_avg.csv",
             "cncl_ops_avg.csv",
         ]:

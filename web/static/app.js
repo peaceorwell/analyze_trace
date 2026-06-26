@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.3.4");
+const appVersion = ref("0.3.5");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -604,6 +604,8 @@ const availableTabs = computed(() => {
     "non_triton_kernel_efficiency_avg.csv": "非 Triton 效率",
     "aten_ops_avg.csv":         "Aten Ops",
     "aten_ops_cmp.csv":         "Aten 对比",
+    "tf_ops_avg.csv":           "TF Ops",
+    "tf_ops_cmp.csv":           "TF 对比",
     "cncl_ops_avg.csv":         "CNCL Ops",
     "cncl_ops_cmp.csv":         "CNCL 对比",
   };
@@ -635,12 +637,14 @@ const CHART_SOURCE_CONFIGS = [
   { file: "all_kernels_cmp.csv", label: "Kernel Delta", mode: "compare", nameField: "kernel_name", defaultMetric: "delta_dur_ms" },
   { file: "triton_kernels_cmp.csv", label: "Triton Delta", mode: "compare", nameField: "kernel_name", defaultMetric: "delta_dur_ms" },
   { file: "aten_ops_cmp.csv", label: "Aten Delta", mode: "compare", nameField: "op_name", defaultMetric: "delta_dur_ms" },
+  { file: "tf_ops_cmp.csv", label: "TF Ops Delta", mode: "compare", nameField: "op_name", defaultMetric: "delta_dur_ms" },
   { file: "cncl_ops_cmp.csv", label: "CNCL Delta", mode: "compare", nameField: "op_name", defaultMetric: "delta_dur_ms" },
   { file: "kernel_types_avg.csv", label: "Kernel 类型", mode: "single", nameField: "type", defaultMetric: "avg_dur_ms" },
   { file: "all_kernels_avg.csv", label: "所有 Kernel", mode: "single", nameField: "kernel_name", defaultMetric: "avg_dur_ms" },
   { file: "triton_kernels_avg.csv", label: "Triton Kernel", mode: "single", nameField: "kernel_name", defaultMetric: "avg_dur_ms" },
   { file: "non_triton_kernel_efficiency_avg.csv", label: "非 Triton 效率", mode: "single", nameField: "kernel_name", defaultMetric: "avg_dur_ms" },
   { file: "aten_ops_avg.csv", label: "Aten Ops", mode: "single", nameField: "op_name", defaultMetric: "avg_dur_ms" },
+  { file: "tf_ops_avg.csv", label: "TF Ops", mode: "single", nameField: "op_name", defaultMetric: "avg_dur_ms" },
   { file: "cncl_ops_avg.csv", label: "CNCL Ops", mode: "single", nameField: "op_name", defaultMetric: "avg_dur_ms" },
 ];
 
@@ -999,7 +1003,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.3.4";
+  appVersion.value = cfg.version || "0.3.5";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;

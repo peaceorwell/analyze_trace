@@ -243,6 +243,56 @@ def _is_triton_kernel_event(name, args):
     return name.startswith("triton_") or bool(isinstance(args, dict) and args.get("triton output code"))
 
 
+def _is_empty_category(cat):
+    return cat is None or cat == ""
+
+
+def _tensorflow_group_step(args):
+    if not isinstance(args, dict):
+        return None
+    group_id = args.get("group_id")
+    if group_id is None:
+        return None
+    try:
+        step = int(str(group_id).strip())
+    except (TypeError, ValueError):
+        return None
+    return step if step >= 0 else None
+
+
+def _is_tensorflow_step_event(name, cat, args):
+    """TensorFlow traces usually use SessionRun + group_id instead of ProfilerStep."""
+    return _is_empty_category(cat) and name == "SessionRun" and _tensorflow_group_step(args) is not None
+
+
+def _is_tensorflow_device_kernel_event(e, name, cat, args):
+    """Return True for TensorFlow MLU device kernel/memcpy timeline events."""
+    if not _is_empty_category(cat) or e.get("ph") != "X" or not isinstance(args, dict):
+        return False
+    if str(e.get("pid", "")) != "1":
+        return False
+    if name == "cnInvokeKernel":
+        return False
+    return bool(args.get("tf_op") and args.get("correlation_id"))
+
+
+def _is_tensorflow_op_event(e, name, cat, args):
+    """Return True for host-side TensorFlow op spans with graph node names."""
+    if not _is_empty_category(cat) or e.get("ph") != "X" or not isinstance(args, dict):
+        return False
+    if _is_tensorflow_step_event(name, cat, args) or _is_tensorflow_device_kernel_event(e, name, cat, args):
+        return False
+    if name in {"ExecutorState::Process", "cnInvokeKernel"}:
+        return False
+    return bool(args.get("long_name"))
+
+
+def _tensorflow_op_name(name, args):
+    if isinstance(args, dict):
+        return str(args.get("long_name") or args.get("tf_op") or name)
+    return str(name)
+
+
 def _external_id_key(value):
     if value is None:
         return ""
@@ -693,7 +743,413 @@ def _iter_trace_events(trace_file):
         yield from ijson.items(f, "traceEvents.item", use_float=True)
 
 
+def _detect_trace_format(trace_file, sample_limit=5000):
+    """Sniff the trace format without mixing framework-specific parse rules."""
+    trace_name = os.path.basename(str(trace_file)).lower()
+    if ".tf.trace" in trace_name or "tensorflow" in trace_name:
+        return "tensorflow"
+
+    torch_score = 0
+    tf_score = 0
+    events = _read_trace_events_fast(trace_file)
+    if events is None:
+        return "pytorch"
+    try:
+        for idx, event in enumerate(events):
+            if idx >= sample_limit:
+                break
+            name = event.get("name", "")
+            cat = event.get("cat") or ""
+            args = event.get("args", {}) or {}
+            if not isinstance(args, dict):
+                args = {}
+            if cat == "kernel" or name.startswith("aten::") or extract_step_number(name) is not None:
+                torch_score += 1
+            if _is_tensorflow_step_event(name, cat, args) or _is_tensorflow_device_kernel_event(event, name, cat, args):
+                tf_score += 2
+            elif _is_tensorflow_op_event(event, name, cat, args):
+                tf_score += 1
+            if torch_score >= 3 and tf_score == 0:
+                return "pytorch"
+            if tf_score >= 3 and torch_score == 0:
+                return "tensorflow"
+    except Exception:
+        return "pytorch"
+    return "tensorflow" if tf_score > torch_score else "pytorch"
+
+
 def parse_trace(trace_file, *, keep_triton_code=False, progress_callback=None):
+    """Parse a Chrome trace with framework-specific parsers."""
+    if _detect_trace_format(trace_file) == "tensorflow":
+        return _parse_tensorflow_trace(trace_file, keep_triton_code=keep_triton_code, progress_callback=progress_callback)
+    return _parse_pytorch_trace(trace_file, keep_triton_code=keep_triton_code, progress_callback=progress_callback)
+
+
+def _parse_tensorflow_trace(trace_file, *, keep_triton_code=False, progress_callback=None):
+    """Parse TensorFlow Chrome traces without reusing PyTorch event rules."""
+    step_ranges = {}
+    step_durations = {}
+    step_cache_dirty = True
+    cached_step_starts = []
+    cached_step_ends = []
+    cached_step_nums = []
+    analyzable_intervals = []
+
+    step_to_triton = defaultdict(list)
+    step_to_kernels = defaultdict(lambda: defaultdict(lambda: {"count": 0, "dur_ms": 0.0}))
+    step_to_aten = defaultdict(lambda: defaultdict(lambda: {"count": 0, "dur_ms": 0.0}))
+    step_to_tf_ops = defaultdict(lambda: defaultdict(lambda: {"count": 0, "dur_ms": 0.0}))
+    step_to_cncl = defaultdict(lambda: defaultdict(lambda: {"count": 0, "dur_ms": 0.0}))
+    step_to_non_triton_kernel_events = defaultdict(list)
+    step_to_kernel_efficiency_counters = defaultdict(list)
+    kernel_families = {}
+    family_cache = {}
+    parse_events_seen = 0
+    parse_records_seen = 0
+    last_progress_at = time.perf_counter()
+    last_progress_snapshot = None
+
+    def maybe_report_parse_progress(*, force=False):
+        nonlocal last_progress_at, last_progress_snapshot
+        if not progress_callback:
+            return
+        now = time.perf_counter()
+        if not force and now - last_progress_at < 5:
+            return
+        snapshot = (parse_events_seen, parse_records_seen)
+        if force and snapshot == last_progress_snapshot:
+            return
+        progress_callback(parse_events_seen, parse_records_seen)
+        last_progress_snapshot = snapshot
+        last_progress_at = now
+
+    def event_interval(e):
+        raw_ts = e.get("ts")
+        if raw_ts is None:
+            return None
+        ts = float(raw_ts) if isinstance(raw_ts, (int, float)) else safe_float(raw_ts)
+        if ts is None:
+            return None
+        raw_dur = e.get("dur")
+        if raw_dur is None:
+            dur = 0.0
+        elif isinstance(raw_dur, (int, float)):
+            dur = float(raw_dur)
+        else:
+            dur = safe_float(raw_dur) or 0.0
+        return ts, ts + max(dur, 0.0)
+
+    def add_step_range(step_num, ts, dur):
+        nonlocal step_cache_dirty
+        start = ts
+        end = ts + dur
+        if step_num in step_ranges:
+            old_start, old_end = step_ranges[step_num]
+            start = min(old_start, start)
+            end = max(old_end, end)
+        step_ranges[step_num] = (start, end)
+        step_durations[step_num] = (end - start) / 1000
+        step_cache_dirty = True
+
+    def find_known_step(ts):
+        nonlocal step_cache_dirty, cached_step_starts, cached_step_ends, cached_step_nums
+        if step_cache_dirty:
+            sorted_steps = sorted(step_ranges.items(), key=lambda x: x[1][0])
+            cached_step_starts = [v[0] for _, v in sorted_steps]
+            cached_step_ends = [v[1] for _, v in sorted_steps]
+            cached_step_nums = [k for k, _ in sorted_steps]
+            step_cache_dirty = False
+        i = bisect.bisect_right(cached_step_starts, ts) - 1
+        if i >= 0 and ts <= cached_step_ends[i]:
+            return cached_step_nums[i]
+        return None
+
+    def is_tf_record_event(e, name, cat, args):
+        return (
+            _is_tensorflow_device_kernel_event(e, name, cat, args)
+            or _is_tensorflow_op_event(e, name, cat, args)
+            or name in _KERNEL_EFFICIENCY_COUNTER_NAMES
+        )
+
+    def compact_record(e, name, cat, interval):
+        args = e.get("args", {}) or {}
+        if not isinstance(args, dict):
+            args = {}
+        ts = interval[0]
+        dur_ms = max(interval[1] - interval[0], 0.0) / 1000 if e.get("dur") is not None else 0.0
+        if _is_tensorflow_device_kernel_event(e, name, cat, args):
+            triton_output_code = args.get("triton output code")
+            triton_code_hash = _stable_text_hash(triton_output_code) if triton_output_code else ""
+            triton_code_signature_hash = (
+                _stable_triton_code_signature_hash(triton_output_code) if triton_output_code else ""
+            )
+            return (
+                "kernel",
+                name,
+                ts,
+                dur_ms,
+                e.get("dur") is not None,
+                safe_float(args.get("kernel num(GB)")),
+                safe_float(args.get("IO efficiency(GB/s)")),
+                args.get("kernel kwargs"),
+                triton_code_hash,
+                triton_code_signature_hash,
+                triton_output_code if keep_triton_code else None,
+                _compute_efficiency_from_args(args),
+                _io_efficiency_pct_from_args(args),
+                _op_efficiency_from_args(args),
+                e.get("tid"),
+                _compact_detail_value(args.get("tf_op")),
+                _is_triton_kernel_event(name, args),
+            )
+        if _is_tensorflow_op_event(e, name, cat, args):
+            return ("tf_op", _tensorflow_op_name(name, args), ts, dur_ms)
+        value = safe_float(args.get("utils")) if isinstance(args, dict) else None
+        return ("efficiency", name, ts, value, e.get("tid"))
+
+    def aggregate_record(record, step):
+        kind = record[0]
+        if kind == "kernel":
+            (
+                _,
+                name,
+                start_ts,
+                dur_ms,
+                has_dur,
+                total_io_gb,
+                io_efficiency,
+                tiling_config,
+                triton_code_hash,
+                triton_code_signature_hash,
+                triton_output_code,
+                compute_efficiency,
+                io_efficiency_pct,
+                op_efficiency,
+                tid,
+                operator,
+                is_triton_kernel,
+            ) = record
+            step_to_kernels[step][name]["count"] += 1
+            step_to_kernels[step][name]["dur_ms"] += dur_ms
+
+            family = family_cache.get(name)
+            if family is None:
+                family = classify_kernel(name)
+                family_cache[name] = family
+            if is_triton_kernel and family != "collective" and not family.startswith("triton"):
+                family = "triton_custom"
+            if name not in kernel_families or family == "collective":
+                kernel_families[name] = family
+            if family == "collective":
+                step_to_cncl[step][name]["count"] += 1
+                step_to_cncl[step][name]["dur_ms"] += dur_ms
+
+            if is_triton_kernel:
+                step_to_triton[step].append({
+                    "kernel_name": name,
+                    "dur(ms)": dur_ms if has_dur else None,
+                    "total io(GB)": total_io_gb,
+                    "IO efficiency(GB/s)": io_efficiency,
+                    "tiling config": tiling_config,
+                    "triton_code_hash": triton_code_hash,
+                    "triton_code_signature_hash": triton_code_signature_hash,
+                    "triton_output_code": triton_output_code,
+                })
+            else:
+                step_to_non_triton_kernel_events[step].append({
+                    "kernel_name": name,
+                    "family": family,
+                    "start_ts": start_ts,
+                    "end_ts": start_ts + dur_ms * 1000 if has_dur else start_ts,
+                    "dur(ms)": dur_ms if has_dur else None,
+                    "compute_efficiency": compute_efficiency,
+                    "io_efficiency": io_efficiency_pct,
+                    "op_efficiency": op_efficiency,
+                    "tid": tid,
+                    "operator": operator,
+                })
+            return
+
+        if kind == "tf_op":
+            _, name, _ts, dur_ms = record
+            step_to_tf_ops[step][name]["count"] += 1
+            step_to_tf_ops[step][name]["dur_ms"] += dur_ms
+            return
+
+        _, counter_name, ts, value, tid = record
+        if value is not None:
+            step_to_kernel_efficiency_counters[step].append({
+                "name": counter_name,
+                "ts": ts,
+                "value": value,
+                "tid": tid,
+            })
+
+    def scan_event(e, record_sink=None, *, allow_direct=False):
+        name = e.get("name", "")
+        cat = e.get("cat") or ""
+        args = e.get("args", {}) or {}
+        if not isinstance(args, dict):
+            args = {}
+        if _is_tensorflow_step_event(name, cat, args):
+            interval = event_interval(e)
+            if interval is not None:
+                add_step_range(_tensorflow_group_step(args), interval[0], interval[1] - interval[0])
+            return False
+        if not is_tf_record_event(e, name, cat, args):
+            return False
+        interval = event_interval(e)
+        if interval is None:
+            return False
+        if name not in _KERNEL_EFFICIENCY_COUNTER_NAMES:
+            analyzable_intervals.append(interval)
+        record = compact_record(e, name, cat, interval)
+        if allow_direct and step_ranges:
+            step = find_known_step(interval[0])
+            if step is not None:
+                aggregate_record(record, step)
+                return True
+        if record_sink is not None:
+            record_sink(record)
+        return True
+
+    def scan_events_with_progress(events, record_sink=None, *, allow_direct=False):
+        nonlocal parse_events_seen, parse_records_seen
+        for event in events:
+            parse_events_seen += 1
+            if scan_event(event, record_sink, allow_direct=allow_direct):
+                parse_records_seen += 1
+            if parse_events_seen % 50000 == 0:
+                maybe_report_parse_progress()
+
+    def fast_records(events):
+        for event in events:
+            name = event.get("name", "")
+            cat = event.get("cat") or ""
+            args = event.get("args", {}) or {}
+            if not isinstance(args, dict):
+                args = {}
+            interval = event_interval(event)
+            if interval is not None and is_tf_record_event(event, name, cat, args):
+                yield compact_record(event, name, cat, interval)
+
+    fast_events = _read_trace_events_fast(trace_file)
+    spool = None
+    spool_batch = []
+    try:
+        if fast_events is not None:
+            scan_events_with_progress(fast_events)
+        else:
+            spool = tempfile.SpooledTemporaryFile(max_size=_SPOOL_MEMORY_BYTES)
+
+            def record_to_spool(record):
+                _spool_record(spool, spool_batch, record)
+
+            scan_events_with_progress(_iter_trace_events(trace_file), record_to_spool, allow_direct=True)
+            _flush_spool_batch(spool, spool_batch)
+        maybe_report_parse_progress(force=True)
+
+        if not step_ranges and analyzable_intervals:
+            start = min(interval[0] for interval in analyzable_intervals)
+            end = max(interval[1] for interval in analyzable_intervals)
+            add_step_range(0, start, max(end - start, 0.0))
+
+        sorted_steps = sorted(step_ranges.items(), key=lambda x: x[1][0])
+        step_starts = [v[0] for _, v in sorted_steps]
+        step_ends = [v[1] for _, v in sorted_steps]
+        step_nums = [k for k, _ in sorted_steps]
+
+        def find_step(ts):
+            i = bisect.bisect_right(step_starts, ts) - 1
+            if i >= 0 and ts <= step_ends[i]:
+                return step_nums[i]
+            return None
+
+        record_iter = fast_records(fast_events) if fast_events is not None else _iter_spooled_records(spool)
+        for record in record_iter:
+            ts = record[2]
+            step = find_step(ts)
+            if step is not None:
+                aggregate_record(record, step)
+
+        def build_non_triton_kernel_efficiency():
+            counter_field = {
+                "Compute Efficiency(%)": "compute_efficiency",
+                "IO Efficiency(%)": "io_efficiency",
+                "OP Efficiency(%)": "op_efficiency",
+            }
+            result = defaultdict(list)
+            for step, kernels in step_to_non_triton_kernel_events.items():
+                counters_by_tid = defaultdict(list)
+                for counter in step_to_kernel_efficiency_counters.get(step, []):
+                    counters_by_tid[counter.get("tid")].append(counter)
+                for counters in counters_by_tid.values():
+                    counters.sort(key=lambda item: item["ts"])
+                ts_cache = {
+                    tid: [counter["ts"] for counter in counters]
+                    for tid, counters in counters_by_tid.items()
+                }
+                for kernel in kernels:
+                    metrics = {
+                        "compute_efficiency": kernel.get("compute_efficiency"),
+                        "io_efficiency": kernel.get("io_efficiency"),
+                        "op_efficiency": kernel.get("op_efficiency"),
+                    }
+                    counters = counters_by_tid.get(kernel.get("tid"), [])
+                    ts_values = ts_cache.get(kernel.get("tid"), [])
+                    if counters and ts_values:
+                        start = kernel["start_ts"]
+                        end = max(kernel.get("end_ts") or start, start)
+                        left = bisect.bisect_left(ts_values, start - _KERNEL_EFFICIENCY_TS_TOLERANCE_US)
+                        right = bisect.bisect_right(ts_values, start + _KERNEL_EFFICIENCY_TS_TOLERANCE_US)
+                        candidates = counters[left:right]
+                        if not candidates:
+                            left = bisect.bisect_left(ts_values, start)
+                            right = bisect.bisect_right(ts_values, end)
+                            candidates = counters[left:right]
+                        values = defaultdict(list)
+                        for counter in candidates:
+                            field = counter_field.get(counter["name"])
+                            if field:
+                                values[field].append(counter["value"])
+                        for field, field_values in values.items():
+                            if metrics.get(field) is None and field_values:
+                                metrics[field] = max(field_values)
+                    if not any(value not in (None, 0, 0.0) for value in metrics.values()):
+                        continue
+                    operator = kernel.get("operator", "")
+                    result[step].append({
+                        "kernel_name": kernel["kernel_name"],
+                        "family": kernel["family"],
+                        "dur(ms)": kernel.get("dur(ms)"),
+                        "operator": operator,
+                        "input_dims": "",
+                        "input_types": "",
+                        "input_strides": "",
+                        "concrete_inputs": "",
+                        "operator_details": operator,
+                        "operator_signature": operator,
+                        **metrics,
+                    })
+            return result
+
+        return {
+            "step_to_triton": step_to_triton,
+            "step_to_kernels": step_to_kernels,
+            "step_to_aten": step_to_aten,
+            "step_to_tf_ops": step_to_tf_ops,
+            "step_to_cncl": step_to_cncl,
+            "step_to_non_triton_kernel_efficiency": build_non_triton_kernel_efficiency(),
+            "step_durations": step_durations,
+            "step_ranges": step_ranges,
+            "kernel_families": kernel_families,
+        }
+    finally:
+        if spool is not None:
+            spool.close()
+
+
+def _parse_pytorch_trace(trace_file, *, keep_triton_code=False, progress_callback=None):
     """Parse a PyTorch profiler trace JSON.
 
     Returns:
@@ -788,7 +1244,7 @@ def parse_trace(trace_file, *, keep_triton_code=False, progress_callback=None):
             return cached_step_nums[i]
         return None
 
-    def is_interesting_event(name, cat):
+    def is_interesting_event(e, name, cat, args):
         return (
             cat == "kernel"
             or name.startswith("aten::")
@@ -797,14 +1253,14 @@ def parse_trace(trace_file, *, keep_triton_code=False, progress_callback=None):
         )
 
     def compact_record(e, name, cat, interval):
+        args = e.get("args", {}) or {}
+        if not isinstance(args, dict):
+            args = {}
         raw_dur = e.get("dur")
         has_dur = raw_dur is not None
         dur_ms = max(interval[1] - interval[0], 0.0) / 1000 if has_dur else 0.0
         ts = interval[0]
         if cat == "kernel":
-            args = e.get("args", {}) or {}
-            if not isinstance(args, dict):
-                args = {}
             triton_output_code = args.get("triton output code")
             triton_code_hash = _stable_text_hash(triton_output_code) if triton_output_code else ""
             triton_code_signature_hash = (
@@ -834,7 +1290,6 @@ def parse_trace(trace_file, *, keep_triton_code=False, progress_callback=None):
         if name.startswith("aten::"):
             return (_EVENT_ATEN, name, ts, dur_ms)
         if name in _KERNEL_EFFICIENCY_COUNTER_NAMES:
-            args = e.get("args", {}) or {}
             value = safe_float(args.get("utils")) if isinstance(args, dict) else None
             return (_EVENT_KERNEL_EFFICIENCY, name, ts, value, e.get("tid"))
         return (_EVENT_CNCL, name, ts, dur_ms)
@@ -926,8 +1381,10 @@ def parse_trace(trace_file, *, keep_triton_code=False, progress_callback=None):
 
     def scan_event(e, record_sink=None, *, allow_direct=False):
         name = e.get("name", "")
-        cat  = e.get("cat", "")
+        cat  = e.get("cat") or ""
         args = e.get("args", {}) or {}
+        if not isinstance(args, dict):
+            args = {}
         detail = _operator_detail_from_event(name, cat, args)
         if detail:
             operator_details_by_external_id.setdefault(_external_id_key(args.get("External id")), detail)
@@ -942,7 +1399,7 @@ def parse_trace(trace_file, *, keep_triton_code=False, progress_callback=None):
             if interval and interval[1] > interval[0] and not step_ranges:
                 fallback_intervals.append(interval)
             return
-        if not is_interesting_event(name, cat):
+        if not is_interesting_event(e, name, cat, args):
             return
 
         interval = event_interval(e)
@@ -972,9 +1429,12 @@ def parse_trace(trace_file, *, keep_triton_code=False, progress_callback=None):
     def fast_records(events):
         for e in events:
             name = e.get("name", "")
-            cat = e.get("cat", "")
+            cat = e.get("cat") or ""
+            args = e.get("args", {}) or {}
+            if not isinstance(args, dict):
+                args = {}
             interval = event_interval(e)
-            if is_interesting_event(name, cat) and interval is not None:
+            if is_interesting_event(e, name, cat, args) and interval is not None:
                 yield compact_record(e, name, cat, interval)
 
     fast_events = _read_trace_events_fast(trace_file)
@@ -1094,7 +1554,7 @@ def parse_trace(trace_file, *, keep_triton_code=False, progress_callback=None):
                         "kernel_name": kernel["kernel_name"],
                         "family": kernel["family"],
                         "dur(ms)": kernel.get("dur(ms)"),
-                        "operator": operator_detail.get("operator", ""),
+                        "operator": operator_detail.get("operator", "") or kernel.get("operator", ""),
                         "input_dims": operator_detail.get("input_dims", ""),
                         "input_types": operator_detail.get("input_types", ""),
                         "input_strides": operator_detail.get("input_strides", ""),
@@ -1198,7 +1658,7 @@ def filter_parsed_steps(parsed, steps, *, require_match=True):
         raise TypeError("filter_parsed_steps expects the dict returned by parse_trace")
 
     available_steps = set(parsed.get("step_durations", {}))
-    for key in ("step_to_triton", "step_to_kernels", "step_to_aten", "step_to_cncl"):
+    for key in ("step_to_triton", "step_to_kernels", "step_to_aten", "step_to_tf_ops", "step_to_cncl"):
         available_steps.update(parsed.get(key, {}))
 
     missing = [step for step in selected_steps if step not in available_steps]
@@ -1231,6 +1691,7 @@ def filter_parsed_steps(parsed, steps, *, require_match=True):
     filtered["step_to_triton"] = filter_mapping("step_to_triton")
     filtered["step_to_kernels"] = filter_mapping("step_to_kernels")
     filtered["step_to_aten"] = filter_mapping("step_to_aten")
+    filtered["step_to_tf_ops"] = filter_mapping("step_to_tf_ops")
     filtered["step_to_cncl"] = filter_mapping("step_to_cncl")
     filtered["step_to_non_triton_kernel_efficiency"] = filter_mapping("step_to_non_triton_kernel_efficiency")
 
@@ -1252,14 +1713,14 @@ def avg_stats(step_to_dict, steps):
     """
     all_names = set()
     for s in steps:
-        all_names.update(step_to_dict[s])
+        all_names.update(step_to_dict.get(s, {}))
     n = len(steps)
     if not n:
         return {}
     result = {}
     zero = {"count": 0, "dur_ms": 0.0}
     for name in all_names:
-        entries = [step_to_dict[s].get(name) or zero for s in steps]
+        entries = [step_to_dict.get(s, {}).get(name) or zero for s in steps]
         result[name] = {
             "avg_count":  sum(e["count"]  for e in entries) / n,
             "avg_dur_ms": sum(e["dur_ms"] for e in entries) / n,
@@ -1274,6 +1735,7 @@ def compute_avgs(parsed):
         step_to_triton       = parsed["step_to_triton"]
         step_to_kernels      = parsed["step_to_kernels"]
         step_to_aten         = parsed["step_to_aten"]
+        step_to_tf_ops       = parsed.get("step_to_tf_ops", defaultdict(lambda: defaultdict(lambda: {"count": 0, "dur_ms": 0.0})))
         step_to_cncl         = parsed["step_to_cncl"]
         step_to_non_triton_kernel_efficiency = parsed.get("step_to_non_triton_kernel_efficiency", defaultdict(list))
         step_durations       = parsed["step_durations"]
@@ -1284,6 +1746,7 @@ def compute_avgs(parsed):
             step_to_triton, step_to_kernels, _, step_to_aten, step_to_cncl, step_durations = parsed
         else:
             step_to_triton, step_to_kernels, step_to_aten, step_to_cncl, step_durations = parsed
+        step_to_tf_ops = defaultdict(lambda: defaultdict(lambda: {"count": 0, "dur_ms": 0.0}))
         step_to_non_triton_kernel_efficiency = defaultdict(list)
         step_ranges = {}
         kernel_families = {}
@@ -1291,6 +1754,7 @@ def compute_avgs(parsed):
         set(step_durations)
         | set(step_to_kernels)
         | set(step_to_aten)
+        | set(step_to_tf_ops)
         | set(step_to_cncl)
         | set(step_to_non_triton_kernel_efficiency)
     )
@@ -1300,25 +1764,32 @@ def compute_avgs(parsed):
     step_stats = {}
     for step in all_steps:
         sd  = step_durations.get(step, 0.0)
-        kc  = sum(v["count"]  for v in step_to_kernels[step].values())
-        collective_names = set(step_to_cncl[step])
+        step_kernels = step_to_kernels.get(step, {})
+        step_triton = step_to_triton.get(step, [])
+        step_aten = step_to_aten.get(step, {})
+        step_tf_ops = step_to_tf_ops.get(step, {})
+        step_cncl = step_to_cncl.get(step, {})
+        kc  = sum(v["count"]  for v in step_kernels.values())
+        collective_names = set(step_cncl)
         ckd = sum(
             v["dur_ms"]
-            for name, v in step_to_kernels[step].items()
+            for name, v in step_kernels.items()
             if (
                 name not in collective_names
                 and (kernel_families.get(name) or extract_kernel_family(name)) != "collective"
             )
         )
-        tc  = len(step_to_triton[step])
-        td  = sum((k["dur(ms)"] or 0.0) for k in step_to_triton[step])
-        ac  = sum(v["count"]  for v in step_to_aten[step].values())
-        ad  = sum(v["dur_ms"] for v in step_to_aten[step].values())
-        cc  = sum(v["count"]  for v in step_to_cncl[step].values())
-        cd  = sum(v["dur_ms"] for v in step_to_cncl[step].values())
-        step_stats[step] = (sd, kc, ckd, tc, td, ac, ad, cc, cd)
+        tc  = len(step_triton)
+        td  = sum((k["dur(ms)"] or 0.0) for k in step_triton)
+        ac  = sum(v["count"]  for v in step_aten.values())
+        ad  = sum(v["dur_ms"] for v in step_aten.values())
+        fc  = sum(v["count"]  for v in step_tf_ops.values())
+        fd  = sum(v["dur_ms"] for v in step_tf_ops.values())
+        cc  = sum(v["count"]  for v in step_cncl.values())
+        cd  = sum(v["dur_ms"] for v in step_cncl.values())
+        step_stats[step] = (sd, kc, ckd, tc, td, ac, ad, fc, fd, cc, cd)
 
-    avg_row = tuple(mean([step_stats[s][i] for s in all_steps]) for i in range(9))
+    avg_row = tuple(mean([step_stats[s][i] for s in all_steps]) for i in range(11))
 
     # Auto-classify kernel families from aggregated per-kernel stats
     avg_kernels_data = avg_stats(step_to_kernels, all_steps)
@@ -1527,6 +1998,7 @@ def compute_avgs(parsed):
         "kt_avgs":        kt_avgs,
         "avg_kernels":    avg_kernels_data,
         "avg_aten":       avg_stats(step_to_aten, all_steps),
+        "avg_tf_ops":     avg_stats(step_to_tf_ops, all_steps),
         "avg_cncl":       avg_stats(step_to_cncl, all_steps),
         "avg_triton":     avg_triton,
         "avg_non_triton_kernel_efficiency": avg_non_triton_kernel_efficiency,
@@ -1540,7 +2012,7 @@ def compute_avgs(parsed):
 
 _HDR = (f"{'step':<8} {'step_dur(ms)':<14} {'kernels':<10} {'compute_kernel_dur(ms)':<24}"
         f" {'triton':<10} {'triton_dur(ms)':<16} {'aten_ops':<10} {'aten_dur(ms)':<14}"
-        f" {'cncl':<8} {'cncl_dur(ms)':<14}")
+        f" {'tf_ops':<10} {'tf_dur(ms)':<12} {'cncl':<8} {'cncl_dur(ms)':<14}")
 
 
 def print_step_summary(data, label=""):
@@ -1551,13 +2023,13 @@ def print_step_summary(data, label=""):
     print(_HDR)
     print("-" * len(_HDR))
     for step in data["all_steps"]:
-        sd, kc, ckd, tc, td, ac, ad, cc, cd = data["step_stats"][step]
+        sd, kc, ckd, tc, td, ac, ad, fc, fd, cc, cd = data["step_stats"][step]
         print(f"{step:<8} {sd:<14.3f} {kc:<10} {ckd:<24.3f} {tc:<10} {td:<16.3f}"
-              f" {ac:<10} {ad:<14.3f} {cc:<8} {cd:<14.3f}")
-    avg_sd, avg_kc, avg_ckd, avg_tc, avg_td, avg_ac, avg_ad, avg_cc, avg_cd = data["avg_row"]
+              f" {ac:<10} {ad:<14.3f} {fc:<10} {fd:<12.3f} {cc:<8} {cd:<14.3f}")
+    avg_sd, avg_kc, avg_ckd, avg_tc, avg_td, avg_ac, avg_ad, avg_fc, avg_fd, avg_cc, avg_cd = data["avg_row"]
     print("-" * len(_HDR))
     print(f"{'avg':<8} {avg_sd:<14.3f} {avg_kc:<10.1f} {avg_ckd:<24.3f} {avg_tc:<10.1f} {avg_td:<16.3f}"
-          f" {avg_ac:<10.1f} {avg_ad:<14.3f} {avg_cc:<8.1f} {avg_cd:<14.3f}")
+          f" {avg_ac:<10.1f} {avg_ad:<14.3f} {avg_fc:<10.1f} {avg_fd:<12.3f} {avg_cc:<8.1f} {avg_cd:<14.3f}")
 
 
 def print_kernel_type_breakdown(data, label=""):
@@ -1629,7 +2101,8 @@ def print_comparison(data_a, data_b, label_a, label_b):
     # Avg row comparison
     METRICS = [
         "step_dur(ms)", "kernels", "compute_kernel_dur(ms)", "triton",
-        "triton_dur(ms)", "aten_ops", "aten_dur(ms)", "cncl", "cncl_dur(ms)",
+        "triton_dur(ms)", "aten_ops", "aten_dur(ms)", "tf_ops", "tf_dur(ms)",
+        "cncl", "cncl_dur(ms)",
     ]
     la, lb = label_a[:16], label_b[:16]
     print(f"\n=== Avg Comparison ({label_a} vs {label_b}) ===")
@@ -1999,6 +2472,7 @@ def write_single(data, args):
         data.get("avg_non_triton_kernel_efficiency", {}),
     )
     write_avg_csv(os.path.join(args.output_dir, "aten_ops_avg.csv"),    data["avg_aten"],    "op_name")
+    write_avg_csv(os.path.join(args.output_dir, "tf_ops_avg.csv"),      data["avg_tf_ops"],  "op_name")
     _write_kernel_types_csv(os.path.join(args.output_dir, "kernel_types_avg.csv"), data["KERNEL_TYPES"], data["kt_avgs"])
     write_avg_csv(os.path.join(args.output_dir, "cncl_ops_avg.csv"),    data["avg_cncl"],    "op_name")
 
@@ -2010,6 +2484,8 @@ def write_comparison(data_a, data_b, args):
                           data_a["avg_triton"], data_b["avg_triton"])
     _write_cmp_avg_csv(os.path.join(args.output_dir, "aten_ops_cmp.csv"),
                        data_a["avg_aten"], data_b["avg_aten"], "op_name")
+    _write_cmp_avg_csv(os.path.join(args.output_dir, "tf_ops_cmp.csv"),
+                       data_a.get("avg_tf_ops", {}), data_b.get("avg_tf_ops", {}), "op_name")
     _write_kernel_types_cmp_csv(os.path.join(args.output_dir, "kernel_types_cmp.csv"), data_a, data_b)
     _write_cmp_avg_csv(os.path.join(args.output_dir, "cncl_ops_cmp.csv"),
                        data_a["avg_cncl"], data_b["avg_cncl"], "op_name")
@@ -2019,7 +2495,7 @@ def write_comparison(data_a, data_b, args):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Parse PyTorch profiler trace JSON(s) and extract kernel/op info per ProfilerStep. "
+        description="Parse PyTorch or TensorFlow Chrome trace JSON(s) and extract kernel/op info. "
                     "Provide two files to compare them."
     )
     parser.add_argument("trace_files", nargs="+", metavar="trace_file",
