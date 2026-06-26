@@ -2,7 +2,7 @@
 
 Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/内网性能分析工具，并兼容 TensorFlow Chrome Trace。它可以解析 `.json`、`.json.gz`、`.gz`、`.json.zip`、`.zip`、`.tar.gz` 和 `.tgz` trace 文件，统计 GPU kernel、Triton kernel、ATen Ops、TensorFlow Ops、CNCL/NCCL 通信算子，并提供单 trace 分析、双 trace 对比、历史管理、AI 分析和 Web 可视化界面。
 
-当前版本：`0.3.11`
+当前版本：`0.3.12`
 
 ## 主要功能
 
@@ -78,7 +78,7 @@ python web/server.py
 
 ## 推荐使用路径
 
-1. 首页按场景选择 `单个`、`两个` 或 `多个` 上传模式；多个 trace 会逐个生成分析任务。
+1. 首页工作台会显示常用入口、最近任务和项目概览；按场景选择 `单个`、`两个` 或 `多个` 上传模式，多个 trace 会逐个生成分析任务。
 2. 先看 `性能总览`：总耗时、Top 回退/改善和占比图通常能定位第一批问题。
 3. 需要证据时下钻到 `所有 Kernel`、`Triton`、`ATen Ops`、`TF Ops` 或 `CNCL Ops`，再下载当前页 CSV。
 4. 需要自然语言总结时打开 `AI 分析`，可补充 Prompt；报告会保留多个版本。

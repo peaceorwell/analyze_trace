@@ -131,7 +131,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.3.11");
+const appVersion = ref("0.3.12");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -619,6 +619,29 @@ const projectQuickViews = computed(() => [
 const activeProjectView = computed(() =>
   projectQuickViews.value.find(view => view.id === historyProjectView.value) || projectQuickViews.value[0]
 );
+const homeRecentJobs = computed(() => historyJobs.value.slice(0, 3));
+const homeStatsCards = computed(() => [
+  {
+    label: "可见项目",
+    value: projectViewStats.value.all,
+    hint: `${projectViewStats.value.favorite} 个收藏`,
+  },
+  {
+    label: "历史任务",
+    value: historyJobsTotal.value || historyAllJobCount.value,
+    hint: "包含单 trace 与对比",
+  },
+  {
+    label: "共享项目",
+    value: projectViewStats.value.shared,
+    hint: "团队可见",
+  },
+]);
+const homeWorkflowSteps = Object.freeze([
+  { label: "1. 上传", text: "单个、两个或多个 trace，先进入队列。" },
+  { label: "2. 总览", text: "从性能总览看 Top 回退、占比和趋势。" },
+  { label: "3. 下钻", text: "继续看 Kernel、Triton、ATen/TF 或 AI 报告。" },
+]);
 const activeHistoryProject = computed(() => {
   if (!filterProject.value) return null;
   if (filterProject.value === "__none__") return { id: "__none__", label: "未分组", job_count: historyJobsTotal.value };
@@ -996,6 +1019,7 @@ const fmtDateTime = iso => {
 };
 
 const statusIcon = s => ({ pending: "⏳", running: "⟳", done: "✓", error: "✗" }[s] || s);
+const statusText = s => ({ pending: "排队中", running: "分析中", done: "已完成", error: "失败" }[s] || s);
 
 const toggleGroup = async label => {
   const opening = !collapsedGroups.value[label];
@@ -1076,7 +1100,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.3.11";
+  appVersion.value = cfg.version || "0.3.12";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -5926,8 +5950,51 @@ const Home = {
 
     <!-- Empty state -->
     <div v-if="!selectedJob" class="empty-main">
-      <div class="empty-main-icon">📊</div>
-      <div class="empty-main-title">上传 trace 开始分析，或从左侧历史记录继续</div>
+      <div class="home-dashboard">
+        <section class="home-hero-panel">
+          <div class="home-kicker">性能分析工作台</div>
+          <h1>让热点显形，让细节说话</h1>
+          <p>从 trace 上传到对比、下钻和 AI 报告，优先把时间花在最可能影响性能的路径上。</p>
+          <div class="home-flow">
+            <div v-for="step in homeWorkflowSteps" :key="step.label" class="home-flow-step">
+              <strong>{{ step.label }}</strong>
+              <span>{{ step.text }}</span>
+            </div>
+          </div>
+        </section>
+        <section class="home-snapshot-panel">
+          <div class="home-panel-head">
+            <span>当前视图</span>
+            <button class="link-btn" type="button" @click="sidebarTab='jobs'">查看历史</button>
+          </div>
+          <div class="home-stat-grid">
+            <div v-for="card in homeStatsCards" :key="card.label" class="home-stat-card">
+              <span>{{ card.label }}</span>
+              <strong>{{ fmtCount(card.value) }}</strong>
+              <small>{{ card.hint }}</small>
+            </div>
+          </div>
+          <div class="home-recent">
+            <div class="home-recent-title">最近任务</div>
+            <button v-for="job in homeRecentJobs"
+                    :key="job.id"
+                    class="home-recent-item"
+                    type="button"
+                    @click="$router.push({ path: '/job/' + job.id })">
+              <span class="home-recent-status" :class="'status-' + job.status">{{ statusIcon(job.status) }}</span>
+              <span class="home-recent-main">
+                <strong :title="job.label">{{ job.label }}</strong>
+                <small>{{ statusText(job.status) }} · {{ job.mode === 'compare' ? '对比' : '单 trace' }} · {{ fmtDate(job.created_at) }}</small>
+              </span>
+            </button>
+            <div v-if="!homeRecentJobs.length" class="home-recent-empty">
+              暂无历史任务，上传 trace 后会在这里出现最近分析。
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <div class="empty-main-title">常用入口</div>
       <div class="empty-action-grid">
         <button class="empty-action-card" type="button" @click="openSingleUploadPicker">
           <strong>上传单个 trace</strong>
@@ -5978,10 +6045,12 @@ const Home = {
       uploadQueue, submitting, uploadProgress,
       form, projects, projectOptionLabel, selectedJob,
       historyGroupsTotal, sidebarTab, showGuide, uploadFileMeta,
+      homeRecentJobs, homeStatsCards, homeWorkflowSteps,
       openSingleUploadPicker, openMultiUploadPicker,
       setQuickUploadMode,
       onDrop, onFileChange, clearFile, submitJob,
       onQuickDrop, onQuickFileChange, clearQuickCompareFile, submitQuickCompare,
+      fmtCount, fmtDate, statusIcon, statusText,
     };
   },
 };
