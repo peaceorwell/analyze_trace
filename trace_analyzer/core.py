@@ -743,10 +743,11 @@ def _iter_trace_events(trace_file):
         yield from ijson.items(f, "traceEvents.item", use_float=True)
 
 
-def _detect_trace_format(trace_file, sample_limit=5000):
+def _detect_trace_format(trace_file, sample_limit=5000, source_name=None):
     """Sniff the trace format without mixing framework-specific parse rules."""
     trace_name = os.path.basename(str(trace_file)).lower()
-    if ".tf.trace" in trace_name or "tensorflow" in trace_name:
+    hint_name = os.path.basename(str(source_name or "")).lower()
+    if any(".tf.trace" in name or "tensorflow" in name for name in (trace_name, hint_name)):
         return "tensorflow"
 
     torch_score = 0
@@ -778,9 +779,9 @@ def _detect_trace_format(trace_file, sample_limit=5000):
     return "tensorflow" if tf_score > torch_score else "pytorch"
 
 
-def parse_trace(trace_file, *, keep_triton_code=False, progress_callback=None):
+def parse_trace(trace_file, *, keep_triton_code=False, progress_callback=None, source_name=None):
     """Parse a Chrome trace with framework-specific parsers."""
-    if _detect_trace_format(trace_file) == "tensorflow":
+    if _detect_trace_format(trace_file, source_name=source_name) == "tensorflow":
         return _parse_tensorflow_trace(trace_file, keep_triton_code=keep_triton_code, progress_callback=progress_callback)
     return _parse_pytorch_trace(trace_file, keep_triton_code=keep_triton_code, progress_callback=progress_callback)
 

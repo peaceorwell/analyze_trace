@@ -56,7 +56,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.3.5"
+APP_VERSION = "0.3.6"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -3622,10 +3622,10 @@ async def _compare_source_summaries(request: Request, job: dict):
     return result
 
 
-def _perfetto_context_from_trace(path):
+def _perfetto_context_from_trace(path, source_name=None):
     from trace_analyzer import compute_avgs, parse_trace
 
-    return _perfetto_context(compute_avgs(parse_trace(path)))
+    return _perfetto_context(compute_avgs(parse_trace(path, source_name=source_name)))
 
 
 async def _resolve_job_trace_path(job: dict, slot: str):
@@ -3835,8 +3835,8 @@ def _run_sync_analysis(job, rdir, path_a, path_b, name_a, name_b, progress_callb
         if progress_callback:
             progress_callback(message)
 
-    def compute_trace(path, step_filter, slot):
-        trace_label = os.path.basename(path)
+    def compute_trace(path, step_filter, slot, source_name=None):
+        trace_label = source_name or os.path.basename(path)
 
         def parse_progress(events_seen, records_seen):
             stage(
@@ -3852,6 +3852,7 @@ def _run_sync_analysis(job, rdir, path_a, path_b, name_a, name_b, progress_callb
             path,
             keep_triton_code=keep_triton_code,
             progress_callback=parse_progress,
+            source_name=source_name,
         )
         steps = parse_step_filter(step_filter)
         if steps:
@@ -3867,7 +3868,7 @@ def _run_sync_analysis(job, rdir, path_a, path_b, name_a, name_b, progress_callb
             step_filter_a = (job.get("step_filter_a") or "").strip()
             if step_filter_a:
                 print(f"Step filter A: {step_filter_a}")
-            data = compute_trace(path_a, step_filter_a, "a")
+            data = compute_trace(path_a, step_filter_a, "a", name_a)
             fake_args = types.SimpleNamespace(
                 output_dir=rdir,
                 save_triton_csv=bool(job["save_triton_csv"]),
@@ -3886,8 +3887,8 @@ def _run_sync_analysis(job, rdir, path_a, path_b, name_a, name_b, progress_callb
                 print(f"Step filter A: {step_filter_a}")
             if step_filter_b:
                 print(f"Step filter B: {step_filter_b}")
-            data_a = compute_trace(path_a, step_filter_a, "a")
-            data_b = compute_trace(path_b, step_filter_b, "b")
+            data_a = compute_trace(path_a, step_filter_a, "a", name_a)
+            data_b = compute_trace(path_b, step_filter_b, "b", name_b)
             fake_args = types.SimpleNamespace(output_dir=rdir)
             label_a = name_a or os.path.basename(path_a)
             label_b = name_b or os.path.basename(path_b)

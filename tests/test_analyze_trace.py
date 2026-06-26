@@ -538,8 +538,7 @@ class TestComputeAvgs:
         assert avgs["kt_avgs"]["collective"] == (1.0, 20.0)
 
     def test_tensorflow_trace_uses_session_run_group_and_tf_ops(self, tmp_path):
-        trace_path = tmp_path / "sample.tf.trace.json"
-        trace_path.write_text(json.dumps({
+        trace_data = {
             "traceEvents": [
                 {"name": "SessionRun", "ph": "X", "ts": 1000, "dur": 1000, "args": {"group_id": "0"}},
                 {
@@ -579,7 +578,9 @@ class TestComputeAvgs:
                     "args": {"group_id": "0", "tf_op": "dense/MatMul:MatMul", "correlation_id": "2"},
                 },
             ],
-        }))
+        }
+        trace_path = tmp_path / "sample.tf.trace.json"
+        trace_path.write_text(json.dumps(trace_data))
 
         parsed = parse_trace(str(trace_path))
 
@@ -590,6 +591,38 @@ class TestComputeAvgs:
         assert parsed["step_to_tf_ops"][0]["dense/MatMul:MatMul"]["count"] == 1
         avgs = compute_avgs(parsed)
         assert avgs["avg_tf_ops"]["dense/MatMul:MatMul"]["avg_dur_ms"] == pytest.approx(0.1)
+
+    def test_tensorflow_trace_uses_source_name_when_upload_path_is_normalized(self, tmp_path):
+        trace_path = tmp_path / "trace_a.json.gz"
+        with gzip.open(trace_path, "wt") as f:
+            json.dump({
+                "traceEvents": [
+                    {"name": "SessionRun", "ph": "X", "ts": 1000, "dur": 1000, "args": {"group_id": "0"}},
+                    {
+                        "name": "Relu",
+                        "ph": "X",
+                        "pid": 20,
+                        "tid": 7,
+                        "ts": 1100,
+                        "dur": 100,
+                        "args": {"group_id": "0", "long_name": "relu:Relu"},
+                    },
+                    {
+                        "name": "void MLUReluKernel",
+                        "ph": "X",
+                        "pid": 1,
+                        "tid": 1,
+                        "ts": 1200,
+                        "dur": 200,
+                        "args": {"group_id": "0", "tf_op": "relu:Relu", "correlation_id": "1"},
+                    },
+                ],
+            }, f)
+
+        parsed = parse_trace(str(trace_path), source_name="bjysw0122.tf.trace.json.gz")
+
+        assert parsed["step_to_tf_ops"][0]["relu:Relu"]["count"] == 1
+        assert parsed["step_to_kernels"][0]["void MLUReluKernel"]["count"] == 1
 
 
 class TestWriteAvgCsv:
