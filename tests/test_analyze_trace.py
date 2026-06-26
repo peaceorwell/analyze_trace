@@ -343,10 +343,36 @@ class TestComputeAvgs:
         trace_path.write_text(json.dumps({
             "traceEvents": [
                 {"name": "ProfilerStep#0", "cat": "user_annotation", "ts": 1000, "dur": 1000},
-                {"name": matmul_name, "cat": "kernel", "ts": 1100, "dur": 100, "tid": 7, "args": {}},
+                {
+                    "name": "torch_mlu::fused_mm",
+                    "cat": "cpu_op",
+                    "ts": 1080,
+                    "dur": 10,
+                    "args": {
+                        "External id": 42,
+                        "Input Dims": [[2, 3], [3, 4]],
+                        "Input type": ["c10::Half", "c10::Half"],
+                    },
+                },
+                {"name": matmul_name, "cat": "kernel", "ts": 1100, "dur": 100, "tid": 7, "args": {"External id": 42}},
                 {"name": "Compute Efficiency(%)", "ph": "C", "ts": 1100, "tid": 7, "args": {"utils": 40.0}},
                 {"name": "IO Efficiency(%)", "ph": "C", "ts": 1100, "tid": 7, "args": {"utils": 18.0}},
                 {"name": "OP Efficiency(%)", "ph": "C", "ts": 1100, "tid": 7, "args": {"utils": 34.0}},
+                {
+                    "name": "torch_mlu::fused_mm",
+                    "cat": "cpu_op",
+                    "ts": 1220,
+                    "dur": 10,
+                    "args": {
+                        "External id": 43,
+                        "Input Dims": [[8, 3], [3, 4]],
+                        "Input type": ["c10::Half", "c10::Half"],
+                    },
+                },
+                {"name": matmul_name, "cat": "kernel", "ts": 1230, "dur": 80, "tid": 7, "args": {"External id": 43}},
+                {"name": "Compute Efficiency(%)", "ph": "C", "ts": 1230, "tid": 7, "args": {"utils": 50.0}},
+                {"name": "IO Efficiency(%)", "ph": "C", "ts": 1230, "tid": 7, "args": {"utils": 28.0}},
+                {"name": "OP Efficiency(%)", "ph": "C", "ts": 1230, "tid": 7, "args": {"utils": 44.0}},
                 {"name": "Compute Efficiency(%)", "ph": "C", "ts": 1200, "tid": 7, "args": {"utils": 0.0}},
                 {"name": "IO Efficiency(%)", "ph": "C", "ts": 1200, "tid": 7, "args": {"utils": 0.0}},
                 {"name": "OP Efficiency(%)", "ph": "C", "ts": 1200, "tid": 7, "args": {"utils": 0.0}},
@@ -364,12 +390,46 @@ class TestComputeAvgs:
 
         avgs = compute_avgs(parse_trace(str(trace_path)))
 
-        row = avgs["avg_non_triton_kernel_efficiency"][matmul_name]
+        rows = [
+            row for row in avgs["avg_non_triton_kernel_efficiency"].values()
+            if row.get("kernel_name") == matmul_name
+        ]
+        assert len(rows) == 2
+        row = next(item for item in rows if item["input_dims"] == "[[2,3],[3,4]]")
         assert row["family"] == "gemm"
+        assert row["operator"] == "torch_mlu::fused_mm"
         assert row["avg_compute_efficiency"] == 40.0
         assert row["avg_io_efficiency"] == 18.0
         assert row["avg_op_efficiency"] == 34.0
+        assert "avg_io_efficiency_gbps" not in row
         assert "triton_poi_fused_add" not in avgs["avg_non_triton_kernel_efficiency"]
+
+    def test_handwritten_triton_kernel_with_output_code_is_triton(self, tmp_path):
+        trace_path = tmp_path / "trace.json"
+        trace_path.write_text(json.dumps({
+            "traceEvents": [
+                {"name": "ProfilerStep#0", "cat": "user_annotation", "ts": 1000, "dur": 1000},
+                {
+                    "name": "_apply_fold_rotary_kernel",
+                    "cat": "kernel",
+                    "ts": 1100,
+                    "dur": 100,
+                    "args": {
+                        "triton output code": "def _apply_fold_rotary_kernel():\n    return\n",
+                        "kernel num(GB)": "1.0",
+                        "IO efficiency(GB/s)": "2.0",
+                    },
+                },
+            ],
+        }))
+
+        parsed = parse_trace(str(trace_path))
+        avgs = compute_avgs(parsed)
+
+        assert parsed["step_to_triton"][0][0]["kernel_name"] == "_apply_fold_rotary_kernel"
+        assert "_apply_fold_rotary_kernel" in avgs["avg_triton"]
+        assert parsed["kernel_families"]["_apply_fold_rotary_kernel"] == "triton_custom"
+        assert not parsed["step_to_non_triton_kernel_efficiency"]
 
     def test_triton_metadata_keeps_stable_match_fingerprints(self, tmp_path):
         trace_path = tmp_path / "trace.json"
@@ -798,7 +858,6 @@ class TestEndToEnd:
                     "avg_compute_efficiency": 40,
                     "avg_io_efficiency": 18,
                     "avg_op_efficiency": 34,
-                    "avg_io_efficiency_gbps": None,
                 },
             },
             "avg_aten": {

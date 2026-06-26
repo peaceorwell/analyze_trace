@@ -123,7 +123,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.3.3");
+const appVersion = ref("0.3.4");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -675,7 +675,6 @@ const CHART_METRIC_DEFS = [
   { key: "avg_io_efficiency", label: "IO 效率", unit: "" },
   { key: "avg_compute_efficiency", label: "Compute 效率", unit: "%" },
   { key: "avg_op_efficiency", label: "OP 效率", unit: "%" },
-  { key: "avg_io_efficiency_gbps", label: "IO 效率", unit: "GB/s" },
 ];
 
 const chartSourceOptions = computed(() => {
@@ -1000,7 +999,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.3.3";
+  appVersion.value = cfg.version || "0.3.4";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
