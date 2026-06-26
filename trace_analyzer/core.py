@@ -1135,6 +1135,7 @@ def _parse_tensorflow_trace(trace_file, *, keep_triton_code=False, progress_call
             return result
 
         return {
+            "framework": "tensorflow",
             "step_to_triton": step_to_triton,
             "step_to_kernels": step_to_kernels,
             "step_to_aten": step_to_aten,
@@ -1567,6 +1568,7 @@ def _parse_pytorch_trace(trace_file, *, keep_triton_code=False, progress_callbac
             return result
 
         return {
+            "framework": "pytorch",
             "step_to_triton":       step_to_triton,
             "step_to_kernels":      step_to_kernels,
             "step_to_aten":         step_to_aten,
@@ -1733,6 +1735,7 @@ def compute_avgs(parsed):
     """Compute all average stats from a parsed trace. Returns a data dict."""
     # Support both dict (new API) and tuple (old API) for backward compatibility
     if isinstance(parsed, dict):
+        framework = parsed.get("framework", "pytorch")
         step_to_triton       = parsed["step_to_triton"]
         step_to_kernels      = parsed["step_to_kernels"]
         step_to_aten         = parsed["step_to_aten"]
@@ -1743,6 +1746,7 @@ def compute_avgs(parsed):
         step_ranges          = parsed.get("step_ranges", {})
         kernel_families      = parsed.get("kernel_families", {})
     else:
+        framework = "pytorch"
         if len(parsed) == 6:
             step_to_triton, step_to_kernels, _, step_to_aten, step_to_cncl, step_durations = parsed
         else:
@@ -1991,6 +1995,7 @@ def compute_avgs(parsed):
     )
 
     return {
+        "framework":      framework,
         "all_steps":      all_steps,
         "n_steps":        n_steps,
         "step_stats":     step_stats,
@@ -2421,8 +2426,13 @@ def _kernel_type_cmp_rows(data_a, data_b):
 
 # ── Top-level write functions ─────────────────────────────────────────────────
 
+def _is_tensorflow_data(data):
+    return data.get("framework") == "tensorflow"
+
+
 def write_single(data, args):
     os.makedirs(args.output_dir, exist_ok=True)
+    is_tensorflow = _is_tensorflow_data(data)
 
     # Per-step triton CSVs + source files
     if args.save_triton_csv or args.save_triton_code:
@@ -2467,29 +2477,39 @@ def write_single(data, args):
         data["avg_kernels"],
         data.get("kernel_families", {}),
     )
-    _write_triton_avg_csv(os.path.join(args.output_dir, "triton_kernels_avg.csv"), data["avg_triton"])
-    _write_non_triton_kernel_efficiency_avg_csv(
-        os.path.join(args.output_dir, "non_triton_kernel_efficiency_avg.csv"),
-        data.get("avg_non_triton_kernel_efficiency", {}),
-    )
-    write_avg_csv(os.path.join(args.output_dir, "aten_ops_avg.csv"),    data["avg_aten"],    "op_name")
-    write_avg_csv(os.path.join(args.output_dir, "tf_ops_avg.csv"),      data["avg_tf_ops"],  "op_name")
+    if not is_tensorflow or data["avg_triton"]:
+        _write_triton_avg_csv(os.path.join(args.output_dir, "triton_kernels_avg.csv"), data["avg_triton"])
+    if not is_tensorflow or data.get("avg_non_triton_kernel_efficiency"):
+        _write_non_triton_kernel_efficiency_avg_csv(
+            os.path.join(args.output_dir, "non_triton_kernel_efficiency_avg.csv"),
+            data.get("avg_non_triton_kernel_efficiency", {}),
+        )
+    if not is_tensorflow or data["avg_aten"]:
+        write_avg_csv(os.path.join(args.output_dir, "aten_ops_avg.csv"),    data["avg_aten"],    "op_name")
+    if data.get("avg_tf_ops"):
+        write_avg_csv(os.path.join(args.output_dir, "tf_ops_avg.csv"),      data["avg_tf_ops"],  "op_name")
     _write_kernel_types_csv(os.path.join(args.output_dir, "kernel_types_avg.csv"), data["KERNEL_TYPES"], data["kt_avgs"])
-    write_avg_csv(os.path.join(args.output_dir, "cncl_ops_avg.csv"),    data["avg_cncl"],    "op_name")
+    if not is_tensorflow or data["avg_cncl"]:
+        write_avg_csv(os.path.join(args.output_dir, "cncl_ops_avg.csv"),    data["avg_cncl"],    "op_name")
 
 
 def write_comparison(data_a, data_b, args):
     os.makedirs(args.output_dir, exist_ok=True)
+    has_tensorflow = _is_tensorflow_data(data_a) or _is_tensorflow_data(data_b)
     _write_kernels_cmp_csv(os.path.join(args.output_dir, "all_kernels_cmp.csv"), data_a, data_b)
-    _write_triton_cmp_csv(os.path.join(args.output_dir, "triton_kernels_cmp.csv"),
-                          data_a["avg_triton"], data_b["avg_triton"])
-    _write_cmp_avg_csv(os.path.join(args.output_dir, "aten_ops_cmp.csv"),
-                       data_a["avg_aten"], data_b["avg_aten"], "op_name")
-    _write_cmp_avg_csv(os.path.join(args.output_dir, "tf_ops_cmp.csv"),
-                       data_a.get("avg_tf_ops", {}), data_b.get("avg_tf_ops", {}), "op_name")
+    if not has_tensorflow or data_a["avg_triton"] or data_b["avg_triton"]:
+        _write_triton_cmp_csv(os.path.join(args.output_dir, "triton_kernels_cmp.csv"),
+                              data_a["avg_triton"], data_b["avg_triton"])
+    if not has_tensorflow or data_a["avg_aten"] or data_b["avg_aten"]:
+        _write_cmp_avg_csv(os.path.join(args.output_dir, "aten_ops_cmp.csv"),
+                           data_a["avg_aten"], data_b["avg_aten"], "op_name")
+    if data_a.get("avg_tf_ops") or data_b.get("avg_tf_ops"):
+        _write_cmp_avg_csv(os.path.join(args.output_dir, "tf_ops_cmp.csv"),
+                           data_a.get("avg_tf_ops", {}), data_b.get("avg_tf_ops", {}), "op_name")
     _write_kernel_types_cmp_csv(os.path.join(args.output_dir, "kernel_types_cmp.csv"), data_a, data_b)
-    _write_cmp_avg_csv(os.path.join(args.output_dir, "cncl_ops_cmp.csv"),
-                       data_a["avg_cncl"], data_b["avg_cncl"], "op_name")
+    if not has_tensorflow or data_a["avg_cncl"] or data_b["avg_cncl"]:
+        _write_cmp_avg_csv(os.path.join(args.output_dir, "cncl_ops_cmp.csv"),
+                           data_a["avg_cncl"], data_b["avg_cncl"], "op_name")
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

@@ -70,13 +70,44 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.3.6",
+        "version": "0.3.7",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
         "allow_code_execution": False,
         "claude_analysis_enabled": False,
     }
+
+
+def test_collect_results_hides_empty_pytorch_csvs_for_tensorflow_trace(isolated_server):
+    rdir = Path(web_server.result_dir("tf-result-job"))
+    rdir.mkdir(parents=True, exist_ok=True)
+    (rdir / "all_kernels_avg.csv").write_text(
+        "kernel_name,family,avg_count,avg_dur_ms,avg_us_per_call\n"
+        "void MLUMatMulGemm,gemm,1,0.2,200\n"
+    )
+    (rdir / "kernel_types_avg.csv").write_text("type,avg_count,avg_dur_ms\ngemm,1,0.2\n")
+    (rdir / "tf_ops_avg.csv").write_text("op_name,avg_count,avg_dur_ms\ndense/MatMul:MatMul,1,0.1\n")
+    (rdir / "triton_kernels_avg.csv").write_text(
+        "kernel_name,avg_count,avg_dur_ms,avg_io_gb,avg_io_efficiency_gbps\n"
+    )
+    (rdir / "aten_ops_avg.csv").write_text("op_name,avg_count,avg_dur_ms\n")
+    (rdir / "cncl_ops_avg.csv").write_text("op_name,avg_count,avg_dur_ms\n")
+    (rdir / "non_triton_kernel_efficiency_avg.csv").write_text(
+        "kernel_name,family,operator,input_dims,input_types,input_strides,concrete_inputs,"
+        "operator_details,avg_count,avg_dur_ms,avg_us_per_call,avg_compute_efficiency,"
+        "avg_io_efficiency,avg_op_efficiency\n"
+    )
+
+    results = web_server.collect_results("tf-result-job")
+
+    assert "all_kernels_avg.csv" in results
+    assert "kernel_types_avg.csv" in results
+    assert "tf_ops_avg.csv" in results
+    assert "triton_kernels_avg.csv" not in results
+    assert "aten_ops_avg.csv" not in results
+    assert "cncl_ops_avg.csv" not in results
+    assert "non_triton_kernel_efficiency_avg.csv" not in results
 
 
 def test_json_log_formatter_uses_configured_timezone():

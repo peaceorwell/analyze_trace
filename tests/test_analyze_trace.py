@@ -584,12 +584,14 @@ class TestComputeAvgs:
 
         parsed = parse_trace(str(trace_path))
 
+        assert parsed["framework"] == "tensorflow"
         assert parsed["step_durations"][0] == 1.0
         assert parsed["step_to_kernels"][0]["void MLUMatMulGemm"]["count"] == 1
         assert parsed["step_to_kernels"][0]["MemcpyH2D"]["count"] == 1
         assert "cnInvokeKernel" not in parsed["step_to_kernels"][0]
         assert parsed["step_to_tf_ops"][0]["dense/MatMul:MatMul"]["count"] == 1
         avgs = compute_avgs(parsed)
+        assert avgs["framework"] == "tensorflow"
         assert avgs["avg_tf_ops"]["dense/MatMul:MatMul"]["avg_dur_ms"] == pytest.approx(0.1)
 
     def test_tensorflow_trace_uses_source_name_when_upload_path_is_normalized(self, tmp_path):
@@ -621,8 +623,50 @@ class TestComputeAvgs:
 
         parsed = parse_trace(str(trace_path), source_name="bjysw0122.tf.trace.json.gz")
 
+        assert parsed["framework"] == "tensorflow"
         assert parsed["step_to_tf_ops"][0]["relu:Relu"]["count"] == 1
         assert parsed["step_to_kernels"][0]["void MLUReluKernel"]["count"] == 1
+
+    def test_tensorflow_single_csv_outputs_skip_empty_pytorch_specific_tables(self, tmp_path):
+        trace_path = tmp_path / "sample.tf.trace.json"
+        trace_path.write_text(json.dumps({
+            "traceEvents": [
+                {"name": "SessionRun", "ph": "X", "ts": 1000, "dur": 1000, "args": {"group_id": "0"}},
+                {
+                    "name": "MatMul",
+                    "ph": "X",
+                    "pid": 501,
+                    "tid": 7,
+                    "ts": 1100,
+                    "dur": 100,
+                    "args": {"group_id": "0", "long_name": "dense/MatMul:MatMul"},
+                },
+                {
+                    "name": "void MLUMatMulGemm",
+                    "ph": "X",
+                    "pid": 1,
+                    "tid": 1,
+                    "ts": 1200,
+                    "dur": 200,
+                    "args": {"group_id": "0", "tf_op": "dense/MatMul:MatMul", "correlation_id": "1"},
+                },
+            ],
+        }))
+        out_dir = tmp_path / "out"
+        args = type("Args", (), {
+            "output_dir": str(out_dir),
+            "save_triton_csv": False,
+            "save_triton_code": False,
+        })
+
+        write_single(compute_avgs(parse_trace(str(trace_path))), args)
+
+        csv_names = {path.name for path in out_dir.glob("*.csv")}
+        assert csv_names == {
+            "all_kernels_avg.csv",
+            "kernel_types_avg.csv",
+            "tf_ops_avg.csv",
+        }
 
 
 class TestWriteAvgCsv:

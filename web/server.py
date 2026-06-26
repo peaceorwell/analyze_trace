@@ -56,7 +56,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.3.6"
+APP_VERSION = "0.3.7"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -1442,6 +1442,28 @@ def csv_to_rows(path: str) -> dict:
         fields = _result_csv_fields(os.path.basename(path), reader.fieldnames or [])
         rows = [_result_csv_row(os.path.basename(path), row) for row in reader]
         return {"fields": fields, "rows": rows}
+
+
+def _prune_empty_tensorflow_result_csvs(files: dict) -> dict:
+    """Hide legacy empty PyTorch-only CSVs from TensorFlow trace results."""
+    has_tf_rows = any(
+        files.get(name, {}).get("rows")
+        for name in ("tf_ops_avg.csv", "tf_ops_cmp.csv")
+    )
+    if not has_tf_rows:
+        return files
+    for name in (
+        "triton_kernels_avg.csv",
+        "triton_kernels_cmp.csv",
+        "non_triton_kernel_efficiency_avg.csv",
+        "aten_ops_avg.csv",
+        "aten_ops_cmp.csv",
+        "cncl_ops_avg.csv",
+        "cncl_ops_cmp.csv",
+    ):
+        if name in files and not files[name].get("rows"):
+            files.pop(name, None)
+    return files
 
 
 def _is_percent_csv_field(field: str) -> bool:
@@ -3459,7 +3481,7 @@ def collect_results(jid: str) -> dict:
             if fname.startswith("step_") and fname.endswith("_triton_kernels.csv"):
                 full = os.path.join(rdir, fname)
                 files[fname] = csv_to_rows(full)
-    return files
+    return _prune_empty_tensorflow_result_csvs(files)
 
 
 def collect_perfetto_context(jid: str) -> dict:
