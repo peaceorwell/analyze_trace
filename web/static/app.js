@@ -59,7 +59,8 @@ const historyJobsOffset = ref(0);
 const historyJobsLoading = ref(false);
 const historySearch = ref("");
 const filterProject = ref(localStorage.getItem("tpa-filter-project") || "");
-const sidebarTab    = ref(localStorage.getItem("tpa-sidebar-tab") || "jobs");
+const storedSidebarTab = localStorage.getItem("tpa-sidebar-tab") || "jobs";
+const sidebarTab    = ref(storedSidebarTab === "compare" ? "jobs" : storedSidebarTab);
 const selectedJobId = ref(null);
 const selectedJob   = ref(null);
 const jobLoading    = ref(false);
@@ -128,7 +129,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.3.8");
+const appVersion = ref("0.3.9");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -543,6 +544,7 @@ const compareSelection  = ref([]);
 const compareSelectionDetails = ref({});
 const compareLabel      = ref("");
 const compareProjectId  = ref("");
+const showCompareModal  = ref(false);
 const batchCompareMode  = ref(false);
 const batchBaselineId   = ref("");
 const batchCandidateIds = ref([]);
@@ -1028,7 +1030,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.3.8";
+  appVersion.value = cfg.version || "0.3.9";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -2566,13 +2568,25 @@ const loadHistoryGroupJobs = async (groupId, reset = false) => {
   }
 };
 
+const compareProjectForSubmit = () => {
+  if (compareProjectId.value === "__none__") return null;
+  return compareProjectId.value || null;
+};
+
 const loadCompareJobs = async () => {
   if (compareJobsController) compareJobsController.abort();
+  if (!showCompareModal.value || !compareProjectId.value) {
+    compareJobs.value = [];
+    compareJobsTotal.value = 0;
+    compareJobsLoading.value = false;
+    compareJobsController = null;
+    return;
+  }
   const controller = new AbortController();
   compareJobsController = controller;
   compareJobsLoading.value = true;
   const params = new URLSearchParams();
-  if (filterProject.value) params.set("project_id", filterProject.value);
+  params.set("project_id", compareProjectId.value);
   if (compareSearch.value.trim()) params.set("q", compareSearch.value.trim());
   params.set("limit", String(compareJobsLimit.value));
   params.set("offset", String(compareJobsOffset.value));
@@ -2616,7 +2630,9 @@ const loadCompareJobs = async () => {
 };
 
 const refreshSidebarData = async () => {
-  await Promise.all([loadHistoryGroups(), loadHistoryJobs(), loadCompareJobs()]);
+  const loaders = [loadHistoryGroups(), loadHistoryJobs()];
+  if (showCompareModal.value) loaders.push(loadCompareJobs());
+  await Promise.all(loaders);
 };
 
 const initializeAppData = async () => {
@@ -5226,6 +5242,33 @@ const setBatchCompareMode = enabled => {
   }
 };
 
+const resetCompareSelections = () => {
+  compareSelection.value = [];
+  compareSelectionDetails.value = {};
+  compareLabel.value = "";
+  clearBatchCompareSelection();
+};
+
+const inferCompareProjectId = () => {
+  if (filterProject.value) return filterProject.value;
+  if (selectedJob.value?.project_id) return selectedJob.value.project_id;
+  const projectGroup = historyProjectGroups.value.find(group => group.id && group.id !== "__none__");
+  if (projectGroup) return projectGroup.id;
+  return historyProjectGroups.value.some(group => group.id === "__none__") ? "__none__" : "";
+};
+
+const openCompareModal = () => {
+  resetCompareSelections();
+  compareProjectId.value = inferCompareProjectId();
+  compareJobsOffset.value = 0;
+  showCompareModal.value = true;
+  loadCompareJobs();
+};
+
+const closeCompareModal = () => {
+  showCompareModal.value = false;
+};
+
 const isCompareJobSelected = job => {
   if (!job) return false;
   if (!batchCompareMode.value) return compareSelection.value.includes(job.id);
@@ -5293,6 +5336,14 @@ const removeBatchCandidate = id => {
 };
 
 const submitCompare = async () => {
+  if (!compareProjectId.value) {
+    showToast("请先选择项目", "error");
+    return;
+  }
+  if (compareSelection.value.length !== 2) {
+    showToast("请选择两个任务进行对比", "error");
+    return;
+  }
   const [a, b] = compareSelection.value;
   const r = await fetch("/api/jobs/compare", {
     method: "POST",
@@ -5301,7 +5352,7 @@ const submitCompare = async () => {
     body: JSON.stringify({
       job_id_a: a, job_id_b: b,
       label: compareLabel.value,
-      project_id: compareProjectId.value || null,
+      project_id: compareProjectForSubmit(),
     }),
   });
   const job = await r.json();
@@ -5312,6 +5363,7 @@ const submitCompare = async () => {
   compareSelection.value = [];
   compareSelectionDetails.value = {};
   compareLabel.value = "";
+  showCompareModal.value = false;
   sidebarTab.value = "jobs";
   await refreshSidebarData();
   router.push({ path: `/job/${job.id}` });
@@ -5319,6 +5371,10 @@ const submitCompare = async () => {
 
 const submitBatchCompare = async () => {
   if (!batchBaselineId.value || !batchCandidateIds.value.length || batchCompareLoading.value) return;
+  if (!compareProjectId.value) {
+    showToast("请先选择项目", "error");
+    return;
+  }
   batchCompareLoading.value = true;
   try {
     const r = await fetch("/api/jobs/batch-compare", {
@@ -5329,7 +5385,7 @@ const submitBatchCompare = async () => {
         baseline_job_id: batchBaselineId.value,
         candidate_job_ids: batchCandidateIds.value,
         label_prefix: batchCompareLabelPrefix.value,
-        project_id: compareProjectId.value || null,
+        project_id: compareProjectForSubmit(),
       }),
     });
     const payload = await r.json();
@@ -5340,7 +5396,7 @@ const submitBatchCompare = async () => {
     const jobs = payload.data || [];
     showToast(`已创建 ${payload.count || jobs.length} 个对比任务`, "success");
     clearBatchCompareSelection();
-    compareProjectId.value = "";
+    showCompareModal.value = false;
     sidebarTab.value = "jobs";
     await refreshSidebarData();
     if (jobs[0]?.id) router.push({ path: `/job/${jobs[0].id}` });
@@ -6684,30 +6740,18 @@ const App = {
     watch(compareSearch, () => {
       clearTimeout(compareSearchTimer);
       compareSearchTimer = setTimeout(() => {
+        if (!showCompareModal.value) return;
         compareJobsOffset.value = 0;
         loadCompareJobs();
       }, 250);
     });
 
-    watch(compareSelection, () => {
-      if (compareSelection.value.length === 2) {
-        const [jobA, jobB] = selectedCompareJobs.value;
-        if (jobA?.project_id && jobA.project_id === jobB?.project_id) {
-          compareProjectId.value = jobA.project_id;
-        } else {
-          compareProjectId.value = "";
-        }
-      }
+    watch(compareProjectId, () => {
+      if (!showCompareModal.value) return;
+      resetCompareSelections();
+      compareJobsOffset.value = 0;
+      loadCompareJobs();
     });
-
-    watch([batchBaselineId, batchCandidateIds], () => {
-      if (!batchCompareMode.value || !batchBaselineId.value || !batchCandidateIds.value.length) return;
-      const jobs = [selectedBatchBaseline.value, ...selectedBatchCandidates.value].filter(Boolean);
-      const firstProject = jobs[0]?.project_id || "";
-      compareProjectId.value = jobs.length && jobs.every(job => (job.project_id || "") === firstProject)
-        ? firstProject
-        : "";
-    }, { deep: true });
 
     watch(sidebarWidth, value => localStorage.setItem("tpa-sidebar-width", String(value)));
     watch(sidebarCollapsed, value => localStorage.setItem("tpa-sidebar-collapsed", String(value)));
@@ -6785,6 +6829,7 @@ const App = {
 
       // Compare
       compareSelection, selectedCompareJobs, compareLabel, compareProjectId,
+      showCompareModal, openCompareModal, closeCompareModal,
       batchCompareMode, batchBaselineId, selectedBatchBaseline, selectedBatchCandidates,
       batchCandidateIds, batchCompareLabelPrefix, batchCompareLoading,
       compareJobs, compareJobsTotal, compareJobsLimit, compareJobsOffset, compareJobsLoading, compareSearch,

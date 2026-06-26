@@ -70,7 +70,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.3.8",
+        "version": "0.3.9",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -2751,6 +2751,10 @@ def test_compare_from_history_accepts_tar_gzip_sources(
     async def insert_jobs():
         db = await web_db.get_db()
         try:
+            await db.execute(
+                "INSERT INTO projects(id, name) VALUES(?,?)",
+                ("target-project", "Target"),
+            )
             await db.executemany(
                 """
                 INSERT INTO jobs(
@@ -2770,12 +2774,13 @@ def test_compare_from_history_accepts_tar_gzip_sources(
 
     created = client.post(
         "/api/jobs/compare",
-        json={"job_id_a": "source-a", "job_id_b": "source-b"},
+        json={"job_id_a": "source-a", "job_id_b": "source-b", "project_id": "target-project"},
     )
 
     assert created.status_code == 201
     compare_job = created.json()
     assert compare_job["mode"] == "compare"
+    assert compare_job["project_id"] == "target-project"
     assert compare_job["status"] in {"pending", "running", "done"}
 
 
