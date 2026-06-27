@@ -131,7 +131,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.3.14");
+const appVersion = ref("0.3.15");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -637,11 +637,6 @@ const homeStatsCards = computed(() => [
     hint: "团队可见",
   },
 ]);
-const homeWorkflowSteps = Object.freeze([
-  { label: "1. 上传", text: "单个、两个或多个 trace，先进入队列。" },
-  { label: "2. 总览", text: "从性能总览看 Top 回退、占比和趋势。" },
-  { label: "3. 下钻", text: "继续看 Kernel、Triton、ATen/TF 或 AI 报告。" },
-]);
 const activeHistoryProject = computed(() => {
   if (!filterProject.value) return null;
   if (filterProject.value === "__none__") return { id: "__none__", label: "未分组", job_count: historyJobsTotal.value };
@@ -1100,7 +1095,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.3.14";
+  appVersion.value = cfg.version || "0.3.15";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -5958,17 +5953,6 @@ const Home = {
     <!-- Empty state -->
     <div v-if="!selectedJob" class="empty-main">
       <div class="home-dashboard">
-        <section class="home-hero-panel">
-          <div class="home-kicker">性能分析工作台</div>
-          <h1>让热点显形，让细节说话</h1>
-          <p>从 trace 上传到对比、下钻和 AI 报告，优先把时间花在最可能影响性能的路径上。</p>
-          <div class="home-flow">
-            <div v-for="step in homeWorkflowSteps" :key="step.label" class="home-flow-step">
-              <strong>{{ step.label }}</strong>
-              <span>{{ step.text }}</span>
-            </div>
-          </div>
-        </section>
         <section class="home-snapshot-panel">
           <div class="home-panel-head">
             <span>当前视图</span>
@@ -6052,7 +6036,7 @@ const Home = {
       uploadQueue, submitting, uploadProgress,
       form, projects, projectOptionLabel, selectedJob,
       historyGroupsTotal, sidebarTab, showGuide, uploadFileMeta,
-      homeRecentJobs, homeStatsCards, homeWorkflowSteps,
+      homeRecentJobs, homeStatsCards,
       openSingleUploadPicker, openMultiUploadPicker,
       setQuickUploadMode,
       onDrop, onFileChange, clearFile, submitJob,

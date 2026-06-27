@@ -892,49 +892,16 @@ body {
   text-transform: uppercase; letter-spacing: .08em;
 }
 .home-dashboard {
-  width: min(1120px, 100%);
-  display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(320px, .9fr);
-  gap: 12px;
+  width: min(520px, 100%);
+  display: flex;
+  justify-content: center;
 }
-.home-hero-panel,
 .home-snapshot-panel {
+  width: 100%;
   min-width: 0; border: 1px solid var(--border); border-radius: 10px;
   background: linear-gradient(180deg, var(--surface), var(--card));
   box-shadow: 0 12px 30px rgba(15,23,42,.05);
 }
-.home-hero-panel {
-  padding: 24px 26px;
-  display: flex; flex-direction: column; justify-content: center; gap: 12px;
-  position: relative; overflow: hidden;
-}
-.home-hero-panel::before {
-  content: ""; position: absolute; inset: 0 auto 0 0; width: 4px;
-  background: linear-gradient(180deg, var(--orange), var(--purple));
-}
-.home-kicker {
-  font-size: 12px; font-weight: 900; color: var(--orange);
-  text-transform: uppercase; letter-spacing: .12em;
-}
-.home-hero-panel h1 {
-  margin: 0; color: var(--text); font-size: 28px; line-height: 1.2;
-  letter-spacing: 0; font-weight: 900;
-}
-.home-hero-panel p {
-  margin: 0; max-width: 720px; color: var(--text2);
-  font-size: 14px; line-height: 1.7;
-}
-.home-flow {
-  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px; margin-top: 4px;
-}
-.home-flow-step {
-  min-width: 0; padding: 10px 12px; border: 1px solid var(--border);
-  border-radius: 8px; background: var(--card2);
-}
-.home-flow-step strong {
-  display: block; color: var(--text); font-size: 12px; font-weight: 900; margin-bottom: 4px;
-}
-.home-flow-step span { display: block; color: var(--text3); font-size: 12px; line-height: 1.45; }
 .home-snapshot-panel { padding: 14px; display: flex; flex-direction: column; gap: 12px; }
 .home-panel-head {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
@@ -1246,21 +1213,16 @@ select.input { appearance: none; cursor: pointer; }
 @media (max-width: 1180px) {
   .quick-compare-cols { grid-template-columns: minmax(260px, 1fr) 1fr; }
   .quick-compare-cols .btn { grid-column: span 2; }
-  .home-dashboard { grid-template-columns: 1fr; width: min(720px, 100%); }
-  .home-hero-panel { padding: 20px 22px; }
-  .home-hero-panel h1 { font-size: 24px; }
+  .home-dashboard { width: min(520px, 100%); }
   .empty-action-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); width: min(720px, 100%); }
   .empty-main-title { width: min(720px, 100%); }
 }
 
 @media (max-width: 720px) {
   .empty-main { padding: 14px 4px 24px; }
-  .home-flow,
   .home-stat-grid,
   .empty-action-grid { grid-template-columns: 1fr; }
-  .home-hero-panel,
   .home-snapshot-panel { border-radius: 8px; }
-  .home-hero-panel h1 { font-size: 22px; }
 }
 
 .upload-progress { margin-top: 8px; }
