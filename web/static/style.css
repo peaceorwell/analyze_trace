@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&family=Noto+Serif+SC:wght@500;600;700&display=swap');
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -36,8 +36,11 @@
   --header-border: rgba(226,232,240,.18);
   --header-accent: rgba(249,115,22,.14);
   --header-chip-bg: rgba(15,23,42,.36);
-  --header-motto-bg: linear-gradient(90deg, rgba(255,255,255,.02), rgba(255,255,255,.10), rgba(255,255,255,.02));
-  --header-motto-text: linear-gradient(90deg, rgba(209,217,231,.92), rgba(253,224,183,.98) 52%, rgba(197,205,255,.94));
+  --header-motto-halo: radial-gradient(58% 130% at 50% 50%, rgba(255,255,255,.075), rgba(255,255,255,0) 72%);
+  --motto-ink:  rgba(226,232,240,.82);
+  --motto-hair: rgba(203,213,225,.32);
+  --motto-warm: #fb923c;
+  --motto-cool: #a5b4fc;
   --menu-bg: #1b2030;
   --menu-hover-bg: #282f48;
   --menu-border: rgba(203,213,225,.24);
@@ -91,8 +94,11 @@
   --header-border: rgba(148,163,184,.34);
   --header-accent: rgba(249,115,22,.18);
   --header-chip-bg: rgba(255,255,255,.70);
-  --header-motto-bg: linear-gradient(90deg, rgba(255,255,255,.16), rgba(255,247,237,.74), rgba(238,242,255,.36));
-  --header-motto-text: linear-gradient(90deg, rgba(71,85,105,.95), rgba(216,80,12,.96) 52%, rgba(79,70,229,.95));
+  --header-motto-halo: radial-gradient(58% 130% at 50% 50%, rgba(255,255,255,.6), rgba(255,255,255,0) 72%);
+  --motto-ink:  #3f4658;
+  --motto-hair: rgba(148,163,184,.45);
+  --motto-warm: #ea580c;
+  --motto-cool: #4f46e5;
   --menu-bg: rgba(255,253,251,.98);
   --menu-hover-bg: #fff3e8;
   --menu-border: rgba(148,163,184,.34);
@@ -128,6 +134,7 @@
 :root {
   --mono: 'JetBrains Mono', monospace;
   --sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --serif: 'Noto Serif SC', 'Songti SC', 'STSong', 'SimSun', serif;
 }
 
 body {
@@ -211,99 +218,72 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 .header-motto {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: 13px;
   position: absolute;
   left: 50%; top: 50%;
   transform: translate(-50%, -50%);
   z-index: 1;
   pointer-events: none;
   white-space: nowrap;
-  padding: 4px 14px;
-  border: 1px solid rgba(255,255,255,.10);
+  padding: 4px 26px;
   border-radius: 999px;
-  background: var(--header-motto-bg);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,.08), 0 5px 18px rgba(15,23,42,.06);
-  backdrop-filter: blur(8px);
-  font-family: "PingFang SC", "Microsoft YaHei", "Inter", system-ui, sans-serif;
-  font-size: 12.5px;
+  /* soft halo only — no border/blur, so the text melts into the header gradient */
+  background: var(--header-motto-halo);
+  font-family: var(--serif);
+  font-size: 16px;
   line-height: 1.2;
   font-weight: 600;
-  letter-spacing: .14em;
-  text-indent: .14em;
+  letter-spacing: .06em;
 }
 .motto-sep {
   flex: none;
-  width: 4px; height: 4px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, var(--orange), var(--purple));
-  opacity: .85;
-}
-.header-motto::before,
-.header-motto::after {
-  content: "";
-  width: 20px;
-  height: 1px;
+  width: 1px; height: 13px;
   border-radius: 999px;
-  opacity: .72;
+  background: var(--motto-hair);
 }
-.header-motto::before {
-  background: linear-gradient(90deg, transparent, rgba(129,140,248,.72));
-}
-.header-motto::after {
-  background: linear-gradient(90deg, rgba(249,115,22,.58), transparent);
-}
-.header-motto span {
-  background: var(--header-motto-text);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-}
-[data-theme="light"] .header-motto {
-  border-color: rgba(255,255,255,.62);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,.78), 0 4px 16px rgba(99,102,241,.06);
-}
+.header-motto .motto-phrase { color: var(--motto-ink); }
+.header-motto .motto-key { font-style: normal; font-weight: 700; }
+.header-motto .motto-key-warm { color: var(--motto-warm); }
+.header-motto .motto-key-cool { color: var(--motto-cool); }
 .header-actions { display: flex; gap: 6px; align-items: center; position: relative; z-index: 2; }
-.header-actions .btn { letter-spacing: .04em; font-weight: 600; }
+.header-actions .btn { letter-spacing: .04em; font-weight: 600; font-size: 12px; padding: 6px 12px; border-radius: 8px; white-space: nowrap; }
+.header-actions .action-icon-btn { border-radius: 8px; }
 .header-user { letter-spacing: .04em; }
 .header-more-menu .action-menu { min-width: 142px; }
 
 .header-actions .btn-outline {
-  background: var(--header-chip-bg);
+  background: transparent;
   color: var(--text2);
   border: 1px solid var(--header-border);
 }
 .header-actions .btn-outline:hover:not(:disabled) {
-  background: var(--card2); color: var(--text); opacity: 1;
+  background: var(--card2); color: var(--text); border-color: var(--border2); opacity: 1;
 }
 .header-actions .header-upload-btn {
   color: var(--purple-l);
   border: 1px solid rgba(99,102,241,.34);
-  background: linear-gradient(180deg, rgba(99,102,241,.16), rgba(99,102,241,.08));
-  box-shadow: inset 0 1px 0 rgba(255,255,255,.08);
-  font-weight: 700;
+  background: transparent;
+  font-weight: 600;
 }
 .header-actions .header-upload-btn:hover:not(:disabled) {
   color: var(--purple-l);
   border-color: var(--purple);
   background: var(--purple-bg);
-  box-shadow: 0 2px 10px rgba(99,102,241,.18);
   opacity: 1;
 }
 [data-theme="light"] .header-actions .header-upload-btn {
   color: var(--purple-d);
-  border-color: rgba(99,102,241,.28);
-  background: linear-gradient(180deg, #f6f7ff, #eef0ff);
-  box-shadow: 0 2px 8px rgba(99,102,241,.10);
+  border-color: rgba(99,102,241,.30);
+  background: transparent;
 }
 [data-theme="light"] .header-actions .header-upload-btn:hover:not(:disabled) {
   color: var(--purple-d);
   background: #eef0ff;
-  box-shadow: 0 3px 10px rgba(99,102,241,.16);
 }
 .header-actions .btn-primary {
   background: var(--orange); color: #fff;
   border: 1px solid var(--orange);
-  box-shadow: 0 1px 8px rgba(249,115,22,.3);
+  box-shadow: 0 2px 9px rgba(249,115,22,.28);
 }
 .header-actions .btn-primary:hover:not(:disabled) { background: var(--orange-d); opacity: 1; }
 
@@ -314,7 +294,7 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 /* ── Theme toggle button ── */
 .theme-toggle {
   display: flex; align-items: center; justify-content: center;
-  width: 32px; height: 32px; border-radius: 7px;
+  width: 32px; height: 32px; border-radius: 8px;
   border: 1px solid var(--border2);
   background: transparent;
   color: var(--text3);
@@ -2097,6 +2077,29 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
 .data-table tr:hover td { background-color: var(--td-hover) !important; }
 .data-table tbody tr.drill-row { cursor: pointer; }
 
+/* Numeric columns: right-aligned, monospace, tabular — 让数值可对比 */
+.data-table th.num-col { text-align: right; }
+.data-table th.num-col .th-label { max-width: calc(100% - 14px); }
+.data-table td.num-col {
+  text-align: right;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+.data-table td.num-col:not(.cell-pos):not(.cell-neg) { color: var(--text); }
+.data-table tfoot td.num-col { text-align: right; font-family: var(--mono); }
+
+/* family semantic chips */
+.family-chip {
+  display: inline-block; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle;
+  font-family: var(--mono); font-size: 10px; font-weight: 600;
+  padding: 1px 7px; border-radius: 5px;
+  background: var(--card2); color: var(--text2);
+}
+.family-chip.fam-gemm   { background: var(--purple-bg); color: var(--purple-l); }
+.family-chip.fam-triton { background: rgba(14,165,233,.14); color: #0ea5e9; }
+.family-chip.fam-reduce { background: rgba(234,179,8,.16); color: var(--yellow); }
+.family-chip.fam-comm   { background: rgba(16,185,129,.15); color: var(--green); }
 .data-table tbody tr.drill-row td:first-child {
   color: var(--purple-l);
   text-decoration: underline;
