@@ -131,7 +131,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.3.18");
+const appVersion = ref("0.3.19");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -197,6 +197,12 @@ const closeActionMenu = () => {
   openActionMenu.value = "";
 };
 document.addEventListener("click", closeActionMenu);
+
+const projectMenuKey = projectId => `project:${projectId}`;
+const toggleProjectMenu = projectId => {
+  if (!projectId || projectId === "__none__") return;
+  toggleActionMenu(projectMenuKey(projectId));
+};
 
 const openReleaseNotes = () => {
   showReleaseNotes.value = true;
@@ -548,6 +554,15 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.3.19",
+    date: "2026-06-27",
+    title: "项目操作菜单",
+    items: [
+      "侧边栏项目管理收敛到项目行右侧三点菜单，减少独立操作条占位。",
+      "项目菜单支持只看、收藏、重命名、转共享、转个人和删除等常用操作。",
+    ],
+  },
   {
     version: "0.3.18",
     date: "2026-06-27",
@@ -1220,7 +1235,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.3.18";
+  appVersion.value = cfg.version || "0.3.19";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -4677,11 +4692,7 @@ const shareProject = async (project) => {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
-    body: JSON.stringify({
-      name: project.name,
-      description: project.description || "",
-      is_public: true,
-    }),
+    body: JSON.stringify({ is_public: true }),
   });
   if (!r.ok) {
     const err = await r.json().catch(() => ({}));
@@ -4691,6 +4702,28 @@ const shareProject = async (project) => {
   await loadProjects();
   await refreshSidebarData();
   showToast("项目已转为共享", "success");
+};
+
+const unshareProject = async (project) => {
+  if (!project?.id || !project.is_public) return;
+  if (!await askConfirm("确定将该共享项目转为个人项目？其他用户将不再看到该项目。", {
+    title: "转为个人项目",
+    confirmText: "转为个人",
+  })) return;
+  const r = await fetch(`/api/projects/${project.id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ is_public: false }),
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    showToast("转为个人失败: " + (err.detail || err.message || `HTTP ${r.status}`), "error");
+    return;
+  }
+  await loadProjects();
+  await refreshSidebarData();
+  showToast("项目已转为个人", "success");
 };
 
 const setSort = col => {
@@ -7102,7 +7135,8 @@ const App = {
       prevPage, nextPage, navigateToJob, loadHistoryGroupJobs,
       historyBulkMode, historySelection, toggleHistoryBulkMode,
       toggleSelectLoadedHistoryJobs, clearHistorySelection,
-      handleHistoryJobClick, selectHistoryProject, selectHistoryProjectView, toggleProjectFavorite,
+      handleHistoryJobClick, selectHistoryProject, selectHistoryProjectView,
+      toggleProjectFavorite, projectMenuKey, toggleProjectMenu,
       openBulkMoveProject, bulkDeleteFiles, bulkDeleteJobs,
 
       // Compare
@@ -7119,7 +7153,7 @@ const App = {
       // Modals
       showNewProject, newProjectName, newProjectDesc, newProjectShared,
       showRenameProject, renameProjectName, openRenameModal,
-      confirmRenameProject, deleteProject, shareProject,
+      confirmRenameProject, deleteProject, shareProject, unshareProject,
       showMoveProject, moveProjectTarget, confirmMoveProject,
       showBulkMoveProject, bulkMoveProjectTarget, confirmBulkMoveProject,
       showRenameJob, renameJobName, confirmRenameJob,

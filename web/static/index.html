@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>torch profiler analyzer</title>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.3.18" />
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.3.19" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.css" />
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
@@ -12,7 +12,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js"></script>
-  <link rel="stylesheet" href="/static/style.css?v=0.3.18" />
+  <link rel="stylesheet" href="/static/style.css?v=0.3.19" />
   <script>
     // Apply saved theme or system preference before page paint to avoid flash
     (function() {
@@ -143,7 +143,7 @@
     <!-- ── Header ── -->
     <header v-if="authChecked && (!authRequired || currentUser)" class="header">
       <div class="header-brand" @click="$router.push('/')" style="cursor:pointer" title="返回上传页面">
-        <img class="header-logo" src="/static/favicon.svg?v=0.3.18" alt="" />
+        <img class="header-logo" src="/static/favicon.svg?v=0.3.19" alt="" />
         <span class="header-title">Torch Profiler Analyzer</span>
         <span class="header-version">v{{ appVersion }}</span>
       </div>
@@ -227,19 +227,6 @@
             <small>{{ historyGroupsTotal }} 个</small>
           </div>
 
-          <div v-if="selectedFilterProject" class="project-actions project-actions-compact">
-            <div class="project-action-meta">
-              <span :class="['project-scope-badge', selectedFilterProject.is_public ? 'shared' : 'personal']">
-                {{ selectedFilterProject.is_public ? '共享项目' : '个人项目' }}
-              </span>
-            </div>
-            <template v-if="selectedFilterProject.is_owner">
-              <button class="btn btn-xs btn-outline" @click="openRenameModal(selectedFilterProject)">重命名</button>
-              <button v-if="!selectedFilterProject.is_public" class="btn btn-xs btn-outline" @click="shareProject(selectedFilterProject)">转共享</button>
-              <button class="btn btn-xs btn-danger" @click="deleteProject(filterProject)">删除</button>
-            </template>
-          </div>
-
           <div v-if="historyGroupsTotal > 0 || historyBulkMode" class="bulk-toolbar">
             <button :class="['btn', 'btn-xs', historyBulkMode ? 'btn-primary' : 'btn-outline']" @click="toggleHistoryBulkMode">
               {{ historyBulkMode ? '退出多选' : '多选' }}
@@ -281,21 +268,28 @@
                   <small v-if="group.id !== '__none__'">{{ group.is_public ? (group.is_owner ? '我创建 · 已共享' : '共享给我') : '我创建' }}</small>
                   <small v-else>未归类任务</small>
                 </span>
-                <button
-                  v-if="group.id !== '__none__'"
-                  :class="['project-favorite-btn', group.is_favorite ? 'active' : '']"
-                  type="button"
-                  :title="group.is_favorite ? '取消收藏' : '收藏项目'"
-                  @click="toggleProjectFavorite(group, $event)"
-                >{{ group.is_favorite ? '★' : '☆' }}</button>
-                <button
-                  v-if="filterProject !== group.id"
-                  class="project-tree-filter-btn"
-                  type="button"
-                  title="只看该项目"
-                  @click.stop="selectHistoryProject(group.id)"
-                >只看</button>
                 <span class="group-count">{{ group.job_count }}</span>
+                <div v-if="group.id !== '__none__'" class="action-menu-wrap project-more-menu" @click.stop>
+                  <button
+                    :class="['project-more-btn', openActionMenu === projectMenuKey(group.id) ? 'active' : '']"
+                    type="button"
+                    title="项目操作"
+                    aria-label="项目操作"
+                    @click="toggleProjectMenu(group.id)"
+                  >...</button>
+                  <div v-if="openActionMenu === projectMenuKey(group.id)" class="action-menu action-menu-sm project-action-menu">
+                    <button v-if="filterProject !== group.id" type="button" @click="selectHistoryProject(group.id); closeActionMenu()">只看该项目</button>
+                    <button type="button" @click="toggleProjectFavorite(group); closeActionMenu()">
+                      {{ group.is_favorite ? '取消收藏' : '收藏项目' }}
+                    </button>
+                    <template v-if="group.is_owner">
+                      <button type="button" @click="openRenameModal(group); closeActionMenu()">重命名</button>
+                      <button v-if="!group.is_public" type="button" @click="shareProject(group); closeActionMenu()">转共享</button>
+                      <button v-else type="button" @click="unshareProject(group); closeActionMenu()">转个人</button>
+                      <button type="button" class="danger" @click="deleteProject(group.id); closeActionMenu()">删除项目</button>
+                    </template>
+                  </div>
+                </div>
               </div>
               <div v-if="collapsedGroups[group.id]" class="project-tree-jobs">
                 <div v-if="group.jobs_loading" class="group-loading">加载任务...</div>
@@ -1432,6 +1426,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=0.3.18"></script>
+  <script src="/static/app.js?v=0.3.19"></script>
 </body>
 </html>
