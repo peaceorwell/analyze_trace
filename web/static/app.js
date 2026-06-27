@@ -131,7 +131,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.3.22");
+const appVersion = ref("0.3.23");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -410,6 +410,16 @@ const historyBulkMode = ref(false);
 const historySelection = ref([]);
 const showBulkMoveProject = ref(false);
 const bulkMoveProjectTarget = ref("");
+const showProjectBulkModal = ref(false);
+const projectBulkId = ref("");
+const projectBulkName = ref("");
+const projectBulkJobs = ref([]);
+const projectBulkJobsTotal = ref(0);
+const projectBulkJobsOffset = ref(0);
+const projectBulkJobsLimit = ref(100);
+const projectBulkJobsLoading = ref(false);
+const projectBulkSearch = ref("");
+const projectBulkSelectionDetails = ref({});
 
 const showRenameJob = ref(false);
 const renameJobName = ref("");
@@ -554,6 +564,15 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.3.23",
+    date: "2026-06-27",
+    title: "项目批量管理弹窗",
+    items: [
+      "项目菜单中的“多选任务”改为弹窗式批量管理，支持项目内搜索、勾选、批量移动、删文件和删任务。",
+      "保留侧边栏项目树的浏览状态，避免进入多选模式后打断当前查看上下文。",
+    ],
+  },
   {
     version: "0.3.22",
     date: "2026-06-27",
@@ -842,6 +861,20 @@ const selectedBatchCandidates = computed(() =>
     .map(id => batchSelectionDetails.value[id])
     .filter(Boolean)
 );
+const projectBulkSelectedJobs = computed(() =>
+  historySelection.value
+    .map(id => projectBulkSelectionDetails.value[id])
+    .filter(Boolean)
+);
+const projectBulkLoadedOwnerIds = computed(() =>
+  projectBulkJobs.value
+    .filter(job => job.is_owner !== false)
+    .map(job => job.id)
+);
+const projectBulkLoadedAllSelected = computed(() => {
+  const ids = projectBulkLoadedOwnerIds.value;
+  return ids.length > 0 && ids.every(id => historySelection.value.includes(id));
+});
 
 const availableTabs = computed(() => {
   const res = selectedJob.value?.result_files || selectedJob.value?.results;
@@ -1269,7 +1302,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.3.22";
+  appVersion.value = cfg.version || "0.3.23";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -2663,6 +2696,7 @@ const deleteSelectedStorageFiles = async () => {
 let historyGroupsController = null;
 let historyJobsController = null;
 let compareJobsController = null;
+let projectBulkJobsController = null;
 let resultTableController = null;
 let loadJobRequestSeq = 0;
 const historyGroupControllers = {};
@@ -2886,6 +2920,7 @@ const loadCompareJobs = async () => {
 const refreshSidebarData = async () => {
   const loaders = [loadHistoryGroups(), loadHistoryJobs()];
   if (showCompareModal.value) loaders.push(loadCompareJobs());
+  if (showProjectBulkModal.value) loaders.push(loadProjectBulkJobs(true));
   await Promise.all(loaders);
 };
 
@@ -4514,6 +4549,84 @@ const startProjectBulkMode = projectOrGroup => {
   selectHistoryProject(project.id);
 };
 
+const resetProjectBulkSelection = () => {
+  historySelection.value = [];
+  projectBulkSelectionDetails.value = {};
+};
+
+const closeProjectBulkModal = () => {
+  showProjectBulkModal.value = false;
+  projectBulkSearch.value = "";
+  projectBulkJobs.value = [];
+  projectBulkJobsTotal.value = 0;
+  projectBulkJobsOffset.value = 0;
+  resetProjectBulkSelection();
+  if (projectBulkJobsController) {
+    projectBulkJobsController.abort();
+    projectBulkJobsController = null;
+  }
+};
+
+const loadProjectBulkJobs = async (reset = false) => {
+  if (!showProjectBulkModal.value || !projectBulkId.value) return;
+  if (projectBulkJobsController) projectBulkJobsController.abort();
+  const controller = new AbortController();
+  projectBulkJobsController = controller;
+  projectBulkJobsLoading.value = true;
+  const offset = reset ? 0 : projectBulkJobsOffset.value;
+  const params = new URLSearchParams();
+  const q = projectBulkSearch.value.trim();
+  if (q) params.set("q", q);
+  params.set("limit", String(projectBulkJobsLimit.value));
+  params.set("offset", String(offset));
+  try {
+    const r = await fetch(`/api/job-groups/${encodeURIComponent(projectBulkId.value)}/jobs?${params}`, {
+      credentials: "include",
+      signal: controller.signal,
+    });
+    const data = await readJsonResponse(r, {});
+    if (!r.ok) {
+      throw new ApiRequestError(apiErrorMessage(r, data, "加载项目任务失败"), {
+        status: r.status,
+        authExpired: r.status === 401,
+      });
+    }
+    if (projectBulkJobsController !== controller) return;
+    const nextJobs = reset ? (data.data || []) : [...projectBulkJobs.value, ...(data.data || [])];
+    projectBulkJobs.value = nextJobs;
+    projectBulkJobsTotal.value = data.total || 0;
+    projectBulkJobsOffset.value = nextJobs.length;
+
+    const details = { ...projectBulkSelectionDetails.value };
+    for (const job of nextJobs) {
+      if (historySelection.value.includes(job.id)) details[job.id] = job;
+    }
+    projectBulkSelectionDetails.value = details;
+  } catch (e) {
+    if (e.name !== "AbortError") showToast(normalizeApiError(e, "加载项目任务失败"), "error");
+  } finally {
+    if (projectBulkJobsController === controller) {
+      projectBulkJobsLoading.value = false;
+      projectBulkJobsController = null;
+    }
+  }
+};
+
+const openProjectBulkModal = async projectOrGroup => {
+  const project = resolveProjectMeta(projectOrGroup);
+  if (!project?.id || project.id === "__none__") return;
+  historyBulkMode.value = false;
+  resetProjectBulkSelection();
+  projectBulkId.value = project.id;
+  projectBulkName.value = project.name || project.label || "当前项目";
+  projectBulkSearch.value = "";
+  projectBulkJobs.value = [];
+  projectBulkJobsTotal.value = 0;
+  projectBulkJobsOffset.value = 0;
+  showProjectBulkModal.value = true;
+  await loadProjectBulkJobs(true);
+};
+
 const toggleProjectFavorite = async (projectOrGroup, event) => {
   event?.preventDefault?.();
   event?.stopPropagation?.();
@@ -4550,6 +4663,47 @@ const toggleHistorySelection = job => {
   if (idx >= 0) historySelection.value.splice(idx, 1);
   else historySelection.value.push(job.id);
 };
+
+const toggleProjectBulkSelection = job => {
+  if (job.is_owner === false) {
+    showToast("只能批量操作自己创建的任务", "error");
+    return;
+  }
+  const selected = new Set(historySelection.value);
+  const details = { ...projectBulkSelectionDetails.value };
+  if (selected.has(job.id)) {
+    selected.delete(job.id);
+    delete details[job.id];
+  } else {
+    selected.add(job.id);
+    details[job.id] = job;
+  }
+  historySelection.value = [...selected];
+  projectBulkSelectionDetails.value = details;
+};
+
+const toggleLoadedProjectBulkJobs = () => {
+  const ids = projectBulkLoadedOwnerIds.value;
+  if (!ids.length) return;
+  const selected = new Set(historySelection.value);
+  const details = { ...projectBulkSelectionDetails.value };
+  if (projectBulkLoadedAllSelected.value) {
+    for (const id of ids) {
+      selected.delete(id);
+      delete details[id];
+    }
+  } else {
+    for (const job of projectBulkJobs.value) {
+      if (job.is_owner === false) continue;
+      selected.add(job.id);
+      details[job.id] = job;
+    }
+  }
+  historySelection.value = [...selected];
+  projectBulkSelectionDetails.value = details;
+};
+
+const clearProjectBulkSelection = () => resetProjectBulkSelection();
 
 const handleHistoryJobClick = job => {
   if (historyBulkMode.value) {
@@ -4607,6 +4761,7 @@ const confirmBulkMoveProject = async () => {
   const ids = [...historySelection.value];
   const moved = ids.length;
   historySelection.value = [];
+  projectBulkSelectionDetails.value = {};
   await refreshSidebarData();
   if (selectedJobId.value && ids.includes(selectedJobId.value)) await loadJob(selectedJobId.value);
   showToast(`已移动 ${moved} 个任务`, "success");
@@ -4633,6 +4788,7 @@ const bulkDeleteJobs = async () => {
   }
   if (selectedJobId.value && ids.includes(selectedJobId.value)) router.push({ path: "/" });
   historySelection.value = [];
+  projectBulkSelectionDetails.value = {};
   await refreshSidebarData();
   showToast(`已删除 ${ids.length} 个任务`, "success");
 };
@@ -7047,6 +7203,7 @@ const App = {
   setup() {
     let historySearchTimer = null;
     let compareSearchTimer = null;
+    let projectBulkSearchTimer = null;
     let resultTableTimer = null;
     const isFeedbackRoute = computed(() => router.currentRoute.value.name === "feedback");
 
@@ -7106,6 +7263,15 @@ const App = {
       }, 250);
     });
 
+    watch(projectBulkSearch, () => {
+      clearTimeout(projectBulkSearchTimer);
+      projectBulkSearchTimer = setTimeout(() => {
+        if (!showProjectBulkModal.value) return;
+        projectBulkJobsOffset.value = 0;
+        loadProjectBulkJobs(true);
+      }, 250);
+    });
+
     watch(compareProjectId, () => {
       if (!showCompareModal.value) return;
       resetCompareSelections();
@@ -7162,6 +7328,7 @@ const App = {
       refreshFeedbackMarkdownEditors();
     });
     onBeforeUnmount(() => {
+      clearTimeout(projectBulkSearchTimer);
       destroyFeedbackMarkdownEditors();
     });
 
@@ -7188,7 +7355,7 @@ const App = {
       toggleSelectLoadedHistoryJobs, clearHistorySelection,
       handleHistoryJobClick, selectHistoryProject, selectHistoryProjectView,
       toggleProjectFavorite, projectMenuKey, toggleProjectMenu,
-      startProjectBulkMode,
+      startProjectBulkMode, openProjectBulkModal,
       openBulkMoveProject, bulkDeleteFiles, bulkDeleteJobs,
 
       // Compare
@@ -7208,6 +7375,11 @@ const App = {
       confirmRenameProject, deleteProject, shareProject, unshareProject,
       showMoveProject, moveProjectTarget, confirmMoveProject,
       showBulkMoveProject, bulkMoveProjectTarget, confirmBulkMoveProject,
+      showProjectBulkModal, projectBulkName, projectBulkJobs, projectBulkJobsTotal,
+      projectBulkJobsOffset, projectBulkJobsLoading, projectBulkSearch,
+      projectBulkSelectedJobs, projectBulkLoadedAllSelected,
+      closeProjectBulkModal, loadProjectBulkJobs, toggleProjectBulkSelection,
+      toggleLoadedProjectBulkJobs, clearProjectBulkSelection,
       showRenameJob, renameJobName, confirmRenameJob,
       showDeletedProjects, deletedProjects, loadDeletedProjects,
       isDeletedOver10Days, restoreProject, permanentlyDeleteProject,

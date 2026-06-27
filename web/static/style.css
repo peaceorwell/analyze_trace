@@ -2282,6 +2282,28 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
   align-items: end;
   padding-top: 4px;
 }
+.bulk-picker-modal {
+  width: min(980px, calc(100vw - 48px));
+}
+.bulk-picker-controls {
+  grid-template-columns: minmax(180px, 260px) minmax(260px, 1fr);
+}
+.bulk-picker-list {
+  max-height: min(52vh, 560px);
+}
+.bulk-picker-job {
+  grid-template-columns: minmax(260px, 1fr) minmax(260px, 1.15fr);
+}
+.bulk-picker-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.bulk-picker-footer .btn:first-child {
+  margin-right: auto;
+}
 @media (max-width: 860px) {
   .compare-picker-modal {
     width: calc(100vw - 24px);
@@ -2301,6 +2323,14 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
   }
   .compare-picker-selected .selected-compare-item {
     max-width: 100%;
+  }
+  .bulk-picker-footer {
+    justify-content: stretch;
+  }
+  .bulk-picker-footer .btn,
+  .bulk-picker-footer .btn:first-child {
+    width: 100%;
+    margin-right: 0;
   }
 }
 .ai-code-modal {

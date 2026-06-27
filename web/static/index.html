@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>torch profiler analyzer</title>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.3.22" />
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.3.23" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.css" />
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
@@ -12,7 +12,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js"></script>
-  <link rel="stylesheet" href="/static/style.css?v=0.3.22" />
+  <link rel="stylesheet" href="/static/style.css?v=0.3.23" />
   <script>
     // Apply saved theme or system preference before page paint to avoid flash
     (function() {
@@ -143,7 +143,7 @@
     <!-- ── Header ── -->
     <header v-if="authChecked && (!authRequired || currentUser)" class="header">
       <div class="header-brand" @click="$router.push('/')" style="cursor:pointer" title="返回上传页面">
-        <img class="header-logo" src="/static/favicon.svg?v=0.3.22" alt="" />
+        <img class="header-logo" src="/static/favicon.svg?v=0.3.23" alt="" />
         <span class="header-title">Torch Profiler Analyzer</span>
         <span class="header-version">v{{ appVersion }}</span>
       </div>
@@ -258,7 +258,7 @@
                   >...</button>
                   <div v-if="openActionMenu === projectMenuKey(group.id)" class="action-menu action-menu-sm project-action-menu">
                     <button type="button" @click="openProjectCompareModal(group); closeActionMenu()">新建对比</button>
-                    <button type="button" @click="startProjectBulkMode(group); closeActionMenu()">多选任务</button>
+                    <button type="button" @click="openProjectBulkModal(group); closeActionMenu()">多选任务</button>
                     <button type="button" @click="toggleProjectFavorite(group); closeActionMenu()">
                       {{ group.is_favorite ? '取消收藏' : '收藏项目' }}
                     </button>
@@ -436,6 +436,82 @@
       </div>
     </div>
 
+    <!-- ── Project bulk picker modal ── -->
+    <div v-if="showProjectBulkModal" class="modal-mask modal-mask-front" @click.self="closeProjectBulkModal">
+      <div class="modal modal-wide compare-picker-modal bulk-picker-modal">
+        <div class="modal-title compare-picker-title">
+          <div>
+            <strong>批量管理任务</strong>
+            <small>已固定项目，在窗口内搜索、勾选并执行批量操作；侧边栏保持当前浏览状态。</small>
+          </div>
+          <button class="btn btn-sm btn-outline" @click="closeProjectBulkModal">关闭</button>
+        </div>
+
+        <div class="compare-picker-controls bulk-picker-controls">
+          <div class="form-row">
+            <label>项目</label>
+            <div class="input compare-project-fixed">{{ projectBulkName || '当前项目' }}</div>
+          </div>
+          <div class="form-row">
+            <label>搜索</label>
+            <input v-model="projectBulkSearch" class="input" placeholder="搜索任务、文件名或备注名..." />
+          </div>
+        </div>
+
+        <div class="compare-picker-summary">
+          <span>已选 {{ historySelection.length }} 个</span>
+          <span>当前加载 {{ projectBulkJobs.length }} / {{ projectBulkJobsTotal }} 个任务</span>
+        </div>
+
+        <div v-if="projectBulkSelectedJobs.length" class="selected-compare-list compare-picker-selected">
+          <div v-for="job in projectBulkSelectedJobs" :key="job.id" class="selected-compare-item">
+            <span>{{ job.label || job.id.slice(0,8) }}</span>
+            <button class="selected-compare-remove" @click.stop="toggleProjectBulkSelection(job)" title="移除">x</button>
+          </div>
+        </div>
+
+        <div class="compare-picker-list bulk-picker-list">
+          <div v-if="projectBulkJobsLoading && projectBulkJobs.length===0" class="sidebar-loading">加载项目任务...</div>
+          <div v-else-if="projectBulkJobs.length===0" class="empty-tip">{{ projectBulkSearch ? '暂无匹配记录' : '该项目暂无任务' }}</div>
+          <div v-for="job in projectBulkJobs" :key="job.id"
+               :class="['compare-picker-job bulk-picker-job', historySelection.includes(job.id)?'compare-selected':'',
+                        job.is_owner===false ? 'file-deleted' : '']"
+               @click="toggleProjectBulkSelection(job)">
+            <div class="compare-picker-job-main">
+              <input type="checkbox" :checked="historySelection.includes(job.id)"
+                     :disabled="job.is_owner===false" readonly />
+              <span class="job-status" :class="'status-'+job.status">{{ statusIcon(job.status) }}</span>
+              <strong>{{ job.label || job.id.slice(0,8) }}</strong>
+              <span class="job-mode-badge" :class="'mode-'+job.mode">{{ job.mode==='compare'?'对比':'单文件' }}</span>
+              <span v-if="job.is_owner===false" class="tag-deleted">只读</span>
+            </div>
+            <div class="compare-picker-job-meta">
+              <span>{{ fmtDate(job.created_at) }}</span>
+              <span v-if="job.file_a_name">{{ job.file_a_name }}</span>
+              <span v-if="job.file_a_exists===false" class="tag-deleted">文件已删除</span>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="projectBulkJobsTotal > projectBulkJobsOffset" class="pagination">
+          <button class="btn btn-xs btn-outline" @click="loadProjectBulkJobs(false)" :disabled="projectBulkJobsLoading">
+            {{ projectBulkJobsLoading ? '加载中...' : '加载更多' }}
+          </button>
+          <span class="page-info">{{ projectBulkJobsOffset }} / {{ projectBulkJobsTotal }}</span>
+        </div>
+
+        <div class="compare-picker-footer bulk-picker-footer">
+          <button class="btn btn-outline" @click="toggleLoadedProjectBulkJobs" :disabled="projectBulkJobs.length===0">
+            {{ projectBulkLoadedAllSelected ? '取消已加载' : '选择已加载' }}
+          </button>
+          <button class="btn btn-outline" @click="clearProjectBulkSelection" :disabled="historySelection.length===0">清空</button>
+          <button class="btn btn-outline" @click="openBulkMoveProject" :disabled="historySelection.length===0">移动到项目</button>
+          <button class="btn btn-outline" @click="bulkDeleteFiles" :disabled="historySelection.length===0">删除文件</button>
+          <button class="btn btn-danger" @click="bulkDeleteJobs" :disabled="historySelection.length===0">删除任务</button>
+        </div>
+      </div>
+    </div>
+
     <!-- ── Move project modal ── -->
     <div v-if="showMoveProject" class="modal-mask" @click.self="showMoveProject=false">
       <div class="modal">
@@ -452,7 +528,7 @@
     </div>
 
     <!-- ── Bulk move project modal ── -->
-    <div v-if="showBulkMoveProject" class="modal-mask" @click.self="showBulkMoveProject=false">
+    <div v-if="showBulkMoveProject" class="modal-mask modal-mask-front" @click.self="showBulkMoveProject=false">
       <div class="modal">
         <div class="modal-title">批量移动到项目</div>
         <select v-model="bulkMoveProjectTarget" class="input w-full">
@@ -1401,6 +1477,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=0.3.22"></script>
+  <script src="/static/app.js?v=0.3.23"></script>
 </body>
 </html>
