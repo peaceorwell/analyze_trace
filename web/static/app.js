@@ -67,6 +67,9 @@ const selectedJob   = ref(null);
 const jobLoading    = ref(false);
 const collapsedGroups = ref({});
 let preSearchExpandedGroups = null;
+const draggingProjectId = ref("");
+const dragOverProjectId = ref("");
+const projectOrderSaving = ref(false);
 
 // ── Upload form ─────────────────────────────────────────────────────────
 const fileA    = ref(null);
@@ -131,7 +134,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.3.25");
+const appVersion = ref("0.3.26");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -583,6 +586,15 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.3.26",
+    date: "2026-06-27",
+    title: "项目拖拽排序",
+    items: [
+      "侧边栏项目支持拖拽调整顺序，并按当前用户单独保存。",
+      "未分组任务保持固定入口，不参与项目排序，避免误操作。",
+    ],
+  },
   {
     version: "0.3.25",
     date: "2026-06-27",
@@ -1269,6 +1281,80 @@ const toggleGroup = async label => {
   }
 };
 
+const orderedProjectIds = groups =>
+  groups
+    .filter(group => group.id && group.id !== "__none__")
+    .map(group => group.id);
+
+const persistProjectOrder = async projectIds => {
+  if (!projectIds.length) return true;
+  projectOrderSaving.value = true;
+  try {
+    const r = await fetch("/api/projects/order", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ project_ids: projectIds }),
+    });
+    const data = await readJsonResponse(r, {});
+    if (!r.ok) {
+      throw new ApiRequestError(apiErrorMessage(r, data, "保存项目排序失败"), {
+        status: r.status,
+        authExpired: r.status === 401,
+      });
+    }
+    return true;
+  } catch (e) {
+    showToast(normalizeApiError(e, "保存项目排序失败"), "error");
+    return false;
+  } finally {
+    projectOrderSaving.value = false;
+  }
+};
+
+const startProjectDrag = (group, event) => {
+  if (!group?.id || group.id === "__none__") return;
+  draggingProjectId.value = group.id;
+  dragOverProjectId.value = "";
+  if (event?.dataTransfer) {
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", group.id);
+  }
+};
+
+const dragProjectOver = (group, event) => {
+  if (!draggingProjectId.value || !group?.id || group.id === "__none__" || group.id === draggingProjectId.value) return;
+  dragOverProjectId.value = group.id;
+  if (event?.dataTransfer) event.dataTransfer.dropEffect = "move";
+};
+
+const endProjectDrag = () => {
+  draggingProjectId.value = "";
+  dragOverProjectId.value = "";
+};
+
+const dropProject = async group => {
+  const sourceId = draggingProjectId.value;
+  const targetId = group?.id;
+  endProjectDrag();
+  if (!sourceId || !targetId || targetId === "__none__" || sourceId === targetId) return;
+
+  const fromIndex = historyGroups.value.findIndex(item => item.id === sourceId);
+  const toIndex = historyGroups.value.findIndex(item => item.id === targetId);
+  if (fromIndex < 0 || toIndex < 0) return;
+
+  const before = [...historyGroups.value];
+  const next = [...historyGroups.value];
+  const [moved] = next.splice(fromIndex, 1);
+  next.splice(toIndex, 0, moved);
+  historyGroups.value = next;
+  const saved = await persistProjectOrder(orderedProjectIds(next));
+  if (!saved) {
+    historyGroups.value = before;
+    await loadHistoryGroups();
+  }
+};
+
 const deltaCellClass = (field, value) => {
   if (!field.includes("delta")) return "";
   const n = parseFloat(value);
@@ -1339,7 +1425,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.3.25";
+  appVersion.value = cfg.version || "0.3.26";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -7391,6 +7477,7 @@ const App = {
       projectQuickViews, activeProjectView, historyProjectView,
       historySearch, filterProject, sidebarTab, selectedJobId, selectedJob,
       collapsedGroups, groupedJobs, loadedHistoryJobIds,
+      draggingProjectId, dragOverProjectId, projectOrderSaving,
       prevPage, nextPage, navigateToJob, loadHistoryGroupJobs,
       historyBulkMode, historySelection, toggleHistoryBulkMode,
       toggleSelectLoadedHistoryJobs, clearHistorySelection,
@@ -7470,7 +7557,9 @@ const App = {
       openActionMenu, toggleActionMenu, closeActionMenu,
 
       // Misc
-      fmtDate, fmtDateTime, fmtCount, statusIcon, toggleGroup, createProject,
+      fmtDate, fmtDateTime, fmtCount, statusIcon, toggleGroup,
+      startProjectDrag, dragProjectOver, dropProject, endProjectDrag,
+      createProject,
     };
   },
 };

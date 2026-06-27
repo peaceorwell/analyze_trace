@@ -558,11 +558,19 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 .project-tree-node {
   min-width: 0;
 }
+.project-tree-node.dragging {
+  opacity: .58;
+}
+.project-tree-node.drop-target .project-tree-head {
+  border-color: rgba(99,102,241,.58);
+  box-shadow: 0 0 0 3px rgba(99,102,241,.13);
+  transform: translateY(-1px);
+}
 .project-tree-head {
   width: 100%;
   min-width: 0;
   display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr) auto auto;
+  grid-template-columns: auto auto auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 6px;
   padding: 7px 8px;
@@ -574,7 +582,7 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   cursor: pointer;
   text-align: left;
   font-family: var(--sans);
-  transition: background-color .15s, border-color .15s, box-shadow .15s;
+  transition: background-color .15s, border-color .15s, box-shadow .15s, transform .15s;
 }
 .project-tree-head:hover {
   background: var(--sidebar-card-hover);
@@ -604,6 +612,37 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 .project-tree-icon.ungrouped {
   background: var(--surface);
   color: var(--text3);
+}
+.project-drag-handle,
+.project-drag-spacer {
+  width: 18px;
+  height: 24px;
+  flex-shrink: 0;
+}
+.project-drag-handle {
+  border: 0;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--text3);
+  font-size: 12px;
+  font-weight: 900;
+  line-height: .68;
+  letter-spacing: -2px;
+  cursor: grab;
+  transition: background-color .15s, color .15s;
+}
+.project-drag-handle:hover {
+  background: var(--purple-bg);
+  color: var(--purple-l);
+}
+.project-drag-handle:active {
+  cursor: grabbing;
+}
+.project-drag-spacer {
+  display: inline-block;
 }
 .project-tree-main {
   min-width: 0;

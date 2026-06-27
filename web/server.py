@@ -56,7 +56,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.3.25"
+APP_VERSION = "0.3.26"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -5948,14 +5948,20 @@ async def get_feedback_image(request: Request, attachment_id: str):
 @app.get("/api/projects")
 async def list_projects(request: Request):
     db = await get_db()
-    access_sql, access_params = _project_access_clause(request)
+    access_sql, access_params = _project_access_clause(request, "p")
     where_sql = f"WHERE {access_sql}" if access_sql else ""
     rows = await (await db.execute(f"""
-        SELECT p.*, {_project_favorite_select("p")}
+        SELECT p.*, {_project_favorite_select("p")}, po.sort_order
         FROM projects p
+        LEFT JOIN project_orders po ON po.project_id = p.id AND po.user_token = ?
         {where_sql}
-        ORDER BY is_favorite DESC, p.is_public DESC, p.created_at DESC
-    """, (_favorite_user_token(request), *access_params))).fetchall()
+        ORDER BY
+            CASE WHEN po.sort_order IS NULL THEN 1 ELSE 0 END,
+            po.sort_order ASC,
+            is_favorite DESC,
+            p.is_public DESC,
+            p.created_at DESC
+    """, (_favorite_user_token(request), _favorite_user_token(request), *access_params))).fetchall()
     await db.close()
     return [_project_response(dict(r), request) for r in rows]
 
@@ -6053,6 +6059,45 @@ async def update_project_favorite(request: Request, pid: str, body: dict):
         return _project_response(dict(refreshed), request)
     finally:
         await db.close()
+
+
+@app.post("/api/projects/order")
+async def update_project_order(request: Request, body: dict):
+    raw_project_ids = body.get("project_ids") or []
+    project_ids: list[str] = []
+    for raw_id in raw_project_ids:
+        project_id = str(raw_id or "").strip()
+        if not project_id or project_id == "__none__" or project_id in project_ids:
+            continue
+        project_ids.append(project_id)
+
+    db = await get_db()
+    try:
+        user_token = _favorite_user_token(request)
+        for project_id in project_ids:
+            await validate_project_access(db, request, project_id)
+
+        if project_ids:
+            await db.executemany(
+                """
+                INSERT INTO project_orders(project_id, user_token, sort_order, updated_at)
+                VALUES(?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(project_id, user_token) DO UPDATE SET
+                    sort_order=excluded.sort_order,
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                [(project_id, user_token, index) for index, project_id in enumerate(project_ids)],
+            )
+        await write_audit(
+            db, request, "project.reorder",
+            resource_type="project",
+            resource_id=",".join(project_ids[:10]),
+            details={"project_count": len(project_ids)},
+        )
+        await db.commit()
+    finally:
+        await db.close()
+    return {"updated": len(project_ids)}
 
 
 @app.delete("/api/projects/{pid}", status_code=204)
@@ -6758,6 +6803,7 @@ async def list_job_groups(
                     p.name AS label,
                     p.user_token,
                     p.is_public,
+                    po.sort_order,
                     {_project_favorite_select("p")},
                     (
                         SELECT COUNT(*)
@@ -6765,10 +6811,15 @@ async def list_job_groups(
                         WHERE {job_count_where_sql}
                     ) AS job_count
                 FROM projects p
+                LEFT JOIN project_orders po ON po.project_id = p.id AND po.user_token = ?
                 {project_where_sql}
-                ORDER BY is_favorite DESC, p.name COLLATE NOCASE
+                ORDER BY
+                    CASE WHEN po.sort_order IS NULL THEN 1 ELSE 0 END,
+                    po.sort_order ASC,
+                    is_favorite DESC,
+                    p.name COLLATE NOCASE
                 """,
-                (_favorite_user_token(request), *job_count_params, *project_params),
+                (_favorite_user_token(request), *job_count_params, _favorite_user_token(request), *project_params),
             )
         ).fetchall()
         groups.extend(
@@ -6776,6 +6827,7 @@ async def list_job_groups(
                 "id": row["id"],
                 "label": row["label"],
                 "job_count": row["job_count"],
+                "sort_order": row["sort_order"],
                 "is_public": 1 if row["is_public"] else 0,
                 "is_owner": True if not current_user_token(request) else row["user_token"] == current_user_token(request),
                 "is_favorite": 1 if row["is_favorite"] else 0,

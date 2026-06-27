@@ -70,7 +70,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.3.25",
+        "version": "0.3.26",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -2383,6 +2383,35 @@ def test_job_groups_include_empty_projects(client):
         "label": searched_data[0]["label"],
         "job_count": searched_data[0]["job_count"],
     } == {"id": "project-empty", "label": "Alpha Empty", "job_count": 0}
+
+
+def test_project_order_can_be_saved_per_user(client):
+    async def insert_projects():
+        db = await web_db.get_db()
+        try:
+            await db.executemany(
+                "INSERT INTO projects(id, name) VALUES(?,?)",
+                [("project-a", "Alpha"), ("project-b", "Beta"), ("project-c", "Gamma")],
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_projects())
+
+    response = client.post(
+        "/api/projects/order",
+        json={"project_ids": ["project-c", "__none__", "project-a", "project-c", "project-b"]},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"updated": 3}
+
+    groups = client.get("/api/job-groups").json()["data"]
+    assert [group["id"] for group in groups[:3]] == ["project-c", "project-a", "project-b"]
+    assert [group["sort_order"] for group in groups[:3]] == [0, 1, 2]
+
+    projects = client.get("/api/projects").json()
+    assert [project["id"] for project in projects[:3]] == ["project-c", "project-a", "project-b"]
 
 
 def test_job_groups_search_returns_matching_visible_groups(client):
