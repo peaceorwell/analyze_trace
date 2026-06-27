@@ -131,7 +131,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.3.20");
+const appVersion = ref("0.3.21");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -555,6 +555,15 @@ const showGuide = ref(false);
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
   {
+    version: "0.3.21",
+    date: "2026-06-27",
+    title: "项目菜单入口收敛",
+    items: [
+      "将新建对比入口移入项目右侧菜单，打开后固定当前项目，只需选择 A/B 任务。",
+      "将多选入口移入项目菜单，并移除低价值的“只看该项目”操作。",
+    ],
+  },
+  {
     version: "0.3.20",
     date: "2026-06-27",
     title: "侧边栏顶部精简",
@@ -809,6 +818,13 @@ const selectedCompareJobs = computed(() =>
     .map(id => compareSelectionDetails.value[id])
     .filter(Boolean)
 );
+const compareProjectLabel = computed(() => {
+  if (!compareProjectId.value) return "";
+  if (compareProjectId.value === "__none__") return "未分组";
+  const project = projects.value.find(item => item.id === compareProjectId.value);
+  const group = historyProjectGroups.value.find(item => item.id === compareProjectId.value);
+  return project?.name || group?.label || "当前项目";
+});
 const selectedBatchBaseline = computed(() =>
   batchBaselineId.value ? batchSelectionDetails.value[batchBaselineId.value] : null
 );
@@ -1244,7 +1260,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.3.20";
+  appVersion.value = cfg.version || "0.3.21";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -4480,6 +4496,15 @@ const selectHistoryProject = projectId => {
   filterProject.value = projectId || "";
 };
 
+const startProjectBulkMode = projectOrGroup => {
+  const project = resolveProjectMeta(projectOrGroup);
+  if (!project?.id || project.id === "__none__") return;
+  historySelection.value = [];
+  historyBulkMode.value = true;
+  collapsedGroups.value = { ...collapsedGroups.value, [project.id]: true };
+  selectHistoryProject(project.id);
+};
+
 const toggleProjectFavorite = async (projectOrGroup, event) => {
   event?.preventDefault?.();
   event?.stopPropagation?.();
@@ -5554,12 +5579,20 @@ const inferCompareProjectId = () => {
   return historyProjectGroups.value.some(group => group.id === "__none__") ? "__none__" : "";
 };
 
-const openCompareModal = () => {
+const openCompareModal = projectOrId => {
   resetCompareSelections();
-  compareProjectId.value = inferCompareProjectId();
+  const fixedProjectId = typeof projectOrId === "string" ? projectOrId : projectOrId?.id;
+  compareProjectId.value = fixedProjectId || inferCompareProjectId();
+  compareSearch.value = "";
   compareJobsOffset.value = 0;
   showCompareModal.value = true;
   loadCompareJobs();
+};
+
+const openProjectCompareModal = projectOrGroup => {
+  const project = resolveProjectMeta(projectOrGroup);
+  if (!project?.id || project.id === "__none__") return;
+  openCompareModal(project.id);
 };
 
 const closeCompareModal = () => {
@@ -7146,11 +7179,12 @@ const App = {
       toggleSelectLoadedHistoryJobs, clearHistorySelection,
       handleHistoryJobClick, selectHistoryProject, selectHistoryProjectView,
       toggleProjectFavorite, projectMenuKey, toggleProjectMenu,
+      startProjectBulkMode,
       openBulkMoveProject, bulkDeleteFiles, bulkDeleteJobs,
 
       // Compare
-      compareSelection, selectedCompareJobs, compareLabel, compareProjectId,
-      showCompareModal, openCompareModal, closeCompareModal,
+      compareSelection, selectedCompareJobs, compareLabel, compareProjectId, compareProjectLabel,
+      showCompareModal, openCompareModal, openProjectCompareModal, closeCompareModal,
       batchCompareMode, batchBaselineId, selectedBatchBaseline, selectedBatchCandidates,
       batchCandidateIds, batchCompareLabelPrefix, batchCompareLoading,
       compareJobs, compareJobsTotal, compareJobsLimit, compareJobsOffset, compareJobsLoading, compareSearch,

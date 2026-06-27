@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>torch profiler analyzer</title>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.3.20" />
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.3.21" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.css" />
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
@@ -12,7 +12,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js"></script>
-  <link rel="stylesheet" href="/static/style.css?v=0.3.20" />
+  <link rel="stylesheet" href="/static/style.css?v=0.3.21" />
   <script>
     // Apply saved theme or system preference before page paint to avoid flash
     (function() {
@@ -143,7 +143,7 @@
     <!-- ── Header ── -->
     <header v-if="authChecked && (!authRequired || currentUser)" class="header">
       <div class="header-brand" @click="$router.push('/')" style="cursor:pointer" title="返回上传页面">
-        <img class="header-logo" src="/static/favicon.svg?v=0.3.20" alt="" />
+        <img class="header-logo" src="/static/favicon.svg?v=0.3.21" alt="" />
         <span class="header-title">Torch Profiler Analyzer</span>
         <span class="header-version">v{{ appVersion }}</span>
       </div>
@@ -207,32 +207,18 @@
               <span class="sidebar-quick-count">{{ view.count }}</span>
             </button>
           </div>
-          <button class="sidebar-compare-launch" type="button" @click="openCompareModal">
-            <span class="sidebar-compare-launch-icon">A/B</span>
-            <span class="sidebar-compare-launch-main">
-              <strong>新建对比</strong>
-              <small>先选项目，再选两个结果</small>
-            </span>
-          </button>
-
           <div class="sidebar-section-title project-list-title">
             <span>项目</span>
             <small>{{ historyGroupsTotal }} 个</small>
           </div>
 
-          <div v-if="historyGroupsTotal > 0 || historyBulkMode" class="bulk-toolbar">
-            <button :class="['btn', 'btn-xs', historyBulkMode ? 'btn-primary' : 'btn-outline']" @click="toggleHistoryBulkMode">
-              {{ historyBulkMode ? '退出多选' : '多选' }}
-            </button>
-            <template v-if="historyBulkMode">
-              <button class="btn btn-xs btn-outline" @click="clearHistorySelection" :disabled="historySelection.length===0">清空</button>
-            </template>
-          </div>
           <div v-if="historyBulkMode" class="bulk-actions">
             <span>已选 {{ historySelection.length }}</span>
+            <button class="btn btn-xs btn-outline" @click="clearHistorySelection" :disabled="historySelection.length===0">清空</button>
             <button class="btn btn-xs btn-outline" @click="openBulkMoveProject" :disabled="historySelection.length===0">移动</button>
             <button class="btn btn-xs btn-outline" @click="bulkDeleteFiles" :disabled="historySelection.length===0">删文件</button>
             <button class="btn btn-xs btn-danger" @click="bulkDeleteJobs" :disabled="historySelection.length===0">删任务</button>
+            <button class="btn btn-xs btn-outline" @click="toggleHistoryBulkMode">退出</button>
           </div>
 
           <div class="history-task-panel history-project-tree">
@@ -271,7 +257,8 @@
                     @click="toggleProjectMenu(group.id)"
                   >...</button>
                   <div v-if="openActionMenu === projectMenuKey(group.id)" class="action-menu action-menu-sm project-action-menu">
-                    <button v-if="filterProject !== group.id" type="button" @click="selectHistoryProject(group.id); closeActionMenu()">只看该项目</button>
+                    <button type="button" @click="openProjectCompareModal(group); closeActionMenu()">新建对比</button>
+                    <button type="button" @click="startProjectBulkMode(group); closeActionMenu()">多选任务</button>
                     <button type="button" @click="toggleProjectFavorite(group); closeActionMenu()">
                       {{ group.is_favorite ? '取消收藏' : '收藏项目' }}
                     </button>
@@ -344,7 +331,7 @@
         <div class="modal-title compare-picker-title">
           <div>
             <strong>新建对比</strong>
-            <small>先选择项目，再选择该项目下的单文件任务；生成的对比结果会归到同一项目。</small>
+            <small>已固定项目，只需选择该项目下的单文件任务；生成的对比结果会归到同一项目。</small>
           </div>
           <button class="btn btn-sm btn-outline" @click="closeCompareModal">关闭</button>
         </div>
@@ -352,11 +339,7 @@
         <div class="compare-picker-controls">
           <div class="form-row">
             <label>项目</label>
-            <select v-model="compareProjectId" class="input">
-              <option value="" disabled>选择项目</option>
-              <option value="__none__">未分组</option>
-              <option v-for="p in projects" :key="p.id" :value="p.id">{{ projectOptionLabel(p) }}</option>
-            </select>
+            <div class="input compare-project-fixed">{{ compareProjectLabel || '当前项目' }}</div>
           </div>
           <div class="form-row">
             <label>搜索</label>
@@ -399,8 +382,7 @@
         </div>
 
         <div class="compare-picker-list">
-          <div v-if="!compareProjectId" class="empty-tip">先选择项目</div>
-          <div v-else-if="compareJobsLoading" class="sidebar-loading">加载可对比任务...</div>
+          <div v-if="compareJobsLoading" class="sidebar-loading">加载可对比任务...</div>
           <div v-else-if="compareJobs.length===0" class="empty-tip">{{ compareSearch ? '暂无匹配记录' : '该项目暂无可对比记录' }}</div>
           <div v-for="job in compareJobs" :key="job.id"
                :class="['compare-picker-job', isCompareJobSelected(job)?'compare-selected':'',
@@ -1343,7 +1325,7 @@
             <ul>
               <li>首页提供 <strong>单个</strong>、<strong>两个</strong>、<strong>多个</strong> 三种上传模式；常用格式包括 <code>.json</code>、<code>.json.gz</code>、<code>.gz</code>、<code>.json.zip</code>、<code>.zip</code>、<code>.tar.gz</code>、<code>.tgz</code></li>
               <li>上传时选择项目和别名即可；如果只想看指定 step，先完成原始分析，再用任务右上角 <strong>指定 Step 重分析</strong> 生成新条目</li>
-              <li><strong>两个</strong> 模式会直接生成 A/B 对比任务；<strong>多个</strong> 模式会逐个分析每个 trace；已有历史任务则点击左侧 <strong>新建对比</strong>，先选项目再选 A/B</li>
+              <li><strong>两个</strong> 模式会直接生成 A/B 对比任务；<strong>多个</strong> 模式会逐个分析每个 trace；已有历史任务可在项目右侧 <strong>...</strong> 中选择 <strong>新建对比</strong></li>
             </ul>
           </section>
           <section class="guide-section">
@@ -1419,6 +1401,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=0.3.20"></script>
+  <script src="/static/app.js?v=0.3.21"></script>
 </body>
 </html>
