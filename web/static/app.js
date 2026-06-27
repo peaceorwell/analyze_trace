@@ -131,7 +131,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.3.19");
+const appVersion = ref("0.3.20");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -554,6 +554,15 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.3.20",
+    date: "2026-06-27",
+    title: "侧边栏顶部精简",
+    items: [
+      "移除侧边栏顶部“工作区 / Trace workspace”标题块。",
+      "移除侧边栏右上角历史总数徽标，让搜索和项目入口更靠前。",
+    ],
+  },
   {
     version: "0.3.19",
     date: "2026-06-27",
@@ -1235,7 +1244,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.3.19";
+  appVersion.value = cfg.version || "0.3.20";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
