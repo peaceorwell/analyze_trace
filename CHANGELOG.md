@@ -1,40 +1,69 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+本文件记录 Torch Profiler Analyzer 的主要版本更新。
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## [0.3.16] - 2026-06-27
 
-## [Unreleased]
+- 标题栏更多菜单新增“版本更新”入口。
+- 新增版本更新弹窗，方便在 Web 内查看每个版本的主要改动。
+- 整理 `CHANGELOG.md`，与当前 Web 功能演进保持一致。
 
-### Added
-- Initial release
+## [0.3.15] - 2026-06-27
 
-### Features
-- Single file GPU kernel analysis
-- Dual file comparison analysis
-- Web UI with drag-and-drop upload
-- Project grouping and management
-- Perfetto integration for trace visualization
-- `.json.gz` and `.json.zip` file support (auto-extract on upload, default `.json.gz` download)
-- User isolation via cookie-based session
-- Project sharing with password protection
+- 精简首页展示，移除占用空间较大的引导卡片。
+- 保留最近任务、当前视图和常用入口，减少空项目首页的视觉噪音。
 
-### CLI Options
-- `-o, --output-dir` - Output directory
-- `-s, --save-triton-csv` - Save per-step Triton kernel details
-- `-c, --save-triton-code` - Save Triton kernel source code
+## [0.3.14] - 2026-06-27
 
-### Web Server Options
-- `--host` - Listen address
-- `--port` - Listen port
-- `--no-download` - Disable trace file download
+- 优化标题栏、侧边栏和主内容区的配色层次。
+- 同步调整浅色和深色主题下的背景、边框与按钮状态。
+
+## [0.3.12] - 2026-06-27
+
+- 首页新增当前视图统计、最近任务和常用入口。
+- 空状态下提供上传、对比、使用指南和灵感社区快捷路径。
+
+## [0.3.11] - 2026-06-26
+
+- 上传 trace 拆分为单个、两个、多个三种模式。
+- 两个 trace 直接生成 A/B 对比任务，多个 trace 逐个分析并生成独立任务。
+
+## [0.3.10] - 2026-06-26
+
+- 侧边栏新增全部项目、收藏、我创建的、共享给我的快捷视图。
+- 项目与任务按树形结构展示，提升历史任务检索效率。
+
+## [0.3.9] - 2026-06-26
+
+- 新建对比改为弹窗流程，先选择项目，再选择 A/B 条目。
+- 对比结果默认归属到所选项目下。
+
+## [0.3.7] - 2026-06-26
+
+- TensorFlow trace 结果页隐藏 PyTorch 专属表格，避免无效空表干扰。
+- 修复 TensorFlow trace 上传后的类型识别与展示入口。
+
+## [0.3.5] - 2026-06-26
+
+- 新增独立的 TensorFlow Chrome Trace 基础分析流程。
+- TensorFlow 与 PyTorch 处理流程保持隔离，降低互相影响的风险。
+
+## [0.3.3] - 2026-06-26
+
+- 新增非 Triton kernel 效率 CSV，用于展示 CNNL、matmul 等 kernel 的效率指标。
+- 保留原有 Triton CSV，并改进 Compute / IO / OP Efficiency 字段解析。
+
+## [0.3.0] - 2026-06-26
+
+- 首页和标题栏引入“让热点显形，让细节说话”的性能分析标语。
+- 完善 AI 分析报告、Triton code 优化展示、下钻和代码查看体验。
+
+## [0.2.0] - 2026-06-08
+
+- 支持 LDAP 登录、用户隔离、共享项目、管理员能力和使用统计。
+- 新增 Claude Code AI 分析、灵感社区、邮件通知、日志、备份和监控能力。
 
 ## [0.1.0] - 2024-04-20
 
-### Added
-- Initial release with core analysis engine
-- Web interface with FastAPI + Vue 3
-- SQLite database for job history
-- CSV export for all analysis results
-- Chart visualization for kernel type breakdown
+- 提供 PyTorch Profiler trace 上传、基础分析、CSV 导出和 Web 查看能力。
+- 支持项目分组、历史记录、Perfetto 跳转和 A/B 对比基础流程。

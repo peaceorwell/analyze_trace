@@ -131,7 +131,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.3.15");
+const appVersion = ref("0.3.16");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -541,6 +541,126 @@ const currentTritonCodePath = ref("");
 
 // ── Guide ───────────────────────────────────────────────────────────────
 const showGuide = ref(false);
+const showReleaseNotes = ref(false);
+const releaseNotes = Object.freeze([
+  {
+    version: "0.3.16",
+    date: "2026-06-27",
+    title: "版本更新入口",
+    items: [
+      "标题栏更多菜单新增“版本更新”，可直接查看每个版本的主要改动。",
+      "补充前端版本记录弹窗和 CHANGELOG，便于部署和使用时追踪功能变化。",
+    ],
+  },
+  {
+    version: "0.3.15",
+    date: "2026-06-27",
+    title: "首页精简",
+    items: [
+      "移除首页偏重的引导大卡片，让上传区和常用入口更聚焦。",
+      "保留最近任务、当前视图和常用入口，减少空项目首页的视觉噪音。",
+    ],
+  },
+  {
+    version: "0.3.14",
+    date: "2026-06-27",
+    title: "视觉分区优化",
+    items: [
+      "优化标题栏、侧边栏和主内容区的配色层次，减少整体颜色过于单一的问题。",
+      "同步调整浅色和深色主题下的边框、背景与按钮状态。",
+    ],
+  },
+  {
+    version: "0.3.12",
+    date: "2026-06-27",
+    title: "首页工作台",
+    items: [
+      "首页增加当前视图统计、最近任务和常用入口。",
+      "空状态下提供上传、对比、使用指南和灵感社区的快捷路径。",
+    ],
+  },
+  {
+    version: "0.3.11",
+    date: "2026-06-26",
+    title: "上传模式拆分",
+    items: [
+      "上传 trace 拆分为单个、两个、多个三种模式。",
+      "两个 trace 直接生成 A/B 对比；多个 trace 会逐个分析并生成独立任务。",
+    ],
+  },
+  {
+    version: "0.3.10",
+    date: "2026-06-26",
+    title: "侧边栏工作区",
+    items: [
+      "侧边栏新增全部项目、收藏、我创建的、共享给我的快捷视图。",
+      "项目与任务按树形结构展示，提升历史任务检索效率。",
+    ],
+  },
+  {
+    version: "0.3.9",
+    date: "2026-06-26",
+    title: "对比流程优化",
+    items: [
+      "新建对比改为弹窗流程，先选择项目，再选择 A/B 条目。",
+      "对比结果默认归属到所选项目下，减少历史列表混乱。",
+    ],
+  },
+  {
+    version: "0.3.7",
+    date: "2026-06-26",
+    title: "TensorFlow Trace 体验",
+    items: [
+      "TensorFlow trace 结果页隐藏 PyTorch 专属表格，避免无效空表干扰。",
+      "修复 TensorFlow trace 上传后的类型识别与展示入口。",
+    ],
+  },
+  {
+    version: "0.3.5",
+    date: "2026-06-26",
+    title: "TensorFlow Trace 兼容",
+    items: [
+      "新增独立的 TensorFlow Chrome Trace 基础分析流程。",
+      "尽量避免 TensorFlow 与 PyTorch 处理流程耦合，降低回归风险。",
+    ],
+  },
+  {
+    version: "0.3.3",
+    date: "2026-06-26",
+    title: "Kernel 效率分析",
+    items: [
+      "新增非 Triton kernel 效率 CSV，用于展示 CNNL、matmul 等 kernel 的效率指标。",
+      "保留原有 Triton CSV，并改进 Compute / IO / OP Efficiency 字段解析。",
+    ],
+  },
+  {
+    version: "0.3.0",
+    date: "2026-06-26",
+    title: "0.3 功能线",
+    items: [
+      "首页和标题栏引入“让热点显形，让细节说话”的性能分析标语。",
+      "持续完善 AI 分析报告、Triton code 优化展示、下钻和代码查看体验。",
+    ],
+  },
+  {
+    version: "0.2.0",
+    date: "2026-06-08",
+    title: "团队化使用",
+    items: [
+      "支持 LDAP 登录、用户隔离、共享项目、管理员能力和使用统计。",
+      "新增 Claude Code AI 分析、灵感社区、邮件通知、日志、备份和监控能力。",
+    ],
+  },
+  {
+    version: "0.1.0",
+    date: "2024-04-20",
+    title: "初始版本",
+    items: [
+      "提供 PyTorch Profiler trace 上传、基础分析、CSV 导出和 Web 查看能力。",
+      "支持项目分组、历史记录、Perfetto 跳转和 A/B 对比基础流程。",
+    ],
+  },
+]);
 
 const compareSelection  = ref([]);
 const compareSelectionDetails = ref({});
@@ -1095,7 +1215,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.3.15";
+  appVersion.value = cfg.version || "0.3.16";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -7068,7 +7188,8 @@ const App = {
       aiCodeViewerPath, aiCodeViewerFilename, aiCodeViewerContent,
       aiCodeViewerSize, aiCodeViewerTruncated,
       closeAiCodeViewer, copyAiCodeViewer, downloadAiCodeViewer,
-      showGuide, showErrorModal, errorModalMsg, errorModalTitle,
+      showGuide, showReleaseNotes, releaseNotes,
+      showErrorModal, errorModalMsg, errorModalTitle,
       copyTritonCode, copyErrorModal,
       showAiPromptModal, aiAnalysisPrompt, aiPromptForce,
       openAiPromptModal, closeAiPromptModal, confirmAiPromptModal,
