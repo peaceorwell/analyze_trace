@@ -131,7 +131,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.3.17");
+const appVersion = ref("0.3.18");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -197,6 +197,11 @@ const closeActionMenu = () => {
   openActionMenu.value = "";
 };
 document.addEventListener("click", closeActionMenu);
+
+const openReleaseNotes = () => {
+  showReleaseNotes.value = true;
+  closeActionMenu();
+};
 
 const resultStateKey = jobId => `tpa-result-state:${jobId}`;
 const readResultMemory = jobId =>
@@ -543,6 +548,15 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.3.18",
+    date: "2026-06-27",
+    title: "更多菜单交互修复",
+    items: [
+      "提高标题栏更多菜单层级，并改为不透明背景，避免主页面内容透出。",
+      "修复“版本更新”菜单项点击不稳定的问题。",
+    ],
+  },
   {
     version: "0.3.17",
     date: "2026-06-27",
@@ -1206,7 +1220,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.3.17";
+  appVersion.value = cfg.version || "0.3.18";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -7145,7 +7159,7 @@ const App = {
       aiCodeViewerPath, aiCodeViewerFilename, aiCodeViewerContent,
       aiCodeViewerSize, aiCodeViewerTruncated,
       closeAiCodeViewer, copyAiCodeViewer, downloadAiCodeViewer,
-      showGuide, showReleaseNotes, releaseNotes,
+      showGuide, showReleaseNotes, releaseNotes, openReleaseNotes,
       showErrorModal, errorModalMsg, errorModalTitle,
       copyTritonCode, copyErrorModal,
       showAiPromptModal, aiAnalysisPrompt, aiPromptForce,

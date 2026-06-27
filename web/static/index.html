@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>torch profiler analyzer</title>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.3.17" />
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.3.18" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.css" />
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
@@ -12,7 +12,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js"></script>
-  <link rel="stylesheet" href="/static/style.css?v=0.3.17" />
+  <link rel="stylesheet" href="/static/style.css?v=0.3.18" />
   <script>
     // Apply saved theme or system preference before page paint to avoid flash
     (function() {
@@ -143,7 +143,7 @@
     <!-- ── Header ── -->
     <header v-if="authChecked && (!authRequired || currentUser)" class="header">
       <div class="header-brand" @click="$router.push('/')" style="cursor:pointer" title="返回上传页面">
-        <img class="header-logo" src="/static/favicon.svg?v=0.3.17" alt="" />
+        <img class="header-logo" src="/static/favicon.svg?v=0.3.18" alt="" />
         <span class="header-title">Torch Profiler Analyzer</span>
         <span class="header-version">v{{ appVersion }}</span>
       </div>
@@ -163,7 +163,7 @@
             <button v-if="isAdmin || !authRequired" type="button" @click="openAdminUsage(); closeActionMenu()">使用统计</button>
             <button type="button" @click="openStorageManager(); closeActionMenu()">存储</button>
             <button type="button" @click="showGuide=true; closeActionMenu()">使用指南</button>
-            <button type="button" @click="showReleaseNotes=true; closeActionMenu()">版本更新</button>
+            <button type="button" @click.stop="openReleaseNotes">版本更新</button>
             <button type="button" @click="showDeletedProjects=true; loadDeletedProjects(); closeActionMenu()">找回项目</button>
             <button v-if="authRequired" type="button" @click="logout(); closeActionMenu()">退出登录</button>
           </div>
@@ -1432,6 +1432,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=0.3.17"></script>
+  <script src="/static/app.js?v=0.3.18"></script>
 </body>
 </html>

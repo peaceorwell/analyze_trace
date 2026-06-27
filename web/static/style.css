@@ -33,6 +33,9 @@
   --header-border: rgba(129,140,248,.16);
   --header-accent: rgba(129,140,248,.16);
   --header-chip-bg: rgba(15,23,42,.42);
+  --menu-bg: #171b29;
+  --menu-hover-bg: #222740;
+  --menu-border: rgba(148,163,184,.28);
   --sidebar-bg: linear-gradient(180deg, #111827 0%, #131b2d 50%, #151827 100%);
   --sidebar-title-bg: linear-gradient(180deg, rgba(30,41,59,.58), rgba(15,23,42,.34));
   --sidebar-card: rgba(30,41,59,.58);
@@ -81,6 +84,9 @@
   --header-border: rgba(203,213,225,.58);
   --header-accent: rgba(148,163,184,.18);
   --header-chip-bg: rgba(255,255,255,.78);
+  --menu-bg: #ffffff;
+  --menu-hover-bg: #f1f5ff;
+  --menu-border: rgba(148,163,184,.42);
   --sidebar-bg: linear-gradient(180deg, #f8fbff 0%, #f3f7ff 52%, #f8fafc 100%);
   --sidebar-title-bg: linear-gradient(180deg, rgba(255,255,255,.82), rgba(241,245,249,.72));
   --sidebar-card: rgba(255,255,255,.76);
@@ -138,6 +144,7 @@ body {
   background: var(--header-bg); border-bottom: 0;
   box-shadow: 0 8px 24px rgba(15,23,42,.07), inset 0 -1px 0 var(--header-accent);
   position: relative;
+  z-index: 60;
   isolation: isolate;
 }
 .header::after {
@@ -1203,9 +1210,11 @@ select.input { appearance: none; cursor: pointer; }
   width: 24px; height: 24px; font-size: 12px; border-radius: 5px; background: var(--card);
 }
 .action-menu {
-  position: absolute; top: calc(100% + 6px); right: 0; z-index: 80;
-  min-width: 132px; padding: 4px; border: 1px solid var(--border2); border-radius: 8px;
-  background: var(--surface); box-shadow: 0 12px 30px rgba(15,23,42,.16);
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 90;
+  min-width: 132px; padding: 5px; border: 1px solid var(--menu-border); border-radius: 10px;
+  background: var(--menu-bg);
+  box-shadow: 0 18px 38px rgba(15,23,42,.22), 0 2px 8px rgba(15,23,42,.08);
+  opacity: 1;
 }
 .action-menu-sm { min-width: 108px; }
 .action-menu button {
@@ -1214,7 +1223,7 @@ select.input { appearance: none; cursor: pointer; }
   padding: 0 9px; background: transparent; color: var(--text2);
   font-size: 12px; font-weight: 600; cursor: pointer; text-align: left;
 }
-.action-menu button:hover { background: var(--card2); color: var(--text); }
+.action-menu button:hover { background: var(--menu-hover-bg); color: var(--text); }
 .action-menu button.danger { color: var(--red); }
 .action-menu button.danger:hover { background: rgba(239,68,68,.10); color: var(--red); }
 .file-info {
