@@ -131,7 +131,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.3.21");
+const appVersion = ref("0.3.22");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -554,6 +554,15 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.3.22",
+    date: "2026-06-27",
+    title: "标题栏视觉优化",
+    items: [
+      "为标题栏增加更有层次的背景色，让中间标语自然融入整体氛围。",
+      "优化浅色和深色主题下标题栏按钮、标语和背景的协调性。",
+    ],
+  },
   {
     version: "0.3.21",
     date: "2026-06-27",
@@ -1260,7 +1269,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.3.21";
+  appVersion.value = cfg.version || "0.3.22";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
