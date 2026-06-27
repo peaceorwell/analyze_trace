@@ -65,7 +65,7 @@ const sidebarTab    = ref(storedSidebarTab === "compare" ? "jobs" : storedSideba
 const selectedJobId = ref(null);
 const selectedJob   = ref(null);
 const jobLoading    = ref(false);
-const collapsedGroups = ref(readStoredJson("tpa-expanded-groups", {}));
+const collapsedGroups = ref({});
 let preSearchExpandedGroups = null;
 
 // ── Upload form ─────────────────────────────────────────────────────────
@@ -131,12 +131,13 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.3.24");
+const appVersion = ref("0.3.25");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
 const currentUser = ref(null);
 const currentUserIsAdmin = ref(false);
+const PROJECT_EXPANSION_STORAGE_PREFIX = "tpa-expanded-groups-v2";
 const LOGIN_USERNAME_KEY = "tpa-login-username";
 const LOGIN_REMEMBER_USERNAME_KEY = "tpa-login-remember-username";
 const loginRememberUsername = ref(readStoredBool(LOGIN_REMEMBER_USERNAME_KEY, true));
@@ -149,6 +150,24 @@ const loginLoading = ref(false);
 const loginError = ref("");
 const loginCaptchaRequired = ref(false);
 const loginCaptchaImage = ref("");
+
+const projectExpansionUserKey = () => {
+  const userKey =
+    currentUser.value?.username ||
+    currentUser.value?.email ||
+    currentUser.value?.display_name ||
+    "";
+  const normalized = String(userKey).trim();
+  if (normalized) return encodeURIComponent(normalized);
+  return authRequired.value ? "anonymous" : "local";
+};
+
+const projectExpansionStorageKey = () =>
+  `${PROJECT_EXPANSION_STORAGE_PREFIX}:${projectExpansionUserKey()}`;
+
+const restoreProjectExpansionState = () => {
+  collapsedGroups.value = readStoredJson(projectExpansionStorageKey(), {});
+};
 const perfettoOpening = ref({});
 const compareRerunLoading = ref(false);
 const singleTraceAnalyzeLoadingSlot = ref("");
@@ -564,6 +583,15 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.3.25",
+    date: "2026-06-27",
+    title: "侧边栏项目展开记忆",
+    items: [
+      "切换“全部项目 / 收藏 / 我创建的 / 共享给我的”视图时，项目列表默认保持折叠，减少侧边栏初始噪音。",
+      "项目展开/收起状态按当前用户单独记住，避免不同用户之间互相污染侧边栏浏览状态。",
+    ],
+  },
   {
     version: "0.3.24",
     date: "2026-06-27",
@@ -1311,7 +1339,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.3.24";
+  appVersion.value = cfg.version || "0.3.25";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -1325,6 +1353,7 @@ const loadMe = async () => {
     currentUser.value = null;
     currentUserIsAdmin.value = false;
     authChecked.value = true;
+    restoreProjectExpansionState();
     return null;
   }
   if (!r.ok) {
@@ -1335,6 +1364,7 @@ const loadMe = async () => {
   currentUser.value = data.authenticated ? data.user : null;
   currentUserIsAdmin.value = Boolean(data.is_admin);
   authChecked.value = true;
+  restoreProjectExpansionState();
   return currentUser.value;
 };
 
@@ -1381,6 +1411,7 @@ const submitLogin = async () => {
     }
     currentUser.value = data.user || null;
     currentUserIsAdmin.value = Boolean(data.is_admin);
+    restoreProjectExpansionState();
     window.setTimeout(() => {
       loginForm.value.password = "";
       loginForm.value.captcha = "";
@@ -1406,6 +1437,7 @@ const logout = async () => {
   projects.value = [];
   historyGroups.value = [];
   historyJobs.value = [];
+  collapsedGroups.value = {};
   compareJobs.value = [];
   selectedJobId.value = null;
   selectedJob.value = null;
@@ -7297,7 +7329,7 @@ const App = {
     });
     watch(collapsedGroups, value => {
       if (!historySearch.value.trim()) {
-        localStorage.setItem("tpa-expanded-groups", JSON.stringify(value));
+        localStorage.setItem(projectExpansionStorageKey(), JSON.stringify(value));
       }
     }, { deep: true });
 
