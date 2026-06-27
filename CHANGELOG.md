@@ -2,6 +2,11 @@
 
 本文件记录 Torch Profiler Analyzer 的主要版本更新。
 
+## [0.3.29] - 2026-06-27
+
+- 增强 Perfetto 打开时的页面握手逻辑，降低加载慢或消息时序导致的偶发无法打开。
+- Perfetto 打开失败时恢复按钮状态，并显示更明确的重试和网络提示。
+
 ## [0.3.28] - 2026-06-27
 
 - 非 Triton 效率 CSV 移除 `operator_details` 列，保留 `operator` 与输入 shape 相关字段。

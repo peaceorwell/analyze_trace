@@ -134,7 +134,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.3.28");
+const appVersion = ref("0.3.29");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -586,6 +586,15 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.3.29",
+    date: "2026-06-27",
+    title: "Perfetto 打开稳定性优化",
+    items: [
+      "增强 Perfetto 页面握手逻辑，降低页面加载慢或消息时序导致的偶发无法打开。",
+      "打开失败时恢复按钮状态，并给出更明确的重试提示。",
+    ],
+  },
   {
     version: "0.3.28",
     date: "2026-06-27",
@@ -1442,7 +1451,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.3.28";
+  appVersion.value = cfg.version || "0.3.29";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -5703,6 +5712,8 @@ const openInPerfetto = async (slot) => {
   if (!job || perfettoOpening.value[slot]) return;
   const fname = (slot === 'a' ? job.file_a_name : job.file_b_name) || `trace_${slot}.json`;
   const PERFETTO = 'https://ui.perfetto.dev';
+  const PING_INTERVAL_MS = 500;
+  const OPEN_TIMEOUT_MS = 90000;
 
   perfettoOpening.value[slot] = true;
   const win = window.open("", "_blank");
@@ -5763,21 +5774,35 @@ const openInPerfetto = async (slot) => {
 
   let sent = false;
   let pingTimer = null;
+  let timeoutTimer = null;
+  let lastPingError = null;
 
   const cleanup = () => {
     window.removeEventListener('message', handler);
     if (pingTimer) clearInterval(pingTimer);
+    if (timeoutTimer) clearTimeout(timeoutTimer);
+  };
+
+  const failPerfettoOpen = (message) => {
+    cleanup();
+    perfettoOpening.value[slot] = false;
+    showPerfettoError(message);
   };
 
   const handler = (e) => {
-    if (e.origin !== PERFETTO || e.data !== 'PONG') return;
+    if (e.source !== win || e.origin !== PERFETTO || e.data !== 'PONG') return;
     if (sent || win.closed) return;
     sent = true;
     const message = { perfetto: { buffer, title: fname, fileName: fname } };
     try {
       win.postMessage(message, PERFETTO, [buffer]);
     } catch (err) {
-      win.postMessage(message, PERFETTO);
+      try {
+        win.postMessage(message, PERFETTO);
+      } catch (fallbackErr) {
+        failPerfettoOpen(`Perfetto 已响应，但 trace 传输失败：${fallbackErr?.message || err?.message || '未知错误'}`);
+        return;
+      }
     }
     perfettoOpening.value[slot] = false;
     cleanup();
@@ -5794,18 +5819,21 @@ const openInPerfetto = async (slot) => {
       cleanup();
       return;
     }
-    win.postMessage('PING', PERFETTO);
+    try {
+      win.postMessage('PING', PERFETTO);
+    } catch (err) {
+      lastPingError = err;
+    }
   };
 
   ping();
-  pingTimer = setInterval(ping, 500);
-  setTimeout(() => {
+  pingTimer = setInterval(ping, PING_INTERVAL_MS);
+  timeoutTimer = setTimeout(() => {
     if (!sent) {
-      cleanup();
-      perfettoOpening.value[slot] = false;
-      showPerfettoError('Perfetto 页面未响应，请稍后重试');
+      const extra = lastPingError?.message ? `浏览器返回：${lastPingError.message}` : "";
+      failPerfettoOpen(`Perfetto 页面未响应。可能是 Perfetto 页面加载较慢、网络不可达或弹窗被浏览器限制，请稍后重试。${extra}`);
     }
-  }, 30000);
+  }, OPEN_TIMEOUT_MS);
 };
 
 const viewTritonCode = async (codePath) => {
