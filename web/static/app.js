@@ -131,7 +131,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.3.23");
+const appVersion = ref("0.3.24");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -564,6 +564,15 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.3.24",
+    date: "2026-06-27",
+    title: "整体配色细节整理",
+    items: [
+      "微调标题栏、侧边栏和主内容区的浅色/深色主题背景，让整体视觉更统一。",
+      "优化首页标语拆分和侧边栏快捷视图的状态配色，降低界面单调感。",
+    ],
+  },
   {
     version: "0.3.23",
     date: "2026-06-27",
@@ -1302,7 +1311,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.3.23";
+  appVersion.value = cfg.version || "0.3.24";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
