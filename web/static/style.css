@@ -20,6 +20,9 @@
   --purple-d:  #4f46e5;
   --purple-l:  #818cf8;
   --purple-bg: rgba(99,102,241,.12);
+  /* Single interactive primary (alias of purple) — was referenced but never defined */
+  --primary:   #6366f1;
+  --primary-d: #4f46e5;
   --text:      #e2e8f0;
   --text2:     #94a3b8;
   --text3:     #64748b;
@@ -73,6 +76,8 @@
   --purple-d:  #4f46e5;
   --purple-l:  #6366f1;
   --purple-bg: rgba(99,102,241,.08);
+  --primary:   #4f46e5;
+  --primary-d: #4338ca;
   --text:      #1e293b;
   --text2:     #475569;
   --text3:     #94a3b8;
@@ -1003,7 +1008,7 @@ select.input { appearance: none; cursor: pointer; }
   cursor: pointer; font-weight: 500; font-family: var(--sans);
   transition: all .15s; display: inline-flex; align-items: center; gap: 4px;
 }
-.btn:disabled { opacity: .38; cursor: not-allowed; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
 .btn:hover:not(:disabled) { opacity: .85; }
 
 .btn-primary  { background: var(--purple); color: #fff; border: 1px solid var(--purple); }
@@ -2066,7 +2071,7 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
 .data-table thead { position: sticky; top: 0; z-index: 1; }
 
 .data-table th {
-  background-color: var(--th-bg); color: var(--text3);
+  background-color: var(--th-bg); color: var(--text2);
   border-bottom: 1px solid var(--border2);
   padding: 6px 9px; text-align: left; white-space: nowrap;
   position: relative; overflow: hidden;
@@ -2091,6 +2096,7 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
 .data-table tbody tr:nth-child(even) td:first-child { background-color: var(--td-first-even); }
 .data-table tr:hover td { background-color: var(--td-hover) !important; }
 .data-table tbody tr.drill-row { cursor: pointer; }
+
 .data-table tbody tr.drill-row td:first-child {
   color: var(--purple-l);
   text-decoration: underline;

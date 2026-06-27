@@ -134,7 +134,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.3.26");
+const appVersion = ref("0.3.27");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -586,6 +586,15 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.3.27",
+    date: "2026-06-27",
+    title: "静态样式细节整理",
+    items: [
+      "补齐页面交互主色变量，避免局部按钮或状态样式引用缺失。",
+      "微调禁用按钮和表格表头的对比度，让静态视觉状态更清晰。",
+    ],
+  },
   {
     version: "0.3.26",
     date: "2026-06-27",
@@ -1425,7 +1434,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.3.26";
+  appVersion.value = cfg.version || "0.3.27";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
