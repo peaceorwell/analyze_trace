@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>torch profiler analyzer</title>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.3.12" />
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.3.13" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.css" />
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
@@ -12,7 +12,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js"></script>
-  <link rel="stylesheet" href="/static/style.css?v=0.3.12" />
+  <link rel="stylesheet" href="/static/style.css?v=0.3.13" />
   <script>
     // Apply saved theme or system preference before page paint to avoid flash
     (function() {
@@ -143,7 +143,7 @@
     <!-- ── Header ── -->
     <header v-if="authChecked && (!authRequired || currentUser)" class="header">
       <div class="header-brand" @click="$router.push('/')" style="cursor:pointer" title="返回上传页面">
-        <img class="header-logo" src="/static/favicon.svg?v=0.3.12" alt="" />
+        <img class="header-logo" src="/static/favicon.svg?v=0.3.13" alt="" />
         <span class="header-title">Torch Profiler Analyzer</span>
         <span class="header-version">v{{ appVersion }}</span>
       </div>
@@ -225,38 +225,6 @@
             <span>项目</span>
             <small>{{ historyGroupsTotal }} 个</small>
           </div>
-          <div class="project-nav-list">
-            <div v-if="historyGroupsLoading" class="sidebar-loading compact">加载项目...</div>
-            <div
-              v-for="group in historyProjectGroups"
-              :key="group.id"
-              :class="['project-nav-item', filterProject===group.id ? 'active' : '']"
-              role="button"
-              tabindex="0"
-              @click="selectHistoryProject(group.id)"
-              @keydown.enter.prevent="selectHistoryProject(group.id)"
-            >
-              <span :class="['project-nav-icon', group.is_public ? 'shared' : '', group.id === '__none__' ? 'ungrouped' : '']">
-                {{ group.id === '__none__' ? '未' : (group.is_public ? '共' : '项') }}
-              </span>
-              <span class="project-nav-main">
-                <span class="project-nav-name">{{ group.label }}</span>
-                <small v-if="group.id !== '__none__'">{{ group.is_public ? (group.is_owner ? '我创建 · 已共享' : '共享给我') : '我创建' }}</small>
-                <small v-else>未归类任务</small>
-              </span>
-              <button
-                v-if="group.id !== '__none__'"
-                :class="['project-favorite-btn', group.is_favorite ? 'active' : '']"
-                type="button"
-                :title="group.is_favorite ? '取消收藏' : '收藏项目'"
-                @click="toggleProjectFavorite(group, $event)"
-              >{{ group.is_favorite ? '★' : '☆' }}</button>
-              <span class="project-nav-count">{{ group.job_count }}</span>
-            </div>
-            <div v-if="!historyGroupsLoading && historyProjectGroups.length===0" class="empty-tip compact">
-              {{ historySearch ? '暂无匹配项目' : (historyProjectView === 'favorite' ? '暂无收藏项目' : '暂无项目') }}
-            </div>
-          </div>
 
           <div v-if="selectedFilterProject" class="project-actions project-actions-compact">
             <div class="project-action-meta">
@@ -286,7 +254,7 @@
             <button class="btn btn-xs btn-danger" @click="bulkDeleteJobs" :disabled="historySelection.length===0">删任务</button>
           </div>
 
-          <div class="history-task-panel">
+          <div class="history-task-panel history-project-tree">
             <div class="history-task-head">
               <div>
                 <strong>{{ historyListTitle }}</strong>
@@ -294,35 +262,80 @@
               </div>
               <span>{{ historyJobsTotal }}</span>
             </div>
-            <div v-if="historyJobsLoading" class="sidebar-loading">加载任务...</div>
-            <div
-              v-for="job in historyJobs"
-              :key="job.id"
-              :class="['job-item', selectedJobId===job.id ? 'selected' : '',
-                       historySelection.includes(job.id) ? 'bulk-selected' : '']"
-              @click="handleHistoryJobClick(job)"
-            >
-              <div class="job-item-top">
-                <input v-if="historyBulkMode" type="checkbox" :checked="historySelection.includes(job.id)" readonly />
-                <span class="job-status" :class="'status-'+job.status">{{ statusIcon(job.status) }}</span>
-                <span class="job-label">{{ job.label || job.id.slice(0,8) }}</span>
-                <span v-if="job.is_pinned" class="job-pin-badge">置顶</span>
-                <span class="job-mode-badge" :class="'mode-'+job.mode">{{ job.mode==='compare'?'对比':'单文件' }}</span>
+            <div v-if="historyGroupsLoading" class="sidebar-loading">加载项目...</div>
+            <div v-for="group in historyProjectGroups" :key="group.id" class="project-tree-node">
+              <div
+                :class="['project-tree-head', filterProject===group.id ? 'active' : '']"
+                role="button"
+                tabindex="0"
+                @click="toggleGroup(group.id)"
+                @keydown.enter.prevent="toggleGroup(group.id)"
+              >
+                <span class="group-caret">{{ collapsedGroups[group.id] ? '▾' : '▸' }}</span>
+                <span :class="['project-tree-icon', group.is_public ? 'shared' : '', group.id === '__none__' ? 'ungrouped' : '']">
+                  {{ group.id === '__none__' ? '未' : (group.is_public ? '共' : '项') }}
+                </span>
+                <span class="project-tree-main">
+                  <strong>{{ group.label }}</strong>
+                  <small v-if="group.id !== '__none__'">{{ group.is_public ? (group.is_owner ? '我创建 · 已共享' : '共享给我') : '我创建' }}</small>
+                  <small v-else>未归类任务</small>
+                </span>
+                <button
+                  v-if="group.id !== '__none__'"
+                  :class="['project-favorite-btn', group.is_favorite ? 'active' : '']"
+                  type="button"
+                  :title="group.is_favorite ? '取消收藏' : '收藏项目'"
+                  @click="toggleProjectFavorite(group, $event)"
+                >{{ group.is_favorite ? '★' : '☆' }}</button>
+                <button
+                  v-if="filterProject !== group.id"
+                  class="project-tree-filter-btn"
+                  type="button"
+                  title="只看该项目"
+                  @click.stop="selectHistoryProject(group.id)"
+                >只看</button>
+                <span class="group-count">{{ group.job_count }}</span>
               </div>
-              <div class="job-item-meta">
-                <span>{{ fmtDate(job.created_at) }}</span>
-                <span v-if="!filterProject && job.project_name" class="job-project-inline">{{ job.project_name }}</span>
+              <div v-if="collapsedGroups[group.id]" class="project-tree-jobs">
+                <div v-if="group.jobs_loading" class="group-loading">加载任务...</div>
+                <div
+                  v-for="job in group.jobs"
+                  :key="job.id"
+                  :class="['job-item', selectedJobId===job.id ? 'selected' : '',
+                           historySelection.includes(job.id) ? 'bulk-selected' : '']"
+                  @click="handleHistoryJobClick(job)"
+                >
+                  <div class="job-item-top">
+                    <input v-if="historyBulkMode" type="checkbox" :checked="historySelection.includes(job.id)" readonly />
+                    <span class="job-status" :class="'status-'+job.status">{{ statusIcon(job.status) }}</span>
+                    <span class="job-label">{{ job.label || job.id.slice(0,8) }}</span>
+                    <span v-if="job.is_pinned" class="job-pin-badge">置顶</span>
+                    <span class="job-mode-badge" :class="'mode-'+job.mode">{{ job.mode==='compare'?'对比':'单文件' }}</span>
+                  </div>
+                  <div class="job-item-meta">
+                    <span>{{ fmtDate(job.created_at) }}</span>
+                  </div>
+                </div>
+                <div v-if="group.jobs_loaded && !group.jobs_loading && group.jobs.length===0" class="empty-tip compact">
+                  {{ historySearch ? '该项目暂无匹配任务' : '该项目暂无任务' }}
+                </div>
+                <button
+                  v-if="group.jobs_loaded && group.jobs_offset < group.jobs_total"
+                  class="btn btn-xs btn-outline group-load-more"
+                  type="button"
+                  @click.stop="loadHistoryGroupJobs(group.id)"
+                >加载更多</button>
               </div>
             </div>
-            <div v-if="!historyJobsLoading && historyJobs.length===0" class="empty-tip">
+            <div v-if="!historyGroupsLoading && historyProjectGroups.length===0" class="empty-tip">
               {{ historySearch ? '暂无匹配任务' : (filterProject ? '该项目暂无任务' : '暂无历史记录') }}
             </div>
           </div>
 
-          <div v-if="historyJobsTotal > historyJobsLimit" class="pagination">
-            <button class="btn btn-xs btn-outline" @click="prevPage" :disabled="historyJobsOffset === 0">上一页</button>
-            <span class="page-info">{{ historyJobsOffset + 1 }}-{{ Math.min(historyJobsOffset + historyJobsLimit, historyJobsTotal) }} / {{ historyJobsTotal }}</span>
-            <button class="btn btn-xs btn-outline" @click="nextPage" :disabled="historyJobsOffset + historyJobsLimit >= historyJobsTotal">下一页</button>
+          <div v-if="historyGroupsTotal > historyGroupsLimit" class="pagination">
+            <button class="btn btn-xs btn-outline" @click="prevPage" :disabled="historyGroupsOffset === 0">上一页</button>
+            <span class="page-info">{{ historyGroupsOffset + 1 }}-{{ Math.min(historyGroupsOffset + historyGroupsLimit, historyGroupsTotal) }} / {{ historyGroupsTotal }}</span>
+            <button class="btn btn-xs btn-outline" @click="nextPage" :disabled="historyGroupsOffset + historyGroupsLimit >= historyGroupsTotal">下一页</button>
           </div>
         </div>
 
@@ -1395,6 +1408,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=0.3.12"></script>
+  <script src="/static/app.js?v=0.3.13"></script>
 </body>
 </html>

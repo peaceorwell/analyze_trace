@@ -345,18 +345,18 @@ body {
 .history-sidebar-search { margin-bottom: 2px; }
 .sidebar-quick-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
+  grid-template-columns: 1fr;
+  gap: 5px;
 }
 .sidebar-quick-item {
   min-width: 0;
-  min-height: 58px;
+  min-height: 42px;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 7px;
-  padding: 8px;
-  border-radius: 10px;
+  gap: 8px;
+  padding: 7px 9px;
+  border-radius: 9px;
   border: 1px solid transparent;
   background: transparent;
   color: var(--text2);
@@ -372,11 +372,11 @@ body {
 .sidebar-quick-item.active {
   background: linear-gradient(180deg, rgba(99,102,241,.14), rgba(99,102,241,.06));
   border-color: rgba(99,102,241,.28);
-  box-shadow: 0 8px 22px rgba(99,102,241,.08);
+  box-shadow: inset 3px 0 0 var(--purple), 0 8px 20px rgba(99,102,241,.07);
 }
 .sidebar-quick-icon {
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
   border-radius: 8px;
   display: inline-flex;
   align-items: center;
@@ -398,7 +398,7 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 900;
 }
 .sidebar-quick-main small {
@@ -407,12 +407,12 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text3);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
 }
 .sidebar-quick-count {
   color: var(--text3);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 900;
 }
 .sidebar-section-title {
@@ -505,6 +505,11 @@ body {
   border-top: 1px solid var(--border);
   padding-top: 8px; margin-top: 2px;
 }
+.history-project-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
 .history-task-head {
   display: flex; align-items: center; justify-content: space-between;
   gap: 8px; margin: 0 2px 6px;
@@ -519,6 +524,106 @@ body {
   flex-shrink: 0; color: var(--text3); font-size: 10px; font-weight: 800;
   background: var(--card2); border: 1px solid var(--border); border-radius: 999px;
   padding: 2px 7px;
+}
+.project-tree-node {
+  min-width: 0;
+}
+.project-tree-head {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--purple);
+  background: var(--card2);
+  color: var(--text2);
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--sans);
+  transition: background-color .15s, border-color .15s, box-shadow .15s;
+}
+.project-tree-head:hover {
+  background: var(--surface);
+  border-color: var(--border2);
+}
+.project-tree-head.active {
+  background: linear-gradient(180deg, rgba(99,102,241,.12), rgba(99,102,241,.06));
+  border-color: rgba(99,102,241,.30);
+}
+.project-tree-icon {
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 900;
+  background: var(--purple-bg);
+  color: var(--purple-l);
+}
+.project-tree-icon.shared {
+  background: rgba(14,165,233,.12);
+  color: #0ea5e9;
+}
+.project-tree-icon.ungrouped {
+  background: var(--surface);
+  color: var(--text3);
+}
+.project-tree-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.project-tree-main strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 850;
+}
+.project-tree-main small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text3);
+  font-size: 10px;
+  font-weight: 700;
+}
+.project-tree-filter-btn {
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text3);
+  font-size: 10px;
+  font-weight: 800;
+  cursor: pointer;
+  opacity: .82;
+}
+.project-tree-filter-btn:hover {
+  border-color: rgba(99,102,241,.35);
+  color: var(--purple-l);
+  background: var(--purple-bg);
+}
+.project-tree-jobs {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 3px 0 6px 16px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border);
 }
 
 .folder-header {

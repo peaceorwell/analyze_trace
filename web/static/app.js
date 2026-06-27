@@ -131,7 +131,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.3.12");
+const appVersion = ref("0.3.13");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -567,13 +567,13 @@ let pollTimer = null;
 // ══════════════════════════════════════════════════════════════════════════════
 
 const groupedJobs = computed(() => historyGroups.value);
+const historyProjectGroups = computed(() => historyGroups.value);
 const loadedHistoryJobs = computed(() =>
-  historyJobs.value
+  historyProjectGroups.value.flatMap(group => group.jobs || [])
 );
 const loadedHistoryJobIds = computed(() =>
   loadedHistoryJobs.value.map(job => job.id)
 );
-const historyProjectGroups = computed(() => historyGroups.value);
 const historyAllJobCount = computed(() =>
   historyProjectGroups.value.reduce((sum, group) => sum + Number(group.job_count || 0), 0)
 );
@@ -1100,7 +1100,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.3.12";
+  appVersion.value = cfg.version || "0.3.13";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -2544,6 +2544,13 @@ const loadHistoryGroups = async () => {
       jobs_loading: false,
     }));
     historyGroupsTotal.value = data.total || 0;
+    const expandedGroupIds = historyGroups.value
+      .filter(group => collapsedGroups.value[group.id] || (filterProject.value && group.id === filterProject.value))
+      .map(group => group.id);
+    for (const groupId of expandedGroupIds) {
+      collapsedGroups.value[groupId] = true;
+      loadHistoryGroupJobs(groupId, true);
+    }
 
   } catch (e) {
     if (e.name !== "AbortError") showToast(normalizeApiError(e, "加载历史记录失败"), "error");
@@ -5691,16 +5698,16 @@ const createProject = async () => {
 };
 
 const prevPage = () => {
-  if (historyJobsOffset.value > 0) {
-    historyJobsOffset.value = Math.max(0, historyJobsOffset.value - historyJobsLimit.value);
-    loadHistoryJobs();
+  if (historyGroupsOffset.value > 0) {
+    historyGroupsOffset.value = Math.max(0, historyGroupsOffset.value - historyGroupsLimit.value);
+    loadHistoryGroups();
   }
 };
 
 const nextPage = () => {
-  if (historyJobsOffset.value + historyJobsLimit.value < historyJobsTotal.value) {
-    historyJobsOffset.value += historyJobsLimit.value;
-    loadHistoryJobs();
+  if (historyGroupsOffset.value + historyGroupsLimit.value < historyGroupsTotal.value) {
+    historyGroupsOffset.value += historyGroupsLimit.value;
+    loadHistoryGroups();
   }
 };
 
