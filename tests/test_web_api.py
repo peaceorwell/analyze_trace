@@ -70,7 +70,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.3.27",
+        "version": "0.3.28",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -95,7 +95,7 @@ def test_collect_results_hides_empty_pytorch_csvs_for_tensorflow_trace(isolated_
     (rdir / "cncl_ops_avg.csv").write_text("op_name,avg_count,avg_dur_ms\n")
     (rdir / "non_triton_kernel_efficiency_avg.csv").write_text(
         "kernel_name,family,operator,input_dims,input_types,input_strides,concrete_inputs,"
-        "operator_details,avg_count,avg_dur_ms,avg_us_per_call,avg_compute_efficiency,"
+        "avg_count,avg_dur_ms,avg_us_per_call,avg_compute_efficiency,"
         "avg_io_efficiency,avg_op_efficiency\n"
     )
 

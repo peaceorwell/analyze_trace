@@ -2,6 +2,10 @@
 
 本文件记录 Torch Profiler Analyzer 的主要版本更新。
 
+## [0.3.28] - 2026-06-27
+
+- 非 Triton 效率 CSV 移除 `operator_details` 列，保留 `operator` 与输入 shape 相关字段。
+
 ## [0.3.27] - 2026-06-27
 
 - 补齐页面交互主色变量，避免局部按钮或状态样式引用缺失。

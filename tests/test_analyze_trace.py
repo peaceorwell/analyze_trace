@@ -1021,3 +1021,6 @@ class TestEndToEnd:
             with open(os.path.join(temp_output_dir, name)) as f:
                 fields = next(csv.reader(f))
             assert not any("pct" in field.lower() or "percent" in field.lower() for field in fields)
+            if name == "non_triton_kernel_efficiency_avg.csv":
+                assert "operator_details" not in fields
+                assert "operator" in fields
