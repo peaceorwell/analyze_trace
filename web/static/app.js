@@ -134,7 +134,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.4.6");
+const appVersion = ref("0.4.7");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -586,6 +586,15 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.4.7",
+    date: "2026-06-28",
+    title: "实验树节点主指标调整",
+    items: [
+      "实验树节点卡片的主指标改为 Compute time，不再默认突出 E2E。",
+      "节点卡片下方改为展示 E2E 与 Kernel，避免 Compute time 重复出现。",
+    ],
+  },
   {
     version: "0.4.6",
     date: "2026-06-28",
@@ -1528,7 +1537,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.4.6";
+  appVersion.value = cfg.version || "0.4.7";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -7380,15 +7389,15 @@ const ExperimentTree = {
                 <span v-if="node.status !== 'done'" class="exp-node-chip status">{{ statusText(node.status) }}</span>
               </div>
               <div class="exp-node-primary">
-                <b>{{ formatNodeMetricNumber(node, 'e2e_ms', 'ms') }}</b>
-                <span>ms · e2e</span>
-                <em v-if="nodeMetricChipText(node, 'e2e_ms', 'e2e')" :class="nodeMetricChipClass(node, 'e2e_ms')">{{ nodeMetricChipText(node, 'e2e_ms', 'e2e') }}</em>
+                <b>{{ formatNodeMetricNumber(node, 'compute_ms', 'ms') }}</b>
+                <span>ms · compute time</span>
+                <em v-if="nodeMetricChipText(node, 'compute_ms', 'compute')" :class="nodeMetricChipClass(node, 'compute_ms')">{{ nodeMetricChipText(node, 'compute_ms', 'compute') }}</em>
               </div>
               <div class="exp-node-secondary">
                 <div>
-                  <span>Compute</span>
-                  <b>{{ formatNodeMetricValue(node, 'compute_ms', 'ms') }}</b>
-                  <em v-if="nodeMetricChipText(node, 'compute_ms', 'compute')" :class="nodeMetricChipClass(node, 'compute_ms')">{{ nodeMetricChipText(node, 'compute_ms', 'compute') }}</em>
+                  <span>E2E</span>
+                  <b>{{ formatNodeMetricValue(node, 'e2e_ms', 'ms') }}</b>
+                  <em v-if="nodeMetricChipText(node, 'e2e_ms', 'e2e')" :class="nodeMetricChipClass(node, 'e2e_ms')">{{ nodeMetricChipText(node, 'e2e_ms', 'e2e') }}</em>
                 </div>
                 <div>
                   <span>Kernel</span>
