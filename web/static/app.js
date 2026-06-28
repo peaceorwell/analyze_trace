@@ -134,7 +134,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.4.11");
+const appVersion = ref("0.4.12");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -586,6 +586,15 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.4.12",
+    date: "2026-06-29",
+    title: "实验树布局修复与折线图视觉优化",
+    items: [
+      "修复旧节点尺寸和单节点缩放状态残留导致的画布自动整理重叠问题。",
+      "美化折线图线条、点、图例、网格和目标线标签，并让坐标轴配色跟随当前主题。",
+    ],
+  },
   {
     version: "0.4.11",
     date: "2026-06-29",
@@ -1574,7 +1583,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.4.11";
+  appVersion.value = cfg.version || "0.4.12";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -7855,8 +7864,6 @@ const ExperimentTree = {
       const height = Math.max(minHeight, Math.min(maxHeight, roundLayout(visualLines * lineHeight + paddingY * 2 + extraHeight)));
       return { width, height };
     };
-    const clampNodeScale = value => Math.max(0.65, Math.min(2.0, Math.round(Number(value || 1) * 100) / 100));
-    const nodeScale = node => clampNodeScale(node?.scale || 1);
     const clampNodeWidth = value => Math.max(NODE_MIN_W, Math.min(NODE_MAX_W, roundLayout(hasLayoutNumber(value) ? value : NODE_W)));
     const clampNodeHeight = value => Math.max(NODE_MIN_H, Math.min(NODE_MAX_H, roundLayout(hasLayoutNumber(value) ? value : NODE_H)));
     const nodeAutoSize = node => {
@@ -7907,15 +7914,13 @@ const ExperimentTree = {
       const statsWidth = nodePaddingX * 2 + Math.max(titleWidth, primaryWidth, secondaryWidth, 164);
       const statsHeight = 76;
       const contentHeight = 15 + 18 + rowGap + statsHeight + 18;
-      const scaledWidth = NODE_W * nodeScale(node);
-      const scaledHeight = contentHeight * nodeScale(node);
       return {
-        width: clampNodeWidth(Math.max(NODE_W, scaledWidth, titleWidth, statsWidth)),
-        height: clampNodeHeight(Math.max(NODE_H, scaledHeight, contentHeight)),
+        width: clampNodeWidth(Math.max(NODE_W, titleWidth, statsWidth)),
+        height: clampNodeHeight(Math.max(NODE_H, contentHeight)),
       };
     };
-    const nodeWidth = node => clampNodeWidth(hasLayoutNumber(node?.width) ? node.width : nodeAutoSize(node).width);
-    const nodeHeight = node => clampNodeHeight(hasLayoutNumber(node?.height) ? node.height : nodeAutoSize(node).height);
+    const nodeWidth = node => nodeAutoSize(node).width;
+    const nodeHeight = node => nodeAutoSize(node).height;
     const clampEdgeLabelWidth = value => Math.max(EDGE_LABEL_MIN_W, Math.min(EDGE_LABEL_MAX_W, roundLayout(value || EDGE_LABEL_W)));
     const clampEdgeLabelHeight = value => Math.max(EDGE_LABEL_MIN_H, Math.min(EDGE_LABEL_MAX_H, roundLayout(value || EDGE_LABEL_H)));
     const edgeLabelAutoSize = edge => autoTextBoxSize(edgeCanvasText(edge), {
@@ -8163,13 +8168,22 @@ const ExperimentTree = {
           label,
           data,
           borderColor: color,
-          backgroundColor: color,
+          backgroundColor: chartAlphaColor(color, 0.12),
+          borderWidth: 2.6,
+          hoverBorderWidth: 3.2,
+          borderCapStyle: "round",
+          borderJoinStyle: "round",
+          cubicInterpolationMode: "monotone",
           pointBackgroundColor: color,
+          pointHoverBackgroundColor: color,
           pointBorderColor: "#ffffff",
+          pointHoverBorderColor: color,
           pointBorderWidth: 2,
-          pointRadius: ctx => ctx.raw?.rawValue === null ? 0 : 4,
-          pointHoverRadius: ctx => ctx.raw?.rawValue === null ? 0 : 6,
-          tension: 0,
+          pointHoverBorderWidth: 3,
+          pointRadius: ctx => ctx.raw?.rawValue === null ? 0 : 4.5,
+          pointHoverRadius: ctx => ctx.raw?.rawValue === null ? 0 : 6.5,
+          pointHitRadius: 10,
+          tension: 0.25,
           spanGaps: true,
         };
       }).filter(Boolean);
@@ -8310,9 +8324,10 @@ const ExperimentTree = {
         let cursorX = 0;
         items.forEach((node, index) => {
           const pinned = Number(node.pinned) === 1 && Number.isFinite(Number(node.x)) && Number.isFinite(Number(node.y));
-          node.x = pinned ? Number(node.x) : cursorX;
-          node.y = pinned ? Number(node.y) : layerTops[Number(key)] || 0;
-          node.scale = clampNodeScale(node.scale || 1);
+          node.x = pinned ? Math.max(Number(node.x), cursorX) : cursorX;
+          const layerTop = layerTops[Number(key)] || 0;
+          node.y = pinned ? Math.max(Number(node.y), layerTop) : layerTop;
+          node.scale = 1;
           node.pinned = pinned ? 1 : 0;
           cursorX = Math.max(cursorX, node.x + nodeWidth(node) + SIBLING_GAP);
         });
@@ -8673,18 +8688,40 @@ const ExperimentTree = {
     const openJob = id => {
       if (id) router.push({ path: `/job/${id}` });
     };
+    const chartAlphaColor = (color, alpha) => {
+      const text = String(color || "").trim();
+      if (/^#[0-9a-f]{6}$/i.test(text)) {
+        const value = parseInt(text.slice(1), 16);
+        return `rgba(${(value >> 16) & 255}, ${(value >> 8) & 255}, ${value & 255}, ${alpha})`;
+      }
+      if (/^rgb\(/i.test(text)) return text.replace(/^rgb\((.+)\)$/i, `rgba($1, ${alpha})`);
+      return text;
+    };
     const lineageChartThemeColors = () => {
       if (typeof window === "undefined") {
-        return { text: "#64748b", title: "#1e293b", grid: "rgba(148,163,184,.22)", target: "#ef4444", border: "#ffffff" };
+        return {
+          text: "#64748b",
+          title: "#1e293b",
+          grid: "rgba(148,163,184,.16)",
+          gridStrong: "rgba(148,163,184,.28)",
+          axis: "rgba(100,116,139,.36)",
+          target: "#ef4444",
+          targetSoft: "rgba(239,68,68,.10)",
+          pointBorder: "#ffffff",
+        };
       }
       const style = getComputedStyle(document.documentElement);
       const read = (name, fallback) => style.getPropertyValue(name).trim() || fallback;
+      const border = read("--border", "#cbd5e1");
       return {
         text: read("--text2", "#64748b"),
         title: read("--text", "#1e293b"),
-        grid: read("--border", "rgba(148,163,184,.22)"),
+        grid: chartAlphaColor(border, 0.46),
+        gridStrong: chartAlphaColor(border, 0.74),
+        axis: chartAlphaColor(border, 0.95),
         target: read("--red", "#ef4444"),
-        border: read("--exp-canvas-bg", "#ffffff"),
+        targetSoft: read("--red-bg", "rgba(239,68,68,.10)"),
+        pointBorder: read("--exp-surface", "#ffffff"),
       };
     };
     const ensureLineageChartTooltip = () => {
@@ -8838,15 +8875,27 @@ const ExperimentTree = {
           ctx.setLineDash([]);
           ctx.font = "700 11px Inter, system-ui, sans-serif";
           const textWidth = ctx.measureText(label).width;
-          const textX = Math.max(chartArea.left + 8, chartArea.right - textWidth - 8);
-          const textY = Math.max(chartArea.top + 14, y - 8);
+          const boxW = textWidth + 14;
+          const boxH = 22;
+          const boxX = Math.max(chartArea.left + 8, chartArea.right - boxW - 8);
+          const boxY = Math.max(chartArea.top + 6, y - boxH - 6);
+          ctx.fillStyle = colors.targetSoft;
+          ctx.strokeStyle = chartAlphaColor(colors.target, 0.22);
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          if (typeof ctx.roundRect === "function") ctx.roundRect(boxX, boxY, boxW, boxH, 6);
+          else ctx.rect(boxX, boxY, boxW, boxH);
+          ctx.fill();
+          ctx.stroke();
           ctx.fillStyle = colors.target;
-          ctx.fillText(label, textX, textY);
+          ctx.fillText(label, boxX + 7, boxY + 14);
           ctx.restore();
         },
       };
       const datasets = lineageChartModel.value.datasets.map(dataset => ({
         ...dataset,
+        pointBorderColor: colors.pointBorder,
+        pointHoverBorderColor: colors.pointBorder,
         data: dataset.data.map(point => ({ ...point })),
       }));
       lineageChartInst = new Chart(lineageChartCanvas.value, {
@@ -8860,6 +8909,18 @@ const ExperimentTree = {
           maintainAspectRatio: false,
           parsing: false,
           normalized: true,
+          layout: {
+            padding: { top: 2, right: 12, bottom: 2, left: 4 },
+          },
+          elements: {
+            line: {
+              borderCapStyle: "round",
+              borderJoinStyle: "round",
+            },
+            point: {
+              hoverBorderWidth: 3,
+            },
+          },
           interaction: { mode: "nearest", intersect: true },
           onClick: (event, _elements, chart) => {
             if (suppressLineageChartClick) return;
@@ -8874,13 +8935,15 @@ const ExperimentTree = {
           plugins: {
             legend: {
               position: "top",
+              align: "start",
               labels: {
                 color: colors.text,
-                boxWidth: 12,
-                boxHeight: 12,
-                padding: 12,
-                font: { size: 11 },
+                boxWidth: 10,
+                boxHeight: 10,
+                padding: 14,
+                font: { size: 11, weight: "650" },
                 usePointStyle: true,
+                pointStyle: "circle",
               },
             },
             tooltip: {
@@ -8898,10 +8961,15 @@ const ExperimentTree = {
                 stepSize: 1,
                 precision: 0,
                 color: colors.text,
-                font: { size: 11 },
+                padding: 8,
+                font: { size: 11, weight: "650" },
                 callback: value => Number.isInteger(Number(value)) ? value : "",
               },
-              grid: { color: colors.grid },
+              grid: {
+                color: context => Number(context.tick?.value) === 0 ? colors.gridStrong : colors.grid,
+                tickLength: 0,
+              },
+              border: { color: colors.axis },
             },
             y: {
               beginAtZero: false,
@@ -8910,10 +8978,15 @@ const ExperimentTree = {
               title: { display: true, text: axisTitle, color: colors.title, font: { size: 12, weight: "700" } },
               ticks: {
                 color: colors.text,
-                font: { size: 11 },
+                padding: 8,
+                font: { size: 11, weight: "650" },
                 callback: value => metricDef.unit === "count" ? value : Number(value).toFixed(2),
               },
-              grid: { color: colors.grid },
+              grid: {
+                color: colors.grid,
+                tickLength: 0,
+              },
+              border: { color: colors.axis },
             },
           },
         },
@@ -9232,11 +9305,7 @@ const ExperimentTree = {
       if (!displayed && !raw) return null;
       const x = finiteLayoutNumber(raw?.x, finiteLayoutNumber(displayed?.x, finiteLayoutNumber(fallback.x, 0)));
       const y = finiteLayoutNumber(raw?.y, finiteLayoutNumber(displayed?.y, finiteLayoutNumber(fallback.y, 0)));
-      const scaleSource = fallback.scale === undefined ? (raw || displayed || fallback) : fallback;
-      const sizeSource = raw || displayed || fallback;
-      const width = clampNodeWidth(hasLayoutNumber(fallback.width) ? fallback.width : nodeWidth(sizeSource));
-      const height = clampNodeHeight(hasLayoutNumber(fallback.height) ? fallback.height : nodeHeight(sizeSource));
-      return { job_id: id, x, y, scale: nodeScale(scaleSource), width, height, pinned: 1 };
+      return { job_id: id, x, y, scale: 1, width: null, height: null, pinned: 1 };
     };
     const nodeStyle = node => ({
       left: `${node.x}px`,
