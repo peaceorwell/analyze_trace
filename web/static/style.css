@@ -946,6 +946,11 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 .exp-toolbar-stable-action {
   min-width: 72px;
 }
+.exp-toolbar-spacer {
+  display: inline-block;
+  height: 1px;
+  visibility: hidden;
+}
 .exp-view-toggle {
   display: inline-flex;
   align-items: center;
@@ -990,19 +995,6 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   white-space: nowrap;
   font-size: 11px;
   color: var(--text3);
-}
-.exp-zoom-btn {
-  width: 30px;
-  padding-left: 0;
-  padding-right: 0;
-}
-.exp-zoom-label {
-  width: 42px;
-  text-align: center;
-  color: var(--text3);
-  font-size: 12px;
-  font-family: var(--mono);
-  font-weight: 700;
 }
 .exp-body {
   flex: 1;
@@ -1303,11 +1295,12 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   font-size: 11px;
   line-height: 1;
   opacity: 0;
+  pointer-events: none;
   transition: opacity .15s, color .15s, border-color .15s, background-color .15s;
 }
-.exp-edge-label:hover .exp-edge-resize,
-.exp-edge-label.active .exp-edge-resize {
+.exp-edge-label:hover .exp-edge-resize {
   opacity: .95;
+  pointer-events: auto;
 }
 .exp-edge-resize:hover {
   color: var(--exp-edge-active);
@@ -1361,7 +1354,7 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   box-sizing: border-box;
   contain: layout paint;
   isolation: isolate;
-  width: 240px;
+  width: 224px;
   height: 142px;
   display: flex;
   flex-direction: column;
@@ -1465,14 +1458,14 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 .exp-status-dot.running { background: var(--yellow); box-shadow: 0 0 0 3px rgba(234,179,8,.18); }
 .exp-status-dot.error { background: var(--red); box-shadow: 0 0 0 3px rgba(239,68,68,.16); }
 .exp-node-primary {
-  display: grid;
-  grid-template-columns: auto auto max-content;
+  display: flex;
   align-items: baseline;
-  gap: 7px;
+  gap: 6px;
   min-width: 0;
   overflow: hidden;
 }
 .exp-node-primary b {
+  flex: 0 0 auto;
   min-width: 0;
   color: var(--node-ink);
   font-family: var(--mono);
@@ -1483,13 +1476,18 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   white-space: nowrap;
 }
 .exp-node-primary span {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--text3);
   font-size: 11px;
   font-weight: 700;
   white-space: nowrap;
 }
 .exp-node-primary .exp-delta {
-  justify-self: end;
+  flex: 0 0 auto;
+  margin-left: auto;
   align-self: center;
   max-width: none;
   overflow: visible;
@@ -1505,8 +1503,9 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 }
 .exp-node-secondary div {
   display: grid;
-  grid-template-columns: minmax(48px, .7fr) minmax(0, 1fr) minmax(0, auto);
+  grid-template-columns: minmax(42px, max-content) max-content minmax(0, max-content);
   align-items: center;
+  justify-content: start;
   gap: 8px;
   min-width: 0;
   overflow: hidden;
@@ -1520,51 +1519,23 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   white-space: nowrap;
 }
 .exp-node-secondary b {
-  min-width: 0;
+  min-width: max-content;
   color: var(--node-ink);
   font-family: var(--mono);
   font-size: 12px;
   font-weight: 800;
   font-variant-numeric: tabular-nums;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow: visible;
+  text-overflow: clip;
   white-space: nowrap;
-  text-align: right;
+  text-align: left;
 }
 .exp-node-secondary .exp-delta {
-  justify-self: end;
-  max-width: 112px;
+  justify-self: start;
+  max-width: none;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.exp-node-resize {
-  position: absolute;
-  right: 5px;
-  bottom: 5px;
-  width: 22px;
-  height: 22px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid rgba(148,163,184,.42);
-  border-radius: 6px;
-  background: var(--exp-handle-bg);
-  color: var(--text3);
-  cursor: nwse-resize;
-  font-size: 11px;
-  line-height: 1;
-  opacity: 0;
-  transition: opacity .15s, color .15s, border-color .15s, background-color .15s;
-}
-.exp-node:hover .exp-node-resize,
-.exp-node.selected .exp-node-resize {
-  opacity: .95;
-}
-.exp-node-resize:hover {
-  color: var(--exp-edge-active);
-  border-color: var(--exp-edge-active);
-  background: var(--purple-bg);
 }
 .exp-chart-tooltip {
   position: fixed;
@@ -1908,13 +1879,15 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 .exp-node-detail {
   gap: 0;
   margin: 12px 0 10px;
+  overflow-x: hidden;
   border-top: 1px solid rgba(148,163,184,.18);
 }
 .exp-node-detail > .exp-node-detail-row {
-  grid-template-columns: minmax(78px, max-content) minmax(160px, max-content);
-  justify-content: start;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  justify-content: stretch;
   column-gap: 14px;
-  min-width: max-content;
+  width: 100%;
+  min-width: 0;
   min-height: 34px;
   padding: 8px 0;
   overflow: visible;
@@ -1939,8 +1912,9 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 }
 .exp-node-detail > .exp-node-detail-row > span {
   justify-self: start;
+  min-width: 0;
   max-width: 100%;
-  width: fit-content;
+  width: 100%;
   padding: 0;
   border: 0;
   border-radius: 0;
@@ -1967,13 +1941,19 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   align-items: center;
   justify-content: flex-end;
   gap: 6px;
-  min-width: 160px;
+  min-width: 0;
+  max-width: none;
   overflow: visible;
+  text-overflow: clip;
   text-align: right;
   white-space: nowrap;
 }
 .exp-node-detail > .exp-node-detail-row i,
 .exp-node-detail > .exp-node-detail-row em {
+  flex: 0 0 auto;
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
   font-style: normal;
   white-space: nowrap;
 }

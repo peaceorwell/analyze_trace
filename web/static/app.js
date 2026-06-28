@@ -134,7 +134,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.4.9");
+const appVersion = ref("0.4.10");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -586,6 +586,16 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.4.10",
+    date: "2026-06-29",
+    title: "实验树折线图与画布交互优化",
+    items: [
+      "新增实验树折线图视图，支持按主指标查看代际趋势、设置指标目标线，并与画布详情交互保持一致。",
+      "收敛画布和折线图工具栏位置，移除折线图缩放入口，仅保留拖拽平移。",
+      "优化节点详情、悬浮提示和画布节点尺寸，取消节点单独缩放，避免数值截断和点击回退后的伪手动布局重叠。",
+    ],
+  },
   {
     version: "0.4.9",
     date: "2026-06-28",
@@ -1555,7 +1565,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.4.9";
+  appVersion.value = cfg.version || "0.4.10";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -7315,13 +7325,7 @@ const ExperimentTree = {
             @click="resetLayout"
             :disabled="saving"
           >自动整理</button>
-          <button
-            v-else
-            class="btn btn-sm btn-outline exp-toolbar-stable-action"
-            type="button"
-            @click="resetLineageChartZoom"
-            :disabled="lineageChartAtDefault || !!lineageChartEmptyText"
-          >重置</button>
+          <span v-else class="exp-toolbar-stable-action exp-toolbar-spacer" aria-hidden="true"></span>
           <button class="btn btn-sm btn-primary" type="button" @click="openAddEdge()">标记优化关系</button>
           <div class="exp-view-toggle" role="tablist" aria-label="实验树视图">
             <button
@@ -7337,19 +7341,6 @@ const ExperimentTree = {
               @click="viewMode='chart'"
             >折线图</button>
           </div>
-          <button
-            class="btn btn-sm btn-outline exp-zoom-btn"
-            type="button"
-            @click="viewMode === 'canvas' ? zoomBy(-0.05) : zoomLineageChart(0.8)"
-            :disabled="viewMode === 'chart' && !!lineageChartEmptyText"
-          >−</button>
-          <span class="exp-zoom-label">{{ viewMode === 'canvas' ? Math.round(view.scale * 100) : Math.round(lineageChartZoom * 100) }}%</span>
-          <button
-            class="btn btn-sm btn-outline exp-zoom-btn"
-            type="button"
-            @click="viewMode === 'canvas' ? zoomBy(0.05) : zoomLineageChart(1.25)"
-            :disabled="viewMode === 'chart' && !!lineageChartEmptyText"
-          >+</button>
           <button class="btn btn-sm btn-outline" type="button" @click="loadGraph" :disabled="loading">刷新</button>
         </div>
       </header>
@@ -7459,13 +7450,6 @@ const ExperimentTree = {
                   <em v-if="nodeMetricChipText(node, 'kernel_count', 'kernel', 'count')" :class="nodeMetricChipClass(node, 'kernel_count')">{{ nodeMetricChipText(node, 'kernel_count', 'kernel', 'count') }}</em>
                 </div>
               </div>
-              <button
-                class="exp-node-resize"
-                type="button"
-                title="缩放节点"
-                aria-label="缩放节点"
-                @mousedown.stop.prevent="startNodeResize(node, $event)"
-              >↘</button>
             </article>
 
           </div>
@@ -7484,7 +7468,6 @@ const ExperimentTree = {
           v-else
           class="exp-chart-view"
           @mousedown="startLineageChartPan"
-          @wheel.prevent="onLineageChartWheel"
         >
           <div v-if="loading" class="exp-loading">加载中...</div>
           <template v-else>
@@ -7536,7 +7519,7 @@ const ExperimentTree = {
             aria-label="展开右侧面板"
             @click.stop="panelCollapsed=false"
           >‹</button>
-          <div class="exp-canvas-hint">滚轮缩放 · 拖空白平移</div>
+          <div class="exp-canvas-hint">拖空白平移</div>
         </div>
 
         <aside v-if="!panelCollapsed" class="exp-panel">
@@ -7752,7 +7735,6 @@ const ExperimentTree = {
     const panelCollapsed = ref(false);
     const viewMode = ref("canvas");
     const lineageMetricKey = ref("compute_ms");
-    const lineageChartZoom = ref(1);
     const lineageChartAxisOffset = ref({ x: 0, y: 0 });
     const nodeNameDraft = ref("");
     const nodeNameOriginal = ref("");
@@ -7768,7 +7750,6 @@ const ExperimentTree = {
     const edgeDraft = ref({ title: "", description: "", variables: [], variablesText: "" });
     let panState = null;
     let dragState = null;
-    let resizeState = null;
     let edgeDragState = null;
     let edgeResizeState = null;
     let lineagePanState = null;
@@ -7777,7 +7758,7 @@ const ExperimentTree = {
     let lineageChartTooltipEl = null;
     let lineageChartBuildToken = 0;
 
-    const NODE_W = 248;
+    const NODE_W = 224;
     const NODE_H = 136;
     const NODE_MIN_W = 200;
     const NODE_MIN_H = 118;
@@ -7914,7 +7895,7 @@ const ExperimentTree = {
         secondaryRowWidth("E2E", "e2e_ms", "ms"),
         secondaryRowWidth("Kernel", "kernel_count", "count"),
       );
-      const statsWidth = nodePaddingX * 2 + Math.max(titleWidth, primaryWidth, secondaryWidth, 180);
+      const statsWidth = nodePaddingX * 2 + Math.max(titleWidth, primaryWidth, secondaryWidth, 164);
       const statsHeight = 76;
       const contentHeight = 15 + 18 + rowGap + statsHeight + 18;
       const scaledWidth = NODE_W * nodeScale(node);
@@ -8199,12 +8180,6 @@ const ExperimentTree = {
         ? `分支过多，仅显示前 ${MAX_LINEAGE_BRANCHES} 条；可在画布视图查看全图`
         : ""
     );
-    const lineageChartAtDefault = computed(() => {
-      const offset = lineageChartAxisOffset.value || {};
-      return lineageChartZoom.value === 1
-        && Math.abs(Number(offset.x) || 0) < 1e-9
-        && Math.abs(Number(offset.y) || 0) < 1e-9;
-    });
     const lineageChartDataPoints = computed(() =>
       lineageChartModel.value.datasets
         .flatMap(dataset => dataset.data || [])
@@ -8214,7 +8189,6 @@ const ExperimentTree = {
       const points = lineageChartDataPoints.value;
       if (!points.length) return {};
       const metricDef = currentLineageMetricDef.value;
-      const zoom = lineageChartZoom.value || 1;
       const offset = lineageChartAxisOffset.value || { x: 0, y: 0 };
       const xValues = points.map(point => Number(point.x)).filter(Number.isFinite);
       const yValues = points.map(point => Number(point.rawValue)).filter(Number.isFinite);
@@ -8224,15 +8198,6 @@ const ExperimentTree = {
         min: bounds.min + value,
         max: bounds.max + value,
       });
-      const zoomBounds = (bounds, zoomValue) => {
-        if (!Number.isFinite(bounds.min) || !Number.isFinite(bounds.max)) return bounds;
-        const center = (bounds.min + bounds.max) / 2;
-        const span = Math.max(1e-9, bounds.max - bounds.min) / zoomValue;
-        return {
-          min: center - span / 2,
-          max: center + span / 2,
-        };
-      };
       const boundsFor = (values, options = {}) => {
         if (!values.length) return {};
         const minValue = Math.min(...values);
@@ -8248,7 +8213,7 @@ const ExperimentTree = {
           max = Math.max(max, span);
           if (max <= min) max = min + rawSpan;
         }
-        return zoomBounds({ min, max }, zoom);
+        return { min, max };
       };
       const yBoundsFor = values => {
         if (!values.length) return {};
@@ -8340,7 +8305,7 @@ const ExperimentTree = {
           node.y = pinned ? Number(node.y) : layerTops[Number(key)] || 0;
           node.scale = clampNodeScale(node.scale || 1);
           node.pinned = pinned ? 1 : 0;
-          if (!pinned) cursorX += nodeWidth(node) + SIBLING_GAP;
+          cursorX = Math.max(cursorX, node.x + nodeWidth(node) + SIBLING_GAP);
         });
       });
       return graphNodes;
@@ -8791,19 +8756,6 @@ const ExperimentTree = {
       lineageChartInst.options.scales.y.min = axisBounds.y?.min;
       lineageChartInst.options.scales.y.max = axisBounds.y?.max;
       lineageChartInst.update("none");
-    };
-    const zoomLineageChart = factor => {
-      const next = Math.max(0.5, Math.min(8, Math.round((lineageChartZoom.value * factor) * 100) / 100));
-      lineageChartZoom.value = next;
-    };
-    const resetLineageChartZoom = () => {
-      lineageChartZoom.value = 1;
-      lineageChartAxisOffset.value = { x: 0, y: 0 };
-      applyLineageChartAxisBounds();
-    };
-    const onLineageChartWheel = event => {
-      if (lineageChartEmptyText.value) return;
-      zoomLineageChart(event.deltaY > 0 ? 0.8 : 1.25);
     };
     const startLineageChartPan = event => {
       if (lineageChartEmptyText.value || !lineageChartInst) return;
@@ -9277,15 +9229,6 @@ const ExperimentTree = {
       const height = clampNodeHeight(hasLayoutNumber(fallback.height) ? fallback.height : nodeHeight(sizeSource));
       return { job_id: id, x, y, scale: nodeScale(scaleSource), width, height, pinned: 1 };
     };
-    const updateNodeSize = (id, width, height) => {
-      const index = nodes.value.findIndex(node => node.id === id);
-      if (index < 0) return;
-      const current = nodes.value[index];
-      const displayed = nodeById.value[id] || current;
-      const x = finiteLayoutNumber(current.x, finiteLayoutNumber(displayed.x, 0));
-      const y = finiteLayoutNumber(current.y, finiteLayoutNumber(displayed.y, 0));
-      nodes.value.splice(index, 1, { ...current, x, y, width: clampNodeWidth(width), height: clampNodeHeight(height), pinned: 1 });
-    };
     const nodeStyle = node => ({
       left: `${node.x}px`,
       top: `${node.y}px`,
@@ -9293,21 +9236,25 @@ const ExperimentTree = {
       height: `${nodeHeight(node)}px`,
     });
     const startNodeDrag = (node, event) => {
-      if (resizeState) return;
       dragState = {
         id: node.id,
         x: event.clientX,
         y: event.clientY,
         nodeX: node.x,
         nodeY: node.y,
+        moved: false,
       };
       window.addEventListener("mousemove", moveNode);
       window.addEventListener("mouseup", stopNodeDrag);
     };
     const moveNode = event => {
       if (!dragState) return;
-      const dx = (event.clientX - dragState.x) / view.value.scale;
-      const dy = (event.clientY - dragState.y) / view.value.scale;
+      const screenDx = event.clientX - dragState.x;
+      const screenDy = event.clientY - dragState.y;
+      if (!dragState.moved && Math.abs(screenDx) <= 3 && Math.abs(screenDy) <= 3) return;
+      dragState.moved = true;
+      const dx = screenDx / view.value.scale;
+      const dy = screenDy / view.value.scale;
       updateNodePosition(dragState.id, Math.round((dragState.nodeX + dx) * 10) / 10, Math.round((dragState.nodeY + dy) * 10) / 10);
     };
     const stopNodeDrag = async () => {
@@ -9316,42 +9263,9 @@ const ExperimentTree = {
       dragState = null;
       window.removeEventListener("mousemove", moveNode);
       window.removeEventListener("mouseup", stopNodeDrag);
+      if (!state.moved) return;
       const layout = saveableNodeLayout(state.id, { x: state.nodeX, y: state.nodeY });
       if (layout) await saveLayout([layout]);
-    };
-    const startNodeResize = (node, event) => {
-      resizeState = {
-        id: node.id,
-        x: event.clientX,
-        y: event.clientY,
-        width: nodeWidth(node),
-        height: nodeHeight(node),
-        currentWidth: nodeWidth(node),
-        currentHeight: nodeHeight(node),
-        affectedIds: new Set([node.id]),
-      };
-      window.addEventListener("mousemove", moveNodeResize);
-      window.addEventListener("mouseup", stopNodeResize);
-    };
-    const moveNodeResize = event => {
-      if (!resizeState) return;
-      const dx = (event.clientX - resizeState.x) / view.value.scale;
-      const dy = (event.clientY - resizeState.y) / view.value.scale;
-      resizeState.currentWidth = clampNodeWidth(resizeState.width + dx);
-      resizeState.currentHeight = clampNodeHeight(resizeState.height + dy);
-      updateNodeSize(resizeState.id, resizeState.currentWidth, resizeState.currentHeight);
-      resolveNodeOverlaps(resizeState.id).forEach(id => resizeState.affectedIds.add(id));
-    };
-    const stopNodeResize = async () => {
-      if (!resizeState) return;
-      const state = resizeState;
-      resizeState = null;
-      window.removeEventListener("mousemove", moveNodeResize);
-      window.removeEventListener("mouseup", stopNodeResize);
-      const layouts = [...(state.affectedIds || new Set([state.id]))]
-        .map(id => saveableNodeLayout(id, id === state.id ? { width: state.currentWidth, height: state.currentHeight } : {}))
-        .filter(Boolean);
-      if (layouts.length) await saveLayout(layouts);
     };
     const updateEdgeLabelLayout = (id, patch) => {
       const index = edges.value.findIndex(edge => edge.id === id);
@@ -9455,8 +9369,6 @@ const ExperimentTree = {
       stopPan();
       window.removeEventListener("mousemove", moveNode);
       window.removeEventListener("mouseup", stopNodeDrag);
-      window.removeEventListener("mousemove", moveNodeResize);
-      window.removeEventListener("mouseup", stopNodeResize);
       window.removeEventListener("mousemove", moveEdgeLabel);
       window.removeEventListener("mouseup", stopEdgeLabelDrag);
       window.removeEventListener("mousemove", moveEdgeLabelResize);
@@ -9741,7 +9653,7 @@ const ExperimentTree = {
       { deep: true },
     );
     watch(
-      () => [viewMode.value, lineageMetricKey.value, lineageChartZoom.value, currentMetricTargetValue.value, isDark.value, nodes.value, edges.value, lineageChartEmptyText.value],
+      () => [viewMode.value, lineageMetricKey.value, currentMetricTargetValue.value, isDark.value, nodes.value, edges.value, lineageChartEmptyText.value],
       () => {
         if (viewMode.value !== "chart") {
           stopLineageChartPan();
@@ -9770,7 +9682,7 @@ const ExperimentTree = {
     return {
       viewportRef, lineageChartCanvas, loading, saving, nodes, unconnected, edges, selectedNodeId, selectedEdgeId,
       selectedNode, selectedEdge, selectedEdgePerfNote, hoverEdgeId, showAddEdge, panelCollapsed, addForm, edgeDraft,
-      viewMode, lineageMetricKey, lineageMetricOptions, lineageChartEmptyText, lineageChartWarning, lineageChartZoom, lineageChartAtDefault,
+      viewMode, lineageMetricKey, lineageMetricOptions, lineageChartEmptyText, lineageChartWarning,
       projectMetricTargetDraft, projectMetricTargetSaving, projectMetricTargetDirty, currentMetricTargetValue, currentMetricTargetTitle, currentMetricTargetValueLabel,
       nodeNameDraft, nodeNameSaving, nodeNameDirty,
       draftVariableInsertItems, selectedNodeTopKernels, selectedNodeDetailRows,
@@ -9781,9 +9693,8 @@ const ExperimentTree = {
       saveNodeName, resetNodeNameDraft,
       saveProjectMetricTarget, clearProjectMetricTarget,
       saveEdge, deleteSelectedEdge, refreshPerf, createCompare, resetLayout,
-      zoomLineageChart, resetLineageChartZoom,
-      startLineageChartPan, onLineageChartWheel,
-      startPan, startNodeDrag, startNodeResize, startEdgeLabelDrag, startEdgeLabelResize,
+      startLineageChartPan,
+      startPan, startNodeDrag, startEdgeLabelDrag, startEdgeLabelResize,
       nodeStyle, nodeWidth, edgeLabelStyle, zoomBy, onWheel,
       edgeLabel, edgeCanvasText, metricRows, formatMs, formatSignedMs, formatPct,
       formatCount, formatNodeMetric, formatNodeMetricNumber, formatNodeMetricValue,
