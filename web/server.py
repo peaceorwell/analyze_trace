@@ -56,7 +56,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.4.1"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -3529,6 +3529,334 @@ def collect_perfetto_context(jid: str) -> dict:
         return json.load(f)
 
 
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _round_ms(value):
+    return round(value, 2) if isinstance(value, (int, float)) else None
+
+
+def _float_or_none(value):
+    try:
+        return float(str(value).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _delta_pct(parent, child):
+    if parent in (None, 0) or child is None:
+        return None
+    return round((child - parent) / parent * 100, 1)
+
+
+def _read_perfetto_e2e_ms(job_id: str):
+    path = os.path.join(result_dir(job_id), "perfetto_context.json")
+    try:
+        with open(path) as f:
+            payload = json.load(f)
+        dur_ns = (payload.get("a") or {}).get("dur_ns")
+        if dur_ns is None:
+            return None
+        return _round_ms(float(dur_ns) / 1_000_000)
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+
+
+def _read_avg_ms_csv(job_id: str, filename: str, key_field: str) -> tuple[float | None, dict, float | None]:
+    path = os.path.join(result_dir(job_id), filename)
+    total = 0.0
+    count_total = 0.0
+    by_key = {}
+    seen = False
+    seen_count = False
+    try:
+        with open(path, newline="") as f:
+            for row in csv.DictReader(f):
+                try:
+                    avg_ms = float(row.get("avg_dur_ms") or "")
+                except (TypeError, ValueError):
+                    continue
+                seen = True
+                total += avg_ms
+                try:
+                    avg_count = float(row.get("avg_count") or "")
+                    seen_count = True
+                    count_total += avg_count
+                except (TypeError, ValueError):
+                    pass
+                key = (row.get(key_field) or "").strip()
+                if key:
+                    by_key[key] = by_key.get(key, 0.0) + avg_ms
+    except OSError:
+        return None, {}, None
+    rounded_by_key = {key: _round_ms(value) for key, value in by_key.items()}
+    return (_round_ms(total) if seen else None), rounded_by_key, (_round_ms(count_total) if seen_count else None)
+
+
+def _step_summary_from_parts(headers, parts) -> dict:
+    def column_value(name):
+        try:
+            return _float_or_none(parts[headers.index(name)])
+        except (ValueError, IndexError):
+            return None
+
+    return {
+        "step_dur_ms": column_value("step_dur(ms)"),
+        "aten_ops_count": column_value("aten_ops"),
+        "aten_ops_ms": column_value("aten_dur(ms)"),
+    }
+
+
+def _read_step_summary_from_console(console_out: str | None) -> dict:
+    if not console_out:
+        return {}
+    headers = None
+    step_rows = []
+    for raw_line in str(console_out).splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if "step_dur(ms)" in line and "aten_ops" in line:
+            headers = line.split()
+            continue
+        if not headers:
+            continue
+        if line.startswith("-"):
+            continue
+        parts = line.split()
+        if not parts:
+            continue
+        if parts[0].lower() == "avg":
+            return {
+                key: _round_ms(value)
+                for key, value in _step_summary_from_parts(headers, parts).items()
+                if value is not None
+            }
+        if parts[0].isdigit():
+            row = _step_summary_from_parts(headers, parts)
+            if any(value is not None for value in row.values()):
+                step_rows.append(row)
+        elif line.startswith("===") and step_rows:
+            break
+    if not step_rows:
+        return {}
+    averaged = {}
+    for key in ("step_dur_ms", "aten_ops_count", "aten_ops_ms"):
+        values = [row[key] for row in step_rows if row.get(key) is not None]
+        if values:
+            averaged[key] = _round_ms(sum(values) / len(values))
+    return averaged
+
+
+def _read_hot_kernel_metrics(job_id: str, limit: int = 5) -> tuple[list[dict], dict]:
+    path = os.path.join(result_dir(job_id), "all_kernels_avg.csv")
+    by_name = {}
+    try:
+        with open(path, newline="") as f:
+            for row in csv.DictReader(f):
+                name = (row.get("kernel_name") or "").strip()
+                if not name:
+                    continue
+                avg_ms = _float_or_none(row.get("avg_dur_ms"))
+                if avg_ms is None:
+                    continue
+                avg_count = _float_or_none(row.get("avg_count"))
+                item = by_name.setdefault(name, {
+                    "name": name,
+                    "family": (row.get("family") or "").strip(),
+                    "avg_count": 0.0,
+                    "avg_dur_ms": 0.0,
+                })
+                item["avg_dur_ms"] += avg_ms
+                if avg_count is not None:
+                    item["avg_count"] += avg_count
+    except OSError:
+        return [], {}
+    rows = []
+    for item in by_name.values():
+        rows.append({
+            "name": item["name"],
+            "family": item["family"],
+            "avg_count": _round_ms(item["avg_count"]),
+            "avg_dur_ms": _round_ms(item["avg_dur_ms"]),
+        })
+    rows.sort(key=lambda item: item.get("avg_dur_ms") or 0, reverse=True)
+    kernel_durations = {item["name"]: item["avg_dur_ms"] for item in rows}
+    return rows[:limit], kernel_durations
+
+
+def _read_node_metrics(job_id: str, console_out: str | None = None) -> dict:
+    compute_ms, by_type, kernel_count = _read_avg_ms_csv(job_id, "kernel_types_avg.csv", "type")
+    comm_ms, _, _ = _read_avg_ms_csv(job_id, "cncl_ops_avg.csv", "op_name")
+    aten_ops_ms, _, aten_ops_count = _read_avg_ms_csv(job_id, "aten_ops_avg.csv", "op_name")
+    step_summary = _read_step_summary_from_console(console_out)
+    top_kernels, kernel_durations = _read_hot_kernel_metrics(job_id)
+    return {
+        "e2e_ms": _read_perfetto_e2e_ms(job_id),
+        "step_dur_ms": step_summary.get("step_dur_ms"),
+        "compute_ms": compute_ms,
+        "comm_ms": comm_ms,
+        "kernel_count": kernel_count,
+        "aten_ops_count": step_summary.get("aten_ops_count", aten_ops_count),
+        "aten_ops_ms": step_summary.get("aten_ops_ms", aten_ops_ms),
+        "by_type": by_type,
+        "top_kernels": top_kernels,
+        "kernel_durations": kernel_durations,
+    }
+
+
+def compute_perf_delta(parent_job_id: str, child_job_id: str) -> dict:
+    parent = _read_node_metrics(parent_job_id)
+    child = _read_node_metrics(child_job_id)
+
+    metrics = {}
+    incomplete = False
+    for key in ("e2e_ms", "compute_ms", "comm_ms"):
+        parent_value = parent.get(key)
+        child_value = child.get(key)
+        if key in {"e2e_ms", "compute_ms"} and (parent_value is None or child_value is None):
+            incomplete = True
+        metrics[key] = {
+            "parent": parent_value,
+            "child": child_value,
+            "delta_pct": _delta_pct(parent_value, child_value),
+        }
+
+    top_movers = []
+    parent_types = parent.get("by_type") or {}
+    child_types = child.get("by_type") or {}
+    for kernel_type in set(parent_types) | set(child_types):
+        parent_ms = parent_types.get(kernel_type, 0.0)
+        child_ms = child_types.get(kernel_type, 0.0)
+        delta_ms = child_ms - parent_ms
+        top_movers.append({
+            "type": kernel_type,
+            "parent_ms": _round_ms(parent_ms),
+            "child_ms": _round_ms(child_ms),
+            "delta_ms": _round_ms(delta_ms),
+            "delta_pct": _delta_pct(parent_ms, child_ms),
+        })
+    top_movers.sort(key=lambda item: abs(item.get("delta_ms") or 0), reverse=True)
+
+    return {
+        "schema": 1,
+        "generated_at": _utc_now_iso(),
+        "metrics": metrics,
+        "top_movers": top_movers[:5],
+        "incomplete": incomplete,
+        "notes": "" if not incomplete else "部分结果文件缺失或尚未生成",
+    }
+
+
+def _parse_json_field(value, fallback):
+    if value in (None, ""):
+        return fallback
+    try:
+        parsed = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return fallback
+    return parsed
+
+
+def _normalize_experiment_variables(raw) -> list[dict]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise HTTPException(400, "variables must be an array")
+    variables = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise HTTPException(400, "variables items must be objects")
+        name = str(item.get("name") or "").strip()
+        if not name:
+            raise HTTPException(400, "variables items require name")
+        variables.append({
+            "name": name,
+            "from": "" if item.get("from") is None else str(item.get("from")),
+            "to": "" if item.get("to") is None else str(item.get("to")),
+        })
+    return variables
+
+
+def _experiment_edge_response(row: dict) -> dict:
+    data = dict(row)
+    data["variables"] = _parse_json_field(data.get("variables"), [])
+    if not isinstance(data["variables"], list):
+        data["variables"] = []
+    perf = _parse_json_field(data.get("perf_summary"), None)
+    data["perf"] = perf if isinstance(perf, dict) else None
+    data.pop("perf_summary", None)
+    data["perf_summary_edited"] = 1 if data.get("perf_summary_edited") else 0
+    return data
+
+
+def _normalize_edge_label_layout(raw) -> dict:
+    if not isinstance(raw, dict):
+        raise HTTPException(400, "label_layout must be an object")
+    normalized = {}
+    for key in ("label_x", "label_y", "label_width", "label_height"):
+        if key not in raw:
+            continue
+        try:
+            value = float(raw.get(key))
+        except (TypeError, ValueError):
+            raise HTTPException(400, "标签布局必须是数字")
+        if key in {"label_x", "label_y"}:
+            if not (-1_000_000 <= value <= 1_000_000):
+                raise HTTPException(400, "标签坐标超出范围")
+        elif key == "label_width":
+            if not (120 <= value <= 900):
+                raise HTTPException(400, "标签宽度超出范围")
+        elif key == "label_height":
+            if not (36 <= value <= 420):
+                raise HTTPException(400, "标签高度超出范围")
+        normalized[key] = value
+    return normalized
+
+
+def _would_create_cycle(edges, parent: str, child: str) -> bool:
+    adj = {}
+    for edge in edges:
+        adj.setdefault(edge["parent_job_id"], []).append(edge["child_job_id"])
+    seen = set()
+    queue = [child]
+    while queue:
+        node = queue.pop(0)
+        if node == parent:
+            return True
+        if node in seen:
+            continue
+        seen.add(node)
+        queue.extend(adj.get(node, []))
+    return False
+
+
+async def _load_experiment_edge(db, edge_id: str) -> Optional[dict]:
+    return await row_to_dict(
+        await (await db.execute("SELECT * FROM experiment_edges WHERE id=?", (edge_id,))).fetchone()
+    )
+
+
+async def _clear_experiment_job_links(db, job_ids: list[str]):
+    if not job_ids:
+        return
+    placeholders = ",".join("?" * len(job_ids))
+    params = tuple(job_ids)
+    await db.execute(
+        f"DELETE FROM experiment_edges WHERE parent_job_id IN ({placeholders}) OR child_job_id IN ({placeholders})",
+        (*params, *params),
+    )
+    await db.execute(
+        f"DELETE FROM experiment_node_layout WHERE job_id IN ({placeholders})",
+        params,
+    )
+    await db.execute(
+        f"UPDATE experiment_edges SET compare_job_id=NULL WHERE compare_job_id IN ({placeholders})",
+        params,
+    )
+
+
 def _perfetto_context(data):
     if not data["step_stats"] or not data["step_ranges"]:
         return None
@@ -6140,6 +6468,9 @@ async def delete_project(request: Request, pid: str):
               job_dict.get("save_triton_csv", 0), job_dict.get("save_triton_code", 0),
               job_dict.get("status", "pending"), job_dict.get("console_out", ""), job_dict.get("error_msg", ""), job_dict.get("result_dir", "")))
 
+    await db.execute("DELETE FROM experiment_edges WHERE project_id=?", (pid,))
+    await db.execute("DELETE FROM experiment_node_layout WHERE project_id=?", (pid,))
+
     # Delete jobs from main table
     await db.execute("DELETE FROM jobs WHERE project_id=?", (pid,))
 
@@ -6557,17 +6888,20 @@ async def bulk_move_jobs(request: Request, body: dict):
     job_ids = _unique_job_ids(body)
     db = await get_db()
     try:
-        await _load_jobs_by_ids(db, job_ids, request)
-        await validate_project_access(db, request, body.get("project_id") or None)
+        jobs = await _load_jobs_by_ids(db, job_ids, request)
+        target_project_id = body.get("project_id") or None
+        await validate_project_access(db, request, target_project_id)
+        changed_job_ids = [job["id"] for job in jobs if job.get("project_id") != target_project_id]
+        await _clear_experiment_job_links(db, changed_job_ids)
         placeholders = ",".join("?" * len(job_ids))
         await db.execute(
             f"UPDATE jobs SET project_id=? WHERE id IN ({placeholders})",
-            (body.get("project_id") or None, *job_ids),
+            (target_project_id, *job_ids),
         )
         await write_audit(
             db, request, "job.bulk_move",
             resource_type="job", resource_id=",".join(job_ids[:10]),
-            details={"job_count": len(job_ids), "project_id": body.get("project_id") or None},
+            details={"job_count": len(job_ids), "project_id": target_project_id},
         )
         await db.commit()
     finally:
@@ -6587,6 +6921,7 @@ async def bulk_delete_jobs(request: Request, body: dict):
         for job_id in job_ids:
             _remove_job_dir(job_id)
         placeholders = ",".join("?" * len(job_ids))
+        await _clear_experiment_job_links(db, job_ids)
         await db.execute(f"DELETE FROM jobs WHERE id IN ({placeholders})", tuple(job_ids))
         await write_audit(
             db, request, "job.bulk_delete",
@@ -6805,6 +7140,12 @@ async def list_job_groups(
                     p.is_public,
                     po.sort_order,
                     {_project_favorite_select("p")},
+                    EXISTS (
+                        SELECT 1
+                        FROM experiment_edges ee
+                        WHERE ee.project_id = p.id
+                        LIMIT 1
+                    ) AS has_experiment_tree,
                     (
                         SELECT COUNT(*)
                         FROM jobs j
@@ -6831,6 +7172,7 @@ async def list_job_groups(
                 "is_public": 1 if row["is_public"] else 0,
                 "is_owner": True if not current_user_token(request) else row["user_token"] == current_user_token(request),
                 "is_favorite": 1 if row["is_favorite"] else 0,
+                "has_experiment_tree": 1 if row["has_experiment_tree"] else 0,
                 "visibility": "shared" if row["is_public"] else "personal",
             }
             for row in project_rows
@@ -7075,6 +7417,518 @@ async def compare_jobs(request: Request, body: dict):
 
     await enqueue_analysis_job(jid)
     return dict(row)
+
+
+@app.get("/api/projects/{pid}/experiments")
+async def get_project_experiments(request: Request, pid: str):
+    db = await get_db()
+    try:
+        await validate_project_access(db, request, pid)
+
+        edge_rows = [
+            dict(row)
+            for row in await (
+                await db.execute(
+                    "SELECT * FROM experiment_edges WHERE project_id=? ORDER BY created_at, id",
+                    (pid,),
+                )
+            ).fetchall()
+        ]
+        for edge in edge_rows:
+            perf = _parse_json_field(edge.get("perf_summary"), None)
+            if isinstance(perf, dict) and perf.get("incomplete") and not edge.get("perf_summary_edited"):
+                refreshed = compute_perf_delta(edge["parent_job_id"], edge["child_job_id"])
+                edge["perf_summary"] = json.dumps(refreshed, ensure_ascii=False)
+                await db.execute(
+                    "UPDATE experiment_edges SET perf_summary=? WHERE id=?",
+                    (edge["perf_summary"], edge["id"]),
+                )
+
+        layout_rows = await (
+            await db.execute(
+                "SELECT job_id, x, y, scale, width, height, pinned FROM experiment_node_layout WHERE project_id=?",
+                (pid,),
+            )
+        ).fetchall()
+        layout_by_job = {row["job_id"]: dict(row) for row in layout_rows}
+
+        node_ids = []
+        for edge in edge_rows:
+            for job_id in (edge.get("parent_job_id"), edge.get("child_job_id")):
+                if job_id and job_id not in node_ids:
+                    node_ids.append(job_id)
+
+        nodes = []
+        kernel_durations_by_job = {}
+        if node_ids:
+            placeholders = ",".join("?" * len(node_ids))
+            clauses = ["j.project_id=?", f"j.id IN ({placeholders})"]
+            params = [pid, *node_ids]
+            access_sql, access_params = _job_access_clause(request, "j")
+            if access_sql:
+                clauses.append(access_sql)
+                params.extend(access_params)
+            rows = await (
+                await db.execute(
+                    f"""
+                    SELECT j.id, j.label, j.file_a_name, j.created_at, j.status, j.mode, j.console_out
+                    FROM jobs j
+                    WHERE {' AND '.join(clauses)}
+                    ORDER BY j.created_at, j.id
+                    """,
+                    params,
+                )
+            ).fetchall()
+            for row in rows:
+                item = dict(row)
+                layout = layout_by_job.get(item["id"]) or {}
+                metrics = _read_node_metrics(item["id"], item.get("console_out"))
+                item.pop("console_out", None)
+                item["e2e_ms"] = metrics.get("e2e_ms")
+                item["step_dur_ms"] = metrics.get("step_dur_ms")
+                item["compute_ms"] = metrics.get("compute_ms")
+                item["comm_ms"] = metrics.get("comm_ms")
+                item["kernel_count"] = metrics.get("kernel_count")
+                item["aten_ops_count"] = metrics.get("aten_ops_count")
+                item["aten_ops_ms"] = metrics.get("aten_ops_ms")
+                item["top_kernels"] = metrics.get("top_kernels") or []
+                kernel_durations_by_job[item["id"]] = metrics.get("kernel_durations") or {}
+                item["x"] = layout.get("x")
+                item["y"] = layout.get("y")
+                item["scale"] = layout.get("scale") if layout.get("scale") is not None else 1.0
+                item["width"] = layout.get("width")
+                item["height"] = layout.get("height")
+                item["pinned"] = 1 if layout.get("pinned") else 0 if layout else None
+                nodes.append(item)
+
+        first_parent_by_child = {}
+        for edge in edge_rows:
+            first_parent_by_child.setdefault(edge.get("child_job_id"), edge.get("parent_job_id"))
+        for item in nodes:
+            parent_id = first_parent_by_child.get(item["id"])
+            if not parent_id:
+                continue
+            parent_kernels = kernel_durations_by_job.get(parent_id) or {}
+            enriched = []
+            for kernel in item.get("top_kernels") or []:
+                child_ms = _float_or_none(kernel.get("avg_dur_ms"))
+                parent_ms = _float_or_none(parent_kernels.get(kernel.get("name"))) or 0.0
+                enriched.append({
+                    **kernel,
+                    "parent_delta_ms": _round_ms(child_ms - parent_ms) if child_ms is not None else None,
+                })
+            item["top_kernels"] = enriched
+
+        unconnected_clauses = [
+            "j.project_id=?",
+            "j.mode='single'",
+            """
+            NOT EXISTS (
+                SELECT 1 FROM experiment_edges ee
+                WHERE ee.project_id=? AND (ee.parent_job_id=j.id OR ee.child_job_id=j.id)
+            )
+            """,
+        ]
+        unconnected_params = [pid, pid]
+        access_sql, access_params = _job_access_clause(request, "j")
+        if access_sql:
+            unconnected_clauses.append(access_sql)
+            unconnected_params.extend(access_params)
+        unconnected_rows = await (
+            await db.execute(
+                f"""
+                SELECT j.id, j.label, j.file_a_name, j.created_at, j.status, j.mode, j.console_out
+                FROM jobs j
+                WHERE {' AND '.join(unconnected_clauses)}
+                ORDER BY j.created_at DESC, j.id
+                """,
+                unconnected_params,
+            )
+        ).fetchall()
+        unconnected = []
+        for row in unconnected_rows:
+            item = dict(row)
+            metrics = _read_node_metrics(item["id"], item.get("console_out"))
+            item.pop("console_out", None)
+            item["e2e_ms"] = metrics.get("e2e_ms")
+            item["step_dur_ms"] = metrics.get("step_dur_ms")
+            item["compute_ms"] = metrics.get("compute_ms")
+            item["comm_ms"] = metrics.get("comm_ms")
+            item["kernel_count"] = metrics.get("kernel_count")
+            item["aten_ops_count"] = metrics.get("aten_ops_count")
+            item["aten_ops_ms"] = metrics.get("aten_ops_ms")
+            item["top_kernels"] = metrics.get("top_kernels") or []
+            unconnected.append(item)
+
+        await db.commit()
+        return {
+            "project_id": pid,
+            "nodes": nodes,
+            "unconnected": unconnected,
+            "edges": [_experiment_edge_response(edge) for edge in edge_rows],
+        }
+    finally:
+        await db.close()
+
+
+@app.post("/api/projects/{pid}/experiments/edges", status_code=201)
+async def create_experiment_edge(request: Request, pid: str, body: dict):
+    parent_job_id = (body.get("parent_job_id") or "").strip()
+    child_job_id = (body.get("child_job_id") or "").strip()
+    if not parent_job_id or not child_job_id:
+        raise HTTPException(400, "parent_job_id and child_job_id are required")
+    if parent_job_id == child_job_id:
+        raise HTTPException(400, "不能自连")
+
+    variables = _normalize_experiment_variables(body.get("variables") or [])
+    db = await get_db()
+    try:
+        user_token = await ensure_user_row(db, request)
+        await validate_project_access(db, request, pid)
+        parent = await load_accessible_job(db, request, parent_job_id, "id, project_id, mode")
+        child = await load_accessible_job(db, request, child_job_id, "id, project_id, mode")
+        if not parent or not child:
+            raise HTTPException(404, "节点不存在")
+        if (
+            parent.get("project_id") != pid
+            or child.get("project_id") != pid
+            or parent.get("mode") != "single"
+            or child.get("mode") != "single"
+        ):
+            raise HTTPException(400, "节点必须是本项目的单文件任务")
+
+        existing = await (
+            await db.execute(
+                """
+                SELECT 1 FROM experiment_edges
+                WHERE project_id=? AND parent_job_id=? AND child_job_id=?
+                """,
+                (pid, parent_job_id, child_job_id),
+            )
+        ).fetchone()
+        if existing:
+            raise HTTPException(409, "关系已存在")
+
+        edge_pairs = [
+            dict(row)
+            for row in await (
+                await db.execute(
+                    "SELECT parent_job_id, child_job_id FROM experiment_edges WHERE project_id=?",
+                    (pid,),
+                )
+            ).fetchall()
+        ]
+        if _would_create_cycle(edge_pairs, parent_job_id, child_job_id):
+            raise HTTPException(409, "会形成循环依赖")
+
+        edge_id = str(uuid.uuid4())
+        perf = compute_perf_delta(parent_job_id, child_job_id)
+        await db.execute(
+            """
+            INSERT INTO experiment_edges(
+                id, project_id, user_token, parent_job_id, child_job_id,
+                title, description, perf_summary, perf_summary_edited, variables
+            )
+            VALUES(?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                edge_id,
+                pid,
+                user_token,
+                parent_job_id,
+                child_job_id,
+                str(body.get("title") or ""),
+                str(body.get("description") or ""),
+                json.dumps(perf, ensure_ascii=False),
+                0,
+                json.dumps(variables, ensure_ascii=False),
+            ),
+        )
+        await write_audit(
+            db, request, "experiment.edge_create",
+            resource_type="experiment_edge", resource_id=edge_id,
+            details={"project_id": pid, "parent": parent_job_id, "child": child_job_id},
+        )
+        await db.commit()
+        row = await _load_experiment_edge(db, edge_id)
+        return _experiment_edge_response(row)
+    finally:
+        await db.close()
+
+
+@app.patch("/api/experiments/edges/{eid}")
+async def patch_experiment_edge(request: Request, eid: str, body: dict):
+    db = await get_db()
+    try:
+        edge = await _load_experiment_edge(db, eid)
+        if not edge:
+            raise HTTPException(404, "关系不存在")
+        await validate_project_access(db, request, edge.get("project_id"))
+
+        updates = []
+        params = []
+        if "title" in body:
+            updates.append("title=?")
+            params.append(str(body.get("title") or ""))
+        if "description" in body:
+            updates.append("description=?")
+            params.append(str(body.get("description") or ""))
+        if "variables" in body:
+            variables = _normalize_experiment_variables(body.get("variables"))
+            updates.append("variables=?")
+            params.append(json.dumps(variables, ensure_ascii=False))
+        if "label_layout" in body:
+            label_layout = _normalize_edge_label_layout(body.get("label_layout"))
+            for key, value in label_layout.items():
+                updates.append(f"{key}=?")
+                params.append(value)
+        if "perf_summary" in body:
+            perf_summary = body.get("perf_summary")
+            if not isinstance(perf_summary, dict):
+                raise HTTPException(400, "perf_summary must be an object")
+            updates.append("perf_summary=?")
+            params.append(json.dumps(perf_summary, ensure_ascii=False))
+            updates.append("perf_summary_edited=1")
+        if "compare_job_id" in body:
+            compare_job_id = (body.get("compare_job_id") or "").strip()
+            if compare_job_id:
+                compare_job = await load_accessible_job(db, request, compare_job_id, "id, mode")
+                if not compare_job:
+                    raise HTTPException(404, "对比任务不存在")
+                if compare_job.get("mode") != "compare":
+                    raise HTTPException(400, "compare_job_id 必须指向对比任务")
+                updates.append("compare_job_id=?")
+                params.append(compare_job_id)
+            else:
+                updates.append("compare_job_id=NULL")
+
+        if updates:
+            await db.execute(
+                f"UPDATE experiment_edges SET {', '.join(updates)} WHERE id=?",
+                (*params, eid),
+            )
+        await write_audit(
+            db, request, "experiment.edge_update",
+            resource_type="experiment_edge", resource_id=eid,
+            details={"fields": list(body.keys())},
+        )
+        await db.commit()
+        row = await _load_experiment_edge(db, eid)
+        return _experiment_edge_response(row)
+    finally:
+        await db.close()
+
+
+@app.delete("/api/experiments/edges/{eid}", status_code=204)
+async def delete_experiment_edge(request: Request, eid: str):
+    db = await get_db()
+    try:
+        edge = await _load_experiment_edge(db, eid)
+        if not edge:
+            raise HTTPException(404, "关系不存在")
+        await validate_project_access(db, request, edge.get("project_id"))
+        await db.execute("DELETE FROM experiment_edges WHERE id=?", (eid,))
+        await write_audit(
+            db, request, "experiment.edge_delete",
+            resource_type="experiment_edge", resource_id=eid,
+            details={
+                "project_id": edge.get("project_id"),
+                "parent": edge.get("parent_job_id"),
+                "child": edge.get("child_job_id"),
+            },
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+
+@app.post("/api/experiments/edges/{eid}/refresh-perf")
+async def refresh_experiment_edge_perf(request: Request, eid: str):
+    db = await get_db()
+    try:
+        edge = await _load_experiment_edge(db, eid)
+        if not edge:
+            raise HTTPException(404, "关系不存在")
+        await validate_project_access(db, request, edge.get("project_id"))
+        if edge.get("perf_summary_edited"):
+            response = _experiment_edge_response(edge)
+            response["skipped"] = True
+            return response
+        perf = compute_perf_delta(edge["parent_job_id"], edge["child_job_id"])
+        await db.execute(
+            "UPDATE experiment_edges SET perf_summary=? WHERE id=?",
+            (json.dumps(perf, ensure_ascii=False), eid),
+        )
+        await write_audit(
+            db, request, "experiment.edge_refresh_perf",
+            resource_type="experiment_edge", resource_id=eid,
+            details={"project_id": edge.get("project_id")},
+        )
+        await db.commit()
+        row = await _load_experiment_edge(db, eid)
+        response = _experiment_edge_response(row)
+        response["skipped"] = False
+        return response
+    finally:
+        await db.close()
+
+
+@app.post("/api/experiments/edges/{eid}/compare", status_code=201)
+async def create_experiment_edge_compare(request: Request, eid: str):
+    db = await get_db()
+    try:
+        user_token = await ensure_user_row(db, request)
+        edge = await _load_experiment_edge(db, eid)
+        if not edge:
+            raise HTTPException(404, "关系不存在")
+        await validate_project_access(db, request, edge.get("project_id"))
+        if edge.get("compare_job_id"):
+            return {"compare_job_id": edge["compare_job_id"]}
+
+        parent = await load_accessible_job(db, request, edge["parent_job_id"])
+        child = await load_accessible_job(db, request, edge["child_job_id"])
+        if not parent or not child:
+            raise HTTPException(404, "源任务不存在")
+        if not _trace_path_exists(parent):
+            raise HTTPException(409, "父节点源文件已被删除")
+        if not _trace_path_exists(child):
+            raise HTTPException(409, "子节点源文件已被删除")
+
+        compare_job_id = str(uuid.uuid4())
+        label = f"{parent.get('label') or parent.get('file_a_name') or edge['parent_job_id']} vs {child.get('label') or child.get('file_a_name') or edge['child_job_id']}"
+        await db.execute(
+            """INSERT INTO jobs(id, project_id, user_token, label, mode,
+                   file_a_name, file_b_name, source_job_a, source_job_b,
+                   save_triton_csv, save_triton_code)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                compare_job_id,
+                edge.get("project_id"),
+                user_token,
+                label,
+                "compare",
+                parent.get("file_a_name"),
+                child.get("file_a_name"),
+                edge["parent_job_id"],
+                edge["child_job_id"],
+                0,
+                0,
+            ),
+        )
+        await _refresh_job_storage_cache(db, compare_job_id)
+        await db.execute(
+            "UPDATE experiment_edges SET compare_job_id=? WHERE id=?",
+            (compare_job_id, eid),
+        )
+        await write_audit(
+            db, request, "experiment.edge_compare_create",
+            resource_type="experiment_edge", resource_id=eid,
+            details={"compare_job_id": compare_job_id, "project_id": edge.get("project_id")},
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+    await enqueue_analysis_job(compare_job_id)
+    return {"compare_job_id": compare_job_id}
+
+
+@app.put("/api/projects/{pid}/experiments/layout")
+async def update_experiment_layout(request: Request, pid: str, body: dict):
+    positions = body.get("positions") or []
+    if not isinstance(positions, list):
+        raise HTTPException(400, "positions must be an array")
+    db = await get_db()
+    try:
+        await ensure_user_row(db, request)
+        await validate_project_access(db, request, pid)
+        normalized = []
+        for item in positions:
+            if not isinstance(item, dict):
+                raise HTTPException(400, "positions items must be objects")
+            job_id = str(item.get("job_id") or "").strip()
+            if not job_id:
+                raise HTTPException(400, "job_id is required")
+            job = await load_accessible_job(db, request, job_id, "id, project_id")
+            if not job or job.get("project_id") != pid:
+                raise HTTPException(400, "节点必须属于本项目")
+            try:
+                x = float(item.get("x"))
+                y = float(item.get("y"))
+            except (TypeError, ValueError):
+                raise HTTPException(400, "坐标必须是数字")
+            if not (-1_000_000 <= x <= 1_000_000 and -1_000_000 <= y <= 1_000_000):
+                raise HTTPException(400, "坐标超出范围")
+            try:
+                scale = float(item.get("scale", 1.0))
+            except (TypeError, ValueError):
+                raise HTTPException(400, "缩放比例必须是数字")
+            if not (0.5 <= scale <= 2.5):
+                raise HTTPException(400, "缩放比例超出范围")
+            width = None
+            if item.get("width") not in (None, ""):
+                try:
+                    width = float(item.get("width"))
+                except (TypeError, ValueError):
+                    raise HTTPException(400, "节点宽度必须是数字")
+                if not (120 <= width <= 900):
+                    raise HTTPException(400, "节点宽度超出范围")
+            height = None
+            if item.get("height") not in (None, ""):
+                try:
+                    height = float(item.get("height"))
+                except (TypeError, ValueError):
+                    raise HTTPException(400, "节点高度必须是数字")
+                if not (72 <= height <= 640):
+                    raise HTTPException(400, "节点高度超出范围")
+            pinned = 1 if item.get("pinned", 1) else 0
+            normalized.append((pid, job_id, x, y, scale, width, height, pinned))
+
+        await db.executemany(
+            """
+            INSERT INTO experiment_node_layout(project_id, job_id, x, y, scale, width, height, pinned, updated_at)
+            VALUES(?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+            ON CONFLICT(project_id, job_id) DO UPDATE SET
+                x=excluded.x,
+                y=excluded.y,
+                scale=excluded.scale,
+                width=excluded.width,
+                height=excluded.height,
+                pinned=excluded.pinned,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            normalized,
+        )
+        await write_audit(
+            db, request, "experiment.layout_update",
+            resource_type="project", resource_id=pid,
+            details={"positions": len(normalized)},
+        )
+        await db.commit()
+        return {"updated": len(normalized)}
+    finally:
+        await db.close()
+
+
+@app.delete("/api/projects/{pid}/experiments/layout", status_code=204)
+async def reset_experiment_layout(request: Request, pid: str):
+    db = await get_db()
+    try:
+        await ensure_user_row(db, request)
+        await validate_project_access(db, request, pid)
+        await db.execute("DELETE FROM experiment_node_layout WHERE project_id=?", (pid,))
+        await db.execute(
+            "UPDATE experiment_edges SET label_x=NULL, label_y=NULL, label_width=NULL, label_height=NULL WHERE project_id=?",
+            (pid,),
+        )
+        await write_audit(
+            db, request, "experiment.layout_update",
+            resource_type="project", resource_id=pid,
+            details={"reset": True},
+        )
+        await db.commit()
+    finally:
+        await db.close()
 
 
 @app.post("/api/jobs/batch-compare", status_code=201)
@@ -7939,8 +8793,11 @@ async def patch_job(request: Request, jid: str, body: dict):
     if "label" in body:
         await db.execute("UPDATE jobs SET label=? WHERE id=?", (body["label"], jid))
     if "project_id" in body:
+        next_project_id = body["project_id"] or None
+        if row.get("project_id") != next_project_id:
+            await _clear_experiment_job_links(db, [jid])
         await db.execute("UPDATE jobs SET project_id=? WHERE id=?",
-                         (body["project_id"] or None, jid))
+                         (next_project_id, jid))
     if "is_pinned" in body:
         await db.execute("UPDATE jobs SET is_pinned=? WHERE id=?", (1 if body["is_pinned"] else 0, jid))
     await write_audit(
@@ -7977,6 +8834,7 @@ async def delete_job(request: Request, jid: str):
 
     _remove_job_dir(jid)
 
+    await _clear_experiment_job_links(db, [jid])
     await db.execute("DELETE FROM jobs WHERE id=?", (jid,))
     await write_audit(
         db, request, "job.delete",

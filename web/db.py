@@ -126,6 +126,38 @@ async def init_db():
                 original_trace_bytes INTEGER
             );
 
+            CREATE TABLE IF NOT EXISTS experiment_edges (
+                id                  TEXT PRIMARY KEY,
+                project_id          TEXT REFERENCES projects(id) ON DELETE CASCADE,
+                user_token          TEXT,
+                parent_job_id       TEXT REFERENCES jobs(id) ON DELETE CASCADE,
+                child_job_id        TEXT REFERENCES jobs(id) ON DELETE CASCADE,
+                title               TEXT DEFAULT '',
+                description         TEXT DEFAULT '',
+                perf_summary        TEXT DEFAULT '',
+                perf_summary_edited INTEGER DEFAULT 0,
+                variables           TEXT DEFAULT '[]',
+                label_x             REAL,
+                label_y             REAL,
+                label_width         REAL,
+                label_height        REAL,
+                compare_job_id      TEXT REFERENCES jobs(id) ON DELETE SET NULL,
+                created_at          DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS experiment_node_layout (
+                project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                job_id      TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+                x           REAL,
+                y           REAL,
+                scale       REAL DEFAULT 1.0,
+                width       REAL,
+                height      REAL,
+                pinned      INTEGER DEFAULT 1,
+                updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(project_id, job_id)
+            );
+
             CREATE TABLE IF NOT EXISTS deleted_projects (
                 id           TEXT PRIMARY KEY,
                 user_token   TEXT,
@@ -215,6 +247,14 @@ async def init_db():
         await add_column_if_missing(db, "folders", "password_hash", "TEXT DEFAULT NULL")
         await add_column_if_missing(db, "feedback_messages", "edited_at", "DATETIME DEFAULT NULL")
         await add_column_if_missing(db, "feedback_messages", "edit_count", "INTEGER DEFAULT 0")
+        await add_column_if_missing(db, "experiment_edges", "variables", "TEXT DEFAULT '[]'")
+        await add_column_if_missing(db, "experiment_edges", "label_x", "REAL")
+        await add_column_if_missing(db, "experiment_edges", "label_y", "REAL")
+        await add_column_if_missing(db, "experiment_edges", "label_width", "REAL")
+        await add_column_if_missing(db, "experiment_edges", "label_height", "REAL")
+        await add_column_if_missing(db, "experiment_node_layout", "scale", "REAL DEFAULT 1.0")
+        await add_column_if_missing(db, "experiment_node_layout", "width", "REAL")
+        await add_column_if_missing(db, "experiment_node_layout", "height", "REAL")
 
         await db.executescript("""
             CREATE TABLE IF NOT EXISTS deleted_jobs (
@@ -264,6 +304,10 @@ async def init_db():
             CREATE INDEX IF NOT EXISTS idx_jobs_pinned_created ON jobs(is_pinned, created_at);
             CREATE INDEX IF NOT EXISTS idx_jobs_source_a ON jobs(source_job_a);
             CREATE INDEX IF NOT EXISTS idx_jobs_source_b ON jobs(source_job_b);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_expedge_pair ON experiment_edges(project_id, parent_job_id, child_job_id);
+            CREATE INDEX IF NOT EXISTS idx_expedge_project ON experiment_edges(project_id);
+            CREATE INDEX IF NOT EXISTS idx_expedge_parent ON experiment_edges(parent_job_id);
+            CREATE INDEX IF NOT EXISTS idx_expedge_child ON experiment_edges(child_job_id);
             CREATE INDEX IF NOT EXISTS idx_folders_user ON folders(user_token);
             CREATE INDEX IF NOT EXISTS idx_projects_folder ON projects(folder_id);
             CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at);

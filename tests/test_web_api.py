@@ -70,7 +70,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.4.0",
+        "version": "0.4.1",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -2385,6 +2385,43 @@ def test_job_groups_include_empty_projects(client):
     } == {"id": "project-empty", "label": "Alpha Empty", "job_count": 0}
 
 
+def test_job_groups_mark_projects_with_experiment_tree(client):
+    async def insert_rows():
+        db = await web_db.get_db()
+        try:
+            await db.executemany(
+                "INSERT INTO projects(id, name) VALUES(?,?)",
+                [("tree-project", "Tree Project"), ("plain-project", "Plain Project")],
+            )
+            await db.executemany(
+                "INSERT INTO jobs(id, project_id, label, mode, status) VALUES(?,?,?,?,?)",
+                [
+                    ("tree-a", "tree-project", "A", "single", "done"),
+                    ("tree-b", "tree-project", "B", "single", "done"),
+                    ("plain-a", "plain-project", "A", "single", "done"),
+                ],
+            )
+            await db.execute(
+                """
+                INSERT INTO experiment_edges(id, project_id, parent_job_id, child_job_id, title)
+                VALUES(?,?,?,?,?)
+                """,
+                ("tree-edge", "tree-project", "tree-a", "tree-b", "opt"),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_rows())
+
+    response = client.get("/api/job-groups")
+
+    assert response.status_code == 200
+    groups = {group["id"]: group for group in response.json()["data"]}
+    assert groups["tree-project"]["has_experiment_tree"] == 1
+    assert groups["plain-project"]["has_experiment_tree"] == 0
+
+
 def test_project_order_can_be_saved_per_user(client):
     async def insert_projects():
         db = await web_db.get_db()
@@ -3504,6 +3541,311 @@ def test_done_job_without_perfetto_context_still_loads(client, sample_trace_file
     assert r.status_code == 200
     assert r.json()["id"] == "old-job"
     assert r.json()["perfetto_context"] == {}
+
+
+def _experiment_console_summary(*, step_dur_ms, kernels=1, compute_ms=0, aten_ops=0, aten_ms=0):
+    return textwrap.dedent(f"""
+        === Per-Step Summary (1 steps) ===
+        step     step_dur(ms)   kernels    compute_kernel_dur(ms)   triton     triton_dur(ms)   aten_ops   aten_dur(ms)   tf_ops     tf_dur(ms)   cncl     cncl_dur(ms)
+        -----------------------------------------------------------------------------------------------------------------------------------------------------------------
+        avg      {step_dur_ms}  {kernels}  {compute_ms}             0          0.000            {aten_ops}  {aten_ms}      0          0.000        0        0.000
+    """).strip()
+
+
+def _write_experiment_result(job_id, *, e2e_ms=None, kernel_rows=None, cncl_rows=None, aten_rows=None, all_kernel_rows=None):
+    result_dir = Path(web_server.result_dir(job_id))
+    result_dir.mkdir(parents=True, exist_ok=True)
+    if e2e_ms is not None:
+        (result_dir / "perfetto_context.json").write_text(
+            json.dumps({"a": {"dur_ns": int(e2e_ms * 1_000_000)}}),
+            encoding="utf-8",
+        )
+    if kernel_rows is not None:
+        lines = ["type,avg_count,avg_dur_ms"]
+        for row in kernel_rows:
+            if len(row) == 3:
+                name, count, value = row
+            else:
+                name, value = row
+                count = 1
+            lines.append(f"{name},{count},{value}")
+        (result_dir / "kernel_types_avg.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if cncl_rows is not None:
+        lines = ["op_name,avg_dur_ms"]
+        lines.extend(f"{name},{value}" for name, value in cncl_rows)
+        (result_dir / "cncl_ops_avg.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if aten_rows is not None:
+        lines = ["op_name,avg_count,avg_dur_ms"]
+        for row in aten_rows:
+            if len(row) == 3:
+                name, count, value = row
+            else:
+                name, value = row
+                count = 1
+            lines.append(f"{name},{count},{value}")
+        (result_dir / "aten_ops_avg.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if all_kernel_rows is not None:
+        lines = ["kernel_name,family,avg_count,avg_dur_ms,avg_us_per_call"]
+        for row in all_kernel_rows:
+            if len(row) == 4:
+                name, family, count, value = row
+            elif len(row) == 3:
+                name, family, value = row
+                count = 1
+            else:
+                name, value = row
+                family = "other"
+                count = 1
+            lines.append(f"{name},{family},{count},{value},{value}")
+        (result_dir / "all_kernels_avg.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_experiment_edge_lifecycle_and_cycle_detection(client):
+    async def insert_rows():
+        db = await web_db.get_db()
+        try:
+            await db.execute("INSERT INTO projects(id, name) VALUES(?,?)", ("exp-project", "Exp"))
+            await db.executemany(
+                """
+                INSERT INTO jobs(id, project_id, label, mode, status, file_a_name, console_out)
+                VALUES(?,?,?,?,?,?,?)
+                """,
+                [
+                    (
+                        "exp-a", "exp-project", "baseline", "single", "done", "a.json",
+                        _experiment_console_summary(step_dur_ms=121.5, kernels=2, compute_ms=28.86, aten_ops=42, aten_ms=6.2),
+                    ),
+                    (
+                        "exp-b", "exp-project", "optimized", "single", "done", "b.json",
+                        _experiment_console_summary(step_dur_ms=101.2, kernels=2, compute_ms=22.2, aten_ops=37, aten_ms=4.7),
+                    ),
+                    ("exp-c", "exp-project", "candidate", "single", "done", "c.json", ""),
+                ],
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_rows())
+    _write_experiment_result(
+        "exp-a",
+        e2e_ms=120.4,
+        kernel_rows=[("gemm", 20.6), ("attention", 8.26)],
+        cncl_rows=[("allreduce", 12.0)],
+        aten_rows=[("aten::mm", 30, 4.2), ("aten::add", 12, 2.0)],
+        all_kernel_rows=[
+            ("gemm_kernel", "gemm", 1, 9.0),
+            ("attention_kernel", "attention", 1, 5.5),
+            ("norm_kernel", "norm", 1, 1.2),
+        ],
+    )
+    _write_experiment_result(
+        "exp-b",
+        e2e_ms=100.1,
+        kernel_rows=[("gemm", 14.1), ("attention", 8.1)],
+        cncl_rows=[("allreduce", 11.5)],
+        aten_rows=[("aten::mm", 25, 3.2), ("aten::add", 12, 1.5)],
+        all_kernel_rows=[
+            ("gemm_kernel", "gemm", 1, 8.0),
+            ("new_hot_kernel", "triton", 1, 6.5),
+            ("attention_kernel", "attention", 1, 3.4),
+            ("norm_kernel", "norm", 1, 1.1),
+            ("copy_kernel", "memory", 1, 0.9),
+            ("tail_kernel", "memory", 1, 0.1),
+        ],
+    )
+
+    create = client.post(
+        "/api/projects/exp-project/experiments/edges",
+        json={
+            "parent_job_id": "exp-a",
+            "child_job_id": "exp-b",
+            "title": "算子融合",
+            "variables": [{"name": "dtype", "from": "fp16", "to": "bf16"}],
+        },
+    )
+
+    assert create.status_code == 201
+    edge = create.json()
+    assert edge["title"] == "算子融合"
+    assert edge["variables"] == [{"name": "dtype", "from": "fp16", "to": "bf16"}]
+    assert edge["perf"]["metrics"]["e2e_ms"] == {
+        "parent": 120.4,
+        "child": 100.1,
+        "delta_pct": -16.9,
+    }
+    assert edge["perf"]["incomplete"] is False
+
+    duplicate = client.post(
+        "/api/projects/exp-project/experiments/edges",
+        json={"parent_job_id": "exp-a", "child_job_id": "exp-b"},
+    )
+    reverse = client.post(
+        "/api/projects/exp-project/experiments/edges",
+        json={"parent_job_id": "exp-b", "child_job_id": "exp-a"},
+    )
+    self_edge = client.post(
+        "/api/projects/exp-project/experiments/edges",
+        json={"parent_job_id": "exp-a", "child_job_id": "exp-a"},
+    )
+
+    assert duplicate.status_code == 409
+    assert reverse.status_code == 409
+    assert self_edge.status_code == 400
+
+    graph = client.get("/api/projects/exp-project/experiments")
+    assert graph.status_code == 200
+    payload = graph.json()
+    assert {node["id"] for node in payload["nodes"]} == {"exp-a", "exp-b"}
+    node_a = next(node for node in payload["nodes"] if node["id"] == "exp-a")
+    assert node_a["compute_ms"] == 28.86
+    assert node_a["kernel_count"] == 2.0
+    assert node_a["step_dur_ms"] == 121.5
+    assert node_a["aten_ops_count"] == 42.0
+    assert node_a["aten_ops_ms"] == 6.2
+    assert node_a["top_kernels"][0]["name"] == "gemm_kernel"
+    node_b = next(node for node in payload["nodes"] if node["id"] == "exp-b")
+    assert [row["name"] for row in node_b["top_kernels"]] == [
+        "gemm_kernel",
+        "new_hot_kernel",
+        "attention_kernel",
+        "norm_kernel",
+        "copy_kernel",
+    ]
+    assert node_b["top_kernels"][0]["parent_delta_ms"] == -1.0
+    assert node_b["top_kernels"][1]["parent_delta_ms"] == 6.5
+    assert {node["id"] for node in payload["unconnected"]} == {"exp-c"}
+    assert payload["edges"][0]["variables"][0]["name"] == "dtype"
+
+    patched = client.patch(
+        f"/api/experiments/edges/{edge['id']}",
+        json={
+            "description": "融合 matmul 后观察端到端收益",
+            "variables": [{"name": "tiling", "from": "64", "to": "128"}],
+        },
+    )
+    assert patched.status_code == 200
+    assert patched.json()["description"] == "融合 matmul 后观察端到端收益"
+    assert patched.json()["variables"] == [{"name": "tiling", "from": "64", "to": "128"}]
+    assert patched.json()["perf_summary_edited"] == 0
+
+    label_layout = client.patch(
+        f"/api/experiments/edges/{edge['id']}",
+        json={"label_layout": {"label_x": 88.5, "label_y": 140, "label_width": 360, "label_height": 96}},
+    )
+    assert label_layout.status_code == 200
+    assert label_layout.json()["label_x"] == 88.5
+    assert label_layout.json()["label_width"] == 360
+    graph_after_layout = client.get("/api/projects/exp-project/experiments").json()
+    assert graph_after_layout["edges"][0]["label_y"] == 140
+    assert graph_after_layout["edges"][0]["label_height"] == 96
+    reset_layout = client.delete("/api/projects/exp-project/experiments/layout")
+    assert reset_layout.status_code == 204
+    graph_after_reset = client.get("/api/projects/exp-project/experiments").json()
+    reset_edge = graph_after_reset["edges"][0]
+    assert reset_edge["label_x"] is None
+    assert reset_edge["label_y"] is None
+    assert reset_edge["label_width"] is None
+    assert reset_edge["label_height"] is None
+
+    manual_perf = {"schema": 1, "metrics": {}, "incomplete": False, "notes": "manual"}
+    patched_perf = client.patch(f"/api/experiments/edges/{edge['id']}", json={"perf_summary": manual_perf})
+    assert patched_perf.status_code == 200
+    assert patched_perf.json()["perf_summary_edited"] == 1
+    refresh = client.post(f"/api/experiments/edges/{edge['id']}/refresh-perf")
+    assert refresh.status_code == 200
+    assert refresh.json()["skipped"] is True
+    assert refresh.json()["perf"]["notes"] == "manual"
+
+    deleted = client.delete(f"/api/experiments/edges/{edge['id']}")
+    assert deleted.status_code == 204
+    assert client.get("/api/projects/exp-project/experiments").json()["edges"] == []
+
+
+def test_experiment_missing_results_layout_and_cleanup(client):
+    async def insert_rows():
+        db = await web_db.get_db()
+        try:
+            await db.executemany(
+                "INSERT INTO projects(id, name) VALUES(?,?)",
+                [("layout-project", "Layout"), ("target-project", "Target")],
+            )
+            await db.executemany(
+                """
+                INSERT INTO jobs(id, project_id, label, mode, status, file_a_name)
+                VALUES(?,?,?,?,?,?)
+                """,
+                [
+                    ("layout-a", "layout-project", "A", "single", "done", "a.json"),
+                    ("layout-b", "layout-project", "B", "single", "done", "b.json"),
+                ],
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_rows())
+    _write_experiment_result("layout-a", e2e_ms=10.0, kernel_rows=[("gemm", 2.0)], cncl_rows=[("allreduce", 1.0)])
+
+    create = client.post(
+        "/api/projects/layout-project/experiments/edges",
+        json={"parent_job_id": "layout-a", "child_job_id": "layout-b", "title": "缺结果"},
+    )
+    assert create.status_code == 201
+    edge_id = create.json()["id"]
+    assert create.json()["perf"]["incomplete"] is True
+    assert create.json()["perf"]["metrics"]["e2e_ms"]["child"] is None
+
+    layout = client.put(
+        "/api/projects/layout-project/experiments/layout",
+        json={
+            "positions": [
+                {"job_id": "layout-a", "x": 12.5, "y": 30, "scale": 1.35, "width": 260, "height": 180, "pinned": 1},
+                {"job_id": "layout-b", "x": 240, "y": 30, "pinned": 1},
+            ]
+        },
+    )
+    assert layout.status_code == 200
+    graph = client.get("/api/projects/layout-project/experiments").json()
+    node_a = next(node for node in graph["nodes"] if node["id"] == "layout-a")
+    assert node_a["x"] == 12.5
+    assert node_a["scale"] == 1.35
+    assert node_a["width"] == 260
+    assert node_a["height"] == 180
+    assert node_a["pinned"] == 1
+
+    _write_experiment_result("layout-b", e2e_ms=11.0, kernel_rows=[("gemm", 3.0)])
+    refreshed = client.post(f"/api/experiments/edges/{edge_id}/refresh-perf")
+    assert refreshed.status_code == 200
+    assert refreshed.json()["perf"]["incomplete"] is False
+    assert refreshed.json()["perf"]["metrics"]["comm_ms"]["child"] is None
+
+    moved = client.patch("/api/jobs/layout-b", json={"project_id": "target-project"})
+    assert moved.status_code == 200
+
+    async def counts():
+        db = await web_db.get_db()
+        try:
+            edge_count = (await (await db.execute("SELECT COUNT(*) FROM experiment_edges")).fetchone())[0]
+            moved_layout = (
+                await (await db.execute(
+                    "SELECT COUNT(*) FROM experiment_node_layout WHERE job_id='layout-b'"
+                )).fetchone()
+            )[0]
+            parent_layout = (
+                await (await db.execute(
+                    "SELECT COUNT(*) FROM experiment_node_layout WHERE job_id='layout-a'"
+                )).fetchone()
+            )[0]
+            return edge_count, moved_layout, parent_layout
+        finally:
+            await db.close()
+
+    assert asyncio.run(counts()) == (0, 0, 1)
+
+    reset = client.delete("/api/projects/layout-project/experiments/layout")
+    assert reset.status_code == 204
+    assert client.get("/api/projects/layout-project/experiments").json()["nodes"] == []
 
 
 def test_compare_job_exposes_source_summaries_and_delete_impact(client, sample_trace_file):

@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>torch profiler analyzer</title>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.4.0" />
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.4.1" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.css" />
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
@@ -12,7 +12,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js"></script>
-  <link rel="stylesheet" href="/static/style.css?v=0.4.0" />
+  <link rel="stylesheet" href="/static/style.css?v=0.4.1" />
   <script>
     // Apply saved theme or system preference before page paint to avoid flash
     (function() {
@@ -143,7 +143,7 @@
     <!-- ── Header ── -->
     <header v-if="authChecked && (!authRequired || currentUser)" class="header">
       <div class="header-brand" @click="$router.push('/')" style="cursor:pointer" title="返回上传页面">
-        <img class="header-logo" src="/static/favicon.svg?v=0.4.0" alt="" />
+        <img class="header-logo" src="/static/favicon.svg?v=0.4.1" alt="" />
         <span class="header-title">Torch Profiler Analyzer</span>
         <span class="header-version">v{{ appVersion }}</span>
       </div>
@@ -249,7 +249,14 @@
                   <small v-if="group.id !== '__none__'">{{ group.is_public ? (group.is_owner ? '我创建 · 已共享' : '共享给我') : '我创建' }}</small>
                   <small v-else>未归类任务</small>
                 </span>
-                <span class="group-count">{{ group.job_count }}</span>
+                <button
+                  v-if="group.has_experiment_tree"
+                  class="project-tree-badge-btn"
+                  type="button"
+                  title="打开实验树"
+                  aria-label="打开实验树"
+                  @click.stop="$router.push('/project/'+group.id+'/tree')"
+                >Tree</button>
                 <div v-if="group.id !== '__none__'" class="action-menu-wrap project-more-menu" @click.stop>
                   <button
                     :class="['project-more-btn', openActionMenu === projectMenuKey(group.id) ? 'active' : '']"
@@ -259,6 +266,7 @@
                     @click="toggleProjectMenu(group.id)"
                   >...</button>
                   <div v-if="openActionMenu === projectMenuKey(group.id)" class="action-menu action-menu-sm project-action-menu">
+                    <button type="button" @click="$router.push('/project/'+group.id+'/tree'); closeActionMenu()">实验树</button>
                     <button type="button" @click="openProjectCompareModal(group); closeActionMenu()">新建对比</button>
                     <button type="button" @click="openProjectBulkModal(group); closeActionMenu()">多选任务</button>
                     <button type="button" @click="toggleProjectFavorite(group); closeActionMenu()">
@@ -1479,6 +1487,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=0.4.0"></script>
+  <script src="/static/app.js?v=0.4.1"></script>
 </body>
 </html>

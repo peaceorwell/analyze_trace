@@ -134,7 +134,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.4.0");
+const appVersion = ref("0.4.1");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -586,6 +586,16 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.4.1",
+    date: "2026-06-28",
+    title: "实验树工作流升级",
+    items: [
+      "新增实验树关系建模、节点拖拽缩放、关系标签编辑、侧边栏快速打开实验树等能力。",
+      "优化实验树节点、连线、右侧详情面板和标题栏的视觉一致性，使用 compute time 作为优化判定主指标。",
+      "补充实验树接口、持久化字段和 Web API 覆盖测试。",
+    ],
+  },
   {
     version: "0.4.0",
     date: "2026-06-27",
@@ -1468,7 +1478,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.4.0";
+  appVersion.value = cfg.version || "0.4.1";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -7209,6 +7219,1505 @@ const JobDetail = {
   },
 };
 
+const ExperimentTree = {
+  template: `
+    <section class="exp-page">
+      <header class="exp-toolbar">
+        <div class="exp-title-block">
+          <button class="btn btn-sm btn-outline" type="button" @click="$router.push('/')">←</button>
+          <div>
+            <div class="exp-title">实验树</div>
+            <div class="exp-subtitle">{{ projectName }}</div>
+          </div>
+        </div>
+        <div class="exp-toolbar-actions">
+          <button class="btn btn-sm btn-primary" type="button" @click="openAddEdge()">标记优化关系</button>
+          <button class="btn btn-sm btn-outline" type="button" @click="resetLayout" :disabled="saving">自动整理</button>
+          <button class="btn btn-sm btn-outline exp-zoom-btn" type="button" @click="zoomBy(-0.05)">−</button>
+          <span class="exp-zoom-label">{{ Math.round(view.scale * 100) }}%</span>
+          <button class="btn btn-sm btn-outline exp-zoom-btn" type="button" @click="zoomBy(0.05)">+</button>
+          <button class="btn btn-sm btn-outline" type="button" @click="loadGraph" :disabled="loading">刷新</button>
+        </div>
+      </header>
+
+      <div :class="['exp-body', panelCollapsed ? 'panel-collapsed' : '']">
+        <div
+          ref="viewportRef"
+          class="exp-canvas"
+          @mousedown="startPan"
+          @wheel.prevent="onWheel"
+        >
+          <div v-if="loading" class="exp-loading">加载中...</div>
+          <div
+            v-else
+            class="exp-layer"
+            :style="{
+              width: canvasSize.width + 'px',
+              height: canvasSize.height + 'px',
+              transform: 'translate(' + view.tx + 'px,' + view.ty + 'px) scale(' + view.scale + ')'
+            }"
+          >
+            <svg class="exp-edge-svg" :width="canvasSize.width" :height="canvasSize.height">
+              <path
+                v-for="item in edgePaths"
+                :key="item.edge.id"
+                :d="item.d"
+                :class="['exp-edge-path', edgeOptimizationClass(item.edge), isEdgeHighlighted(item.edge) ? 'active' : '', hasSelection && !isEdgeHighlighted(item.edge) ? 'muted' : '']"
+              ></path>
+              <path
+                v-for="item in edgePaths"
+                :key="'arrow-' + item.edge.id"
+                :d="item.arrowD"
+                :class="['exp-edge-arrow', edgeOptimizationClass(item.edge), isEdgeHighlighted(item.edge) ? 'active' : '', hasSelection && !isEdgeHighlighted(item.edge) ? 'muted' : '']"
+              ></path>
+              <template v-for="item in edgePaths" :key="'connector-' + item.edge.id">
+                <path
+                  v-if="item.connectorD"
+                  :d="item.connectorD"
+                  :class="['exp-edge-label-link', edgeOptimizationClass(item.edge), isEdgeHighlighted(item.edge) ? 'active' : '', hasSelection && !isEdgeHighlighted(item.edge) ? 'muted' : '']"
+                ></path>
+              </template>
+            </svg>
+
+            <div
+              v-for="item in edgePaths"
+              :key="'label-' + item.edge.id"
+              :class="['exp-edge-label', edgeOptimizationClass(item.edge), isEdgeHighlighted(item.edge) ? 'active' : '', hasSelection && !isEdgeHighlighted(item.edge) ? 'muted' : '']"
+              :style="edgeLabelStyle(item)"
+              role="button"
+              tabindex="0"
+              @mousedown.stop.prevent="startEdgeLabelDrag(item.edge, item, $event)"
+              @click.stop="selectEdge(item.edge)"
+              @keydown.enter.prevent="selectEdge(item.edge)"
+              @keydown.space.prevent="selectEdge(item.edge)"
+              @mouseenter="hoverEdgeId = item.edge.id"
+              @mouseleave="hoverEdgeId = ''"
+            >
+              <span>{{ edgeCanvasText(item.edge) }}</span>
+              <button
+                class="exp-edge-resize"
+                type="button"
+                title="缩放关系框"
+                aria-label="缩放关系框"
+                @mousedown.stop.prevent="startEdgeLabelResize(item.edge, item, $event)"
+              >↘</button>
+            </div>
+
+            <article
+              v-for="node in displayNodes"
+              :key="node.id"
+              :class="[
+                'exp-node',
+                node.status,
+                nodeOptimizationClass(node),
+                selectedNodeId === node.id ? 'selected' : '',
+                hasSelection && !isNodeHighlighted(node) ? 'muted' : ''
+              ]"
+              :style="nodeStyle(node)"
+              @mousedown.stop="startNodeDrag(node, $event)"
+              @mouseenter="setHoverNode(node)"
+              @mouseleave="clearHoverNode"
+              @click.stop="selectNode(node)"
+              @dblclick.stop="openJob(node.id)"
+            >
+              <div class="exp-node-head">
+                <span :class="['exp-status-dot', node.status]"></span>
+                <strong :title="nodeTitle(node)">{{ nodeTitle(node) }}</strong>
+              </div>
+              <div class="exp-node-stats">
+                <div><span>E2E</span><b>{{ formatNodeMetric(node, 'e2e_ms', 'ms') }}</b></div>
+                <div><span>Kernel</span><b>{{ formatNodeMetric(node, 'kernel_count', 'count') }}</b></div>
+                <div><span>Compute</span><b>{{ formatNodeMetric(node, 'compute_ms', 'ms') }}</b></div>
+              </div>
+              <button
+                class="exp-node-resize"
+                type="button"
+                title="缩放节点"
+                aria-label="缩放节点"
+                @mousedown.stop.prevent="startNodeResize(node, $event)"
+              >↘</button>
+            </article>
+
+            <div
+              v-if="hoverNode"
+              class="exp-tooltip"
+              :style="{ left: (hoverNode.x + nodeWidth(hoverNode) + 12) + 'px', top: (hoverNode.y - 8) + 'px' }"
+            >
+              <strong>{{ nodeTitle(hoverNode) }}</strong>
+              <div class="exp-node-detail exp-tooltip-detail">
+                <div
+                  v-for="row in hoverNodeDetailRows"
+                  :key="row.key"
+                  :class="['exp-node-detail-row', 'tone-' + row.tone]"
+                >
+                  <span :title="row.title || row.label">{{ row.label }}</span>
+                  <b>
+                    <i>{{ row.value }}</i>
+                    <em v-if="row.deltaText" :class="row.deltaClass">{{ row.deltaText }}</em>
+                  </b>
+                </div>
+              </div>
+            </div>
+          </div>
+          <button
+            v-if="panelCollapsed"
+            class="exp-panel-expand-btn"
+            type="button"
+            title="展开右侧面板"
+            aria-label="展开右侧面板"
+            @click.stop="panelCollapsed=false"
+          >‹</button>
+        </div>
+
+        <aside v-if="!panelCollapsed" class="exp-panel">
+          <button
+            class="exp-panel-fold-btn"
+            type="button"
+            title="折叠右侧面板"
+            aria-label="折叠右侧面板"
+            @click="panelCollapsed=true"
+          >›</button>
+
+          <template v-if="selectedEdge">
+            <div class="exp-edge-editor-tools">
+              <button class="btn btn-sm btn-outline" type="button" @click="selectedEdgeId=''">关闭</button>
+            </div>
+
+            <div class="exp-editor-card">
+              <label class="exp-field">
+                <span>连线显示正文</span>
+                <textarea v-model="edgeDraft.title" class="input exp-display-textarea" placeholder="写在连线框里的正文"></textarea>
+              </label>
+            </div>
+
+            <div class="exp-editor-card exp-variable-card">
+              <div class="exp-field-title">
+                <span>变更项</span>
+                <button
+                  v-if="edgeDraft.variablesText"
+                  class="btn btn-sm btn-outline"
+                  type="button"
+                  @click="edgeDraft.variablesText=''"
+                >清空</button>
+              </div>
+              <textarea
+                v-model="edgeDraft.variablesText"
+                class="input exp-variable-textarea"
+                placeholder="gemm: 1 -> 2&#10;triton: 3 -> 4&#10;或者直接粘贴一段变更说明"
+              ></textarea>
+              <div class="exp-field-hint">每行一条；能识别“名称: 前 -> 后”，其他内容会作为说明保留。</div>
+            </div>
+
+            <div v-if="draftVariableInsertItems.length" class="exp-field exp-display-insert">
+              <div class="exp-field-title">
+                <span>变量加入显示</span>
+                <button class="btn btn-sm btn-outline" type="button" @click="appendAllDraftVariablesToTitle">全部加入</button>
+              </div>
+              <div class="exp-insert-chip-list">
+                <button
+                  v-for="item in draftVariableInsertItems"
+                  :key="item.key"
+                  class="exp-insert-chip"
+                  type="button"
+                  @click="appendDraftVariableToTitle(item.text)"
+                >+ {{ item.label }}</button>
+              </div>
+            </div>
+
+            <div v-if="selectedEdge.perf?.incomplete" class="exp-inline-note">
+              <span>性能摘要未完整</span>
+              <button class="btn btn-sm btn-outline" type="button" @click="refreshPerf" :disabled="saving">重新计算</button>
+            </div>
+
+            <div class="exp-panel-actions">
+              <button class="btn btn-primary" type="button" @click="saveEdge" :disabled="saving">保存</button>
+              <button v-if="selectedEdge.compare_job_id" class="btn btn-outline" type="button" @click="openJob(selectedEdge.compare_job_id)">查看对比详情 ↗</button>
+              <button v-else class="btn btn-outline" type="button" @click="createCompare" :disabled="saving">生成详细对比</button>
+              <button class="btn btn-danger" type="button" @click="deleteSelectedEdge" :disabled="saving">删除关系</button>
+            </div>
+          </template>
+
+          <template v-else-if="selectedNode">
+            <div class="exp-panel-head">
+              <div class="exp-node-name-editor">
+                <small>节点</small>
+                <input
+                  v-model="nodeNameDraft"
+                  class="input exp-node-name-input"
+                  :placeholder="nodeTitle(selectedNode)"
+                  @keydown.enter.prevent="saveNodeName"
+                />
+                <div class="exp-node-name-actions">
+                  <button
+                    class="btn btn-sm btn-primary"
+                    type="button"
+                    @click="saveNodeName"
+                    :disabled="nodeNameSaving || !nodeNameDirty"
+                  >{{ nodeNameSaving ? '保存中' : '保存名称' }}</button>
+                  <button
+                    class="btn btn-sm btn-outline"
+                    type="button"
+                    @click="resetNodeNameDraft"
+                    :disabled="nodeNameSaving || !nodeNameDirty"
+                  >还原</button>
+                </div>
+              </div>
+              <button class="btn btn-sm btn-outline" type="button" @click="selectedNodeId=''">关闭</button>
+            </div>
+            <div class="exp-node-detail">
+              <div
+                v-for="row in selectedNodeDetailRows"
+                :key="row.key"
+                :class="['exp-node-detail-row', 'tone-' + row.tone]"
+              >
+                <span :title="row.title || row.label">{{ row.label }}</span>
+                <b>
+                  <i>{{ row.value }}</i>
+                  <em v-if="row.deltaText" :class="row.deltaClass">{{ row.deltaText }}</em>
+                </b>
+              </div>
+            </div>
+            <div class="exp-panel-actions">
+              <button class="btn btn-primary" type="button" @click="openJob(selectedNode.id)">打开完整分析</button>
+            </div>
+          </template>
+
+          <template v-else>
+            <div class="exp-panel-head">
+              <div>
+                <small>项目</small>
+                <strong>{{ projectName }}</strong>
+              </div>
+            </div>
+            <div class="exp-summary-grid">
+              <div><span>节点</span><b>{{ nodes.length }}</b></div>
+              <div><span>关系</span><b>{{ edges.length }}</b></div>
+              <div><span>未连接</span><b>{{ unconnected.length }}</b></div>
+            </div>
+            <div class="exp-panel-subtitle">未连接任务</div>
+            <div class="exp-unconnected-list">
+              <div v-for="job in unconnected" :key="job.id" class="exp-unconnected-item">
+                <div>
+                  <strong>{{ nodeTitle(job) }}</strong>
+                  <span>E2E {{ formatMs(job.e2e_ms) }} · Kernel {{ formatCount(job.kernel_count) }} · Compute {{ formatMs(job.compute_ms) }}</span>
+                </div>
+                <button class="btn btn-xs btn-outline" type="button" @click="openAddEdge('', job.id)">连入</button>
+              </div>
+              <div v-if="!unconnected.length" class="exp-empty-small">暂无未连接任务</div>
+            </div>
+          </template>
+        </aside>
+      </div>
+
+      <div v-if="showAddEdge" class="modal-mask modal-mask-front" @click.self="closeAddEdge">
+        <div class="modal exp-edge-modal">
+          <div class="modal-title">
+            <span>标记优化关系</span>
+            <button class="btn btn-sm btn-outline" type="button" @click="closeAddEdge">关闭</button>
+          </div>
+          <div class="exp-edge-form">
+            <label class="exp-field">
+              <span>父节点</span>
+              <select v-model="addForm.parent_job_id" class="input">
+                <option value="">选择父节点</option>
+                <option v-for="job in candidateOptions" :key="job.id" :value="job.id">{{ jobOptionLabel(job) }}</option>
+              </select>
+            </label>
+            <label class="exp-field">
+              <span>子节点</span>
+              <select v-model="addForm.child_job_id" class="input">
+                <option value="">选择子节点</option>
+                <option v-for="job in candidateOptions" :key="job.id" :value="job.id">{{ jobOptionLabel(job) }}</option>
+              </select>
+            </label>
+            <label class="exp-field">
+              <span>名称</span>
+              <input v-model="addForm.title" class="input" />
+            </label>
+            <label class="exp-field">
+              <span>描述</span>
+              <textarea v-model="addForm.description" class="input exp-textarea"></textarea>
+            </label>
+            <div class="exp-field">
+              <div class="exp-field-title">
+                <span>变更项</span>
+              </div>
+              <textarea
+                v-model="addForm.variablesText"
+                class="input exp-variable-textarea exp-variable-textarea-compact"
+                placeholder="gemm: 1 -> 2&#10;triton: 3 -> 4&#10;或者直接粘贴一段变更说明"
+              ></textarea>
+              <div class="exp-field-hint">每行一条；能识别“名称: 前 -> 后”。</div>
+            </div>
+          </div>
+          <div class="modal-actions">
+            <button class="btn btn-outline" type="button" @click="closeAddEdge">取消</button>
+            <button class="btn btn-primary" type="button" @click="submitAddEdge" :disabled="saving">创建</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  `,
+  setup() {
+    const route = VueRouter.useRoute();
+    const viewportRef = ref(null);
+    const loading = ref(false);
+    const saving = ref(false);
+    const nodes = ref([]);
+    const unconnected = ref([]);
+    const edges = ref([]);
+    const candidateJobs = ref([]);
+    const selectedNodeId = ref("");
+    const selectedEdgeId = ref("");
+    const hoverNodeId = ref("");
+    const hoverEdgeId = ref("");
+    const showAddEdge = ref(false);
+    const panelCollapsed = ref(false);
+    const nodeNameDraft = ref("");
+    const nodeNameOriginal = ref("");
+    const nodeNameSaving = ref(false);
+    const view = ref({ scale: 1, tx: 36, ty: 36 });
+    const addForm = ref({
+      parent_job_id: "",
+      child_job_id: "",
+      title: "",
+      description: "",
+      variablesText: "",
+    });
+    const edgeDraft = ref({ title: "", description: "", variables: [], variablesText: "" });
+    let panState = null;
+    let dragState = null;
+    let resizeState = null;
+    let edgeDragState = null;
+    let edgeResizeState = null;
+
+    const NODE_W = 192;
+    const NODE_H = 128;
+    const NODE_MIN_W = 120;
+    const NODE_MIN_H = 72;
+    const NODE_MAX_W = 900;
+    const NODE_MAX_H = 640;
+    const SIBLING_GAP = 88;
+    const EDGE_LABEL_GAP = 30;
+    const LAYER_GAP = 60;
+    const EDGE_LABEL_W = 300;
+    const EDGE_LABEL_H = 58;
+    const EDGE_LABEL_MIN_W = 160;
+    const EDGE_LABEL_MIN_H = 44;
+    const EDGE_LABEL_MAX_W = 900;
+    const EDGE_LABEL_MAX_H = 420;
+    const EDGE_LABEL_AUTO_MAX_W = 520;
+    const roundLayout = value => Math.round(Number(value || 0) * 10) / 10;
+    const hasLayoutNumber = value => value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value));
+    const charWidth = char => /[\u2E80-\u9FFF]/.test(char) ? 13 : /[A-Z0-9]/.test(char) ? 8 : /[a-z]/.test(char) ? 7 : 6.5;
+    const textWidth = text => Array.from(String(text || "")).reduce((sum, char) => sum + charWidth(char), 0);
+    const looksLikeFileNameText = value => /\.(json|gz|zip|tgz|tar|trace|pt)(\.|$)/i.test(String(value || ""));
+    const shortNodeIdText = id => String(id || "").slice(0, 8);
+    const nodeTitleText = node => {
+      const label = String(node?.label || "").trim();
+      const fileName = String(node?.file_a_name || "").trim();
+      if (label && label !== fileName && !looksLikeFileNameText(label)) return label;
+      return `Job ${shortNodeIdText(node?.id)}`;
+    };
+    const compactMsText = value => Number.isFinite(Number(value)) ? `${Number(value).toFixed(2)} ms` : "-";
+    const compactCountText = value => {
+      if (!Number.isFinite(Number(value))) return "-";
+      const number = Number(value);
+      return Number.isInteger(number) ? String(number) : number.toFixed(1);
+    };
+    const compactSignedMsText = value => {
+      if (!Number.isFinite(Number(value))) return "-";
+      const number = Number(value);
+      return `${number > 0 ? "+" : ""}${number.toFixed(2)} ms`;
+    };
+    const compactSignedCountText = value => {
+      if (!Number.isFinite(Number(value))) return "-";
+      const number = Number(value);
+      const text = Number.isInteger(number) ? String(number) : number.toFixed(1);
+      return `${number > 0 ? "+" : ""}${text}`;
+    };
+    const autoTextBoxSize = (text, options = {}) => {
+      const {
+        minWidth = 160,
+        maxWidth = 520,
+        minHeight = 44,
+        maxHeight = 420,
+        paddingX = 12,
+        paddingY = 10,
+        lineHeight = 16,
+        extraWidth = 0,
+        extraHeight = 0,
+      } = options;
+      const lines = String(text || "").split("\n");
+      const longest = Math.max(0, ...lines.map(line => textWidth(line)));
+      const width = Math.max(minWidth, Math.min(maxWidth, roundLayout(longest + paddingX * 2 + extraWidth)));
+      const contentWidth = Math.max(40, width - paddingX * 2 - extraWidth);
+      const visualLines = lines.reduce((sum, line) => sum + Math.max(1, Math.ceil(textWidth(line) / contentWidth)), 0);
+      const height = Math.max(minHeight, Math.min(maxHeight, roundLayout(visualLines * lineHeight + paddingY * 2 + extraHeight)));
+      return { width, height };
+    };
+    const clampNodeScale = value => Math.max(0.65, Math.min(2.0, Math.round(Number(value || 1) * 100) / 100));
+    const nodeScale = node => clampNodeScale(node?.scale || 1);
+    const clampNodeWidth = value => Math.max(NODE_MIN_W, Math.min(NODE_MAX_W, roundLayout(hasLayoutNumber(value) ? value : NODE_W)));
+    const clampNodeHeight = value => Math.max(NODE_MIN_H, Math.min(NODE_MAX_H, roundLayout(hasLayoutNumber(value) ? value : NODE_H)));
+    const nodeAutoSize = node => {
+      const nodePaddingX = 28;
+      const rowPaddingX = 14;
+      const rowGap = 12;
+      const handleReserveX = 30;
+      const titleWidth = nodePaddingX + 22 + 8 + textWidth(nodeTitleText(node));
+      const parentEdge = edges.value.find(edge => edge.child_job_id === node?.id);
+      const parent = parentEdge ? nodes.value.find(item => item.id === parentEdge.parent_job_id) : null;
+      const metricText = (key, kind = "ms") => {
+        const value = kind === "count" ? compactCountText(node?.[key]) : compactMsText(node?.[key]);
+        const childValue = Number(node?.[key]);
+        const parentValue = Number(parent?.[key]);
+        if (!Number.isFinite(childValue) || !Number.isFinite(parentValue)) return value;
+        const delta = childValue - parentValue;
+        const deltaText = kind === "count" ? compactSignedCountText(delta) : compactSignedMsText(delta);
+        return `${value} (${deltaText})`;
+      };
+      const metricRows = [
+        ["E2E", metricText("e2e_ms", "ms")],
+        ["Kernel", metricText("kernel_count", "count")],
+        ["Compute", metricText("compute_ms", "ms")],
+      ];
+      const labelWidth = Math.max(...metricRows.map(row => textWidth(row[0])));
+      const valueWidth = Math.max(...metricRows.map(row => textWidth(row[1])));
+      const statsWidth = nodePaddingX + rowPaddingX + labelWidth + rowGap + valueWidth + handleReserveX;
+      const statsHeight = metricRows.length * 22 + (metricRows.length - 1) * 5;
+      const contentHeight = 13 + 18 + 10 + statsHeight + 34;
+      const scaledWidth = NODE_W * nodeScale(node);
+      const scaledHeight = contentHeight * nodeScale(node);
+      return {
+        width: clampNodeWidth(Math.max(NODE_W, scaledWidth, titleWidth, statsWidth)),
+        height: clampNodeHeight(Math.max(148, scaledHeight, contentHeight)),
+      };
+    };
+    const nodeWidth = node => clampNodeWidth(hasLayoutNumber(node?.width) ? node.width : nodeAutoSize(node).width);
+    const nodeHeight = node => clampNodeHeight(hasLayoutNumber(node?.height) ? node.height : nodeAutoSize(node).height);
+    const clampEdgeLabelWidth = value => Math.max(EDGE_LABEL_MIN_W, Math.min(EDGE_LABEL_MAX_W, roundLayout(value || EDGE_LABEL_W)));
+    const clampEdgeLabelHeight = value => Math.max(EDGE_LABEL_MIN_H, Math.min(EDGE_LABEL_MAX_H, roundLayout(value || EDGE_LABEL_H)));
+    const edgeLabelAutoSize = edge => autoTextBoxSize(edgeCanvasText(edge), {
+      minWidth: EDGE_LABEL_MIN_W,
+      maxWidth: EDGE_LABEL_AUTO_MAX_W,
+      minHeight: EDGE_LABEL_MIN_H,
+      maxHeight: EDGE_LABEL_MAX_H,
+      paddingX: 12,
+      paddingY: 10,
+      lineHeight: 16.2,
+      extraWidth: 18,
+      extraHeight: 8,
+    });
+    const edgeLabelWidth = edge => clampEdgeLabelWidth(hasLayoutNumber(edge?.label_width) ? edge.label_width : edgeLabelAutoSize(edge).width);
+    const edgeLabelHeight = edge => clampEdgeLabelHeight(hasLayoutNumber(edge?.label_height) ? edge.label_height : edgeLabelAutoSize(edge).height);
+    const edgeArrowPath = (tipX, tipY, fromX, fromY) => {
+      const dx = tipX - fromX;
+      const dy = tipY - fromY;
+      const length = Math.hypot(dx, dy) || 1;
+      const ux = dx / length;
+      const uy = dy / length;
+      const px = -uy;
+      const py = ux;
+      const headLength = 11;
+      const headWidth = 5.5;
+      const baseX = tipX - ux * headLength;
+      const baseY = tipY - uy * headLength;
+      const leftX = baseX + px * headWidth;
+      const leftY = baseY + py * headWidth;
+      const rightX = baseX - px * headWidth;
+      const rightY = baseY - py * headWidth;
+      const curveX = tipX - ux * (headLength * 0.72);
+      const curveY = tipY - uy * (headLength * 0.72);
+      const point = (x, y) => `${roundLayout(x)} ${roundLayout(y)}`;
+      return `M ${point(tipX, tipY)} L ${point(leftX, leftY)} Q ${point(curveX, curveY)} ${point(rightX, rightY)} Z`;
+    };
+
+    const projectId = computed(() => String(route.params.pid || ""));
+    const projectName = computed(() => {
+      const found = projects.value.find(project => project.id === projectId.value);
+      return found?.name || activeHistoryProject.value?.label || projectId.value || "项目";
+    });
+
+    const sortedGraphNodes = computed(() => {
+      const byId = new Map(nodes.value.map(node => [node.id, { ...node }]));
+      const graphNodes = Array.from(byId.values());
+      const indegree = {};
+      const children = {};
+      graphNodes.forEach(node => {
+        indegree[node.id] = 0;
+        children[node.id] = [];
+      });
+      edges.value.forEach(edge => {
+        if (!(edge.parent_job_id in indegree) || !(edge.child_job_id in indegree)) return;
+        indegree[edge.child_job_id] += 1;
+        children[edge.parent_job_id].push(edge.child_job_id);
+      });
+      const queue = graphNodes
+        .filter(node => indegree[node.id] === 0)
+        .sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")))
+        .map(node => node.id);
+      const layer = {};
+      queue.forEach(id => { layer[id] = 0; });
+      while (queue.length) {
+        const id = queue.shift();
+        for (const childId of children[id] || []) {
+          layer[childId] = Math.max(layer[childId] || 0, (layer[id] || 0) + 1);
+          indegree[childId] -= 1;
+          if (indegree[childId] === 0) queue.push(childId);
+        }
+      }
+      graphNodes.forEach(node => {
+        if (layer[node.id] === undefined) layer[node.id] = 0;
+      });
+      const byLayer = {};
+      graphNodes.forEach(node => {
+        const key = layer[node.id] || 0;
+        if (!byLayer[key]) byLayer[key] = [];
+        byLayer[key].push(node);
+      });
+      const layerHeights = {};
+      Object.entries(byLayer).forEach(([key, items]) => {
+        layerHeights[key] = Math.max(NODE_H, ...items.map(node => nodeHeight(node)));
+      });
+      const edgeLabelHeightsByLayer = {};
+      edges.value.forEach(edge => {
+        const parentLayer = layer[edge.parent_job_id];
+        const childLayer = layer[edge.child_job_id];
+        if (!Number.isFinite(Number(parentLayer)) || !Number.isFinite(Number(childLayer))) return;
+        if (Number(childLayer) !== Number(parentLayer) + 1) return;
+        edgeLabelHeightsByLayer[parentLayer] = Math.max(
+          edgeLabelHeightsByLayer[parentLayer] || 0,
+          edgeLabelHeight(edge),
+        );
+      });
+      const layerTops = {};
+      const layerKeys = Object.keys(byLayer).map(Number).sort((a, b) => a - b);
+      layerKeys.forEach((key, index) => {
+        if (index === 0) {
+          layerTops[key] = 0;
+          return;
+        }
+        const prevKey = layerKeys[index - 1];
+        const labelSpace = Math.max(EDGE_LABEL_H, edgeLabelHeightsByLayer[prevKey] || 0);
+        layerTops[key] = layerTops[prevKey] + (layerHeights[prevKey] || NODE_H) + labelSpace + EDGE_LABEL_GAP * 2 + LAYER_GAP;
+      });
+      Object.entries(byLayer).forEach(([key, items]) => {
+        items.sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")));
+        let cursorX = 0;
+        items.forEach((node, index) => {
+          const pinned = Number(node.pinned) === 1 && Number.isFinite(Number(node.x)) && Number.isFinite(Number(node.y));
+          node.x = pinned ? Number(node.x) : cursorX;
+          node.y = pinned ? Number(node.y) : layerTops[Number(key)] || 0;
+          node.scale = clampNodeScale(node.scale || 1);
+          node.pinned = pinned ? 1 : 0;
+          if (!pinned) cursorX += nodeWidth(node) + SIBLING_GAP;
+        });
+      });
+      return graphNodes;
+    });
+
+    const displayNodes = computed(() => sortedGraphNodes.value);
+    const nodeById = computed(() => Object.fromEntries(displayNodes.value.map(node => [node.id, node])));
+    const canvasSize = computed(() => {
+      const maxX = Math.max(820, ...displayNodes.value.map(node => node.x + nodeWidth(node) + 120), 820);
+      const maxY = Math.max(520, ...displayNodes.value.map(node => node.y + nodeHeight(node) + 120), 520);
+      return { width: maxX, height: maxY };
+    });
+    const bestNodeId = computed(() => {
+      const valueFor = node => {
+        const compute = Number(node.compute_ms);
+        if (Number.isFinite(compute)) return compute;
+        const e2e = Number(node.e2e_ms);
+        return Number.isFinite(e2e) ? e2e : null;
+      };
+      const doneNodes = displayNodes.value
+        .filter(node => node.status === "done" && valueFor(node) !== null)
+        .sort((a, b) => valueFor(a) - valueFor(b));
+      return doneNodes[0]?.id || "";
+    });
+    const selectedEdge = computed(() => edges.value.find(edge => edge.id === selectedEdgeId.value) || null);
+    const selectedNode = computed(() => nodeById.value[selectedNodeId.value] || null);
+    const nodeTopKernels = node => (node?.top_kernels || []).slice(0, 5);
+    const nodeDetailRows = node => {
+      if (!node) return [];
+      const rows = [
+        nodeMetricDetailRow(node, "e2e_ms", "e2e", "ms", "time"),
+        nodeMetricDetailRow(node, "kernel_count", "Kernel", "count", "count"),
+        nodeMetricDetailRow(node, "compute_ms", "Compute", "ms", "time"),
+        nodeMetricDetailRow(node, "step_dur_ms", "step_dur", "ms", "time"),
+        nodeMetricDetailRow(node, "aten_ops_count", "aten_ops", "count", "count"),
+      ];
+      return rows.concat(nodeTopKernels(node).map((kernel, index) => hotKernelDetailRow(node, kernel, index)));
+    };
+    const selectedNodeTopKernels = computed(() => nodeTopKernels(selectedNode.value));
+    const selectedNodeDetailRows = computed(() => nodeDetailRows(selectedNode.value));
+    const hoverNode = computed(() => nodeById.value[hoverNodeId.value] || null);
+    const hoverNodeDetailRows = computed(() => nodeDetailRows(hoverNode.value));
+    const hasSelection = computed(() => Boolean(selectedNodeId.value || selectedEdgeId.value));
+    const lineage = computed(() => {
+      const nodeIds = new Set();
+      const edgeIds = new Set();
+      if (selectedEdge.value) {
+        edgeIds.add(selectedEdge.value.id);
+        nodeIds.add(selectedEdge.value.parent_job_id);
+        nodeIds.add(selectedEdge.value.child_job_id);
+        return { nodeIds, edgeIds };
+      }
+      const root = selectedNodeId.value;
+      if (!root) return { nodeIds, edgeIds };
+      nodeIds.add(root);
+      const walk = (startIds, direction) => {
+        const queue = [...startIds];
+        const seen = new Set(queue);
+        while (queue.length) {
+          const id = queue.shift();
+          edges.value.forEach(edge => {
+            const match = direction === "down" ? edge.parent_job_id === id : edge.child_job_id === id;
+            if (!match) return;
+            const nextId = direction === "down" ? edge.child_job_id : edge.parent_job_id;
+            edgeIds.add(edge.id);
+            nodeIds.add(nextId);
+            if (!seen.has(nextId)) {
+              seen.add(nextId);
+              queue.push(nextId);
+            }
+          });
+        }
+      };
+      walk([root], "down");
+      walk([root], "up");
+      return { nodeIds, edgeIds };
+    });
+    const edgePaths = computed(() => edges.value
+      .map(edge => {
+        const parent = nodeById.value[edge.parent_job_id];
+        const child = nodeById.value[edge.child_job_id];
+        if (!parent || !child) return null;
+        const sx = parent.x + nodeWidth(parent) / 2;
+        const sy = parent.y + nodeHeight(parent);
+        const tx = child.x + nodeWidth(child) / 2;
+        const ty = child.y;
+        const midY = sy + (ty - sy) / 2;
+        const labelWidth = edgeLabelWidth(edge);
+        const labelHeight = edgeLabelHeight(edge);
+        const defaultLabelX = (sx + tx) / 2 - labelWidth / 2;
+        const defaultLabelY = (sy + ty) / 2 - labelHeight / 2;
+        const labelX = hasLayoutNumber(edge.label_x) ? Number(edge.label_x) : defaultLabelX;
+        const labelY = hasLayoutNumber(edge.label_y) ? Number(edge.label_y) : defaultLabelY;
+        const anchorX = (sx + tx) / 2;
+        const anchorY = (sy + ty) / 2;
+        const labelCenterX = labelX + labelWidth / 2;
+        const labelCenterY = labelY + labelHeight / 2;
+        const dx = anchorX - labelCenterX;
+        const dy = anchorY - labelCenterY;
+        let connectorD = "";
+        if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
+          let endX = labelCenterX;
+          let endY = labelCenterY;
+          if (Math.abs(dx) * labelHeight > Math.abs(dy) * labelWidth && Math.abs(dx) > 0) {
+            endX = labelCenterX + Math.sign(dx) * labelWidth / 2;
+            endY = labelCenterY + dy * (labelWidth / 2) / Math.abs(dx);
+          } else if (Math.abs(dy) > 0) {
+            endY = labelCenterY + Math.sign(dy) * labelHeight / 2;
+            endX = labelCenterX + dx * (labelHeight / 2) / Math.abs(dy);
+          }
+          connectorD = `M ${anchorX} ${anchorY} L ${endX} ${endY}`;
+        }
+        return {
+          edge,
+          d: `M ${sx} ${sy} C ${sx} ${midY} ${tx} ${midY} ${tx} ${ty}`,
+          arrowD: edgeArrowPath(tx, ty, tx, midY),
+          connectorD,
+          labelX,
+          labelY,
+          labelWidth,
+          labelHeight,
+        };
+      })
+      .filter(Boolean));
+    const candidateOptions = computed(() => {
+      const map = new Map();
+      [...candidateJobs.value, ...nodes.value, ...unconnected.value].forEach(job => {
+        if (job?.id && job.mode === "single") map.set(job.id, job);
+      });
+      return Array.from(map.values());
+    });
+
+    const cleanVariables = variables => (variables || [])
+      .map(item => ({
+        name: String(item.name || "").trim(),
+        from: String(item.from ?? ""),
+        to: String(item.to ?? ""),
+      }))
+      .filter(item => item.name);
+    const variableDisplayLabel = variable => {
+      const from = String(variable?.from || "").trim();
+      const to = String(variable?.to || "").trim();
+      return from || to ? `${variable.name}: ${from || "-"} → ${to || "-"}` : variable.name;
+    };
+    const variableListLine = variable => `- ${variableDisplayLabel(variable)}`;
+    const variableListText = variables => cleanVariables(variables).map(variableListLine).join("\n");
+    const variablesTextFromVariables = variables => cleanVariables(variables).map(variableDisplayLabel).join("\n");
+    const parseVariableLine = value => {
+      const line = String(value || "").trim().replace(/^[-*]\s+/, "");
+      if (!line) return null;
+      const structured = line.match(/^(.+?)\s*[:：=]\s*(.*?)\s*(?:->|→|=>|⇒)\s*(.*)$/);
+      if (structured) {
+        return {
+          name: structured[1].trim(),
+          from: structured[2].trim(),
+          to: structured[3].trim(),
+        };
+      }
+      const arrowOnly = line.match(/^(.+?)\s*(?:->|→|=>|⇒)\s*(.*)$/);
+      if (arrowOnly) {
+        return {
+          name: arrowOnly[1].trim(),
+          from: "",
+          to: arrowOnly[2].trim(),
+        };
+      }
+      return { name: line, from: "", to: "" };
+    };
+    const parseVariablesText = text => String(text || "")
+      .split(/\r?\n/)
+      .map(parseVariableLine)
+      .filter(item => item?.name);
+    const draftVariables = () => parseVariablesText(edgeDraft.value.variablesText);
+    const hydrateEdgeDraft = edge => {
+      const variables = cleanVariables(edge?.variables || []);
+      edgeDraft.value = {
+        title: edge?.title || "",
+        description: edge?.description || "",
+        variables: variables.map(item => ({ ...item })),
+        variablesText: variablesTextFromVariables(variables),
+      };
+    };
+    watch(selectedEdge, edge => {
+      if (edge) hydrateEdgeDraft(edge);
+    });
+
+    const loadCandidates = async () => {
+      if (!projectId.value) return;
+      try {
+        const payload = await fetchJson(
+          `/api/jobs?project_id=${encodeURIComponent(projectId.value)}&limit=500`,
+          { credentials: "include" },
+          "加载候选任务失败",
+        );
+        candidateJobs.value = (payload.data || []).filter(job => job.mode === "single");
+      } catch (e) {
+        candidateJobs.value = [...nodes.value, ...unconnected.value];
+      }
+    };
+    const loadGraph = async () => {
+      if (!projectId.value) return;
+      loading.value = true;
+      try {
+        const payload = await fetchJson(
+          `/api/projects/${encodeURIComponent(projectId.value)}/experiments`,
+          { credentials: "include" },
+          "加载实验树失败",
+        );
+        nodes.value = payload.nodes || [];
+        unconnected.value = payload.unconnected || [];
+        edges.value = payload.edges || [];
+        if (selectedEdgeId.value && !edges.value.some(edge => edge.id === selectedEdgeId.value)) selectedEdgeId.value = "";
+        if (selectedNodeId.value && !nodes.value.some(node => node.id === selectedNodeId.value)) selectedNodeId.value = "";
+        await loadCandidates();
+      } catch (e) {
+        showToast(normalizeApiError(e, "加载实验树失败"), "error");
+      } finally {
+        loading.value = false;
+      }
+    };
+
+    const replaceEdge = edge => {
+      const index = edges.value.findIndex(item => item.id === edge.id);
+      if (index >= 0) edges.value.splice(index, 1, edge);
+      else edges.value.push(edge);
+    };
+    const selectNode = node => {
+      selectedNodeId.value = node.id;
+      selectedEdgeId.value = "";
+    };
+    const selectEdge = edge => {
+      selectedEdgeId.value = edge.id;
+      selectedNodeId.value = "";
+      hydrateEdgeDraft(edge);
+    };
+    const openJob = id => {
+      if (id) router.push({ path: `/job/${id}` });
+    };
+    const openAddEdge = (parentId = "", childId = "") => {
+      addForm.value = {
+        parent_job_id: parentId,
+        child_job_id: childId,
+        title: "",
+        description: "",
+        variablesText: "",
+      };
+      showAddEdge.value = true;
+      loadCandidates();
+    };
+    const closeAddEdge = () => {
+      showAddEdge.value = false;
+    };
+    const submitAddEdge = async () => {
+      if (!addForm.value.parent_job_id || !addForm.value.child_job_id) {
+        showToast("请选择父节点和子节点", "error");
+        return;
+      }
+      saving.value = true;
+      try {
+        const { variablesText, ...payload } = addForm.value;
+        const edge = await fetchJson(
+          `/api/projects/${encodeURIComponent(projectId.value)}/experiments/edges`,
+          {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              ...payload,
+              variables: parseVariablesText(variablesText),
+            }),
+          },
+          "创建优化关系失败",
+        );
+        replaceEdge(edge);
+        showAddEdge.value = false;
+        selectedEdgeId.value = edge.id;
+        await loadGraph();
+        showToast("优化关系已创建", "success");
+      } catch (e) {
+        showToast(normalizeApiError(e, "创建优化关系失败"), "error");
+      } finally {
+        saving.value = false;
+      }
+    };
+    const saveEdge = async () => {
+      if (!selectedEdge.value) return;
+      saving.value = true;
+      try {
+        const edge = await fetchJson(
+          `/api/experiments/edges/${encodeURIComponent(selectedEdge.value.id)}`,
+          {
+            method: "PATCH",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              title: edgeDraft.value.title,
+              description: edgeDraft.value.description,
+              variables: draftVariables(),
+            }),
+          },
+          "保存优化关系失败",
+        );
+        replaceEdge(edge);
+        showToast("已保存", "success");
+      } catch (e) {
+        showToast(normalizeApiError(e, "保存优化关系失败"), "error");
+      } finally {
+        saving.value = false;
+      }
+    };
+    const deleteSelectedEdge = async () => {
+      if (!selectedEdge.value || !window.confirm("删除这条优化关系？")) return;
+      saving.value = true;
+      try {
+        await fetch(`/api/experiments/edges/${encodeURIComponent(selectedEdge.value.id)}`, {
+          method: "DELETE",
+          credentials: "include",
+        }).then(async response => {
+          if (!response.ok) throw new ApiRequestError((await readJsonResponse(response, {}))?.detail || "删除优化关系失败", { status: response.status });
+        });
+        selectedEdgeId.value = "";
+        await loadGraph();
+        showToast("关系已删除", "success");
+      } catch (e) {
+        showToast(normalizeApiError(e, "删除优化关系失败"), "error");
+      } finally {
+        saving.value = false;
+      }
+    };
+    const refreshPerf = async () => {
+      if (!selectedEdge.value) return;
+      saving.value = true;
+      try {
+        const edge = await fetchJson(
+          `/api/experiments/edges/${encodeURIComponent(selectedEdge.value.id)}/refresh-perf`,
+          { method: "POST", credentials: "include" },
+          "重新计算失败",
+        );
+        replaceEdge(edge);
+        if (edge.skipped) {
+          showToast("性能摘要为手动编辑，未覆盖", "info");
+        } else if (edge.perf?.incomplete) {
+          showToast("已重新计算，仍缺少 e2e 或 compute 数据", "info");
+        } else {
+          showToast("已重新计算，性能摘要已完整", "success");
+        }
+      } catch (e) {
+        showToast(normalizeApiError(e, "重新计算失败"), "error");
+      } finally {
+        saving.value = false;
+      }
+    };
+    const createCompare = async () => {
+      if (!selectedEdge.value) return;
+      saving.value = true;
+      try {
+        const payload = await fetchJson(
+          `/api/experiments/edges/${encodeURIComponent(selectedEdge.value.id)}/compare`,
+          { method: "POST", credentials: "include" },
+          "生成详细对比失败",
+        );
+        if (payload.compare_job_id) {
+          selectedEdge.value.compare_job_id = payload.compare_job_id;
+          showToast("详细对比已创建", "success");
+          router.push({ path: `/job/${payload.compare_job_id}` });
+        }
+      } catch (e) {
+        showToast(normalizeApiError(e, "生成详细对比失败"), "error");
+      } finally {
+        saving.value = false;
+      }
+    };
+
+    const saveLayout = async positions => {
+      if (!positions.length) return;
+      try {
+        await fetchJson(
+          `/api/projects/${encodeURIComponent(projectId.value)}/experiments/layout`,
+          {
+            method: "PUT",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ positions }),
+          },
+          "保存布局失败",
+        );
+      } catch (e) {
+        showToast(normalizeApiError(e, "保存布局失败"), "error");
+      }
+    };
+    const saveEdgeLabelLayout = async layout => {
+      if (!layout?.id) return;
+      try {
+        const edge = await fetchJson(
+          `/api/experiments/edges/${encodeURIComponent(layout.id)}`,
+          {
+            method: "PATCH",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              label_layout: {
+                label_x: layout.label_x,
+                label_y: layout.label_y,
+                label_width: layout.label_width,
+                label_height: layout.label_height,
+              },
+            }),
+          },
+          "保存关系框布局失败",
+        );
+        replaceEdge(edge);
+      } catch (e) {
+        showToast(normalizeApiError(e, "保存关系框布局失败"), "error");
+      }
+    };
+    const resetLayout = async () => {
+      saving.value = true;
+      try {
+        await fetch(`/api/projects/${encodeURIComponent(projectId.value)}/experiments/layout`, {
+          method: "DELETE",
+          credentials: "include",
+        }).then(async response => {
+          if (!response.ok) throw new ApiRequestError((await readJsonResponse(response, {}))?.detail || "重置布局失败", { status: response.status });
+        });
+        view.value = { scale: 1, tx: 36, ty: 36 };
+        await loadGraph();
+      } catch (e) {
+        showToast(normalizeApiError(e, "重置布局失败"), "error");
+      } finally {
+        saving.value = false;
+      }
+    };
+
+    const startPan = event => {
+      if (event.target.closest(".exp-node, .exp-edge-label, .exp-panel, button, input, textarea, select")) return;
+      panState = {
+        x: event.clientX,
+        y: event.clientY,
+        tx: view.value.tx,
+        ty: view.value.ty,
+      };
+      window.addEventListener("mousemove", movePan);
+      window.addEventListener("mouseup", stopPan);
+    };
+    const movePan = event => {
+      if (!panState) return;
+      view.value.tx = panState.tx + event.clientX - panState.x;
+      view.value.ty = panState.ty + event.clientY - panState.y;
+    };
+    const stopPan = () => {
+      panState = null;
+      window.removeEventListener("mousemove", movePan);
+      window.removeEventListener("mouseup", stopPan);
+    };
+    const updateNodePosition = (id, x, y) => {
+      const index = nodes.value.findIndex(node => node.id === id);
+      if (index < 0) return;
+      nodes.value.splice(index, 1, { ...nodes.value[index], x, y, pinned: 1 });
+    };
+    const finiteLayoutNumber = (value, fallback = 0) => {
+      const number = Number(value);
+      return Number.isFinite(number) ? number : fallback;
+    };
+    const saveableNodeLayout = (id, fallback = {}) => {
+      const raw = nodes.value.find(item => item.id === id);
+      const displayed = nodeById.value[id] || raw;
+      if (!displayed && !raw) return null;
+      const x = finiteLayoutNumber(raw?.x, finiteLayoutNumber(displayed?.x, finiteLayoutNumber(fallback.x, 0)));
+      const y = finiteLayoutNumber(raw?.y, finiteLayoutNumber(displayed?.y, finiteLayoutNumber(fallback.y, 0)));
+      const scaleSource = fallback.scale === undefined ? (raw || displayed || fallback) : fallback;
+      const sizeSource = raw || displayed || fallback;
+      const width = clampNodeWidth(hasLayoutNumber(fallback.width) ? fallback.width : nodeWidth(sizeSource));
+      const height = clampNodeHeight(hasLayoutNumber(fallback.height) ? fallback.height : nodeHeight(sizeSource));
+      return { job_id: id, x, y, scale: nodeScale(scaleSource), width, height, pinned: 1 };
+    };
+    const updateNodeSize = (id, width, height) => {
+      const index = nodes.value.findIndex(node => node.id === id);
+      if (index < 0) return;
+      const current = nodes.value[index];
+      const displayed = nodeById.value[id] || current;
+      const x = finiteLayoutNumber(current.x, finiteLayoutNumber(displayed.x, 0));
+      const y = finiteLayoutNumber(current.y, finiteLayoutNumber(displayed.y, 0));
+      nodes.value.splice(index, 1, { ...current, x, y, width: clampNodeWidth(width), height: clampNodeHeight(height), pinned: 1 });
+    };
+    const nodeStyle = node => ({
+      left: `${node.x}px`,
+      top: `${node.y}px`,
+      width: `${nodeWidth(node)}px`,
+      height: `${nodeHeight(node)}px`,
+    });
+    const startNodeDrag = (node, event) => {
+      if (resizeState) return;
+      dragState = {
+        id: node.id,
+        x: event.clientX,
+        y: event.clientY,
+        nodeX: node.x,
+        nodeY: node.y,
+      };
+      window.addEventListener("mousemove", moveNode);
+      window.addEventListener("mouseup", stopNodeDrag);
+    };
+    const moveNode = event => {
+      if (!dragState) return;
+      const dx = (event.clientX - dragState.x) / view.value.scale;
+      const dy = (event.clientY - dragState.y) / view.value.scale;
+      updateNodePosition(dragState.id, Math.round((dragState.nodeX + dx) * 10) / 10, Math.round((dragState.nodeY + dy) * 10) / 10);
+    };
+    const stopNodeDrag = async () => {
+      if (!dragState) return;
+      const state = dragState;
+      dragState = null;
+      window.removeEventListener("mousemove", moveNode);
+      window.removeEventListener("mouseup", stopNodeDrag);
+      const layout = saveableNodeLayout(state.id, { x: state.nodeX, y: state.nodeY });
+      if (layout) await saveLayout([layout]);
+    };
+    const startNodeResize = (node, event) => {
+      resizeState = {
+        id: node.id,
+        x: event.clientX,
+        y: event.clientY,
+        width: nodeWidth(node),
+        height: nodeHeight(node),
+        currentWidth: nodeWidth(node),
+        currentHeight: nodeHeight(node),
+      };
+      window.addEventListener("mousemove", moveNodeResize);
+      window.addEventListener("mouseup", stopNodeResize);
+    };
+    const moveNodeResize = event => {
+      if (!resizeState) return;
+      const dx = (event.clientX - resizeState.x) / view.value.scale;
+      const dy = (event.clientY - resizeState.y) / view.value.scale;
+      resizeState.currentWidth = clampNodeWidth(resizeState.width + dx);
+      resizeState.currentHeight = clampNodeHeight(resizeState.height + dy);
+      updateNodeSize(resizeState.id, resizeState.currentWidth, resizeState.currentHeight);
+    };
+    const stopNodeResize = async () => {
+      if (!resizeState) return;
+      const state = resizeState;
+      resizeState = null;
+      window.removeEventListener("mousemove", moveNodeResize);
+      window.removeEventListener("mouseup", stopNodeResize);
+      const layout = saveableNodeLayout(state.id, { width: state.currentWidth, height: state.currentHeight });
+      if (layout) await saveLayout([layout]);
+    };
+    const updateEdgeLabelLayout = (id, patch) => {
+      const index = edges.value.findIndex(edge => edge.id === id);
+      if (index < 0) return;
+      edges.value.splice(index, 1, { ...edges.value[index], ...patch });
+    };
+    const currentEdgeLabelLayout = (id, fallback = {}) => {
+      const item = edgePaths.value.find(path => path.edge.id === id);
+      const edge = edges.value.find(candidate => candidate.id === id) || item?.edge || {};
+      return {
+        id,
+        label_x: roundLayout(hasLayoutNumber(edge.label_x) ? edge.label_x : item?.labelX ?? fallback.label_x ?? 0),
+        label_y: roundLayout(hasLayoutNumber(edge.label_y) ? edge.label_y : item?.labelY ?? fallback.label_y ?? 0),
+        label_width: clampEdgeLabelWidth(edge.label_width || item?.labelWidth || fallback.label_width || EDGE_LABEL_W),
+        label_height: clampEdgeLabelHeight(edge.label_height || item?.labelHeight || fallback.label_height || EDGE_LABEL_H),
+      };
+    };
+    const edgeLabelStyle = item => ({
+      left: `${item.labelX}px`,
+      top: `${item.labelY}px`,
+      width: `${item.labelWidth}px`,
+      height: `${item.labelHeight}px`,
+    });
+    const startEdgeLabelDrag = (edge, item, event) => {
+      if (edgeResizeState) return;
+      edgeDragState = {
+        id: edge.id,
+        x: event.clientX,
+        y: event.clientY,
+        labelX: item.labelX,
+        labelY: item.labelY,
+        labelWidth: item.labelWidth,
+        labelHeight: item.labelHeight,
+        moved: false,
+      };
+      window.addEventListener("mousemove", moveEdgeLabel);
+      window.addEventListener("mouseup", stopEdgeLabelDrag);
+    };
+    const moveEdgeLabel = event => {
+      if (!edgeDragState) return;
+      const dx = (event.clientX - edgeDragState.x) / view.value.scale;
+      const dy = (event.clientY - edgeDragState.y) / view.value.scale;
+      if (Math.abs(dx) > 1 || Math.abs(dy) > 1) edgeDragState.moved = true;
+      updateEdgeLabelLayout(edgeDragState.id, {
+        label_x: roundLayout(edgeDragState.labelX + dx),
+        label_y: roundLayout(edgeDragState.labelY + dy),
+        label_width: edgeDragState.labelWidth,
+        label_height: edgeDragState.labelHeight,
+      });
+    };
+    const stopEdgeLabelDrag = async () => {
+      if (!edgeDragState) return;
+      const state = edgeDragState;
+      edgeDragState = null;
+      window.removeEventListener("mousemove", moveEdgeLabel);
+      window.removeEventListener("mouseup", stopEdgeLabelDrag);
+      if (state.moved) await saveEdgeLabelLayout(currentEdgeLabelLayout(state.id, state));
+    };
+    const startEdgeLabelResize = (edge, item, event) => {
+      edgeResizeState = {
+        id: edge.id,
+        x: event.clientX,
+        y: event.clientY,
+        labelX: item.labelX,
+        labelY: item.labelY,
+        labelWidth: item.labelWidth,
+        labelHeight: item.labelHeight,
+      };
+      window.addEventListener("mousemove", moveEdgeLabelResize);
+      window.addEventListener("mouseup", stopEdgeLabelResize);
+    };
+    const moveEdgeLabelResize = event => {
+      if (!edgeResizeState) return;
+      const dx = (event.clientX - edgeResizeState.x) / view.value.scale;
+      const dy = (event.clientY - edgeResizeState.y) / view.value.scale;
+      updateEdgeLabelLayout(edgeResizeState.id, {
+        label_x: edgeResizeState.labelX,
+        label_y: edgeResizeState.labelY,
+        label_width: clampEdgeLabelWidth(edgeResizeState.labelWidth + dx),
+        label_height: clampEdgeLabelHeight(edgeResizeState.labelHeight + dy),
+      });
+    };
+    const stopEdgeLabelResize = async () => {
+      if (!edgeResizeState) return;
+      const state = edgeResizeState;
+      edgeResizeState = null;
+      window.removeEventListener("mousemove", moveEdgeLabelResize);
+      window.removeEventListener("mouseup", stopEdgeLabelResize);
+      await saveEdgeLabelLayout(currentEdgeLabelLayout(state.id, state));
+    };
+    const zoomBy = delta => {
+      const next = Math.max(0.4, Math.min(1.6, Math.round((view.value.scale + delta) * 100) / 100));
+      view.value.scale = next;
+    };
+    const onWheel = event => {
+      zoomBy(event.deltaY > 0 ? -0.02 : 0.02);
+    };
+    onBeforeUnmount(() => {
+      stopPan();
+      window.removeEventListener("mousemove", moveNode);
+      window.removeEventListener("mouseup", stopNodeDrag);
+      window.removeEventListener("mousemove", moveNodeResize);
+      window.removeEventListener("mouseup", stopNodeResize);
+      window.removeEventListener("mousemove", moveEdgeLabel);
+      window.removeEventListener("mouseup", stopEdgeLabelDrag);
+      window.removeEventListener("mousemove", moveEdgeLabelResize);
+      window.removeEventListener("mouseup", stopEdgeLabelResize);
+    });
+
+    const setHoverNode = node => {
+      hoverNodeId.value = node.id;
+    };
+    const clearHoverNode = () => {
+      hoverNodeId.value = "";
+    };
+
+    const metricRows = edge => {
+      const metrics = edge?.perf?.metrics || {};
+      const defs = [
+        ["e2e_ms", "端到端"],
+        ["compute_ms", "计算"],
+        ["comm_ms", "通信"],
+      ];
+      return defs.map(([key, label]) => ({ key, label, ...(metrics[key] || {}) }));
+    };
+    const formatMs = value => Number.isFinite(Number(value)) ? `${Number(value).toFixed(2)} ms` : "-";
+    const formatCount = value => {
+      if (!Number.isFinite(Number(value))) return "-";
+      const number = Number(value);
+      return Number.isInteger(number) ? String(number) : number.toFixed(1);
+    };
+    const formatSignedMs = value => {
+      if (!Number.isFinite(Number(value))) return "-";
+      const number = Number(value);
+      return `${number > 0 ? "+" : ""}${number.toFixed(2)} ms`;
+    };
+    const formatSignedCount = value => {
+      if (!Number.isFinite(Number(value))) return "-";
+      const number = Number(value);
+      const text = Number.isInteger(number) ? String(number) : number.toFixed(1);
+      return `${number > 0 ? "+" : ""}${text}`;
+    };
+    const numericMetric = value => {
+      const number = Number(value);
+      return Number.isFinite(number) ? number : null;
+    };
+    const parentNodeFor = node => {
+      if (!node?.id) return null;
+      const parentEdge = edges.value.find(edge => edge.child_job_id === node.id);
+      return parentEdge ? nodeById.value[parentEdge.parent_job_id] || null : null;
+    };
+    const nodeMetricDelta = (node, key) => {
+      const childValue = numericMetric(node?.[key]);
+      const parentValue = numericMetric(parentNodeFor(node)?.[key]);
+      if (childValue === null || parentValue === null) return null;
+      return childValue - parentValue;
+    };
+    const formatNodeMetric = (node, key, kind = "ms") => {
+      const value = kind === "count" ? formatCount(node?.[key]) : formatMs(node?.[key]);
+      const delta = nodeMetricDelta(node, key);
+      if (delta === null) return value;
+      const deltaText = kind === "count" ? formatSignedCount(delta) : formatSignedMs(delta);
+      return `${value} (${deltaText})`;
+    };
+    const formatHotKernelMetric = (node, kernel) => {
+      const value = numericMetric(kernel?.avg_dur_ms);
+      const absolute = formatMs(value);
+      const serverDelta = numericMetric(kernel?.parent_delta_ms);
+      if (serverDelta !== null) return `${absolute} (${formatSignedMs(serverDelta)})`;
+      const parent = parentNodeFor(node);
+      if (!parent || value === null) return absolute;
+      const parentValue = numericMetric(parent.kernel_durations?.[kernel?.name]) ?? 0;
+      return `${absolute} (${formatSignedMs(value - parentValue)})`;
+    };
+    const formatPct = value => Number.isFinite(Number(value)) ? `${Number(value) > 0 ? "+" : ""}${Number(value).toFixed(1)}%` : "n/a";
+    const formatMetricPair = metric => `${formatMs(metric.parent)} → ${formatMs(metric.child)}`;
+    const metricDeltaClass = value => {
+      if (!Number.isFinite(Number(value))) return "neutral";
+      return Number(value) < 0 ? "good" : Number(value) > 0 ? "bad" : "neutral";
+    };
+    const nodeMetricDetailRow = (node, key, label, kind = "ms", tone = "time") => {
+      const delta = nodeMetricDelta(node, key);
+      return {
+        key,
+        label,
+        tone,
+        value: kind === "count" ? formatCount(node?.[key]) : formatMs(node?.[key]),
+        deltaText: delta === null ? "" : `(${kind === "count" ? formatSignedCount(delta) : formatSignedMs(delta)})`,
+        deltaClass: metricDeltaClass(delta),
+      };
+    };
+    const hotKernelDetailRow = (node, kernel, index = 0) => {
+      const value = numericMetric(kernel?.avg_dur_ms);
+      const serverDelta = numericMetric(kernel?.parent_delta_ms);
+      const parent = parentNodeFor(node);
+      const parentValue = parent ? numericMetric(parent.kernel_durations?.[kernel?.name]) : null;
+      const delta = serverDelta !== null
+        ? serverDelta
+        : (parent && value !== null ? value - (parentValue ?? 0) : null);
+      const name = String(kernel?.name || "");
+      return {
+        key: `hot-${index}-${name}`,
+        label: `hot · ${shortKernelName(name)}`,
+        title: name,
+        tone: "hot",
+        value: formatMs(value),
+        deltaText: delta === null ? "" : `(${formatSignedMs(delta)})`,
+        deltaClass: metricDeltaClass(delta),
+      };
+    };
+    const deltaMetric = edge => edge?.perf?.metrics?.e2e_ms || {};
+    const deltaLabel = edge => formatPct(deltaMetric(edge).delta_pct);
+    const deltaClass = edge => ["exp-delta", metricDeltaClass(deltaMetric(edge).delta_pct)];
+    const nodeOptimizationDelta = node => {
+      const computeDelta = nodeMetricDelta(node, "compute_ms");
+      if (computeDelta !== null) return computeDelta;
+      return nodeMetricDelta(node, "e2e_ms");
+    };
+    const edgeOptimizationDelta = edge => {
+      const computeDelta = numericMetric(edge?.perf?.metrics?.compute_ms?.delta_pct);
+      if (computeDelta !== null) return computeDelta;
+      return numericMetric(edge?.perf?.metrics?.e2e_ms?.delta_pct);
+    };
+    const nodeOptimizationClass = node => {
+      if (bestNodeId.value === node?.id) return "result-best";
+      const delta = nodeOptimizationDelta(node);
+      if (delta === null || delta === 0) return "";
+      return delta < 0 ? "result-good" : "result-bad";
+    };
+    const edgeOptimizationClass = edge => {
+      const deltaPct = edgeOptimizationDelta(edge);
+      if (deltaPct === null || deltaPct === 0) return "";
+      return deltaPct < 0 ? "result-good" : "result-bad";
+    };
+    const draftVariableInsertItems = computed(() => draftVariables().map((variable, index) => ({
+      key: `${index}-${variable.name}-${variable.from}-${variable.to}`,
+      label: variableDisplayLabel(variable),
+      text: variableListLine(variable),
+    })));
+    const appendLinesToDraftTitle = lines => {
+      const text = (lines || []).map(line => String(line || "").trim()).filter(Boolean).join("\n");
+      if (!text) return;
+      const current = String(edgeDraft.value.title || "").replace(/\s+$/, "");
+      edgeDraft.value = {
+        ...edgeDraft.value,
+        title: current ? `${current}\n${text}` : text,
+      };
+    };
+    const appendDraftVariableToTitle = text => appendLinesToDraftTitle([text]);
+    const appendAllDraftVariablesToTitle = () => appendLinesToDraftTitle(draftVariableInsertItems.value.map(item => item.text));
+    const edgeCanvasText = edge => {
+      if (edge?.id && edge.id === selectedEdgeId.value) {
+        const draftTitle = (edgeDraft.value.title || "").trim();
+        if (draftTitle) return draftTitle;
+        const draftVariableText = variableListText(draftVariables());
+        if (draftVariableText) return draftVariableText;
+      }
+      return (edge?.title || "").trim() || variableListText(edge?.variables) || "优化关系";
+    };
+    const edgeLabel = edge => edgeCanvasText(edge);
+    const looksLikeFileName = value => /\.(json|gz|zip|tgz|tar|trace|pt)(\.|$)/i.test(String(value || ""));
+    const shortId = id => String(id || "").slice(0, 8);
+    const shortKernelName = name => {
+      const text = String(name || "").replace(/^void\s+/, "");
+      const beforeArgs = text.split("(")[0] || text;
+      const parts = beforeArgs.split("::").filter(Boolean);
+      const leaf = parts[parts.length - 1] || beforeArgs;
+      return leaf.length > 34 ? `${leaf.slice(0, 31)}...` : leaf;
+    };
+    const nodeTitle = node => {
+      const label = String(node?.label || "").trim();
+      const fileName = String(node?.file_a_name || "").trim();
+      if (label && label !== fileName && !looksLikeFileName(label)) return label;
+      return `Job ${shortId(node?.id)}`;
+    };
+    const nodeEditableName = node => {
+      const label = String(node?.label || "").trim();
+      return label || nodeTitle(node);
+    };
+    const resetNodeNameDraft = () => {
+      const value = selectedNode.value ? nodeEditableName(selectedNode.value) : "";
+      nodeNameDraft.value = value;
+      nodeNameOriginal.value = value;
+    };
+    const nodeNameDirty = computed(() => nodeNameDraft.value.trim() !== nodeNameOriginal.value.trim());
+    const patchJobInList = (listRef, job) => {
+      const index = listRef.value.findIndex(item => item.id === job.id);
+      if (index >= 0) listRef.value.splice(index, 1, { ...listRef.value[index], label: job.label });
+    };
+    const syncRenamedJob = job => {
+      if (!job?.id) return;
+      patchJobInList(nodes, job);
+      patchJobInList(unconnected, job);
+      patchJobInList(candidateJobs, job);
+    };
+    const saveNodeName = async () => {
+      if (!selectedNode.value?.id || nodeNameSaving.value || !nodeNameDirty.value) return;
+      nodeNameSaving.value = true;
+      try {
+        const updated = await fetchJson(
+          `/api/jobs/${encodeURIComponent(selectedNode.value.id)}`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+            body: JSON.stringify({ label: nodeNameDraft.value.trim() }),
+          },
+          "保存节点名称失败",
+        );
+        syncRenamedJob(updated);
+        const nextName = nodeEditableName({ ...selectedNode.value, label: updated.label });
+        nodeNameDraft.value = nextName;
+        nodeNameOriginal.value = nextName;
+        await refreshSidebarData();
+        showToast("节点名称已更新", "success");
+      } catch (e) {
+        showToast(normalizeApiError(e, "保存节点名称失败"), "error");
+      } finally {
+        nodeNameSaving.value = false;
+      }
+    };
+    const nodeTitleById = id => {
+      const node = nodeById.value[id] || candidateOptions.value.find(item => item.id === id);
+      return node ? nodeTitle(node) : `Job ${shortId(id)}`;
+    };
+    const jobOptionLabel = job => `${nodeTitle(job)} · ${statusText(job.status)}`;
+    const isNodeHighlighted = node => !hasSelection.value || lineage.value.nodeIds.has(node.id);
+    const isEdgeHighlighted = edge => !hasSelection.value || lineage.value.edgeIds.has(edge.id) || hoverEdgeId.value === edge.id;
+    watch(selectedNodeId, () => {
+      resetNodeNameDraft();
+    });
+
+    watch(() => route.params.pid, () => {
+      selectedNodeId.value = "";
+      selectedEdgeId.value = "";
+      loadGraph();
+    }, { immediate: true });
+
+    return {
+      viewportRef, loading, saving, nodes, unconnected, edges, selectedNodeId, selectedEdgeId,
+      selectedNode, selectedEdge, hoverNode, hoverEdgeId, showAddEdge, panelCollapsed, addForm, edgeDraft,
+      nodeNameDraft, nodeNameSaving, nodeNameDirty,
+      draftVariableInsertItems, selectedNodeTopKernels, selectedNodeDetailRows, hoverNodeDetailRows,
+      view, projectName, displayNodes, edgePaths, canvasSize, bestNodeId,
+      candidateOptions, hasSelection,
+      loadGraph, openAddEdge, closeAddEdge, submitAddEdge, selectNode, selectEdge, openJob,
+      saveNodeName, resetNodeNameDraft,
+      saveEdge, deleteSelectedEdge, refreshPerf, createCompare, resetLayout,
+      startPan, startNodeDrag, startNodeResize, startEdgeLabelDrag, startEdgeLabelResize,
+      nodeStyle, nodeWidth, edgeLabelStyle, zoomBy, onWheel, setHoverNode, clearHoverNode,
+      edgeLabel, edgeCanvasText, metricRows, formatMs, formatSignedMs, formatPct,
+      formatCount, formatNodeMetric, formatHotKernelMetric, shortKernelName, nodeTitle, nodeTitleById,
+      formatMetricPair, metricDeltaClass, jobOptionLabel, isNodeHighlighted, isEdgeHighlighted,
+      nodeOptimizationClass, edgeOptimizationClass,
+      appendDraftVariableToTitle, appendAllDraftVariablesToTitle,
+      fmtDate, fmtDateTime, statusText,
+    };
+  },
+};
+
 // ══════════════════════════════════════════════════════════════════════════════
 // Router definition
 // ══════════════════════════════════════════════════════════════════════════════
@@ -7218,6 +8727,7 @@ const router = createRouter({
   routes: [
     { path: "/", component: Home },
     { path: "/feedback/:postId?", name: "feedback", component: Home },
+    { path: "/project/:pid/tree", component: ExperimentTree },
     { path: "/job/:id", component: JobDetail },
     { path: "/job/:id/:tab", component: JobDetail },
   ],
@@ -7343,6 +8853,10 @@ router.beforeEach(async (to, from) => {
 
   if (to.name === "feedback") {
     await openFeedbackRoute(to);
+    return;
+  }
+  if (to.path.startsWith("/project/")) {
+    clearSelectedJobRoute();
     return;
   }
   if (showFeedbackBoard.value) {
