@@ -70,6 +70,8 @@ async def init_db():
                 description  TEXT DEFAULT '',
                 password_hash TEXT DEFAULT NULL,
                 is_public    INTEGER DEFAULT 0,
+                compute_target_ms REAL,
+                metric_targets_json TEXT DEFAULT '{}',
                 created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -166,6 +168,8 @@ async def init_db():
                 description  TEXT DEFAULT '',
                 password_hash TEXT DEFAULT NULL,
                 is_public    INTEGER DEFAULT 0,
+                compute_target_ms REAL,
+                metric_targets_json TEXT DEFAULT '{}',
                 created_at   DATETIME,
                 deleted_at   DATETIME DEFAULT CURRENT_TIMESTAMP
             );
@@ -235,8 +239,12 @@ async def init_db():
         await add_column_if_missing(db, "projects", "user_token", "TEXT")
         await add_column_if_missing(db, "projects", "password_hash", "TEXT DEFAULT NULL")
         await add_column_if_missing(db, "projects", "is_public", "INTEGER DEFAULT 0")
+        await add_column_if_missing(db, "projects", "compute_target_ms", "REAL")
+        await add_column_if_missing(db, "projects", "metric_targets_json", "TEXT DEFAULT '{}'")
         await add_column_if_missing(db, "projects", "created_at", "DATETIME")
         await add_column_if_missing(db, "projects", "folder_id", "TEXT")
+        await add_column_if_missing(db, "deleted_projects", "compute_target_ms", "REAL")
+        await add_column_if_missing(db, "deleted_projects", "metric_targets_json", "TEXT DEFAULT '{}'")
         await add_column_if_missing(db, "jobs", "user_token", "TEXT")
         await add_column_if_missing(db, "jobs", "owned_bytes", "INTEGER")
         await add_column_if_missing(db, "jobs", "result_bytes", "INTEGER")

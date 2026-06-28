@@ -943,6 +943,41 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 .exp-toolbar-actions .btn-primary {
   box-shadow: 0 10px 22px rgba(99,102,241,.20);
 }
+.exp-toolbar-stable-action {
+  min-width: 72px;
+}
+.exp-view-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid rgba(148,163,184,.28);
+  border-radius: 8px;
+  background: var(--exp-surface-soft);
+}
+.exp-view-tab {
+  min-height: 28px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text3);
+  cursor: pointer;
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  transition: background-color .15s, color .15s, box-shadow .15s;
+}
+.exp-view-tab:hover {
+  color: var(--text);
+  background: rgba(148,163,184,.12);
+}
+.exp-view-tab.active {
+  background: var(--purple);
+  color: #fff;
+  box-shadow: 0 8px 16px rgba(99,102,241,.24);
+}
 .exp-title {
   font-size: 16px;
   font-weight: 800;
@@ -996,6 +1031,90 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   user-select: none;
 }
 .exp-canvas:active { cursor: grabbing; }
+.exp-chart-view {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgba(148,163,184,.28);
+  border-radius: 8px;
+  background: var(--exp-canvas-bg);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.04);
+  cursor: grab;
+  user-select: none;
+}
+.exp-chart-view:active { cursor: grabbing; }
+.exp-chart-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  min-height: 38px;
+  cursor: default;
+}
+.exp-chart-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.exp-chart-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+.exp-chart-field span {
+  color: var(--text3);
+  font-size: 12px;
+  font-weight: 800;
+}
+.exp-chart-select {
+  min-width: 180px;
+  min-height: 34px;
+}
+.exp-chart-target-input {
+  width: 132px;
+  min-height: 34px;
+}
+.exp-chart-note {
+  max-width: min(560px, 100%);
+  padding: 7px 10px;
+  border: 1px solid rgba(234,179,8,.30);
+  border-radius: 7px;
+  background: rgba(234,179,8,.08);
+  color: var(--yellow);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.4;
+}
+.exp-chart-empty {
+  flex: 1;
+  min-height: 320px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  color: var(--text3);
+  font-size: 13px;
+  font-weight: 800;
+  text-align: center;
+}
+.exp-chart-canvas-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 360px;
+  padding: 8px 4px 2px;
+}
+.exp-chart-canvas-wrap canvas {
+  width: 100% !important;
+  height: 100% !important;
+  cursor: grab;
+}
 .exp-loading {
   position: absolute;
   inset: 0;
@@ -1447,20 +1566,20 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   border-color: var(--exp-edge-active);
   background: var(--purple-bg);
 }
-.exp-tooltip {
+.exp-chart-tooltip {
   position: fixed;
   z-index: 3900;
-  width: 360px;
+  width: 248px;
   max-width: calc(100vw - 24px);
-  max-height: 430px;
-  padding: 12px;
-  overflow: hidden;
-  border: 1px solid rgba(148,163,184,.30);
-  border-radius: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(148,163,184,.34);
+  border-radius: 8px;
   background: var(--exp-surface);
   color: var(--text2);
-  box-shadow: 0 18px 38px rgba(15,23,42,.18);
+  box-shadow: 0 10px 24px rgba(15,23,42,.12);
+  opacity: 0;
   pointer-events: none;
+  transition: opacity .08s ease;
 }
 .exp-canvas-hint {
   position: absolute;
@@ -1477,33 +1596,43 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   pointer-events: none;
   backdrop-filter: blur(8px);
 }
-.exp-tooltip strong {
+.exp-chart-tooltip-title {
   display: block;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text);
-  margin-bottom: 9px;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 750;
 }
-.exp-tooltip .exp-tooltip-detail {
-  gap: 6px;
-  margin: 0;
+.exp-chart-tooltip-rows {
+  border-top: 1px solid rgba(148,163,184,.18);
 }
-.exp-tooltip .exp-tooltip-detail > .exp-node-detail-row {
-  grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr);
-  min-height: 34px;
-  padding: 7px 9px 7px 13px;
+.exp-chart-tooltip-row {
+  display: grid;
+  grid-template-columns: minmax(0, 92px) minmax(0, 1fr);
+  align-items: baseline;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(148,163,184,.14);
 }
-.exp-tooltip .exp-tooltip-detail > .exp-node-detail-row > span {
-  max-width: 132px;
+.exp-chart-tooltip-row:last-child {
+  border-bottom: 0;
 }
-.exp-tooltip .exp-tooltip-detail > .exp-node-detail-row > b {
-  gap: 4px;
+.exp-chart-tooltip-row span {
+  color: var(--text3);
+  font-size: 11px;
+  font-weight: 650;
 }
-.exp-tooltip .exp-tooltip-detail > .exp-node-detail-row i,
-.exp-tooltip .exp-tooltip-detail > .exp-node-detail-row em {
-  font-size: 10px;
+.exp-chart-tooltip-row b {
+  min-width: 0;
+  color: var(--text);
+  text-align: right;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  font-weight: 750;
 }
 .exp-panel {
   position: relative;
@@ -1777,40 +1906,25 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   grid-template-columns: minmax(0, .8fr) minmax(0, 1.5fr);
 }
 .exp-node-detail {
-  gap: 8px;
+  gap: 0;
   margin: 12px 0 10px;
+  border-top: 1px solid rgba(148,163,184,.18);
 }
 .exp-node-detail > .exp-node-detail-row {
-  --detail-accent: var(--purple);
-  --detail-soft: rgba(99,102,241,.10);
-  --detail-chip: rgba(99,102,241,.14);
-  position: relative;
-  grid-template-columns: minmax(0, .76fr) minmax(0, 1.24fr);
-  min-height: 40px;
-  padding: 8px 10px 8px 13px;
-  overflow: hidden;
-  border-color: rgba(148,163,184,.26);
-  background:
-    linear-gradient(135deg, var(--detail-soft), transparent 70%),
-    var(--exp-surface-soft);
+  grid-template-columns: minmax(78px, max-content) minmax(160px, max-content);
+  justify-content: start;
+  column-gap: 14px;
+  min-width: max-content;
+  min-height: 34px;
+  padding: 8px 0;
+  overflow: visible;
+  border: 0;
+  border-bottom: 1px solid rgba(148,163,184,.14);
+  border-radius: 0;
+  background: transparent;
 }
 .exp-node-detail > .exp-node-detail-row::before {
-  content: "";
-  position: absolute;
-  inset: 8px auto 8px 7px;
-  width: 3px;
-  border-radius: 999px;
-  background: var(--detail-accent);
-}
-.exp-node-detail > .exp-node-detail-row.tone-count {
-  --detail-accent: #0ea5e9;
-  --detail-soft: rgba(14,165,233,.10);
-  --detail-chip: rgba(14,165,233,.14);
-}
-.exp-node-detail > .exp-node-detail-row.tone-hot {
-  --detail-accent: #f59e0b;
-  --detail-soft: rgba(245,158,11,.12);
-  --detail-chip: rgba(245,158,11,.16);
+  display: none;
 }
 .exp-metric-row span,
 .exp-mover-row span,
@@ -1827,13 +1941,13 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   justify-self: start;
   max-width: 100%;
   width: fit-content;
-  padding: 3px 8px;
-  border: 1px solid rgba(148,163,184,.18);
-  border-radius: 7px;
-  background: var(--detail-chip);
-  color: var(--detail-accent);
-  font-size: 11px;
-  font-weight: 800;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text3);
+  font-size: 12px;
+  font-weight: 650;
 }
 .exp-metric-row b,
 .exp-mover-row b,
@@ -1849,43 +1963,38 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 }
 .exp-node-detail > .exp-node-detail-row > b {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   justify-content: flex-end;
-  gap: 5px;
+  gap: 6px;
+  min-width: 160px;
   overflow: visible;
   text-align: right;
-  white-space: normal;
+  white-space: nowrap;
 }
 .exp-node-detail > .exp-node-detail-row i,
 .exp-node-detail > .exp-node-detail-row em {
   font-style: normal;
+  white-space: nowrap;
 }
 .exp-node-detail > .exp-node-detail-row i {
-  padding: 2px 6px;
-  border-radius: 6px;
-  background: rgba(255,255,255,.10);
   color: var(--text);
-  font-weight: 800;
+  font-weight: 700;
 }
 .exp-node-detail > .exp-node-detail-row em {
-  padding: 2px 6px;
-  border: 1px solid rgba(148,163,184,.20);
-  border-radius: 999px;
-  background: rgba(148,163,184,.12);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   color: var(--text2);
   font-size: 10px;
-  font-weight: 800;
+  font-weight: 700;
 }
 .exp-node-detail > .exp-node-detail-row em.good {
-  border-color: var(--exp-good-border);
-  background: var(--exp-good-bg-strong);
-  color: var(--exp-good-ink);
+  color: var(--green);
 }
 .exp-node-detail > .exp-node-detail-row em.bad {
-  border-color: var(--exp-bad-border);
-  background: var(--exp-bad-bg-strong);
-  color: var(--exp-bad-ink);
+  color: var(--red);
 }
 .exp-inline-note {
   display: flex;
@@ -1995,12 +2104,26 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   .exp-body.panel-collapsed {
     grid-template-rows: minmax(420px, 1fr);
   }
+  .exp-chart-canvas-wrap {
+    min-height: 420px;
+  }
   .exp-panel {
     max-height: 42vh;
   }
 }
 
 @media (max-width: 640px) {
+  .exp-chart-field,
+  .exp-chart-select,
+  .exp-chart-target-input {
+    width: 100%;
+  }
+  .exp-chart-controls {
+    width: 100%;
+  }
+  .exp-chart-toolbar {
+    align-items: stretch;
+  }
   .exp-edge-form {
     grid-template-columns: 1fr;
   }

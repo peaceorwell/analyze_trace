@@ -7308,17 +7308,55 @@ const ExperimentTree = {
           </div>
         </div>
         <div class="exp-toolbar-actions">
+          <button
+            v-if="viewMode === 'canvas'"
+            class="btn btn-sm btn-outline exp-toolbar-stable-action"
+            type="button"
+            @click="resetLayout"
+            :disabled="saving"
+          >自动整理</button>
+          <button
+            v-else
+            class="btn btn-sm btn-outline exp-toolbar-stable-action"
+            type="button"
+            @click="resetLineageChartZoom"
+            :disabled="lineageChartAtDefault || !!lineageChartEmptyText"
+          >重置</button>
           <button class="btn btn-sm btn-primary" type="button" @click="openAddEdge()">标记优化关系</button>
-          <button class="btn btn-sm btn-outline" type="button" @click="resetLayout" :disabled="saving">自动整理</button>
-          <button class="btn btn-sm btn-outline exp-zoom-btn" type="button" @click="zoomBy(-0.05)">−</button>
-          <span class="exp-zoom-label">{{ Math.round(view.scale * 100) }}%</span>
-          <button class="btn btn-sm btn-outline exp-zoom-btn" type="button" @click="zoomBy(0.05)">+</button>
+          <div class="exp-view-toggle" role="tablist" aria-label="实验树视图">
+            <button
+              type="button"
+              :class="['exp-view-tab', viewMode === 'canvas' ? 'active' : '']"
+              :aria-selected="viewMode === 'canvas'"
+              @click="viewMode='canvas'"
+            >画布</button>
+            <button
+              type="button"
+              :class="['exp-view-tab', viewMode === 'chart' ? 'active' : '']"
+              :aria-selected="viewMode === 'chart'"
+              @click="viewMode='chart'"
+            >折线图</button>
+          </div>
+          <button
+            class="btn btn-sm btn-outline exp-zoom-btn"
+            type="button"
+            @click="viewMode === 'canvas' ? zoomBy(-0.05) : zoomLineageChart(0.8)"
+            :disabled="viewMode === 'chart' && !!lineageChartEmptyText"
+          >−</button>
+          <span class="exp-zoom-label">{{ viewMode === 'canvas' ? Math.round(view.scale * 100) : Math.round(lineageChartZoom * 100) }}%</span>
+          <button
+            class="btn btn-sm btn-outline exp-zoom-btn"
+            type="button"
+            @click="viewMode === 'canvas' ? zoomBy(0.05) : zoomLineageChart(1.25)"
+            :disabled="viewMode === 'chart' && !!lineageChartEmptyText"
+          >+</button>
           <button class="btn btn-sm btn-outline" type="button" @click="loadGraph" :disabled="loading">刷新</button>
         </div>
       </header>
 
       <div :class="['exp-body', panelCollapsed ? 'panel-collapsed' : '']">
         <div
+          v-if="viewMode === 'canvas'"
           ref="viewportRef"
           class="exp-canvas"
           @mousedown="startPan"
@@ -7396,8 +7434,6 @@ const ExperimentTree = {
               ]"
               :style="nodeStyle(node)"
               @mousedown.stop="startNodeDrag(node, $event)"
-              @mouseenter="setHoverNode(node)"
-              @mouseleave="clearHoverNode"
               @click.stop="selectNode(node)"
               @dblclick.stop="openJob(node.id)"
             >
@@ -7445,24 +7481,62 @@ const ExperimentTree = {
         </div>
 
         <div
-          v-if="hoverNode"
-          class="exp-tooltip"
-          :style="hoverTooltipStyle"
+          v-else
+          class="exp-chart-view"
+          @mousedown="startLineageChartPan"
+          @wheel.prevent="onLineageChartWheel"
         >
-          <strong>{{ nodeTitle(hoverNode) }}</strong>
-          <div class="exp-node-detail exp-tooltip-detail">
-            <div
-              v-for="row in hoverNodeDetailRows"
-              :key="row.key"
-              :class="['exp-node-detail-row', 'tone-' + row.tone]"
-            >
-              <span :title="row.title || row.label">{{ row.label }}</span>
-              <b>
-                <i>{{ row.value }}</i>
-                <em v-if="row.deltaText" :class="row.deltaClass">{{ row.deltaText }}</em>
-              </b>
+          <div v-if="loading" class="exp-loading">加载中...</div>
+          <template v-else>
+            <div class="exp-chart-toolbar">
+              <div class="exp-chart-controls">
+                <label class="exp-chart-field">
+                  <span>主指标</span>
+                  <select v-model="lineageMetricKey" class="input exp-chart-select">
+                    <option v-for="metric in lineageMetricOptions" :key="metric.key" :value="metric.key">{{ metric.label }}</option>
+                  </select>
+                </label>
+                <label class="exp-chart-field exp-chart-target-field">
+                  <span>{{ currentMetricTargetTitle }}</span>
+                  <input
+                    v-model="projectMetricTargetDraft"
+                    class="input exp-chart-target-input"
+                    type="text"
+                    inputmode="decimal"
+                    placeholder="未设置"
+                    @keydown.enter.prevent="saveProjectMetricTarget"
+                  />
+                </label>
+                <button
+                  class="btn btn-sm btn-primary"
+                  type="button"
+                  @click="saveProjectMetricTarget"
+                  :disabled="projectMetricTargetSaving || !projectMetricTargetDirty"
+                >{{ projectMetricTargetSaving ? '保存中' : '保存目标' }}</button>
+                <button
+                  v-if="currentMetricTargetValue !== null || projectMetricTargetDraft"
+                  class="btn btn-sm btn-outline"
+                  type="button"
+                  @click="clearProjectMetricTarget"
+                  :disabled="projectMetricTargetSaving"
+                >清除</button>
+              </div>
+              <div v-if="lineageChartWarning" class="exp-chart-note">{{ lineageChartWarning }}</div>
             </div>
-          </div>
+            <div v-if="lineageChartEmptyText" class="exp-chart-empty">{{ lineageChartEmptyText }}</div>
+            <div v-else class="exp-chart-canvas-wrap">
+              <canvas ref="lineageChartCanvas"></canvas>
+            </div>
+          </template>
+          <button
+            v-if="panelCollapsed"
+            class="exp-panel-expand-btn"
+            type="button"
+            title="展开右侧面板"
+            aria-label="展开右侧面板"
+            @click.stop="panelCollapsed=false"
+          >‹</button>
+          <div class="exp-canvas-hint">滚轮缩放 · 拖空白平移</div>
         </div>
 
         <aside v-if="!panelCollapsed" class="exp-panel">
@@ -7589,6 +7663,7 @@ const ExperimentTree = {
               <div><span>节点</span><b>{{ nodes.length }}</b></div>
               <div><span>关系</span><b>{{ edges.length }}</b></div>
               <div><span>未连接</span><b>{{ unconnected.length }}</b></div>
+              <div><span>{{ currentMetricTargetTitle }}</span><b>{{ currentMetricTargetValueLabel }}</b></div>
             </div>
             <div class="exp-panel-subtitle">未连接任务</div>
             <div class="exp-unconnected-list">
@@ -7660,18 +7735,25 @@ const ExperimentTree = {
   setup() {
     const route = VueRouter.useRoute();
     const viewportRef = ref(null);
+    const lineageChartCanvas = ref(null);
     const loading = ref(false);
     const saving = ref(false);
     const nodes = ref([]);
     const unconnected = ref([]);
     const edges = ref([]);
+    const projectMeta = ref(null);
+    const projectMetricTargetDraft = ref("");
+    const projectMetricTargetSaving = ref(false);
     const candidateJobs = ref([]);
     const selectedNodeId = ref("");
     const selectedEdgeId = ref("");
-    const hoverNodeId = ref("");
     const hoverEdgeId = ref("");
     const showAddEdge = ref(false);
     const panelCollapsed = ref(false);
+    const viewMode = ref("canvas");
+    const lineageMetricKey = ref("compute_ms");
+    const lineageChartZoom = ref(1);
+    const lineageChartAxisOffset = ref({ x: 0, y: 0 });
     const nodeNameDraft = ref("");
     const nodeNameOriginal = ref("");
     const nodeNameSaving = ref(false);
@@ -7689,6 +7771,11 @@ const ExperimentTree = {
     let resizeState = null;
     let edgeDragState = null;
     let edgeResizeState = null;
+    let lineagePanState = null;
+    let suppressLineageChartClick = false;
+    let lineageChartInst = null;
+    let lineageChartTooltipEl = null;
+    let lineageChartBuildToken = 0;
 
     const NODE_W = 248;
     const NODE_H = 136;
@@ -7709,6 +7796,20 @@ const ExperimentTree = {
     const NODE_COLLISION_GAP_X = 28;
     const NODE_COLLISION_GAP_Y = 32;
     const NODE_EDGE_GAP_Y = Math.max(EDGE_LABEL_H + EDGE_LABEL_GAP * 2 + 22, 120);
+    const MAX_LINEAGE_BRANCHES = 24;
+    const LINEAGE_BRANCH_COLORS = [
+      "#6366f1", "#10b981", "#f59e0b", "#0ea5e9",
+      "#ef4444", "#8b5cf6", "#14b8a6", "#f97316",
+    ];
+    const LINEAGE_METRIC_DEFS = [
+      { key: "compute_ms", label: "计算耗时", unit: "ms", beginAtZero: false },
+      { key: "e2e_ms", label: "端到端耗时", unit: "ms", beginAtZero: false },
+      { key: "comm_ms", label: "通信耗时", unit: "ms", beginAtZero: false },
+      { key: "kernel_count", label: "Kernel 数", unit: "count", beginAtZero: true },
+      { key: "aten_ops_ms", label: "ATen 耗时", unit: "ms", beginAtZero: false },
+      { key: "aten_ops_count", label: "ATen 操作数", unit: "count", beginAtZero: true },
+      { key: "step_dur_ms", label: "Step 耗时", unit: "ms", beginAtZero: false },
+    ];
     const roundLayout = value => Math.round(Number(value || 0) * 10) / 10;
     const hasLayoutNumber = value => value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value));
     const charWidth = char => /[\u2E80-\u9FFF]/.test(char) ? 13 : /[A-Z0-9]/.test(char) ? 8 : /[a-z]/.test(char) ? 7 : 6.5;
@@ -7864,8 +7965,307 @@ const ExperimentTree = {
 
     const projectId = computed(() => String(route.params.pid || ""));
     const projectName = computed(() => {
+      if (projectMeta.value?.name) return projectMeta.value.name;
       const found = projects.value.find(project => project.id === projectId.value);
       return found?.name || activeHistoryProject.value?.label || projectId.value || "项目";
+    });
+    const normalizeProjectMetricTarget = value => {
+      if (value === null || value === undefined || value === "") return null;
+      const number = Number(String(value).replace(/,/g, "").trim());
+      return Number.isFinite(number) && number > 0 ? number : null;
+    };
+    const formatProjectMetricTargetDraft = value => {
+      const number = normalizeProjectMetricTarget(value);
+      return number === null ? "" : String(Math.round(number * 100) / 100);
+    };
+    const projectMetricTargets = computed(() => {
+      const localTargets = projectMeta.value?.metric_targets;
+      const project = projects.value.find(item => item.id === projectId.value);
+      const rawTargets = localTargets && typeof localTargets === "object" ? localTargets : (project?.metric_targets || {});
+      const targets = {};
+      Object.entries(rawTargets || {}).forEach(([key, value]) => {
+        const target = normalizeProjectMetricTarget(value);
+        if (target !== null) targets[key] = target;
+      });
+      const legacyComputeTarget = normalizeProjectMetricTarget(
+        projectMeta.value && Object.prototype.hasOwnProperty.call(projectMeta.value, "compute_target_ms")
+          ? projectMeta.value.compute_target_ms
+          : project?.compute_target_ms,
+      );
+      if (legacyComputeTarget !== null && targets.compute_ms === undefined) {
+        targets.compute_ms = legacyComputeTarget;
+      }
+      return targets;
+    });
+
+    const lineageMetricValue = (node, key) => {
+      if (node?.[key] === null || node?.[key] === undefined || node?.[key] === "") return null;
+      const number = Number(node?.[key]);
+      return Number.isFinite(number) ? number : null;
+    };
+    const lineageMetricOptions = computed(() => {
+      const available = LINEAGE_METRIC_DEFS.filter(def =>
+        def.key === "compute_ms" || nodes.value.some(node => lineageMetricValue(node, def.key) !== null)
+      );
+      return available.length ? available : [LINEAGE_METRIC_DEFS[0]];
+    });
+    const currentLineageMetricDef = computed(() =>
+      lineageMetricOptions.value.find(item => item.key === lineageMetricKey.value)
+      || LINEAGE_METRIC_DEFS.find(item => item.key === lineageMetricKey.value)
+      || LINEAGE_METRIC_DEFS[0]
+    );
+    const currentMetricTargetValue = computed(() =>
+      projectMetricTargets.value[currentLineageMetricDef.value.key] ?? null
+    );
+    const currentMetricTargetTitle = computed(() => `${currentLineageMetricDef.value.label}目标`);
+    const currentMetricTargetValueLabel = computed(() =>
+      currentMetricTargetValue.value === null ? "未设置" : formatLineageMetricValue(currentMetricTargetValue.value, currentLineageMetricDef.value)
+    );
+    const projectMetricTargetDirty = computed(() => {
+      const draft = String(projectMetricTargetDraft.value || "").trim();
+      if (!draft) return currentMetricTargetValue.value !== null;
+      const draftValue = normalizeProjectMetricTarget(draft);
+      if (draftValue === null) return true;
+      return currentMetricTargetValue.value === null || Math.abs(draftValue - currentMetricTargetValue.value) > 1e-6;
+    });
+    const lineageMetricTargetLineValue = computed(() => currentMetricTargetValue.value);
+    const refreshProjectMetricTargetDraft = () => {
+      projectMetricTargetDraft.value = formatProjectMetricTargetDraft(currentMetricTargetValue.value);
+    };
+    const sortLineageNodeIds = (ids, nodeMap) => ids.slice().sort((a, b) => {
+      const left = nodeMap.get(a) || {};
+      const right = nodeMap.get(b) || {};
+      return String(left.created_at || "").localeCompare(String(right.created_at || ""))
+        || nodeTitleText(left).localeCompare(nodeTitleText(right))
+        || String(a).localeCompare(String(b));
+    });
+    const lineageTopology = computed(() => {
+      const nodeMap = new Map();
+      nodes.value.forEach(node => {
+        if (node?.id) nodeMap.set(String(node.id), node);
+      });
+      const ids = sortLineageNodeIds(Array.from(nodeMap.keys()), nodeMap);
+      const childrenOf = new Map(ids.map(id => [id, []]));
+      const parentsOf = new Map(ids.map(id => [id, []]));
+      edges.value.forEach(edge => {
+        const parentId = String(edge?.parent_job_id || "");
+        const childId = String(edge?.child_job_id || "");
+        if (!nodeMap.has(parentId) || !nodeMap.has(childId)) return;
+        childrenOf.get(parentId).push(childId);
+        parentsOf.get(childId).push(parentId);
+      });
+      ids.forEach(id => {
+        childrenOf.set(id, sortLineageNodeIds(childrenOf.get(id) || [], nodeMap));
+        parentsOf.set(id, sortLineageNodeIds(parentsOf.get(id) || [], nodeMap));
+      });
+      let roots = ids.filter(id => !(parentsOf.get(id) || []).length);
+      if (!roots.length) roots = ids;
+      roots = sortLineageNodeIds(roots, nodeMap);
+      const indegree = new Map(ids.map(id => [id, (parentsOf.get(id) || []).length]));
+      const generation = new Map(ids.map(id => [id, 0]));
+      const queue = [...roots];
+      const processed = new Set();
+      while (queue.length) {
+        const id = queue.shift();
+        processed.add(id);
+        for (const childId of childrenOf.get(id) || []) {
+          generation.set(childId, Math.max(generation.get(childId) || 0, (generation.get(id) || 0) + 1));
+          const nextInDegree = (indegree.get(childId) || 0) - 1;
+          indegree.set(childId, nextInDegree);
+          if (nextInDegree === 0) queue.push(childId);
+        }
+      }
+      ids.forEach(id => {
+        if (!processed.has(id)) generation.set(id, generation.get(id) || 0);
+      });
+      return { nodeMap, ids, childrenOf, parentsOf, roots, generation };
+    });
+    const lineageBranches = computed(() => {
+      const graph = lineageTopology.value;
+      const branches = [];
+      let truncated = false;
+      const addBranch = path => {
+        if (branches.length >= MAX_LINEAGE_BRANCHES) {
+          truncated = true;
+          return;
+        }
+        branches.push(path);
+      };
+      const visit = (id, path, seen) => {
+        if (truncated) return;
+        const nextPath = [...path, id];
+        const children = (graph.childrenOf.get(id) || []).filter(childId => !seen.has(childId));
+        if (!children.length) {
+          addBranch(nextPath);
+          return;
+        }
+        for (const childId of children) {
+          seen.add(childId);
+          visit(childId, nextPath, seen);
+          seen.delete(childId);
+          if (truncated) break;
+        }
+      };
+      for (const rootId of graph.roots) {
+        visit(rootId, [], new Set([rootId]));
+        if (truncated) break;
+      }
+      return { branches, truncated };
+    });
+    const formatLineageMetricValue = (value, metricDef = currentLineageMetricDef.value) => {
+      if (value === null || value === undefined || !Number.isFinite(Number(value))) return "—";
+      const number = Number(value);
+      if (metricDef.unit === "count") return Number.isInteger(number) ? String(number) : number.toFixed(1);
+      return `${number.toFixed(2)}${metricDef.unit ? ` ${metricDef.unit}` : ""}`;
+    };
+    const formatLineageSignedValue = (value, metricDef = currentLineageMetricDef.value) => {
+      if (value === null || value === undefined || !Number.isFinite(Number(value))) return "—";
+      const number = Number(value);
+      const sign = number > 0 ? "+" : "";
+      if (metricDef.unit === "count") {
+        const text = Number.isInteger(number) ? String(number) : number.toFixed(1);
+        return `${sign}${text}`;
+      }
+      return `${sign}${number.toFixed(2)}${metricDef.unit ? ` ${metricDef.unit}` : ""}`;
+    };
+    const formatLineagePct = value => {
+      if (value === null || value === undefined || !Number.isFinite(Number(value))) return "";
+      const number = Number(value);
+      return `${number > 0 ? "+" : ""}${number.toFixed(1)}%`;
+    };
+    const lineageChartModel = computed(() => {
+      const graph = lineageTopology.value;
+      const metricDef = currentLineageMetricDef.value;
+      const branchNameCounts = new Map();
+      const datasets = lineageBranches.value.branches.map((path, index) => {
+        const leaf = graph.nodeMap.get(path[path.length - 1]);
+        const baseName = shortChartLabel(nodeTitleText(leaf) || `分支 ${index + 1}`, 34);
+        const branchNameCount = (branchNameCounts.get(baseName) || 0) + 1;
+        branchNameCounts.set(baseName, branchNameCount);
+        const label = branchNameCount === 1 ? baseName : `${baseName} · ${branchNameCount}`;
+        const color = LINEAGE_BRANCH_COLORS[index % LINEAGE_BRANCH_COLORS.length];
+        const data = path.map((nodeId, pointIndex) => {
+          const node = graph.nodeMap.get(nodeId);
+          const parentId = path[pointIndex - 1] || "";
+          const parentNode = parentId ? graph.nodeMap.get(parentId) : null;
+          const rawValue = lineageMetricValue(node, metricDef.key);
+          const parentValue = parentNode ? lineageMetricValue(parentNode, metricDef.key) : null;
+          const delta = rawValue !== null && parentValue !== null ? rawValue - parentValue : null;
+          const deltaPct = delta !== null && parentValue !== null && parentValue !== 0
+            ? Math.round((delta / Math.abs(parentValue)) * 1000) / 10
+            : null;
+          return {
+            x: graph.generation.get(nodeId) || 0,
+            y: rawValue,
+            nodeId,
+            label: nodeTitleText(node),
+            status: node?.status || "",
+            fileName: String(node?.file_a_name || ""),
+            rawValue,
+            parentNodeId: parentId,
+            parentLabel: parentNode ? nodeTitleText(parentNode) : "",
+            delta,
+            deltaPct,
+          };
+        });
+        if (!data.some(point => point.rawValue !== null)) return null;
+        return {
+          label,
+          data,
+          borderColor: color,
+          backgroundColor: color,
+          pointBackgroundColor: color,
+          pointBorderColor: "#ffffff",
+          pointBorderWidth: 2,
+          pointRadius: ctx => ctx.raw?.rawValue === null ? 0 : 4,
+          pointHoverRadius: ctx => ctx.raw?.rawValue === null ? 0 : 6,
+          tension: 0,
+          spanGaps: true,
+        };
+      }).filter(Boolean);
+      return { datasets, truncated: lineageBranches.value.truncated };
+    });
+    const lineageMetricHasData = computed(() =>
+      nodes.value.some(node => lineageMetricValue(node, currentLineageMetricDef.value.key) !== null)
+    );
+    const lineageChartEmptyText = computed(() => {
+      if (!edges.value.length) return "先建立优化关系后查看代际趋势";
+      if (!nodes.value.length) return "暂无实验节点";
+      if (!lineageMetricHasData.value || !lineageChartModel.value.datasets.length) return "该指标暂无数据，建议换指标";
+      return "";
+    });
+    const lineageChartWarning = computed(() =>
+      lineageChartModel.value.truncated
+        ? `分支过多，仅显示前 ${MAX_LINEAGE_BRANCHES} 条；可在画布视图查看全图`
+        : ""
+    );
+    const lineageChartAtDefault = computed(() => {
+      const offset = lineageChartAxisOffset.value || {};
+      return lineageChartZoom.value === 1
+        && Math.abs(Number(offset.x) || 0) < 1e-9
+        && Math.abs(Number(offset.y) || 0) < 1e-9;
+    });
+    const lineageChartDataPoints = computed(() =>
+      lineageChartModel.value.datasets
+        .flatMap(dataset => dataset.data || [])
+        .filter(point => point?.rawValue !== null && point?.rawValue !== undefined)
+    );
+    const lineageChartAxisBounds = computed(() => {
+      const points = lineageChartDataPoints.value;
+      if (!points.length) return {};
+      const metricDef = currentLineageMetricDef.value;
+      const zoom = lineageChartZoom.value || 1;
+      const offset = lineageChartAxisOffset.value || { x: 0, y: 0 };
+      const xValues = points.map(point => Number(point.x)).filter(Number.isFinite);
+      const yValues = points.map(point => Number(point.rawValue)).filter(Number.isFinite);
+      const targetValue = lineageMetricTargetLineValue.value;
+      const yDomainValues = targetValue === null ? yValues : [...yValues, targetValue];
+      const withOffset = (bounds, value) => ({
+        min: bounds.min + value,
+        max: bounds.max + value,
+      });
+      const zoomBounds = (bounds, zoomValue) => {
+        if (!Number.isFinite(bounds.min) || !Number.isFinite(bounds.max)) return bounds;
+        const center = (bounds.min + bounds.max) / 2;
+        const span = Math.max(1e-9, bounds.max - bounds.min) / zoomValue;
+        return {
+          min: center - span / 2,
+          max: center + span / 2,
+        };
+      };
+      const boundsFor = (values, options = {}) => {
+        if (!values.length) return {};
+        const minValue = Math.min(...values);
+        const maxValue = Math.max(...values);
+        const center = (minValue + maxValue) / 2;
+        const rawSpan = Math.max(maxValue - minValue, options.fallbackSpan || 1);
+        const paddedSpan = rawSpan * (options.paddingFactor || 1.25);
+        const span = paddedSpan;
+        let min = center - span / 2;
+        let max = center + span / 2;
+        if (options.clampMinZero && minValue >= 0 && min < 0) {
+          min = 0;
+          max = Math.max(max, span);
+          if (max <= min) max = min + rawSpan;
+        }
+        return zoomBounds({ min, max }, zoom);
+      };
+      const yBoundsFor = values => {
+        if (!values.length) return {};
+        const minValue = Math.min(...values);
+        const maxValue = Math.max(...values);
+        const min = minValue >= 0 ? minValue * 0.8 : minValue * 1.25;
+        let max = maxValue >= 0 ? maxValue * 1.25 : maxValue * 0.8;
+        if (max <= min) {
+          const fallbackSpan = metricDef.unit === "count" ? 2 : Math.max(1, Math.abs(maxValue || minValue || 1) * 0.25);
+          max = min + fallbackSpan;
+        }
+        return { min, max };
+      };
+      return {
+        x: withOffset(boundsFor(xValues, { fallbackSpan: 2, paddingFactor: 1.25, clampMinZero: true }), offset.x || 0),
+        y: withOffset(yBoundsFor(yDomainValues), offset.y || 0),
+      };
     });
 
     const sortedGraphNodes = computed(() => {
@@ -7975,33 +8375,29 @@ const ExperimentTree = {
         nodeMetricDetailRow(node, "e2e_ms", "e2e", "ms", "time"),
         nodeMetricDetailRow(node, "kernel_count", "Kernel", "count", "count"),
         nodeMetricDetailRow(node, "compute_ms", "Compute", "ms", "time"),
-        nodeMetricDetailRow(node, "step_dur_ms", "step_dur", "ms", "time"),
         nodeMetricDetailRow(node, "aten_ops_count", "aten_ops", "count", "count"),
       ];
       return rows.concat(nodeTopKernels(node).map((kernel, index) => hotKernelDetailRow(node, kernel, index)));
     };
     const selectedNodeTopKernels = computed(() => nodeTopKernels(selectedNode.value));
     const selectedNodeDetailRows = computed(() => nodeDetailRows(selectedNode.value));
-    const hoverNode = computed(() => nodeById.value[hoverNodeId.value] || null);
-    const hoverNodeDetailRows = computed(() => nodeDetailRows(hoverNode.value));
-    const hoverTooltipStyle = computed(() => {
-      const node = hoverNode.value;
-      const viewport = viewportRef.value;
-      if (!node || !viewport || typeof window === "undefined") return {};
-      const rect = viewport.getBoundingClientRect();
-      const scale = view.value.scale || 1;
-      const width = 360;
-      const margin = 12;
-      const height = Math.min(430, Math.max(140, window.innerHeight - margin * 2));
-      const rawLeft = rect.left + view.value.tx + (node.x + nodeWidth(node) + 12) * scale;
-      const rawTop = rect.top + view.value.ty + (node.y - 8) * scale;
-      const maxLeft = Math.max(margin, window.innerWidth - width - margin);
-      const maxTop = Math.max(margin, window.innerHeight - height - margin);
-      return {
-        left: `${Math.min(Math.max(rawLeft, margin), maxLeft)}px`,
-        top: `${Math.min(Math.max(rawTop, margin), maxTop)}px`,
-      };
-    });
+    const lineageHoverMetricDefs = () => [
+      { ...LINEAGE_METRIC_DEFS.find(item => item.key === "compute_ms"), label: "compute time" },
+      { ...LINEAGE_METRIC_DEFS.find(item => item.key === "e2e_ms"), label: "e2e time" },
+      { ...LINEAGE_METRIC_DEFS.find(item => item.key === "kernel_count"), label: "kernel num" },
+      { ...LINEAGE_METRIC_DEFS.find(item => item.key === "aten_ops_count"), label: "aten ops" },
+    ].filter(Boolean);
+    const lineageHoverMetricRows = node => {
+      if (!node) return [];
+      return lineageHoverMetricDefs().map(metricDef => ({
+        key: metricDef.key,
+        label: metricDef.label,
+        tone: metricDef.unit === "count" ? "count" : "time",
+        value: formatLineageMetricValue(lineageMetricValue(node, metricDef.key), metricDef),
+        deltaText: "",
+        deltaClass: "neutral",
+      }));
+    };
     const hasSelection = computed(() => Boolean(selectedNodeId.value || selectedEdgeId.value));
     const lineage = computed(() => {
       const nodeIds = new Set();
@@ -8219,6 +8615,12 @@ const ExperimentTree = {
           { credentials: "include" },
           "加载实验树失败",
         );
+        if (payload.project) {
+          projectMeta.value = payload.project;
+          const projectIndex = projects.value.findIndex(project => project.id === payload.project.id);
+          if (projectIndex >= 0) projects.value.splice(projectIndex, 1, { ...projects.value[projectIndex], ...payload.project });
+          refreshProjectMetricTargetDraft();
+        }
         nodes.value = payload.nodes || [];
         unconnected.value = payload.unconnected || [];
         edges.value = payload.edges || [];
@@ -8232,6 +8634,49 @@ const ExperimentTree = {
         loading.value = false;
       }
     };
+    const syncProjectMeta = project => {
+      if (!project?.id) return;
+      projectMeta.value = { ...(projectMeta.value || {}), ...project };
+      const projectIndex = projects.value.findIndex(item => item.id === project.id);
+      if (projectIndex >= 0) projects.value.splice(projectIndex, 1, { ...projects.value[projectIndex], ...project });
+    };
+    const saveProjectMetricTarget = async () => {
+      if (projectMetricTargetSaving.value || !projectId.value) return;
+      const metricDef = currentLineageMetricDef.value;
+      const draft = String(projectMetricTargetDraft.value || "").trim();
+      const nextTarget = draft ? normalizeProjectMetricTarget(draft) : null;
+      if (draft && nextTarget === null) {
+        showToast(`${metricDef.label}目标必须是正数`, "error");
+        return;
+      }
+      const nextTargets = { ...projectMetricTargets.value };
+      if (nextTarget === null) delete nextTargets[metricDef.key];
+      else nextTargets[metricDef.key] = nextTarget;
+      projectMetricTargetSaving.value = true;
+      try {
+        const updated = await fetchJson(
+          `/api/projects/${encodeURIComponent(projectId.value)}`,
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+            body: JSON.stringify({ metric_targets: nextTargets }),
+          },
+          `保存${metricDef.label}目标失败`,
+        );
+        syncProjectMeta(updated);
+        refreshProjectMetricTargetDraft();
+        showToast(nextTarget === null ? `${metricDef.label}目标已清除` : `${metricDef.label}目标已保存`, "success");
+      } catch (e) {
+        showToast(normalizeApiError(e, `保存${metricDef.label}目标失败`), "error");
+      } finally {
+        projectMetricTargetSaving.value = false;
+      }
+    };
+    const clearProjectMetricTarget = () => {
+      projectMetricTargetDraft.value = "";
+      if (currentMetricTargetValue.value !== null) saveProjectMetricTarget();
+    };
 
     const replaceEdge = edge => {
       const index = edges.value.findIndex(item => item.id === edge.id);
@@ -8242,6 +8687,10 @@ const ExperimentTree = {
       selectedNodeId.value = node.id;
       selectedEdgeId.value = "";
     };
+    const selectNodeById = nodeId => {
+      const node = nodeById.value[nodeId] || nodes.value.find(item => item.id === nodeId);
+      if (node) selectNode(node);
+    };
     const selectEdge = edge => {
       selectedEdgeId.value = edge.id;
       selectedNodeId.value = "";
@@ -8249,6 +8698,275 @@ const ExperimentTree = {
     };
     const openJob = id => {
       if (id) router.push({ path: `/job/${id}` });
+    };
+    const lineageChartThemeColors = () => {
+      if (typeof window === "undefined") {
+        return { text: "#64748b", title: "#1e293b", grid: "rgba(148,163,184,.22)", target: "#ef4444", border: "#ffffff" };
+      }
+      const style = getComputedStyle(document.documentElement);
+      const read = (name, fallback) => style.getPropertyValue(name).trim() || fallback;
+      return {
+        text: read("--text2", "#64748b"),
+        title: read("--text", "#1e293b"),
+        grid: read("--border", "rgba(148,163,184,.22)"),
+        target: read("--red", "#ef4444"),
+        border: read("--exp-canvas-bg", "#ffffff"),
+      };
+    };
+    const ensureLineageChartTooltip = () => {
+      if (typeof document === "undefined") return null;
+      if (lineageChartTooltipEl) return lineageChartTooltipEl;
+      lineageChartTooltipEl = document.createElement("div");
+      lineageChartTooltipEl.className = "exp-chart-tooltip";
+      document.body.appendChild(lineageChartTooltipEl);
+      return lineageChartTooltipEl;
+    };
+    const hideLineageChartTooltip = () => {
+      if (lineageChartTooltipEl) lineageChartTooltipEl.style.opacity = "0";
+    };
+    const destroyLineageChartTooltip = () => {
+      if (!lineageChartTooltipEl) return;
+      lineageChartTooltipEl.remove();
+      lineageChartTooltipEl = null;
+    };
+    const renderLineageChartTooltip = context => {
+      const tooltip = context?.tooltip;
+      const chart = context?.chart;
+      if (!tooltip || tooltip.opacity === 0 || !chart?.canvas) {
+        hideLineageChartTooltip();
+        return;
+      }
+      const point = tooltip.dataPoints?.[0]?.raw || {};
+      const node = nodeById.value[point.nodeId] || nodes.value.find(item => item.id === point.nodeId) || point;
+      const tooltipEl = ensureLineageChartTooltip();
+      if (!tooltipEl) return;
+
+      tooltipEl.replaceChildren();
+      const title = document.createElement("strong");
+      title.className = "exp-chart-tooltip-title";
+      title.textContent = point.label || "节点";
+      tooltipEl.appendChild(title);
+
+      const rowsEl = document.createElement("div");
+      rowsEl.className = "exp-chart-tooltip-rows";
+      lineageHoverMetricRows(node).forEach(row => {
+        const rowEl = document.createElement("div");
+        rowEl.className = "exp-chart-tooltip-row";
+        const labelEl = document.createElement("span");
+        labelEl.textContent = row.label;
+        const valueEl = document.createElement("b");
+        valueEl.textContent = row.value;
+        rowEl.append(labelEl, valueEl);
+        rowsEl.appendChild(rowEl);
+      });
+      tooltipEl.appendChild(rowsEl);
+
+      const rect = chart.canvas.getBoundingClientRect();
+      const margin = 10;
+      tooltipEl.style.opacity = "1";
+      tooltipEl.style.left = "0px";
+      tooltipEl.style.top = "0px";
+      const width = tooltipEl.offsetWidth || 240;
+      const height = tooltipEl.offsetHeight || 150;
+      const rawLeft = rect.left + tooltip.caretX + 12;
+      const rawTop = rect.top + tooltip.caretY - height / 2;
+      tooltipEl.style.left = `${Math.min(Math.max(rawLeft, margin), window.innerWidth - width - margin)}px`;
+      tooltipEl.style.top = `${Math.min(Math.max(rawTop, margin), window.innerHeight - height - margin)}px`;
+    };
+    const destroyLineageChart = () => {
+      destroyLineageChartTooltip();
+      if (!lineageChartInst) return;
+      lineageChartInst.destroy();
+      lineageChartInst = null;
+    };
+    const chartPointFromHit = (chart, hit) => {
+      if (!chart || !hit) return null;
+      return chart.data.datasets?.[hit.datasetIndex]?.data?.[hit.index] || null;
+    };
+    const applyLineageChartAxisBounds = () => {
+      if (!lineageChartInst) return;
+      const axisBounds = lineageChartAxisBounds.value;
+      lineageChartInst.options.scales.x.min = axisBounds.x?.min ?? 0;
+      lineageChartInst.options.scales.x.max = axisBounds.x?.max;
+      lineageChartInst.options.scales.y.min = axisBounds.y?.min;
+      lineageChartInst.options.scales.y.max = axisBounds.y?.max;
+      lineageChartInst.update("none");
+    };
+    const zoomLineageChart = factor => {
+      const next = Math.max(0.5, Math.min(8, Math.round((lineageChartZoom.value * factor) * 100) / 100));
+      lineageChartZoom.value = next;
+    };
+    const resetLineageChartZoom = () => {
+      lineageChartZoom.value = 1;
+      lineageChartAxisOffset.value = { x: 0, y: 0 };
+      applyLineageChartAxisBounds();
+    };
+    const onLineageChartWheel = event => {
+      if (lineageChartEmptyText.value) return;
+      zoomLineageChart(event.deltaY > 0 ? 0.8 : 1.25);
+    };
+    const startLineageChartPan = event => {
+      if (lineageChartEmptyText.value || !lineageChartInst) return;
+      if (event.target.closest(".exp-chart-toolbar, .exp-panel, button, input, textarea, select")) return;
+      const bounds = lineageChartAxisBounds.value;
+      const area = lineageChartInst.chartArea || {};
+      const plotWidth = Math.max(1, (area.right || 0) - (area.left || 0));
+      const plotHeight = Math.max(1, (area.bottom || 0) - (area.top || 0));
+      lineagePanState = {
+        x: event.clientX,
+        y: event.clientY,
+        startOffset: { ...lineageChartAxisOffset.value },
+        xSpan: Math.max(1e-9, (bounds.x?.max ?? 1) - (bounds.x?.min ?? 0)),
+        ySpan: Math.max(1e-9, (bounds.y?.max ?? 1) - (bounds.y?.min ?? 0)),
+        plotWidth,
+        plotHeight,
+        moved: false,
+      };
+      window.addEventListener("mousemove", moveLineageChartPan);
+      window.addEventListener("mouseup", stopLineageChartPan);
+    };
+    const moveLineageChartPan = event => {
+      if (!lineagePanState) return;
+      const dx = event.clientX - lineagePanState.x;
+      const dy = event.clientY - lineagePanState.y;
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+        lineagePanState.moved = true;
+        suppressLineageChartClick = true;
+      }
+      lineageChartAxisOffset.value = {
+        x: lineagePanState.startOffset.x - dx / lineagePanState.plotWidth * lineagePanState.xSpan,
+        y: lineagePanState.startOffset.y + dy / lineagePanState.plotHeight * lineagePanState.ySpan,
+      };
+      applyLineageChartAxisBounds();
+    };
+    const stopLineageChartPan = () => {
+      const moved = Boolean(lineagePanState?.moved);
+      lineagePanState = null;
+      window.removeEventListener("mousemove", moveLineageChartPan);
+      window.removeEventListener("mouseup", stopLineageChartPan);
+      if (moved) setTimeout(() => { suppressLineageChartClick = false; }, 0);
+      else suppressLineageChartClick = false;
+    };
+    const buildLineageChart = () => {
+      if (typeof Chart === "undefined" || !lineageChartCanvas.value || viewMode.value !== "chart" || lineageChartEmptyText.value) {
+        destroyLineageChart();
+        return;
+      }
+      destroyLineageChart();
+      const metricDef = currentLineageMetricDef.value;
+      const colors = lineageChartThemeColors();
+      const axisTitle = `${metricDef.label}${metricDef.unit ? ` (${metricDef.unit})` : ""}`;
+      const axisBounds = lineageChartAxisBounds.value;
+      const targetLineValue = lineageMetricTargetLineValue.value;
+      const targetLinePlugin = {
+        id: "lineageMetricTargetLine",
+        afterDatasetsDraw(chart) {
+          if (targetLineValue === null || !Number.isFinite(Number(targetLineValue))) return;
+          const { ctx, chartArea, scales } = chart;
+          const y = scales.y.getPixelForValue(targetLineValue);
+          if (!Number.isFinite(y) || y < chartArea.top - 1 || y > chartArea.bottom + 1) return;
+          const label = `目标 ${formatLineageMetricValue(targetLineValue, metricDef)}`;
+          ctx.save();
+          ctx.setLineDash([7, 5]);
+          ctx.strokeStyle = colors.target;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(chartArea.left, y);
+          ctx.lineTo(chartArea.right, y);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.font = "700 11px Inter, system-ui, sans-serif";
+          const textWidth = ctx.measureText(label).width;
+          const textX = Math.max(chartArea.left + 8, chartArea.right - textWidth - 8);
+          const textY = Math.max(chartArea.top + 14, y - 8);
+          ctx.fillStyle = colors.target;
+          ctx.fillText(label, textX, textY);
+          ctx.restore();
+        },
+      };
+      const datasets = lineageChartModel.value.datasets.map(dataset => ({
+        ...dataset,
+        data: dataset.data.map(point => ({ ...point })),
+      }));
+      lineageChartInst = new Chart(lineageChartCanvas.value, {
+        type: "line",
+        data: {
+          datasets,
+        },
+        plugins: targetLineValue === null ? [] : [targetLinePlugin],
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          parsing: false,
+          normalized: true,
+          interaction: { mode: "nearest", intersect: true },
+          onClick: (event, _elements, chart) => {
+            if (suppressLineageChartClick) return;
+            const hits = chart.getElementsAtEventForMode(event, "nearest", { intersect: true }, false);
+            const point = chartPointFromHit(chart, hits?.[0]);
+            if (point?.nodeId) selectNodeById(point.nodeId);
+          },
+          onHover: (event, elements) => {
+            const target = event?.native?.target || lineageChartCanvas.value;
+            if (target) target.style.cursor = elements?.length ? "pointer" : "grab";
+          },
+          plugins: {
+            legend: {
+              position: "top",
+              labels: {
+                color: colors.text,
+                boxWidth: 12,
+                boxHeight: 12,
+                padding: 12,
+                font: { size: 11 },
+                usePointStyle: true,
+              },
+            },
+            tooltip: {
+              enabled: false,
+              external: renderLineageChartTooltip,
+            },
+          },
+          scales: {
+            x: {
+              type: "linear",
+              min: axisBounds.x?.min ?? 0,
+              max: axisBounds.x?.max,
+              title: { display: true, text: "子孙代数", color: colors.title, font: { size: 12, weight: "700" } },
+              ticks: {
+                stepSize: 1,
+                precision: 0,
+                color: colors.text,
+                font: { size: 11 },
+                callback: value => Number.isInteger(Number(value)) ? value : "",
+              },
+              grid: { color: colors.grid },
+            },
+            y: {
+              beginAtZero: false,
+              min: axisBounds.y?.min,
+              max: axisBounds.y?.max,
+              title: { display: true, text: axisTitle, color: colors.title, font: { size: 12, weight: "700" } },
+              ticks: {
+                color: colors.text,
+                font: { size: 11 },
+                callback: value => metricDef.unit === "count" ? value : Number(value).toFixed(2),
+              },
+              grid: { color: colors.grid },
+            },
+          },
+        },
+      });
+    };
+    const scheduleLineageChart = async () => {
+      const token = ++lineageChartBuildToken;
+      await nextTick();
+      await new Promise(resolve => {
+        if (typeof requestAnimationFrame === "function") requestAnimationFrame(resolve);
+        else setTimeout(resolve, 0);
+      });
+      if (token !== lineageChartBuildToken) return;
+      buildLineageChart();
     };
     const openAddEdge = (parentId = "", childId = "") => {
       addForm.value = {
@@ -8732,6 +9450,8 @@ const ExperimentTree = {
       zoomBy(event.deltaY > 0 ? -0.02 : 0.02);
     };
     onBeforeUnmount(() => {
+      destroyLineageChart();
+      stopLineageChartPan();
       stopPan();
       window.removeEventListener("mousemove", moveNode);
       window.removeEventListener("mouseup", stopNodeDrag);
@@ -8742,13 +9462,6 @@ const ExperimentTree = {
       window.removeEventListener("mousemove", moveEdgeLabelResize);
       window.removeEventListener("mouseup", stopEdgeLabelResize);
     });
-
-    const setHoverNode = node => {
-      hoverNodeId.value = node.id;
-    };
-    const clearHoverNode = () => {
-      hoverNodeId.value = "";
-    };
 
     const metricRows = edge => {
       const metrics = edge?.perf?.metrics || {};
@@ -9012,6 +9725,38 @@ const ExperimentTree = {
     const jobOptionLabel = job => `${nodeTitle(job)} · ${statusText(job.status)}`;
     const isNodeHighlighted = node => !hasSelection.value || lineage.value.nodeIds.has(node.id);
     const isEdgeHighlighted = edge => !hasSelection.value || lineage.value.edgeIds.has(edge.id) || hoverEdgeId.value === edge.id;
+    watch(lineageMetricOptions, options => {
+      if (!options.some(item => item.key === lineageMetricKey.value)) {
+        lineageMetricKey.value = options[0]?.key || "compute_ms";
+      }
+    }, { immediate: true });
+    watch(() => lineageChartCanvas.value, () => {
+      if (viewMode.value === "chart") scheduleLineageChart();
+    });
+    watch(
+      () => [lineageMetricKey.value, projectMetricTargets.value],
+      () => {
+        if (!projectMetricTargetSaving.value) refreshProjectMetricTargetDraft();
+      },
+      { deep: true },
+    );
+    watch(
+      () => [viewMode.value, lineageMetricKey.value, lineageChartZoom.value, currentMetricTargetValue.value, isDark.value, nodes.value, edges.value, lineageChartEmptyText.value],
+      () => {
+        if (viewMode.value !== "chart") {
+          stopLineageChartPan();
+          destroyLineageChart();
+          return;
+        }
+        scheduleLineageChart();
+      },
+      { deep: true },
+    );
+    watch(viewMode, () => {
+      selectedNodeId.value = "";
+      selectedEdgeId.value = "";
+      hoverEdgeId.value = "";
+    });
     watch(selectedNodeId, () => {
       resetNodeNameDraft();
     });
@@ -9023,18 +9768,23 @@ const ExperimentTree = {
     }, { immediate: true });
 
     return {
-      viewportRef, loading, saving, nodes, unconnected, edges, selectedNodeId, selectedEdgeId,
-      selectedNode, selectedEdge, selectedEdgePerfNote, hoverNode, hoverEdgeId, hoverTooltipStyle, showAddEdge, panelCollapsed, addForm, edgeDraft,
+      viewportRef, lineageChartCanvas, loading, saving, nodes, unconnected, edges, selectedNodeId, selectedEdgeId,
+      selectedNode, selectedEdge, selectedEdgePerfNote, hoverEdgeId, showAddEdge, panelCollapsed, addForm, edgeDraft,
+      viewMode, lineageMetricKey, lineageMetricOptions, lineageChartEmptyText, lineageChartWarning, lineageChartZoom, lineageChartAtDefault,
+      projectMetricTargetDraft, projectMetricTargetSaving, projectMetricTargetDirty, currentMetricTargetValue, currentMetricTargetTitle, currentMetricTargetValueLabel,
       nodeNameDraft, nodeNameSaving, nodeNameDirty,
-      draftVariableInsertItems, selectedNodeTopKernels, selectedNodeDetailRows, hoverNodeDetailRows,
+      draftVariableInsertItems, selectedNodeTopKernels, selectedNodeDetailRows,
       nodePrimaryDeltaText,
       view, projectName, displayNodes, edgePaths, canvasSize, bestNodeId,
       candidateOptions, hasSelection,
       loadGraph, openAddEdge, closeAddEdge, submitAddEdge, selectNode, selectEdge, openJob,
       saveNodeName, resetNodeNameDraft,
+      saveProjectMetricTarget, clearProjectMetricTarget,
       saveEdge, deleteSelectedEdge, refreshPerf, createCompare, resetLayout,
+      zoomLineageChart, resetLineageChartZoom,
+      startLineageChartPan, onLineageChartWheel,
       startPan, startNodeDrag, startNodeResize, startEdgeLabelDrag, startEdgeLabelResize,
-      nodeStyle, nodeWidth, edgeLabelStyle, zoomBy, onWheel, setHoverNode, clearHoverNode,
+      nodeStyle, nodeWidth, edgeLabelStyle, zoomBy, onWheel,
       edgeLabel, edgeCanvasText, metricRows, formatMs, formatSignedMs, formatPct,
       formatCount, formatNodeMetric, formatNodeMetricNumber, formatNodeMetricValue,
       nodeMetricChipText, nodeMetricChipClass, deltaClass, edgeDeltaChipText,

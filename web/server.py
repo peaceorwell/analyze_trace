@@ -9,6 +9,7 @@ import html
 import io
 import json
 import logging
+import math
 import mimetypes
 import os
 import re
@@ -61,6 +62,15 @@ APP_VERSION = "0.4.9"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
+PROJECT_METRIC_TARGET_KEYS = {
+    "compute_ms",
+    "e2e_ms",
+    "comm_ms",
+    "kernel_count",
+    "aten_ops_ms",
+    "aten_ops_count",
+    "step_dur_ms",
+}
 FEEDBACK_DIRNAME = "feedback"
 FEEDBACK_MAX_IMAGES = 4
 FEEDBACK_MAX_IMAGE_BYTES = 8 * 1024 * 1024
@@ -621,10 +631,76 @@ def _project_response(row: dict, request: Request) -> dict:
     data = dict(row)
     data["is_public"] = 1 if data.get("is_public") else 0
     data["is_favorite"] = 1 if data.get("is_favorite") else 0
+    metric_targets = _project_metric_targets(data)
+    data["metric_targets"] = metric_targets
+    data["compute_target_ms"] = metric_targets.get("compute_ms")
     token = current_user_token(request)
     data["is_owner"] = True if not token else data.get("user_token") == token
     data["visibility"] = "shared" if data["is_public"] else "personal"
     return data
+
+
+def _coerce_project_metric_target(value):
+    if value in (None, ""):
+        return None
+    try:
+        number = float(str(value).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and number > 0 else None
+
+
+def _parse_project_metric_target(value, field_name: str = "target"):
+    if value in (None, ""):
+        return None
+    try:
+        number = float(str(value).replace(",", "").strip())
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, f"{field_name} must be a positive number") from exc
+    if not math.isfinite(number) or number <= 0:
+        raise HTTPException(400, f"{field_name} must be a positive number")
+    return round(number, 6)
+
+
+def _parse_project_metric_targets(value) -> dict:
+    if value in (None, ""):
+        return {}
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(400, "metric_targets must be an object") from exc
+    if not isinstance(value, dict):
+        raise HTTPException(400, "metric_targets must be an object")
+    targets = {}
+    for raw_key, raw_value in value.items():
+        key = str(raw_key or "").strip()
+        if key not in PROJECT_METRIC_TARGET_KEYS:
+            raise HTTPException(400, f"Unsupported metric target: {key}")
+        target = _parse_project_metric_target(raw_value, f"metric_targets.{key}")
+        if target is not None:
+            targets[key] = target
+    return targets
+
+
+def _project_metric_targets(row: dict) -> dict:
+    targets = {}
+    raw_json = row.get("metric_targets_json")
+    if raw_json:
+        try:
+            parsed = json.loads(raw_json)
+        except (TypeError, json.JSONDecodeError):
+            parsed = {}
+        if isinstance(parsed, dict):
+            for key, value in parsed.items():
+                if key in PROJECT_METRIC_TARGET_KEYS:
+                    target = _coerce_project_metric_target(value)
+                    if target is not None:
+                        targets[key] = target
+    legacy_compute_target = _coerce_project_metric_target(row.get("compute_target_ms"))
+    if legacy_compute_target is not None and "compute_ms" not in targets:
+        targets["compute_ms"] = legacy_compute_target
+    return targets
 
 
 def _job_response(row: dict, request: Request) -> dict:
@@ -6391,12 +6467,24 @@ async def list_projects(request: Request):
 @app.post("/api/projects", status_code=201)
 async def create_project(request: Request, body: dict):
     pid = str(uuid.uuid4())
+    metric_targets = _parse_project_metric_targets(body.get("metric_targets")) if "metric_targets" in body else {}
+    if "compute_target_ms" in body:
+        compute_target = _parse_project_metric_target(body.get("compute_target_ms"), "compute_target_ms")
+        if compute_target is None:
+            metric_targets.pop("compute_ms", None)
+        else:
+            metric_targets["compute_ms"] = compute_target
+    compute_target_ms = metric_targets.get("compute_ms")
+    metric_targets_json = json.dumps(metric_targets, ensure_ascii=False)
     db = await get_db()
     user_token = await ensure_user_row(db, request)
     is_public = 1 if body.get("is_public") else 0
     await db.execute(
-        "INSERT INTO projects(id, user_token, name, description, is_public) VALUES(?,?,?,?,?)",
-        (pid, user_token, body.get("name", "新项目"), body.get("description", ""), is_public),
+        """
+        INSERT INTO projects(id, user_token, name, description, is_public, compute_target_ms, metric_targets_json)
+        VALUES(?,?,?,?,?,?,?)
+        """,
+        (pid, user_token, body.get("name", "新项目"), body.get("description", ""), is_public, compute_target_ms, metric_targets_json),
     )
     await write_audit(
         db, request, "project.create",
@@ -6415,6 +6503,10 @@ async def create_project(request: Request, body: dict):
 
 @app.put("/api/projects/{pid}")
 async def update_project(request: Request, pid: str, body: dict):
+    has_compute_target = "compute_target_ms" in body
+    parsed_compute_target_ms = _parse_project_metric_target(body.get("compute_target_ms"), "compute_target_ms") if has_compute_target else None
+    has_metric_targets = "metric_targets" in body
+    parsed_metric_targets = _parse_project_metric_targets(body.get("metric_targets")) if has_metric_targets else None
     db = await get_db()
 
     row = await load_owned_project(db, request, pid)
@@ -6425,9 +6517,17 @@ async def update_project(request: Request, pid: str, body: dict):
     next_name = body.get("name", row.get("name"))
     next_description = body.get("description", row.get("description", ""))
     next_is_public = 1 if body.get("is_public", row.get("is_public", 0)) else 0
+    next_metric_targets = parsed_metric_targets if has_metric_targets else _project_metric_targets(row)
+    if has_compute_target:
+        if parsed_compute_target_ms is None:
+            next_metric_targets.pop("compute_ms", None)
+        else:
+            next_metric_targets["compute_ms"] = parsed_compute_target_ms
+    next_compute_target_ms = next_metric_targets.get("compute_ms")
+    next_metric_targets_json = json.dumps(next_metric_targets, ensure_ascii=False)
     await db.execute(
-        "UPDATE projects SET name=?, description=?, is_public=? WHERE id=?",
-        (next_name, next_description, next_is_public, pid),
+        "UPDATE projects SET name=?, description=?, is_public=?, compute_target_ms=?, metric_targets_json=? WHERE id=?",
+        (next_name, next_description, next_is_public, next_compute_target_ms, next_metric_targets_json, pid),
     )
     await write_audit(
         db, request, "project.update",
@@ -6437,6 +6537,9 @@ async def update_project(request: Request, pid: str, body: dict):
             "new_name": next_name,
             "old_is_public": row.get("is_public", 0),
             "new_is_public": next_is_public,
+            "old_compute_target_ms": row.get("compute_target_ms"),
+            "new_compute_target_ms": next_compute_target_ms,
+            "metric_targets": next_metric_targets,
         },
     )
     await db.commit()
@@ -6533,10 +6636,15 @@ async def delete_project(request: Request, pid: str):
 
     # Move project info to deleted_projects table for recovery
     await db.execute("""
-        INSERT INTO deleted_projects(id, user_token, folder_id, name, description, password_hash, is_public, created_at, deleted_at)
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        INSERT INTO deleted_projects(
+            id, user_token, folder_id, name, description, password_hash,
+            is_public, compute_target_ms, metric_targets_json, created_at, deleted_at
+        )
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
     """, (row["id"], row["user_token"], row.get("folder_id"), row["name"],
-          row.get("description", ""), row.get("password_hash"), row.get("is_public", 0), row.get("created_at")))
+          row.get("description", ""), row.get("password_hash"), row.get("is_public", 0),
+          row.get("compute_target_ms"), row.get("metric_targets_json") or "{}",
+          row.get("created_at")))
 
     # Move all jobs to deleted_jobs table (keep files for recovery)
     cursor = await db.execute("SELECT * FROM jobs WHERE project_id=?", (pid,))
@@ -6629,16 +6737,25 @@ async def restore_project(request: Request, pid: str):
     try:
         if created_at == "CURRENT_TIMESTAMP":
             await db.execute("""
-                INSERT INTO projects(id, user_token, folder_id, name, description, password_hash, is_public, created_at)
-                VALUES(?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                INSERT INTO projects(
+                    id, user_token, folder_id, name, description, password_hash,
+                    is_public, compute_target_ms, metric_targets_json, created_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             """, (row["id"], row["user_token"], row.get("folder_id"), row["name"],
-                  row.get("description", ""), row.get("password_hash"), row.get("is_public", 0)))
+                  row.get("description", ""), row.get("password_hash"), row.get("is_public", 0),
+                  row.get("compute_target_ms"), row.get("metric_targets_json") or "{}"))
         else:
             await db.execute("""
-                INSERT INTO projects(id, user_token, folder_id, name, description, password_hash, is_public, created_at)
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO projects(
+                    id, user_token, folder_id, name, description, password_hash,
+                    is_public, compute_target_ms, metric_targets_json, created_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (row["id"], row["user_token"], row.get("folder_id"), row["name"],
-                  row.get("description", ""), row.get("password_hash"), row.get("is_public", 0), created_at))
+                  row.get("description", ""), row.get("password_hash"), row.get("is_public", 0),
+                  row.get("compute_target_ms"), row.get("metric_targets_json") or "{}",
+                  created_at))
     except Exception as e:
         await db.close()
         raise HTTPException(500, f"数据库错误: {e}")
@@ -7517,7 +7634,9 @@ async def compare_jobs(request: Request, body: dict):
 async def get_project_experiments(request: Request, pid: str):
     db = await get_db()
     try:
-        await validate_project_access(db, request, pid)
+        project = await load_accessible_project(db, request, pid)
+        if not project:
+            raise HTTPException(404, "Project not found")
 
         edge_rows = [
             dict(row)
@@ -7659,6 +7778,7 @@ async def get_project_experiments(request: Request, pid: str):
         await db.commit()
         return {
             "project_id": pid,
+            "project": _project_response(project, request),
             "nodes": nodes,
             "unconnected": unconnected,
             "edges": [_experiment_edge_response(edge) for edge in edge_rows],

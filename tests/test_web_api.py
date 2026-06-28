@@ -2201,23 +2201,47 @@ def test_backup_script_creates_archive_and_manifest(client, isolated_server, tmp
 def test_project_crud_does_not_require_auth(client):
     created = client.post(
         "/api/projects",
-        json={"name": "Local Project", "description": "single user"},
+        json={
+            "name": "Local Project",
+            "description": "single user",
+            "metric_targets": {"compute_ms": 42.5, "e2e_ms": 80},
+        },
     )
     assert created.status_code == 201
     project = created.json()
     assert project["name"] == "Local Project"
     assert project["description"] == "single user"
+    assert project["compute_target_ms"] == 42.5
+    assert project["metric_targets"] == {"compute_ms": 42.5, "e2e_ms": 80.0}
 
     listed = client.get("/api/projects")
     assert listed.status_code == 200
     assert [p["id"] for p in listed.json()] == [project["id"]]
+    assert listed.json()[0]["compute_target_ms"] == 42.5
+    assert listed.json()[0]["metric_targets"] == {"compute_ms": 42.5, "e2e_ms": 80.0}
 
     updated = client.put(
         f"/api/projects/{project['id']}",
-        json={"name": "Renamed", "description": ""},
+        json={"name": "Renamed", "description": "", "metric_targets": {"compute_ms": 31.25, "kernel_count": 1500}},
     )
     assert updated.status_code == 200
     assert updated.json()["name"] == "Renamed"
+    assert updated.json()["compute_target_ms"] == 31.25
+    assert updated.json()["metric_targets"] == {"compute_ms": 31.25, "kernel_count": 1500.0}
+
+    cleared = client.put(
+        f"/api/projects/{project['id']}",
+        json={"metric_targets": {}},
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["compute_target_ms"] is None
+    assert cleared.json()["metric_targets"] == {}
+
+    invalid = client.put(
+        f"/api/projects/{project['id']}",
+        json={"metric_targets": {"e2e_ms": -1}},
+    )
+    assert invalid.status_code == 400
 
 
 def test_job_patch_does_not_require_auth(client):
@@ -3604,7 +3628,10 @@ def test_experiment_edge_lifecycle_and_cycle_detection(client):
     async def insert_rows():
         db = await web_db.get_db()
         try:
-            await db.execute("INSERT INTO projects(id, name) VALUES(?,?)", ("exp-project", "Exp"))
+            await db.execute(
+                "INSERT INTO projects(id, name, compute_target_ms, metric_targets_json) VALUES(?,?,?,?)",
+                ("exp-project", "Exp", 24.0, json.dumps({"compute_ms": 24.0, "e2e_ms": 90.0})),
+            )
             await db.executemany(
                 """
                 INSERT INTO jobs(id, project_id, label, mode, status, file_a_name, console_out)
@@ -3700,6 +3727,8 @@ def test_experiment_edge_lifecycle_and_cycle_detection(client):
     graph = client.get("/api/projects/exp-project/experiments")
     assert graph.status_code == 200
     payload = graph.json()
+    assert payload["project"]["compute_target_ms"] == 24.0
+    assert payload["project"]["metric_targets"] == {"compute_ms": 24.0, "e2e_ms": 90.0}
     assert {node["id"] for node in payload["nodes"]} == {"exp-a", "exp-b"}
     node_a = next(node for node in payload["nodes"] if node["id"] == "exp-a")
     assert node_a["compute_ms"] == 28.86
