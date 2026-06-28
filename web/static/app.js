@@ -134,7 +134,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.4.3");
+const appVersion = ref("0.4.4");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -586,6 +586,16 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.4.4",
+    date: "2026-06-28",
+    title: "实验树节点缩放修复",
+    items: [
+      "修复节点缩放后可能覆盖其他实验节点、形成视觉叠层的问题。",
+      "节点缩放时会为相邻节点保留安全间距，并将受影响的布局一并保存。",
+      "加强节点卡片内部内容收敛，避免指标 chip 在窄宽度下溢出。",
+    ],
+  },
   {
     version: "0.4.3",
     date: "2026-06-28",
@@ -1499,7 +1509,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.4.3";
+  appVersion.value = cfg.version || "0.4.4";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -7651,6 +7661,9 @@ const ExperimentTree = {
     const EDGE_LABEL_MAX_W = 900;
     const EDGE_LABEL_MAX_H = 420;
     const EDGE_LABEL_AUTO_MAX_W = 520;
+    const NODE_COLLISION_GAP_X = 28;
+    const NODE_COLLISION_GAP_Y = 32;
+    const NODE_EDGE_GAP_Y = Math.max(EDGE_LABEL_H + EDGE_LABEL_GAP * 2 + 22, 120);
     const roundLayout = value => Math.round(Number(value || 0) * 10) / 10;
     const hasLayoutNumber = value => value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value));
     const charWidth = char => /[\u2E80-\u9FFF]/.test(char) ? 13 : /[A-Z0-9]/.test(char) ? 8 : /[a-z]/.test(char) ? 7 : 6.5;
@@ -8362,14 +8375,87 @@ const ExperimentTree = {
       window.removeEventListener("mousemove", movePan);
       window.removeEventListener("mouseup", stopPan);
     };
-    const updateNodePosition = (id, x, y) => {
-      const index = nodes.value.findIndex(node => node.id === id);
-      if (index < 0) return;
-      nodes.value.splice(index, 1, { ...nodes.value[index], x, y, pinned: 1 });
-    };
     const finiteLayoutNumber = (value, fallback = 0) => {
       const number = Number(value);
       return Number.isFinite(number) ? number : fallback;
+    };
+    const layoutNodeById = id => nodes.value.find(node => node.id === id) || nodeById.value[id] || null;
+    const nodeLayoutRect = node => {
+      const x = finiteLayoutNumber(node?.x, 0);
+      const y = finiteLayoutNumber(node?.y, 0);
+      const width = nodeWidth(node);
+      const height = nodeHeight(node);
+      return {
+        minX: x,
+        minY: y,
+        maxX: x + width,
+        maxY: y + height,
+        width,
+        height,
+        centerX: x + width / 2,
+        centerY: y + height / 2,
+      };
+    };
+    const moveLayoutNode = (id, x, y) => {
+      const index = nodes.value.findIndex(node => node.id === id);
+      if (index < 0) return false;
+      const current = nodes.value[index];
+      const nextX = roundLayout(x);
+      const nextY = roundLayout(y);
+      if (roundLayout(current.x) === nextX && roundLayout(current.y) === nextY && Number(current.pinned) === 1) return false;
+      nodes.value.splice(index, 1, { ...current, x: nextX, y: nextY, pinned: 1 });
+      return true;
+    };
+    const updateNodePosition = (id, x, y) => moveLayoutNode(id, x, y);
+    const hasDirectEdge = (sourceId, targetId) => edges.value.some(edge => edge.parent_job_id === sourceId && edge.child_job_id === targetId);
+    const rectsTooClose = (source, target, gapX, gapY) => (
+      target.minX < source.maxX + gapX
+      && target.maxX > source.minX - gapX
+      && target.minY < source.maxY + gapY
+      && target.maxY > source.minY - gapY
+    );
+    const pushNodeAway = (sourceId, targetId) => {
+      const sourceNode = layoutNodeById(sourceId);
+      const targetNode = layoutNodeById(targetId);
+      if (!sourceNode || !targetNode) return false;
+      const source = nodeLayoutRect(sourceNode);
+      const target = nodeLayoutRect(targetNode);
+      const directDownstream = hasDirectEdge(sourceId, targetId);
+      const gapY = directDownstream ? NODE_EDGE_GAP_Y : NODE_COLLISION_GAP_Y;
+      if (!rectsTooClose(source, target, NODE_COLLISION_GAP_X, gapY)) return false;
+
+      const pushRight = target.centerX >= source.centerX
+        ? Math.max(0, source.maxX + NODE_COLLISION_GAP_X - target.minX)
+        : Infinity;
+      const pushDown = target.centerY >= source.centerY - 8
+        ? Math.max(0, source.maxY + gapY - target.minY)
+        : Infinity;
+      if (!Number.isFinite(pushRight) && !Number.isFinite(pushDown)) {
+        return moveLayoutNode(targetId, target.minX, source.maxY + gapY);
+      }
+      if (directDownstream || pushDown <= pushRight * 1.35) {
+        return moveLayoutNode(targetId, target.minX, target.minY + pushDown);
+      }
+      return moveLayoutNode(targetId, target.minX + pushRight, target.minY);
+    };
+    const resolveNodeOverlaps = anchorId => {
+      const movedIds = new Set();
+      let frontier = [anchorId];
+      for (let pass = 0; pass < 12 && frontier.length; pass += 1) {
+        const next = new Set();
+        const ids = displayNodes.value.map(node => node.id);
+        frontier.forEach(sourceId => {
+          ids.forEach(targetId => {
+            if (!targetId || targetId === sourceId || targetId === anchorId) return;
+            if (pushNodeAway(sourceId, targetId)) {
+              movedIds.add(targetId);
+              next.add(targetId);
+            }
+          });
+        });
+        frontier = [...next];
+      }
+      return movedIds;
     };
     const saveableNodeLayout = (id, fallback = {}) => {
       const raw = nodes.value.find(item => item.id === id);
@@ -8434,6 +8520,7 @@ const ExperimentTree = {
         height: nodeHeight(node),
         currentWidth: nodeWidth(node),
         currentHeight: nodeHeight(node),
+        affectedIds: new Set([node.id]),
       };
       window.addEventListener("mousemove", moveNodeResize);
       window.addEventListener("mouseup", stopNodeResize);
@@ -8445,6 +8532,7 @@ const ExperimentTree = {
       resizeState.currentWidth = clampNodeWidth(resizeState.width + dx);
       resizeState.currentHeight = clampNodeHeight(resizeState.height + dy);
       updateNodeSize(resizeState.id, resizeState.currentWidth, resizeState.currentHeight);
+      resolveNodeOverlaps(resizeState.id).forEach(id => resizeState.affectedIds.add(id));
     };
     const stopNodeResize = async () => {
       if (!resizeState) return;
@@ -8452,8 +8540,10 @@ const ExperimentTree = {
       resizeState = null;
       window.removeEventListener("mousemove", moveNodeResize);
       window.removeEventListener("mouseup", stopNodeResize);
-      const layout = saveableNodeLayout(state.id, { width: state.currentWidth, height: state.currentHeight });
-      if (layout) await saveLayout([layout]);
+      const layouts = [...(state.affectedIds || new Set([state.id]))]
+        .map(id => saveableNodeLayout(id, id === state.id ? { width: state.currentWidth, height: state.currentHeight } : {}))
+        .filter(Boolean);
+      if (layouts.length) await saveLayout(layouts);
     };
     const updateEdgeLabelLayout = (id, patch) => {
       const index = edges.value.findIndex(edge => edge.id === id);

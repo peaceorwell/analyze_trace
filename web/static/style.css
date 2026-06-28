@@ -1239,6 +1239,9 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   --node-shadow: var(--exp-node-shadow);
   position: absolute;
   z-index: 3;
+  box-sizing: border-box;
+  contain: layout paint;
+  isolation: isolate;
   width: 240px;
   height: 142px;
   display: flex;
@@ -1353,6 +1356,7 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   align-items: baseline;
   gap: 7px;
   min-width: 0;
+  overflow: hidden;
 }
 .exp-node-primary b {
   min-width: 0;
@@ -1373,18 +1377,25 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 .exp-node-primary .exp-delta {
   justify-self: end;
   align-self: center;
+  max-width: min(120px, 42%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .exp-node-secondary {
   display: grid;
   grid-template-columns: 1fr;
   gap: 5px;
+  min-width: 0;
+  overflow: hidden;
 }
 .exp-node-secondary div {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(48px, .7fr) minmax(0, 1fr) minmax(0, auto);
   align-items: center;
   gap: 8px;
   min-width: 0;
+  overflow: hidden;
   color: var(--text3);
   font-size: 11px;
 }
@@ -1408,6 +1419,10 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 }
 .exp-node-secondary .exp-delta {
   justify-self: end;
+  max-width: 112px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .exp-node-resize {
   position: absolute;
