@@ -134,7 +134,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.4.4");
+const appVersion = ref("0.4.5");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -586,6 +586,16 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.4.5",
+    date: "2026-06-28",
+    title: "实验树验收修复",
+    items: [
+      "关系 delta 文案、颜色和优化判定统一优先使用 Compute time，避免 E2E 与 Compute 口径打架。",
+      "节点不再显示基线/最优文字标签，改用卡片底色、边框和文字颜色区分性能最优、正优化与负优化。",
+      "移除侧栏项目列表头的任务数字，降低项目入口噪音。",
+    ],
+  },
   {
     version: "0.4.4",
     date: "2026-06-28",
@@ -1509,7 +1519,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.4.4";
+  appVersion.value = cfg.version || "0.4.5";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -7355,11 +7365,9 @@ const ExperimentTree = {
               @click.stop="selectNode(node)"
               @dblclick.stop="openJob(node.id)"
             >
-              <div v-if="isBestNode(node)" class="exp-node-corner">最优</div>
               <div class="exp-node-head">
                 <span :class="['exp-status-dot', node.status]"></span>
                 <strong :title="nodeTitle(node)">{{ nodeTitle(node) }}</strong>
-                <span v-if="isBaselineNode(node)" class="exp-node-chip baseline">基线</span>
                 <span v-if="node.status !== 'done'" class="exp-node-chip status">{{ statusText(node.status) }}</span>
               </div>
               <div class="exp-node-primary">
@@ -8786,12 +8794,22 @@ const ExperimentTree = {
         deltaClass: metricDeltaClass(delta),
       };
     };
-    const deltaMetric = edge => edge?.perf?.metrics?.e2e_ms || {};
-    const deltaLabel = edge => formatPct(deltaMetric(edge).delta_pct);
+    const edgePrimaryMetricEntry = edge => {
+      const metrics = edge?.perf?.metrics || {};
+      if (metrics.compute_ms && numericMetric(metrics.compute_ms.delta_pct) !== null) {
+        return { key: "compute", metric: metrics.compute_ms };
+      }
+      if (metrics.e2e_ms && numericMetric(metrics.e2e_ms.delta_pct) !== null) {
+        return { key: "e2e", metric: metrics.e2e_ms };
+      }
+      return { key: "compute", metric: {} };
+    };
+    const deltaMetric = edge => edgePrimaryMetricEntry(edge).metric || {};
     const deltaClass = edge => ["exp-delta", metricDeltaClass(deltaMetric(edge).delta_pct)];
     const edgeDeltaChipText = edge => {
-      const text = compactPctDeltaText(deltaMetric(edge).delta_pct);
-      return text ? `e2e ${text}` : "e2e n/a";
+      const entry = edgePrimaryMetricEntry(edge);
+      const text = compactPctDeltaText(entry.metric?.delta_pct);
+      return text ? `${entry.key} ${text}` : `${entry.key} n/a`;
     };
     const nodeOptimizationDelta = node => {
       const computeDelta = nodeMetricDelta(node, "compute_ms");
@@ -8805,7 +8823,9 @@ const ExperimentTree = {
     };
     const nodeOptimizationClass = node => {
       if (isBestNode(node)) return "result-best";
-      return "";
+      const deltaPct = nodeOptimizationDelta(node);
+      if (deltaPct === null || deltaPct === 0) return "";
+      return deltaPct < 0 ? "result-good" : "result-bad";
     };
     const edgeOptimizationClass = edge => {
       const deltaPct = edgeOptimizationDelta(edge);

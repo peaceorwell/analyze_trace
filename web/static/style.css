@@ -1270,15 +1270,28 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 }
 .exp-node:active { cursor: grabbing; }
 .exp-node.result-best {
-  --node-accent: var(--purple-l);
+  --node-accent: var(--exp-best-border);
+  --node-bg: var(--exp-best-bg);
+  --node-bg-soft: rgba(99,102,241,.08);
   --node-border: var(--exp-best-border);
+  --node-ink: var(--exp-best-ink);
   --node-shadow: var(--exp-best-shadow);
 }
 .exp-node.result-good {
-  --node-accent: rgba(148,163,184,.55);
+  --node-accent: var(--exp-good-border);
+  --node-bg: var(--exp-good-bg);
+  --node-bg-soft: rgba(16,185,129,.07);
+  --node-border: var(--exp-good-border);
+  --node-ink: var(--exp-good-ink);
+  --node-shadow: var(--exp-good-shadow);
 }
 .exp-node.result-bad {
-  --node-accent: rgba(148,163,184,.55);
+  --node-accent: var(--exp-bad-border);
+  --node-bg: var(--exp-bad-bg);
+  --node-bg-soft: rgba(244,63,94,.08);
+  --node-border: var(--exp-bad-border);
+  --node-ink: var(--exp-bad-ink);
+  --node-shadow: var(--exp-bad-shadow);
 }
 .exp-node.selected {
   border-color: var(--purple);
@@ -1297,7 +1310,7 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   align-items: center;
   gap: 8px;
   min-width: 0;
-  padding-right: 42px;
+  padding-right: 4px;
 }
 .exp-node-head strong {
   min-width: 0;
@@ -1308,19 +1321,6 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   line-height: 1.2;
   color: var(--node-ink);
 }
-.exp-node-corner {
-  position: absolute;
-  top: 9px;
-  right: 9px;
-  z-index: 1;
-  border: 1px solid color-mix(in srgb, var(--purple) 30%, transparent);
-  border-radius: 999px;
-  padding: 2px 7px;
-  background: var(--exp-best-bg);
-  color: var(--exp-best-ink);
-  font-size: 10px;
-  font-weight: 800;
-}
 .exp-node-chip {
   flex-shrink: 0;
   border-radius: 999px;
@@ -1328,11 +1328,6 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   font-size: 10px;
   font-weight: 800;
   line-height: 1.25;
-}
-.exp-node-chip.baseline {
-  border: 1px solid color-mix(in srgb, var(--purple) 20%, transparent);
-  background: var(--purple-bg);
-  color: var(--purple-l);
 }
 .exp-node-chip.status {
   border: 1px solid rgba(148,163,184,.24);
