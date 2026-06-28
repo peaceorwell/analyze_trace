@@ -134,7 +134,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.4.7");
+const appVersion = ref("0.4.8");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -586,6 +586,15 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.4.8",
+    date: "2026-06-28",
+    title: "实验树主指标文案精简",
+    items: [
+      "节点主指标行保留 Compute time 作为指标名，右侧 delta chip 只显示箭头和百分比。",
+      "移除同一行内重复出现的 compute 文案，让节点卡片更简洁。",
+    ],
+  },
   {
     version: "0.4.7",
     date: "2026-06-28",
@@ -1537,7 +1546,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.4.7";
+  appVersion.value = cfg.version || "0.4.8";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -7391,7 +7400,7 @@ const ExperimentTree = {
               <div class="exp-node-primary">
                 <b>{{ formatNodeMetricNumber(node, 'compute_ms', 'ms') }}</b>
                 <span>ms · compute time</span>
-                <em v-if="nodeMetricChipText(node, 'compute_ms', 'compute')" :class="nodeMetricChipClass(node, 'compute_ms')">{{ nodeMetricChipText(node, 'compute_ms', 'compute') }}</em>
+                <em v-if="nodePrimaryDeltaText(node)" :class="nodeMetricChipClass(node, 'compute_ms')">{{ nodePrimaryDeltaText(node) }}</em>
               </div>
               <div class="exp-node-secondary">
                 <div>
@@ -8777,6 +8786,10 @@ const ExperimentTree = {
       const pctText = compactPctDeltaText(pct);
       return pctText ? `${label} ${pctText}` : "";
     };
+    const nodePrimaryDeltaText = node => {
+      if (node?.status !== "done" || nodeMetricDelta(node, "compute_ms") === null) return "";
+      return compactPctDeltaText(nodeMetricDeltaPct(node, "compute_ms"));
+    };
     const nodeMetricChipClass = (node, key) => ["exp-delta", metricDeltaClass(nodeMetricDelta(node, key))];
     const formatNodeMetric = (node, key, kind = "ms") => {
       const value = kind === "count" ? formatCount(node?.[key]) : formatMs(node?.[key]);
@@ -8978,6 +8991,7 @@ const ExperimentTree = {
       selectedNode, selectedEdge, selectedEdgePerfNote, hoverNode, hoverEdgeId, hoverTooltipStyle, showAddEdge, panelCollapsed, addForm, edgeDraft,
       nodeNameDraft, nodeNameSaving, nodeNameDirty,
       draftVariableInsertItems, selectedNodeTopKernels, selectedNodeDetailRows, hoverNodeDetailRows,
+      nodePrimaryDeltaText,
       view, projectName, displayNodes, edgePaths, canvasSize, bestNodeId,
       candidateOptions, hasSelection,
       loadGraph, openAddEdge, closeAddEdge, submitAddEdge, selectNode, selectEdge, openJob,

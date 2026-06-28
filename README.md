@@ -2,7 +2,7 @@
 
 Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/内网性能分析工具，并兼容 TensorFlow Chrome Trace。它可以解析 `.json`、`.json.gz`、`.gz`、`.json.zip`、`.zip`、`.tar.gz` 和 `.tgz` trace 文件，统计 GPU kernel、Triton kernel、ATen Ops、TensorFlow Ops、CNCL/NCCL 通信算子，并提供单 trace 分析、双 trace 对比、历史管理、AI 分析和 Web 可视化界面。
 
-当前版本：`0.4.7`
+当前版本：`0.4.8`
 
 ## 主要功能
 
@@ -153,7 +153,7 @@ Web 首页有三种上传模式：
 项目侧边栏出现树形标记时，表示该项目已经创建实验树，点击标记可快速打开。实验树用于把多次单 trace 实验串成可追溯的优化关系：
 
 - `标记优化关系` 可连接父节点和子节点；关系标签支持正文描述，也可以把变量变更追加成列表。
-- 节点卡以 Compute time 为主指标，E2E、Kernel 作为次要指标；优化结果优先使用 Compute time 判断，并通过卡片底色、边框和文字色区分性能最优、正优化和负优化。
+- 节点卡以 Compute time 为主指标，主指标行的 delta 仅显示箭头百分比；E2E、Kernel 作为次要指标。
 - 右侧详情会展示节点指标、热点 kernel 和相对父节点的 delta；如果两端 step 数或单步耗时口径不一致，会提示“跨度对比仅供参考”。
 - 节点悬浮详情以页面级浮层显示，靠近右侧面板时也会保持在最上层，方便快速核对指标。
 - 画布支持缩放、平移、自动整理、右侧面板折叠；节点和关系标签都支持拖拽与水平/垂直缩放。
