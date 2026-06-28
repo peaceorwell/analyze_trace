@@ -134,7 +134,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.4.1");
+const appVersion = ref("0.4.2");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -586,6 +586,17 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.4.2",
+    date: "2026-06-28",
+    title: "实验树可信度与可读性修复",
+    items: [
+      "实验树性能摘要新增 step 口径信息，step 数或单步耗时口径不一致时会在关系详情中提示。",
+      "实验树加载指标文件时移入线程池执行，减少打开大项目时阻塞其他请求的风险。",
+      "优化节点默认尺寸、指标行换行和关系告警展示，自动整理后更容易完整看清 E2E、Kernel、Compute 与 delta。",
+      "标题栏中部标语仅在首页/空状态显示，进入具体任务后自动隐藏。",
+    ],
+  },
   {
     version: "0.4.1",
     date: "2026-06-28",
@@ -1478,7 +1489,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.4.1";
+  appVersion.value = cfg.version || "0.4.2";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -7424,9 +7435,9 @@ const ExperimentTree = {
               </div>
             </div>
 
-            <div v-if="selectedEdge.perf?.incomplete" class="exp-inline-note">
-              <span>性能摘要未完整</span>
-              <button class="btn btn-sm btn-outline" type="button" @click="refreshPerf" :disabled="saving">重新计算</button>
+            <div v-if="selectedEdgePerfNote" class="exp-inline-note">
+              <span>{{ selectedEdgePerfNote }}</span>
+              <button v-if="selectedEdge.perf?.incomplete" class="btn btn-sm btn-outline" type="button" @click="refreshPerf" :disabled="saving">重新计算</button>
             </div>
 
             <div class="exp-panel-actions">
@@ -7591,10 +7602,10 @@ const ExperimentTree = {
     let edgeDragState = null;
     let edgeResizeState = null;
 
-    const NODE_W = 192;
-    const NODE_H = 128;
-    const NODE_MIN_W = 120;
-    const NODE_MIN_H = 72;
+    const NODE_W = 240;
+    const NODE_H = 142;
+    const NODE_MIN_W = 180;
+    const NODE_MIN_H = 104;
     const NODE_MAX_W = 900;
     const NODE_MAX_H = 640;
     const SIBLING_GAP = 88;
@@ -7685,7 +7696,7 @@ const ExperimentTree = {
       const labelWidth = Math.max(...metricRows.map(row => textWidth(row[0])));
       const valueWidth = Math.max(...metricRows.map(row => textWidth(row[1])));
       const statsWidth = nodePaddingX + rowPaddingX + labelWidth + rowGap + valueWidth + handleReserveX;
-      const statsHeight = metricRows.length * 22 + (metricRows.length - 1) * 5;
+      const statsHeight = metricRows.length * 26 + (metricRows.length - 1) * 5;
       const contentHeight = 13 + 18 + 10 + statsHeight + 34;
       const scaledWidth = NODE_W * nodeScale(node);
       const scaledHeight = contentHeight * nodeScale(node);
@@ -7837,6 +7848,7 @@ const ExperimentTree = {
       return doneNodes[0]?.id || "";
     });
     const selectedEdge = computed(() => edges.value.find(edge => edge.id === selectedEdgeId.value) || null);
+    const selectedEdgePerfNote = computed(() => String(selectedEdge.value?.perf?.notes || "").trim());
     const selectedNode = computed(() => nodeById.value[selectedNodeId.value] || null);
     const nodeTopKernels = node => (node?.top_kernels || []).slice(0, 5);
     const nodeDetailRows = node => {
@@ -8698,7 +8710,7 @@ const ExperimentTree = {
 
     return {
       viewportRef, loading, saving, nodes, unconnected, edges, selectedNodeId, selectedEdgeId,
-      selectedNode, selectedEdge, hoverNode, hoverEdgeId, showAddEdge, panelCollapsed, addForm, edgeDraft,
+      selectedNode, selectedEdge, selectedEdgePerfNote, hoverNode, hoverEdgeId, showAddEdge, panelCollapsed, addForm, edgeDraft,
       nodeNameDraft, nodeNameSaving, nodeNameDirty,
       draftVariableInsertItems, selectedNodeTopKernels, selectedNodeDetailRows, hoverNodeDetailRows,
       view, projectName, displayNodes, edgePaths, canvasSize, bestNodeId,
@@ -8909,6 +8921,7 @@ const App = {
     let projectBulkSearchTimer = null;
     let resultTableTimer = null;
     const isFeedbackRoute = computed(() => router.currentRoute.value.name === "feedback");
+    const showHeaderMotto = computed(() => router.currentRoute.value.path === "/");
 
     // Watchers that need to live at the root level
     watch(resultTab, (v, previousTab) => {
@@ -9038,7 +9051,7 @@ const App = {
     // Return everything the root template (index.html) needs
     return {
       // Layout/theme
-      isDark, toggleTheme, sidebarWidth, sidebarCollapsed, appVersion, isFeedbackRoute,
+      isDark, toggleTheme, sidebarWidth, sidebarCollapsed, appVersion, isFeedbackRoute, showHeaderMotto,
       toggleSidebar, startSidebarResize,
       authRequired, authChecked, authInitError, currentUser, isAdmin, loginForm, loginRememberUsername, loginLoading, loginError,
       loginCaptchaRequired, loginCaptchaImage,

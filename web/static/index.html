@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>torch profiler analyzer</title>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.4.1" />
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.4.2" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.css" />
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
@@ -12,7 +12,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js"></script>
-  <link rel="stylesheet" href="/static/style.css?v=0.4.1" />
+  <link rel="stylesheet" href="/static/style.css?v=0.4.2" />
   <script>
     // Apply saved theme or system preference before page paint to avoid flash
     (function() {
@@ -143,11 +143,11 @@
     <!-- ── Header ── -->
     <header v-if="authChecked && (!authRequired || currentUser)" class="header">
       <div class="header-brand" @click="$router.push('/')" style="cursor:pointer" title="返回上传页面">
-        <img class="header-logo" src="/static/favicon.svg?v=0.4.1" alt="" />
+        <img class="header-logo" src="/static/favicon.svg?v=0.4.2" alt="" />
         <span class="header-title">Torch Profiler Analyzer</span>
         <span class="header-version">v{{ appVersion }}</span>
       </div>
-      <div class="header-motto" aria-hidden="true">
+      <div v-if="showHeaderMotto" class="header-motto" aria-hidden="true">
         <span class="motto-phrase">让<i class="motto-key motto-key-warm">热点</i>显形</span>
         <em class="motto-sep"></em>
         <span class="motto-phrase">让<i class="motto-key motto-key-cool">细节</i>说话</span>
@@ -1424,7 +1424,17 @@
             </ul>
           </section>
           <section class="guide-section">
-            <h3>3. AI 分析</h3>
+            <h3>3. 实验树</h3>
+            <ul>
+              <li>项目侧边栏带树形标记时，可直接打开该项目的实验树；在树里用 <strong>标记优化关系</strong> 连接父子实验</li>
+              <li>节点卡片默认展示 E2E、Kernel、Compute，关系标签适合填写这次修改的正文和变量变更</li>
+              <li>优化判定优先看 Compute time；节点颜色用于快速区分当前最优、正优化和负优化</li>
+              <li>如果两端 step 数或单步口径不一致，右侧详情会提示“跨度对比仅供参考”，此时建议先统一 step 再判断收益</li>
+              <li>画布支持拖拽、缩放、自动整理和右侧面板折叠；节点与关系标签都可以单独调整尺寸</li>
+            </ul>
+          </section>
+          <section class="guide-section">
+            <h3>4. AI 分析</h3>
             <ul>
               <li>服务端开启 Claude Code 后会出现 <strong>AI 分析</strong> 页签；开始时可填写可选补充 Prompt</li>
               <li>系统会先做环境诊断，诊断通过才调用单 trace 或对比 trace skill 生成报告</li>
@@ -1433,7 +1443,7 @@
             </ul>
           </section>
           <section class="guide-section">
-            <h3>4. 历史、项目和文件</h3>
+            <h3>5. 历史、项目和文件</h3>
             <ul>
               <li>左侧历史按项目分组，支持搜索、分页、置顶、多选、批量移动、删除任务和删除原始文件</li>
               <li>登录模式下有个人项目和共享项目；共享项目便于团队查看和复用 trace 做对比</li>
@@ -1442,7 +1452,7 @@
             </ul>
           </section>
           <section class="guide-section">
-            <h3>5. 灵感社区</h3>
+            <h3>6. 灵感社区</h3>
             <ul>
               <li>右上角或首页卡片进入 <strong>灵感社区</strong>，用于提建议、贴问题和交流使用经验</li>
               <li>帖子和回复支持图片、Markdown、Emoji、表情反应、作者编辑和 <code>@英文名</code> 候选</li>
@@ -1487,6 +1497,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=0.4.1"></script>
+  <script src="/static/app.js?v=0.4.2"></script>
 </body>
 </html>

@@ -70,7 +70,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.4.1",
+        "version": "0.4.2",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -3543,9 +3543,9 @@ def test_done_job_without_perfetto_context_still_loads(client, sample_trace_file
     assert r.json()["perfetto_context"] == {}
 
 
-def _experiment_console_summary(*, step_dur_ms, kernels=1, compute_ms=0, aten_ops=0, aten_ms=0):
+def _experiment_console_summary(*, step_dur_ms, kernels=1, compute_ms=0, aten_ops=0, aten_ms=0, steps=1):
     return textwrap.dedent(f"""
-        === Per-Step Summary (1 steps) ===
+        === Per-Step Summary ({steps} steps) ===
         step     step_dur(ms)   kernels    compute_kernel_dur(ms)   triton     triton_dur(ms)   aten_ops   aten_dur(ms)   tf_ops     tf_dur(ms)   cncl     cncl_dur(ms)
         -----------------------------------------------------------------------------------------------------------------------------------------------------------------
         avg      {step_dur_ms}  {kernels}  {compute_ms}             0          0.000            {aten_ops}  {aten_ms}      0          0.000        0        0.000
@@ -3674,6 +3674,10 @@ def test_experiment_edge_lifecycle_and_cycle_detection(client):
         "child": 100.1,
         "delta_pct": -16.9,
     }
+    assert edge["perf"]["step_meta"]["parent"]["step_count"] == 1
+    assert edge["perf"]["step_meta"]["child"]["step_count"] == 1
+    assert edge["perf"]["step_meta"]["warning"] == ""
+    assert edge["perf"]["notes"] == ""
     assert edge["perf"]["incomplete"] is False
 
     duplicate = client.post(
@@ -3760,6 +3764,66 @@ def test_experiment_edge_lifecycle_and_cycle_detection(client):
     deleted = client.delete(f"/api/experiments/edges/{edge['id']}")
     assert deleted.status_code == 204
     assert client.get("/api/projects/exp-project/experiments").json()["edges"] == []
+
+
+def test_experiment_perf_warns_on_step_count_mismatch(client):
+    async def insert_rows():
+        db = await web_db.get_db()
+        try:
+            await db.execute("INSERT INTO projects(id, name) VALUES(?,?)", ("step-project", "Step"))
+            await db.executemany(
+                """
+                INSERT INTO jobs(id, project_id, label, mode, status, file_a_name, console_out)
+                VALUES(?,?,?,?,?,?,?)
+                """,
+                [
+                    (
+                        "step-a", "step-project", "A", "single", "done", "a.json",
+                        _experiment_console_summary(step_dur_ms=20.0, kernels=3, compute_ms=12.0, steps=1),
+                    ),
+                    (
+                        "step-b", "step-project", "B", "single", "done", "b.json",
+                        _experiment_console_summary(step_dur_ms=20.0, kernels=3, compute_ms=11.0, steps=2),
+                    ),
+                ],
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_rows())
+    _write_experiment_result(
+        "step-a",
+        e2e_ms=24.0,
+        kernel_rows=[("gemm", 3, 12.0)],
+        cncl_rows=[("allreduce", 1.0)],
+        aten_rows=[("aten::mm", 10, 3.0)],
+    )
+    _write_experiment_result(
+        "step-b",
+        e2e_ms=22.0,
+        kernel_rows=[("gemm", 3, 11.0)],
+        cncl_rows=[("allreduce", 1.0)],
+        aten_rows=[("aten::mm", 9, 2.5)],
+    )
+
+    create = client.post(
+        "/api/projects/step-project/experiments/edges",
+        json={"parent_job_id": "step-a", "child_job_id": "step-b", "title": "step mismatch"},
+    )
+
+    assert create.status_code == 201
+    perf = create.json()["perf"]
+    warning = "两端 step 口径不一致，跨度对比仅供参考"
+    assert perf["incomplete"] is False
+    assert perf["step_meta"]["parent"]["step_count"] == 1
+    assert perf["step_meta"]["child"]["step_count"] == 2
+    assert perf["step_meta"]["warning"] == warning
+    assert warning in perf["notes"]
+
+    graph = client.get("/api/projects/step-project/experiments")
+    assert graph.status_code == 200
+    assert graph.json()["edges"][0]["perf"]["step_meta"]["warning"] == warning
 
 
 def test_experiment_missing_results_layout_and_cleanup(client):

@@ -1224,8 +1224,8 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   --node-shadow: var(--exp-node-shadow);
   position: absolute;
   z-index: 3;
-  width: 192px;
-  height: 128px;
+  width: 240px;
+  height: 142px;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -1324,11 +1324,11 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 .exp-node-stats div {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, .76fr) minmax(0, 1.24fr);
-  align-items: center;
+  grid-template-columns: minmax(58px, .68fr) minmax(0, 1.32fr);
+  align-items: start;
   gap: 10px;
   min-width: 0;
-  min-height: 22px;
+  min-height: 24px;
   padding: 3px 7px 3px 10px;
   border: 1px solid color-mix(in srgb, var(--node-accent) 32%, transparent);
   border-radius: 6px;
@@ -1357,7 +1357,13 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   font-family: var(--mono);
   font-size: 12px;
   font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.25;
+  overflow: visible;
+  overflow-wrap: anywhere;
   text-align: right;
+  text-overflow: clip;
+  white-space: normal;
 }
 .exp-node-resize {
   position: absolute;
@@ -1813,7 +1819,7 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 }
 .exp-inline-note {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
   padding: 8px;
@@ -1823,6 +1829,10 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   color: var(--yellow);
   font-size: 12px;
   font-weight: 800;
+}
+.exp-inline-note span {
+  min-width: 0;
+  line-height: 1.4;
 }
 .exp-panel-actions {
   display: flex;

@@ -36,6 +36,7 @@ import aiofiles
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.sessions import SessionMiddleware
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -56,7 +57,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.4.1"
+APP_VERSION = "0.4.2"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -1804,16 +1805,20 @@ def _collect_ai_analysis_versions(jid: str, status: Optional[dict] = None) -> li
             metadata["report_exists"] = bool(report_path and os.path.exists(report_path))
             metadata.setdefault("model", "未知")
             metadata.setdefault("generated_at", metadata.get("finished_at") or metadata.get("updated_at") or "")
+            with contextlib.suppress(OSError):
+                metadata["_sort_mtime"] = os.path.getmtime(meta_path)
             versions.append(metadata)
 
     if not versions and os.path.exists(ai_analysis_report_path(jid)):
         versions.append(_legacy_ai_analysis_version(jid, status))
 
-    def sort_key(item: dict) -> tuple[datetime, str]:
+    def sort_key(item: dict) -> tuple[datetime, float, str]:
         dt = _parse_iso_datetime(item.get("generated_at") or item.get("finished_at") or "")
-        return (dt or datetime.fromtimestamp(0, timezone.utc), item.get("id", ""))
+        return (dt or datetime.fromtimestamp(0, timezone.utc), float(item.get("_sort_mtime") or 0), item.get("id", ""))
 
     versions.sort(key=sort_key, reverse=True)
+    for item in versions:
+        item.pop("_sort_mtime", None)
     return versions
 
 
@@ -3613,9 +3618,14 @@ def _read_step_summary_from_console(console_out: str | None) -> dict:
         return {}
     headers = None
     step_rows = []
+    step_count = None
     for raw_line in str(console_out).splitlines():
         line = raw_line.strip()
         if not line:
+            continue
+        step_count_match = re.search(r"Per-Step Summary\s*\((\d+)\s+steps?\)", line)
+        if step_count_match:
+            step_count = int(step_count_match.group(1))
             continue
         if "step_dur(ms)" in line and "aten_ops" in line:
             headers = line.split()
@@ -3628,11 +3638,14 @@ def _read_step_summary_from_console(console_out: str | None) -> dict:
         if not parts:
             continue
         if parts[0].lower() == "avg":
-            return {
+            summary = {
                 key: _round_ms(value)
                 for key, value in _step_summary_from_parts(headers, parts).items()
                 if value is not None
             }
+            if step_count is not None:
+                summary["step_count"] = step_count
+            return summary
         if parts[0].isdigit():
             row = _step_summary_from_parts(headers, parts)
             if any(value is not None for value in row.values()):
@@ -3646,6 +3659,10 @@ def _read_step_summary_from_console(console_out: str | None) -> dict:
         values = [row[key] for row in step_rows if row.get(key) is not None]
         if values:
             averaged[key] = _round_ms(sum(values) / len(values))
+    if step_count is not None:
+        averaged["step_count"] = step_count
+    elif step_rows:
+        averaged["step_count"] = len(step_rows)
     return averaged
 
 
@@ -3695,6 +3712,7 @@ def _read_node_metrics(job_id: str, console_out: str | None = None) -> dict:
     return {
         "e2e_ms": _read_perfetto_e2e_ms(job_id),
         "step_dur_ms": step_summary.get("step_dur_ms"),
+        "step_count": step_summary.get("step_count"),
         "compute_ms": compute_ms,
         "comm_ms": comm_ms,
         "kernel_count": kernel_count,
@@ -3706,9 +3724,35 @@ def _read_node_metrics(job_id: str, console_out: str | None = None) -> dict:
     }
 
 
-def compute_perf_delta(parent_job_id: str, child_job_id: str) -> dict:
-    parent = _read_node_metrics(parent_job_id)
-    child = _read_node_metrics(child_job_id)
+def _step_meta_for(metrics: dict) -> dict:
+    return {
+        "step_count": metrics.get("step_count"),
+        "step_dur_ms": metrics.get("step_dur_ms"),
+    }
+
+
+def _step_meta_warning(parent: dict, child: dict) -> str:
+    parent_count = parent.get("step_count")
+    child_count = child.get("step_count")
+    if parent_count is not None and child_count is not None and parent_count != child_count:
+        return "两端 step 口径不一致，跨度对比仅供参考"
+    parent_step = parent.get("step_dur_ms")
+    child_step = child.get("step_dur_ms")
+    if parent_step not in (None, 0) and child_step is not None:
+        ratio = abs(child_step - parent_step) / abs(parent_step)
+        if ratio > 0.5:
+            return "两端单步耗时差异较大，跨度对比仅供参考"
+    return ""
+
+
+def compute_perf_delta(
+    parent_job_id: str,
+    child_job_id: str,
+    parent_console_out: str | None = None,
+    child_console_out: str | None = None,
+) -> dict:
+    parent = _read_node_metrics(parent_job_id, parent_console_out)
+    child = _read_node_metrics(child_job_id, child_console_out)
 
     metrics = {}
     incomplete = False
@@ -3738,15 +3782,65 @@ def compute_perf_delta(parent_job_id: str, child_job_id: str) -> dict:
             "delta_pct": _delta_pct(parent_ms, child_ms),
         })
     top_movers.sort(key=lambda item: abs(item.get("delta_ms") or 0), reverse=True)
+    notes = []
+    if incomplete:
+        notes.append("部分结果文件缺失或尚未生成")
+    step_warning = _step_meta_warning(parent, child)
+    if step_warning:
+        notes.append(step_warning)
 
     return {
         "schema": 1,
         "generated_at": _utc_now_iso(),
         "metrics": metrics,
         "top_movers": top_movers[:5],
+        "step_meta": {
+            "parent": _step_meta_for(parent),
+            "child": _step_meta_for(child),
+            "warning": step_warning,
+        },
         "incomplete": incomplete,
-        "notes": "" if not incomplete else "部分结果文件缺失或尚未生成",
+        "notes": "；".join(notes),
     }
+
+
+async def _read_node_metrics_async(job_id: str, console_out: str | None = None) -> dict:
+    return await run_in_threadpool(_read_node_metrics, job_id, console_out)
+
+
+async def _load_experiment_console_outs(parent_job_id: str, child_job_id: str) -> dict:
+    db = await get_db()
+    try:
+        rows = await (
+            await db.execute(
+                "SELECT id, console_out FROM jobs WHERE id IN (?,?)",
+                (parent_job_id, child_job_id),
+            )
+        ).fetchall()
+        return {row["id"]: row["console_out"] for row in rows}
+    finally:
+        await db.close()
+
+
+async def compute_perf_delta_async(
+    parent_job_id: str,
+    child_job_id: str,
+    parent_console_out: str | None = None,
+    child_console_out: str | None = None,
+) -> dict:
+    if parent_console_out is None or child_console_out is None:
+        console_outs = await _load_experiment_console_outs(parent_job_id, child_job_id)
+        if parent_console_out is None:
+            parent_console_out = console_outs.get(parent_job_id)
+        if child_console_out is None:
+            child_console_out = console_outs.get(child_job_id)
+    return await run_in_threadpool(
+        compute_perf_delta,
+        parent_job_id,
+        child_job_id,
+        parent_console_out,
+        child_console_out,
+    )
 
 
 def _parse_json_field(value, fallback):
@@ -7437,12 +7531,14 @@ async def get_project_experiments(request: Request, pid: str):
         for edge in edge_rows:
             perf = _parse_json_field(edge.get("perf_summary"), None)
             if isinstance(perf, dict) and perf.get("incomplete") and not edge.get("perf_summary_edited"):
-                refreshed = compute_perf_delta(edge["parent_job_id"], edge["child_job_id"])
-                edge["perf_summary"] = json.dumps(refreshed, ensure_ascii=False)
-                await db.execute(
-                    "UPDATE experiment_edges SET perf_summary=? WHERE id=?",
-                    (edge["perf_summary"], edge["id"]),
-                )
+                refreshed = await compute_perf_delta_async(edge["parent_job_id"], edge["child_job_id"])
+                refreshed_json = json.dumps(refreshed, ensure_ascii=False)
+                if refreshed_json != edge.get("perf_summary"):
+                    edge["perf_summary"] = refreshed_json
+                    await db.execute(
+                        "UPDATE experiment_edges SET perf_summary=? WHERE id=?",
+                        (edge["perf_summary"], edge["id"]),
+                    )
 
         layout_rows = await (
             await db.execute(
@@ -7482,7 +7578,7 @@ async def get_project_experiments(request: Request, pid: str):
             for row in rows:
                 item = dict(row)
                 layout = layout_by_job.get(item["id"]) or {}
-                metrics = _read_node_metrics(item["id"], item.get("console_out"))
+                metrics = await _read_node_metrics_async(item["id"], item.get("console_out"))
                 item.pop("console_out", None)
                 item["e2e_ms"] = metrics.get("e2e_ms")
                 item["step_dur_ms"] = metrics.get("step_dur_ms")
@@ -7548,7 +7644,7 @@ async def get_project_experiments(request: Request, pid: str):
         unconnected = []
         for row in unconnected_rows:
             item = dict(row)
-            metrics = _read_node_metrics(item["id"], item.get("console_out"))
+            metrics = await _read_node_metrics_async(item["id"], item.get("console_out"))
             item.pop("console_out", None)
             item["e2e_ms"] = metrics.get("e2e_ms")
             item["step_dur_ms"] = metrics.get("step_dur_ms")
@@ -7585,8 +7681,8 @@ async def create_experiment_edge(request: Request, pid: str, body: dict):
     try:
         user_token = await ensure_user_row(db, request)
         await validate_project_access(db, request, pid)
-        parent = await load_accessible_job(db, request, parent_job_id, "id, project_id, mode")
-        child = await load_accessible_job(db, request, child_job_id, "id, project_id, mode")
+        parent = await load_accessible_job(db, request, parent_job_id, "id, project_id, mode, console_out")
+        child = await load_accessible_job(db, request, child_job_id, "id, project_id, mode, console_out")
         if not parent or not child:
             raise HTTPException(404, "节点不存在")
         if (
@@ -7622,7 +7718,12 @@ async def create_experiment_edge(request: Request, pid: str, body: dict):
             raise HTTPException(409, "会形成循环依赖")
 
         edge_id = str(uuid.uuid4())
-        perf = compute_perf_delta(parent_job_id, child_job_id)
+        perf = await compute_perf_delta_async(
+            parent_job_id,
+            child_job_id,
+            parent.get("console_out"),
+            child.get("console_out"),
+        )
         await db.execute(
             """
             INSERT INTO experiment_edges(
@@ -7754,7 +7855,7 @@ async def refresh_experiment_edge_perf(request: Request, eid: str):
             response = _experiment_edge_response(edge)
             response["skipped"] = True
             return response
-        perf = compute_perf_delta(edge["parent_job_id"], edge["child_job_id"])
+        perf = await compute_perf_delta_async(edge["parent_job_id"], edge["child_job_id"])
         await db.execute(
             "UPDATE experiment_edges SET perf_summary=? WHERE id=?",
             (json.dumps(perf, ensure_ascii=False), eid),
