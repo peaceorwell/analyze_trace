@@ -31,32 +31,32 @@
   --red:       #ef4444;
   --red-bg:    rgba(239,68,68,.1);
   --exp-shell-bg: #111827;
-  --exp-canvas-bg: #111723;
-  --exp-grid-dot: rgba(148,163,184,.15);
-  --exp-grid-line: rgba(148,163,184,.07);
+  --exp-canvas-bg: #101624;
+  --exp-grid-dot: rgba(148,163,184,.09);
+  --exp-grid-line: rgba(148,163,184,.055);
   --exp-surface: rgba(24,30,44,.92);
   --exp-surface-soft: rgba(31,41,55,.58);
-  --exp-node-bg: #192132;
-  --exp-node-border: rgba(148,163,184,.34);
-  --exp-node-shadow: 0 18px 42px rgba(2,6,23,.24);
-  --exp-edge-stroke: rgba(148,163,184,.72);
+  --exp-node-bg: #171f2f;
+  --exp-node-border: rgba(148,163,184,.30);
+  --exp-node-shadow: 0 18px 42px rgba(2,6,23,.22);
+  --exp-edge-stroke: rgba(129,140,248,.72);
   --exp-edge-active: #818cf8;
   --exp-handle-bg: rgba(15,23,42,.78);
-  --exp-best-bg: rgba(6,78,59,.88);
-  --exp-best-bg-strong: rgba(16,185,129,.20);
-  --exp-best-border: #34d399;
-  --exp-best-ink: #86efac;
-  --exp-best-shadow: 0 18px 38px rgba(16,185,129,.20);
-  --exp-good-bg: rgba(22,78,99,.84);
-  --exp-good-bg-strong: rgba(34,211,238,.18);
-  --exp-good-border: #22d3ee;
-  --exp-good-ink: #67e8f9;
-  --exp-good-shadow: 0 18px 38px rgba(34,211,238,.16);
-  --exp-bad-bg: rgba(136,19,55,.82);
-  --exp-bad-bg-strong: rgba(251,113,133,.18);
-  --exp-bad-border: #fb7185;
-  --exp-bad-ink: #fecdd3;
-  --exp-bad-shadow: 0 18px 38px rgba(251,113,133,.16);
+  --exp-best-bg: rgba(99,102,241,.14);
+  --exp-best-bg-strong: rgba(99,102,241,.20);
+  --exp-best-border: #818cf8;
+  --exp-best-ink: #c7d2fe;
+  --exp-best-shadow: 0 18px 38px rgba(99,102,241,.16);
+  --exp-good-bg: rgba(16,185,129,.12);
+  --exp-good-bg-strong: rgba(16,185,129,.18);
+  --exp-good-border: #10b981;
+  --exp-good-ink: #6ee7b7;
+  --exp-good-shadow: 0 18px 38px rgba(16,185,129,.14);
+  --exp-bad-bg: rgba(239,68,68,.10);
+  --exp-bad-bg-strong: rgba(239,68,68,.16);
+  --exp-bad-border: #ef4444;
+  --exp-bad-ink: #fecaca;
+  --exp-bad-shadow: 0 18px 38px rgba(239,68,68,.12);
   --shadow:    0 4px 24px rgba(0,0,0,.45);
   --modal-bg:  rgba(0,0,0,.65);
   --header-bg: linear-gradient(118deg, #141826 0%, #191f37 46%, #221f3b 76%, #2c2339 100%);
@@ -117,29 +117,29 @@
   --red-bg:    rgba(220,38,38,.07);
   --exp-shell-bg: #f6f8fc;
   --exp-canvas-bg: #f7f9fe;
-  --exp-grid-dot: rgba(100,116,139,.20);
-  --exp-grid-line: rgba(148,163,184,.22);
+  --exp-grid-dot: rgba(100,116,139,.14);
+  --exp-grid-line: rgba(148,163,184,.18);
   --exp-surface: rgba(255,255,255,.90);
   --exp-surface-soft: rgba(241,245,249,.76);
   --exp-node-bg: #ffffff;
   --exp-node-border: #cbd5e1;
   --exp-node-shadow: 0 18px 34px rgba(15,23,42,.10);
-  --exp-best-bg: #ecfdf5;
-  --exp-best-bg-strong: #dcfce7;
-  --exp-best-border: #22c55e;
-  --exp-best-ink: #15803d;
-  --exp-best-shadow: 0 18px 34px rgba(22,163,74,.14);
-  --exp-good-bg: #ecfeff;
-  --exp-good-bg-strong: #cffafe;
-  --exp-good-border: #06b6d4;
-  --exp-good-ink: #0e7490;
-  --exp-good-shadow: 0 18px 34px rgba(8,145,178,.12);
-  --exp-bad-bg: #fff1f2;
-  --exp-bad-bg-strong: #ffe4e6;
-  --exp-bad-border: #f43f5e;
-  --exp-bad-ink: #be123c;
-  --exp-bad-shadow: 0 18px 34px rgba(225,29,72,.12);
-  --exp-edge-stroke: rgba(100,116,139,.70);
+  --exp-best-bg: #eef2ff;
+  --exp-best-bg-strong: #e0e7ff;
+  --exp-best-border: #6366f1;
+  --exp-best-ink: #4338ca;
+  --exp-best-shadow: 0 18px 34px rgba(79,70,229,.12);
+  --exp-good-bg: #ecfdf5;
+  --exp-good-bg-strong: #d1fae5;
+  --exp-good-border: #10b981;
+  --exp-good-ink: #047857;
+  --exp-good-shadow: 0 18px 34px rgba(16,185,129,.12);
+  --exp-bad-bg: #fef2f2;
+  --exp-bad-bg-strong: #fee2e2;
+  --exp-bad-border: #ef4444;
+  --exp-bad-ink: #b91c1c;
+  --exp-bad-shadow: 0 18px 34px rgba(239,68,68,.10);
+  --exp-edge-stroke: rgba(99,102,241,.70);
   --exp-edge-active: #6366f1;
   --exp-handle-bg: rgba(255,255,255,.82);
   --shadow:    0 10px 30px rgba(31,41,55,.10);
@@ -940,6 +940,9 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   gap: 8px;
   min-width: 0;
 }
+.exp-toolbar-actions .btn-primary {
+  box-shadow: 0 10px 22px rgba(99,102,241,.20);
+}
 .exp-title {
   font-size: 16px;
   font-weight: 800;
@@ -1023,10 +1026,10 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   vector-effect: non-scaling-stroke;
 }
 .exp-edge-path.result-good {
-  stroke: var(--exp-good-border);
+  stroke: var(--exp-edge-stroke);
 }
 .exp-edge-path.result-bad {
-  stroke: var(--exp-bad-border);
+  stroke: var(--exp-edge-stroke);
 }
 .exp-edge-path.active {
   stroke: var(--exp-edge-active);
@@ -1046,10 +1049,10 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   vector-effect: non-scaling-stroke;
 }
 .exp-edge-arrow.result-good {
-  fill: var(--exp-good-border);
+  fill: var(--exp-edge-stroke);
 }
 .exp-edge-arrow.result-bad {
-  fill: var(--exp-bad-border);
+  fill: var(--exp-edge-stroke);
 }
 .exp-edge-arrow.active {
   fill: var(--exp-edge-active);
@@ -1062,16 +1065,15 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   fill: none;
   stroke: var(--exp-edge-stroke);
   stroke-width: 1.8;
-  stroke-dasharray: 4 6;
   stroke-linecap: round;
-  opacity: .54;
+  opacity: .48;
   vector-effect: non-scaling-stroke;
 }
 .exp-edge-label-link.result-good {
-  stroke: var(--exp-good-border);
+  stroke: var(--exp-edge-stroke);
 }
 .exp-edge-label-link.result-bad {
-  stroke: var(--exp-bad-border);
+  stroke: var(--exp-edge-stroke);
 }
 .exp-edge-label-link.active {
   stroke: var(--exp-edge-active);
@@ -1090,14 +1092,12 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   --edge-label-shadow: 0 12px 30px rgba(15,23,42,.14);
   position: absolute;
   z-index: 4;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  display: block;
   align-items: start;
   justify-content: stretch;
-  gap: 8px;
-  padding: 11px 13px;
+  padding: 10px 12px 11px;
   border: 1px solid var(--edge-label-border);
-  border-radius: 8px;
+  border-radius: 10px;
   background:
     linear-gradient(135deg, var(--edge-label-bg-soft), transparent 72%),
     var(--edge-label-bg);
@@ -1113,7 +1113,14 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   transition: border-color .15s, box-shadow .15s, opacity .15s, background-color .15s;
 }
 .exp-edge-label:active { cursor: grabbing; }
-.exp-edge-label span {
+.exp-edge-label-main {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+}
+.exp-edge-label-main span {
   min-width: 0;
   display: block;
   padding-left: 2px;
@@ -1121,6 +1128,9 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   overflow-wrap: anywhere;
   color: var(--edge-label-ink);
   font-weight: 700;
+}
+.exp-edge-label-main .exp-delta {
+  margin-top: 1px;
 }
 .exp-edge-label::before {
   content: "";
@@ -1136,7 +1146,7 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 .exp-edge-label.result-good {
   --edge-label-accent: var(--exp-good-border);
   --edge-label-bg: var(--exp-good-bg);
-  --edge-label-bg-soft: rgba(6,182,212,.08);
+  --edge-label-bg-soft: rgba(16,185,129,.07);
   --edge-label-border: var(--exp-good-border);
   --edge-label-ink: var(--exp-good-ink);
   --edge-label-shadow: var(--exp-good-shadow);
@@ -1151,8 +1161,8 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 }
 .exp-edge-label.active {
   z-index: 7;
-  border-color: var(--edge-label-border);
-  box-shadow: 0 0 0 3px rgba(99,102,241,.18), var(--edge-label-shadow);
+  border-color: var(--purple);
+  box-shadow: 0 0 0 2px var(--purple), var(--edge-label-shadow);
 }
 .exp-edge-label.muted {
   opacity: .32;
@@ -1173,12 +1183,12 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   cursor: nwse-resize;
   font-size: 11px;
   line-height: 1;
-  opacity: .70;
+  opacity: 0;
   transition: opacity .15s, color .15s, border-color .15s, background-color .15s;
 }
 .exp-edge-label:hover .exp-edge-resize,
 .exp-edge-label.active .exp-edge-resize {
-  opacity: 1;
+  opacity: .95;
 }
 .exp-edge-resize:hover {
   color: var(--exp-edge-active);
@@ -1190,34 +1200,39 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 .exp-mover-row em {
   flex-shrink: 0;
   border-radius: 999px;
-  padding: 1px 6px;
+  padding: 2px 7px;
   font-style: normal;
   font-weight: 800;
   font-family: var(--mono);
   font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.35;
 }
 .exp-delta.good,
 .exp-metric-row em.good,
 .exp-mover-row em.good {
-  background: rgba(34,197,94,.13);
-  color: var(--green);
+  border: 1px solid color-mix(in srgb, var(--exp-good-border) 28%, transparent);
+  background: var(--exp-good-bg-strong);
+  color: var(--exp-good-ink);
 }
 .exp-delta.bad,
 .exp-metric-row em.bad,
 .exp-mover-row em.bad {
-  background: rgba(239,68,68,.12);
-  color: var(--red);
+  border: 1px solid color-mix(in srgb, var(--exp-bad-border) 28%, transparent);
+  background: var(--exp-bad-bg-strong);
+  color: var(--exp-bad-ink);
 }
 .exp-delta.neutral,
 .exp-metric-row em.neutral,
 .exp-mover-row em.neutral {
+  border: 1px solid rgba(148,163,184,.22);
   background: var(--card2);
   color: var(--text3);
 }
 .exp-node {
-  --node-accent: var(--text3);
+  --node-accent: rgba(148,163,184,.55);
   --node-bg: var(--exp-node-bg);
-  --node-bg-soft: rgba(148,163,184,.055);
+  --node-bg-soft: rgba(148,163,184,.045);
   --node-bg-strong: rgba(148,163,184,.10);
   --node-border: var(--exp-node-border);
   --node-ink: var(--text);
@@ -1236,7 +1251,7 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
     linear-gradient(135deg, var(--node-bg-soft), transparent 72%),
     var(--node-bg);
   box-shadow: var(--node-shadow);
-  cursor: grab;
+  cursor: move;
   overflow: hidden;
   transition: border-color .15s, box-shadow .15s, opacity .15s, background-color .15s, transform .15s;
 }
@@ -1246,41 +1261,25 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   left: 0;
   right: 0;
   top: 0;
-  height: 4px;
+  height: 3px;
   background: var(--node-accent);
   opacity: .75;
 }
 .exp-node:active { cursor: grabbing; }
 .exp-node.result-best {
-  --node-accent: var(--exp-best-border);
-  --node-bg: var(--exp-best-bg);
-  --node-bg-soft: rgba(34,197,94,.08);
-  --node-bg-strong: var(--exp-best-bg-strong);
+  --node-accent: var(--purple-l);
   --node-border: var(--exp-best-border);
-  --node-ink: var(--exp-best-ink);
   --node-shadow: var(--exp-best-shadow);
 }
 .exp-node.result-good {
-  --node-accent: var(--exp-good-border);
-  --node-bg: var(--exp-good-bg);
-  --node-bg-soft: rgba(6,182,212,.08);
-  --node-bg-strong: var(--exp-good-bg-strong);
-  --node-border: var(--exp-good-border);
-  --node-ink: var(--exp-good-ink);
-  --node-shadow: var(--exp-good-shadow);
+  --node-accent: rgba(148,163,184,.55);
 }
 .exp-node.result-bad {
-  --node-accent: var(--exp-bad-border);
-  --node-bg: var(--exp-bad-bg);
-  --node-bg-soft: rgba(244,63,94,.08);
-  --node-bg-strong: var(--exp-bad-bg-strong);
-  --node-border: var(--exp-bad-border);
-  --node-ink: var(--exp-bad-ink);
-  --node-shadow: var(--exp-bad-shadow);
+  --node-accent: rgba(148,163,184,.55);
 }
 .exp-node.selected {
-  border-color: var(--node-border);
-  box-shadow: 0 0 0 3px rgba(99,102,241,.18), var(--node-shadow);
+  border-color: var(--purple);
+  box-shadow: 0 0 0 2px var(--purple), var(--node-shadow);
   transform: translateY(-1px);
 }
 .exp-node.error,
@@ -1295,6 +1294,7 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   align-items: center;
   gap: 8px;
   min-width: 0;
+  padding-right: 42px;
 }
 .exp-node-head strong {
   min-width: 0;
@@ -1304,6 +1304,37 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   font-size: 14px;
   line-height: 1.2;
   color: var(--node-ink);
+}
+.exp-node-corner {
+  position: absolute;
+  top: 9px;
+  right: 9px;
+  z-index: 1;
+  border: 1px solid color-mix(in srgb, var(--purple) 30%, transparent);
+  border-radius: 999px;
+  padding: 2px 7px;
+  background: var(--exp-best-bg);
+  color: var(--exp-best-ink);
+  font-size: 10px;
+  font-weight: 800;
+}
+.exp-node-chip {
+  flex-shrink: 0;
+  border-radius: 999px;
+  padding: 2px 7px;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.25;
+}
+.exp-node-chip.baseline {
+  border: 1px solid color-mix(in srgb, var(--purple) 20%, transparent);
+  background: var(--purple-bg);
+  color: var(--purple-l);
+}
+.exp-node-chip.status {
+  border: 1px solid rgba(148,163,184,.24);
+  background: var(--exp-surface-soft);
+  color: var(--text3);
 }
 .exp-status-dot {
   width: 10px;
@@ -1316,54 +1347,67 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 .exp-status-dot.done { background: var(--green); box-shadow: 0 0 0 3px rgba(34,197,94,.15); }
 .exp-status-dot.running { background: var(--yellow); box-shadow: 0 0 0 3px rgba(234,179,8,.18); }
 .exp-status-dot.error { background: var(--red); box-shadow: 0 0 0 3px rgba(239,68,68,.16); }
-.exp-node-stats {
+.exp-node-primary {
+  display: grid;
+  grid-template-columns: minmax(0, auto) auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+}
+.exp-node-primary b {
+  min-width: 0;
+  color: var(--node-ink);
+  font-family: var(--mono);
+  font-size: 22px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  white-space: nowrap;
+}
+.exp-node-primary span {
+  color: var(--text3);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.exp-node-primary .exp-delta {
+  justify-self: end;
+  align-self: center;
+}
+.exp-node-secondary {
   display: grid;
   grid-template-columns: 1fr;
   gap: 5px;
 }
-.exp-node-stats div {
-  position: relative;
+.exp-node-secondary div {
   display: grid;
-  grid-template-columns: minmax(58px, .68fr) minmax(0, 1.32fr);
-  align-items: start;
-  gap: 10px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
   min-width: 0;
-  min-height: 24px;
-  padding: 3px 7px 3px 10px;
-  border: 1px solid color-mix(in srgb, var(--node-accent) 32%, transparent);
-  border-radius: 6px;
-  background: var(--node-bg-strong);
   color: var(--text3);
-  font-size: 12px;
+  font-size: 11px;
 }
-.exp-node-stats div::before {
-  content: "";
-  position: absolute;
-  inset: 4px auto 4px 5px;
-  width: 2px;
-  border-radius: 999px;
-  background: var(--node-accent);
-  opacity: .82;
-}
-.exp-node-stats span,
-.exp-node-stats b {
+.exp-node-secondary span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.exp-node-stats b {
+.exp-node-secondary b {
+  min-width: 0;
   color: var(--node-ink);
   font-family: var(--mono);
   font-size: 12px;
   font-weight: 800;
   font-variant-numeric: tabular-nums;
-  line-height: 1.25;
-  overflow: visible;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   text-align: right;
-  text-overflow: clip;
-  white-space: normal;
+}
+.exp-node-secondary .exp-delta {
+  justify-self: end;
 }
 .exp-node-resize {
   position: absolute;
@@ -1381,12 +1425,12 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   cursor: nwse-resize;
   font-size: 11px;
   line-height: 1;
-  opacity: .72;
+  opacity: 0;
   transition: opacity .15s, color .15s, border-color .15s, background-color .15s;
 }
 .exp-node:hover .exp-node-resize,
 .exp-node.selected .exp-node-resize {
-  opacity: 1;
+  opacity: .95;
 }
 .exp-node-resize:hover {
   color: var(--exp-edge-active);
@@ -1406,6 +1450,21 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   color: var(--text2);
   box-shadow: 0 18px 38px rgba(15,23,42,.18);
   pointer-events: none;
+}
+.exp-canvas-hint {
+  position: absolute;
+  left: 14px;
+  bottom: 12px;
+  z-index: 2;
+  border: 1px solid rgba(148,163,184,.18);
+  border-radius: 999px;
+  padding: 5px 9px;
+  background: color-mix(in srgb, var(--exp-surface) 78%, transparent);
+  color: var(--text3);
+  font-size: 11px;
+  font-weight: 700;
+  pointer-events: none;
+  backdrop-filter: blur(8px);
 }
 .exp-tooltip strong {
   display: block;
@@ -1862,6 +1921,13 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   border-radius: 7px;
   background: var(--exp-surface-soft);
   transition: border-color .15s, background-color .15s;
+}
+.exp-unconnected-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
 }
 .exp-unconnected-item:hover {
   border-color: rgba(99,102,241,.42);

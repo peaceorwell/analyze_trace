@@ -2,7 +2,7 @@
 
 Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/内网性能分析工具，并兼容 TensorFlow Chrome Trace。它可以解析 `.json`、`.json.gz`、`.gz`、`.json.zip`、`.zip`、`.tar.gz` 和 `.tgz` trace 文件，统计 GPU kernel、Triton kernel、ATen Ops、TensorFlow Ops、CNCL/NCCL 通信算子，并提供单 trace 分析、双 trace 对比、历史管理、AI 分析和 Web 可视化界面。
 
-当前版本：`0.4.2`
+当前版本：`0.4.3`
 
 ## 主要功能
 
@@ -10,7 +10,7 @@ Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/
 - **结果阅读**：默认进入性能总览，提供摘要卡片、Top 回退/改善、图表下钻、控制台全屏阅读和全量 CSV 表格能力。
 - **定位细节**：Kernel 类型、所有 Kernel、Triton、ATen Ops、TF Ops、CNCL Ops、Triton Step 等页签支持搜索、筛选、排序、列显隐、分页和下载。
 - **Step 重分析**：完成任务后可指定 step 派生新分析；对比任务支持 A/B 分别指定不同 step。
-- **实验树**：按项目把多次实验连接成优化谱系，支持节点/关系拖拽缩放、变量变更记录、Compute time 优化判定和 step 口径告警。
+- **实验树**：按项目把多次实验连接成优化谱系，支持中性节点卡、边 delta 芯片、节点/关系拖拽缩放、变量变更记录、Compute time 优化判定和 step 口径告警。
 - **AI 分析**：Claude Code + 自定义 skill 生成 Markdown 报告，支持补充 Prompt、环境诊断、进度/耗时、历史版本、下载和完成通知。
 - **团队协作**：LDAP 用户隔离、个人/共享项目、管理员统计，以及独立的 **灵感社区**（Issue 风格帖子、回复、图片、@ 候选、邮件通知）。
 - **运维能力**：JSON 日志、审计日志、健康检查、Prometheus 指标、备份脚本和存储管理。
@@ -153,7 +153,7 @@ Web 首页有三种上传模式：
 项目侧边栏出现树形标记时，表示该项目已经创建实验树，点击标记可快速打开。实验树用于把多次单 trace 实验串成可追溯的优化关系：
 
 - `标记优化关系` 可连接父节点和子节点；关系标签支持正文描述，也可以把变量变更追加成列表。
-- 节点卡默认展示 E2E、Kernel、Compute；优化结果优先使用 Compute time 判断，并通过节点背景、边框和文字色区分当前最优、正优化和负优化。
+- 节点卡以 E2E 为主指标，Compute、Kernel 作为次要指标；优化结果优先使用 Compute time 判断，节点保持中性，边上的 delta 芯片表达收益或退化。
 - 右侧详情会展示节点指标、热点 kernel 和相对父节点的 delta；如果两端 step 数或单步耗时口径不一致，会提示“跨度对比仅供参考”。
 - 画布支持缩放、平移、自动整理、右侧面板折叠；节点和关系标签都支持拖拽与水平/垂直缩放。
 - 打开大项目时，实验树指标读取会移入后台线程，减少同步读取 CSV 对其他接口的阻塞。

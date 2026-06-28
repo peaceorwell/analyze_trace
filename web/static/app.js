@@ -134,7 +134,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.4.2");
+const appVersion = ref("0.4.3");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -586,6 +586,16 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.4.3",
+    date: "2026-06-28",
+    title: "实验树前端视觉重构",
+    items: [
+      "实验树节点改为中性卡片，把正优化和负优化集中到边的 delta 芯片表达。",
+      "节点卡片突出 E2E 主指标，Compute 和 Kernel 降为次要信息，降低数值截断和视觉噪音。",
+      "未连接任务主操作改为设为优化结果，画布补充拖拽/缩放提示，并在刷新和自动整理后自动居中。",
+    ],
+  },
   {
     version: "0.4.2",
     date: "2026-06-28",
@@ -1489,7 +1499,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.4.2";
+  appVersion.value = cfg.version || "0.4.3";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -7304,7 +7314,10 @@ const ExperimentTree = {
               @mouseenter="hoverEdgeId = item.edge.id"
               @mouseleave="hoverEdgeId = ''"
             >
-              <span>{{ edgeCanvasText(item.edge) }}</span>
+              <div class="exp-edge-label-main">
+                <span>{{ edgeCanvasText(item.edge) }}</span>
+                <em :class="deltaClass(item.edge)">{{ edgeDeltaChipText(item.edge) }}</em>
+              </div>
               <button
                 class="exp-edge-resize"
                 type="button"
@@ -7321,6 +7334,7 @@ const ExperimentTree = {
                 'exp-node',
                 node.status,
                 nodeOptimizationClass(node),
+                isBaselineNode(node) ? 'baseline-node' : '',
                 selectedNodeId === node.id ? 'selected' : '',
                 hasSelection && !isNodeHighlighted(node) ? 'muted' : ''
               ]"
@@ -7331,14 +7345,29 @@ const ExperimentTree = {
               @click.stop="selectNode(node)"
               @dblclick.stop="openJob(node.id)"
             >
+              <div v-if="isBestNode(node)" class="exp-node-corner">最优</div>
               <div class="exp-node-head">
                 <span :class="['exp-status-dot', node.status]"></span>
                 <strong :title="nodeTitle(node)">{{ nodeTitle(node) }}</strong>
+                <span v-if="isBaselineNode(node)" class="exp-node-chip baseline">基线</span>
+                <span v-if="node.status !== 'done'" class="exp-node-chip status">{{ statusText(node.status) }}</span>
               </div>
-              <div class="exp-node-stats">
-                <div><span>E2E</span><b>{{ formatNodeMetric(node, 'e2e_ms', 'ms') }}</b></div>
-                <div><span>Kernel</span><b>{{ formatNodeMetric(node, 'kernel_count', 'count') }}</b></div>
-                <div><span>Compute</span><b>{{ formatNodeMetric(node, 'compute_ms', 'ms') }}</b></div>
+              <div class="exp-node-primary">
+                <b>{{ formatNodeMetricNumber(node, 'e2e_ms', 'ms') }}</b>
+                <span>ms · e2e</span>
+                <em v-if="nodeMetricChipText(node, 'e2e_ms', 'e2e')" :class="nodeMetricChipClass(node, 'e2e_ms')">{{ nodeMetricChipText(node, 'e2e_ms', 'e2e') }}</em>
+              </div>
+              <div class="exp-node-secondary">
+                <div>
+                  <span>Compute</span>
+                  <b>{{ formatNodeMetricValue(node, 'compute_ms', 'ms') }}</b>
+                  <em v-if="nodeMetricChipText(node, 'compute_ms', 'compute')" :class="nodeMetricChipClass(node, 'compute_ms')">{{ nodeMetricChipText(node, 'compute_ms', 'compute') }}</em>
+                </div>
+                <div>
+                  <span>Kernel</span>
+                  <b>{{ formatNodeMetricValue(node, 'kernel_count', 'count') }}</b>
+                  <em v-if="nodeMetricChipText(node, 'kernel_count', 'kernel', 'count')" :class="nodeMetricChipClass(node, 'kernel_count')">{{ nodeMetricChipText(node, 'kernel_count', 'kernel', 'count') }}</em>
+                </div>
               </div>
               <button
                 class="exp-node-resize"
@@ -7378,6 +7407,7 @@ const ExperimentTree = {
             aria-label="展开右侧面板"
             @click.stop="panelCollapsed=false"
           >‹</button>
+          <div class="exp-canvas-hint">拖拽排布 · 滚轮缩放 · 拖空白平移</div>
         </div>
 
         <aside v-if="!panelCollapsed" class="exp-panel">
@@ -7512,7 +7542,10 @@ const ExperimentTree = {
                   <strong>{{ nodeTitle(job) }}</strong>
                   <span>E2E {{ formatMs(job.e2e_ms) }} · Kernel {{ formatCount(job.kernel_count) }} · Compute {{ formatMs(job.compute_ms) }}</span>
                 </div>
-                <button class="btn btn-xs btn-outline" type="button" @click="openAddEdge('', job.id)">连入</button>
+                <div class="exp-unconnected-actions">
+                  <button class="btn btn-xs btn-primary" type="button" @click="openAddEdge('', job.id)">设为优化结果</button>
+                  <button class="btn btn-xs btn-outline" type="button" @click="openJob(job.id)">详情</button>
+                </div>
               </div>
               <div v-if="!unconnected.length" class="exp-empty-small">暂无未连接任务</div>
             </div>
@@ -7602,18 +7635,18 @@ const ExperimentTree = {
     let edgeDragState = null;
     let edgeResizeState = null;
 
-    const NODE_W = 240;
-    const NODE_H = 142;
-    const NODE_MIN_W = 180;
-    const NODE_MIN_H = 104;
+    const NODE_W = 248;
+    const NODE_H = 136;
+    const NODE_MIN_W = 200;
+    const NODE_MIN_H = 118;
     const NODE_MAX_W = 900;
     const NODE_MAX_H = 640;
     const SIBLING_GAP = 88;
     const EDGE_LABEL_GAP = 30;
     const LAYER_GAP = 60;
-    const EDGE_LABEL_W = 300;
+    const EDGE_LABEL_W = 320;
     const EDGE_LABEL_H = 58;
-    const EDGE_LABEL_MIN_W = 160;
+    const EDGE_LABEL_MIN_W = 210;
     const EDGE_LABEL_MIN_H = 44;
     const EDGE_LABEL_MAX_W = 900;
     const EDGE_LABEL_MAX_H = 420;
@@ -7647,6 +7680,12 @@ const ExperimentTree = {
       const text = Number.isInteger(number) ? String(number) : number.toFixed(1);
       return `${number > 0 ? "+" : ""}${text}`;
     };
+    const compactPctDeltaText = value => {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return "";
+      if (number === 0) return "0.0%";
+      return `${number < 0 ? "▼" : "▲"}${Math.abs(number).toFixed(1)}%`;
+    };
     const autoTextBoxSize = (text, options = {}) => {
       const {
         minWidth = 160,
@@ -7673,10 +7712,9 @@ const ExperimentTree = {
     const clampNodeHeight = value => Math.max(NODE_MIN_H, Math.min(NODE_MAX_H, roundLayout(hasLayoutNumber(value) ? value : NODE_H)));
     const nodeAutoSize = node => {
       const nodePaddingX = 28;
-      const rowPaddingX = 14;
-      const rowGap = 12;
+      const rowGap = 10;
       const handleReserveX = 30;
-      const titleWidth = nodePaddingX + 22 + 8 + textWidth(nodeTitleText(node));
+      const titleWidth = nodePaddingX + 22 + 8 + textWidth(nodeTitleText(node)) + 48;
       const parentEdge = edges.value.find(edge => edge.child_job_id === node?.id);
       const parent = parentEdge ? nodes.value.find(item => item.id === parentEdge.parent_job_id) : null;
       const metricText = (key, kind = "ms") => {
@@ -7688,21 +7726,16 @@ const ExperimentTree = {
         const deltaText = kind === "count" ? compactSignedCountText(delta) : compactSignedMsText(delta);
         return `${value} (${deltaText})`;
       };
-      const metricRows = [
-        ["E2E", metricText("e2e_ms", "ms")],
-        ["Kernel", metricText("kernel_count", "count")],
-        ["Compute", metricText("compute_ms", "ms")],
-      ];
-      const labelWidth = Math.max(...metricRows.map(row => textWidth(row[0])));
-      const valueWidth = Math.max(...metricRows.map(row => textWidth(row[1])));
-      const statsWidth = nodePaddingX + rowPaddingX + labelWidth + rowGap + valueWidth + handleReserveX;
-      const statsHeight = metricRows.length * 26 + (metricRows.length - 1) * 5;
-      const contentHeight = 13 + 18 + 10 + statsHeight + 34;
+      const primaryWidth = textWidth(metricText("e2e_ms", "ms")) + 92;
+      const secondaryWidth = Math.max(textWidth(metricText("compute_ms", "ms")), textWidth(metricText("kernel_count", "count"))) + 82;
+      const statsWidth = nodePaddingX + Math.max(primaryWidth, secondaryWidth) + handleReserveX;
+      const statsHeight = 76;
+      const contentHeight = 15 + 18 + rowGap + statsHeight + 18;
       const scaledWidth = NODE_W * nodeScale(node);
       const scaledHeight = contentHeight * nodeScale(node);
       return {
         width: clampNodeWidth(Math.max(NODE_W, scaledWidth, titleWidth, statsWidth)),
-        height: clampNodeHeight(Math.max(148, scaledHeight, contentHeight)),
+        height: clampNodeHeight(Math.max(NODE_H, scaledHeight, contentHeight)),
       };
     };
     const nodeWidth = node => clampNodeWidth(hasLayoutNumber(node?.width) ? node.width : nodeAutoSize(node).width);
@@ -7717,7 +7750,7 @@ const ExperimentTree = {
       paddingX: 12,
       paddingY: 10,
       lineHeight: 16.2,
-      extraWidth: 18,
+      extraWidth: 96,
       extraHeight: 8,
     });
     const edgeLabelWidth = edge => clampEdgeLabelWidth(hasLayoutNumber(edge?.label_width) ? edge.label_width : edgeLabelAutoSize(edge).width);
@@ -7955,6 +7988,57 @@ const ExperimentTree = {
       });
       return Array.from(map.values());
     });
+    const graphBounds = () => {
+      const boxes = displayNodes.value.map(node => ({
+        minX: node.x,
+        minY: node.y,
+        maxX: node.x + nodeWidth(node),
+        maxY: node.y + nodeHeight(node),
+      }));
+      edgePaths.value.forEach(item => {
+        boxes.push({
+          minX: item.labelX,
+          minY: item.labelY,
+          maxX: item.labelX + item.labelWidth,
+          maxY: item.labelY + item.labelHeight,
+        });
+      });
+      if (!boxes.length) return null;
+      return {
+        minX: Math.min(...boxes.map(box => box.minX)),
+        minY: Math.min(...boxes.map(box => box.minY)),
+        maxX: Math.max(...boxes.map(box => box.maxX)),
+        maxY: Math.max(...boxes.map(box => box.maxY)),
+      };
+    };
+    const fitGraphToViewport = () => {
+      const bounds = graphBounds();
+      const viewport = viewportRef.value;
+      if (!bounds || !viewport) {
+        view.value = { scale: 1, tx: 36, ty: 36 };
+        return;
+      }
+      const viewportWidth = viewport.clientWidth || 900;
+      const viewportHeight = viewport.clientHeight || 620;
+      const paddingX = 96;
+      const paddingY = 86;
+      const graphWidth = Math.max(1, bounds.maxX - bounds.minX);
+      const graphHeight = Math.max(1, bounds.maxY - bounds.minY);
+      const fitScale = Math.min(
+        1.12,
+        Math.max(0.48, (viewportWidth - paddingX * 2) / graphWidth, 0.48),
+        Math.max(0.48, (viewportHeight - paddingY * 2) / graphHeight, 0.48),
+      );
+      view.value = {
+        scale: Math.round(fitScale * 100) / 100,
+        tx: roundLayout((viewportWidth - graphWidth * fitScale) / 2 - bounds.minX * fitScale),
+        ty: roundLayout(Math.max(24, (viewportHeight - graphHeight * fitScale) / 2 - bounds.minY * fitScale)),
+      };
+    };
+    const fitGraphAfterPaint = async () => {
+      await nextTick();
+      fitGraphToViewport();
+    };
 
     const cleanVariables = variables => (variables || [])
       .map(item => ({
@@ -8038,6 +8122,7 @@ const ExperimentTree = {
         if (selectedEdgeId.value && !edges.value.some(edge => edge.id === selectedEdgeId.value)) selectedEdgeId.value = "";
         if (selectedNodeId.value && !nodes.value.some(node => node.id === selectedNodeId.value)) selectedNodeId.value = "";
         await loadCandidates();
+        await fitGraphAfterPaint();
       } catch (e) {
         showToast(normalizeApiError(e, "加载实验树失败"), "error");
       } finally {
@@ -8248,7 +8333,6 @@ const ExperimentTree = {
         }).then(async response => {
           if (!response.ok) throw new ApiRequestError((await readJsonResponse(response, {}))?.detail || "重置布局失败", { status: response.status });
         });
-        view.value = { scale: 1, tx: 36, ty: 36 };
         await loadGraph();
       } catch (e) {
         showToast(normalizeApiError(e, "重置布局失败"), "error");
@@ -8512,13 +8596,26 @@ const ExperimentTree = {
       const text = Number.isInteger(number) ? String(number) : number.toFixed(1);
       return `${number > 0 ? "+" : ""}${text}`;
     };
+    const formatNodeMetricNumber = (node, key, kind = "ms") => {
+      if (node?.status !== "done") return "-";
+      if (kind === "count") return formatCount(node?.[key]);
+      const number = Number(node?.[key]);
+      return Number.isFinite(number) ? number.toFixed(2) : "-";
+    };
+    const formatNodeMetricValue = (node, key, kind = "ms") => {
+      if (node?.status !== "done") return "-";
+      return kind === "count" ? formatCount(node?.[key]) : formatMs(node?.[key]);
+    };
     const numericMetric = value => {
       const number = Number(value);
       return Number.isFinite(number) ? number : null;
     };
+    const incomingEdgeFor = node => edges.value.find(edge => edge.child_job_id === node?.id) || null;
+    const isBaselineNode = node => Boolean(node?.id) && !incomingEdgeFor(node);
+    const isBestNode = node => node?.status === "done" && bestNodeId.value === node?.id;
     const parentNodeFor = node => {
       if (!node?.id) return null;
-      const parentEdge = edges.value.find(edge => edge.child_job_id === node.id);
+      const parentEdge = incomingEdgeFor(node);
       return parentEdge ? nodeById.value[parentEdge.parent_job_id] || null : null;
     };
     const nodeMetricDelta = (node, key) => {
@@ -8527,6 +8624,25 @@ const ExperimentTree = {
       if (childValue === null || parentValue === null) return null;
       return childValue - parentValue;
     };
+    const nodeMetricDeltaPct = (node, key) => {
+      const delta = nodeMetricDelta(node, key);
+      const parentValue = numericMetric(parentNodeFor(node)?.[key]);
+      if (delta === null || parentValue === null || parentValue === 0) return null;
+      return Math.round((delta / Math.abs(parentValue)) * 1000) / 10;
+    };
+    const nodeMetricChipText = (node, key, label, kind = "ms") => {
+      if (node?.status !== "done") return "";
+      const delta = nodeMetricDelta(node, key);
+      if (delta === null) return "";
+      if (kind === "count") {
+        if (delta === 0) return `${label} 0`;
+        return `${label} ${delta < 0 ? "▼" : "▲"}${Math.abs(delta).toFixed(delta % 1 ? 1 : 0)}`;
+      }
+      const pct = nodeMetricDeltaPct(node, key);
+      const pctText = compactPctDeltaText(pct);
+      return pctText ? `${label} ${pctText}` : "";
+    };
+    const nodeMetricChipClass = (node, key) => ["exp-delta", metricDeltaClass(nodeMetricDelta(node, key))];
     const formatNodeMetric = (node, key, kind = "ms") => {
       const value = kind === "count" ? formatCount(node?.[key]) : formatMs(node?.[key]);
       const delta = nodeMetricDelta(node, key);
@@ -8583,6 +8699,10 @@ const ExperimentTree = {
     const deltaMetric = edge => edge?.perf?.metrics?.e2e_ms || {};
     const deltaLabel = edge => formatPct(deltaMetric(edge).delta_pct);
     const deltaClass = edge => ["exp-delta", metricDeltaClass(deltaMetric(edge).delta_pct)];
+    const edgeDeltaChipText = edge => {
+      const text = compactPctDeltaText(deltaMetric(edge).delta_pct);
+      return text ? `e2e ${text}` : "e2e n/a";
+    };
     const nodeOptimizationDelta = node => {
       const computeDelta = nodeMetricDelta(node, "compute_ms");
       if (computeDelta !== null) return computeDelta;
@@ -8594,10 +8714,8 @@ const ExperimentTree = {
       return numericMetric(edge?.perf?.metrics?.e2e_ms?.delta_pct);
     };
     const nodeOptimizationClass = node => {
-      if (bestNodeId.value === node?.id) return "result-best";
-      const delta = nodeOptimizationDelta(node);
-      if (delta === null || delta === 0) return "";
-      return delta < 0 ? "result-good" : "result-bad";
+      if (isBestNode(node)) return "result-best";
+      return "";
     };
     const edgeOptimizationClass = edge => {
       const deltaPct = edgeOptimizationDelta(edge);
@@ -8721,9 +8839,11 @@ const ExperimentTree = {
       startPan, startNodeDrag, startNodeResize, startEdgeLabelDrag, startEdgeLabelResize,
       nodeStyle, nodeWidth, edgeLabelStyle, zoomBy, onWheel, setHoverNode, clearHoverNode,
       edgeLabel, edgeCanvasText, metricRows, formatMs, formatSignedMs, formatPct,
-      formatCount, formatNodeMetric, formatHotKernelMetric, shortKernelName, nodeTitle, nodeTitleById,
+      formatCount, formatNodeMetric, formatNodeMetricNumber, formatNodeMetricValue,
+      nodeMetricChipText, nodeMetricChipClass, deltaClass, edgeDeltaChipText,
+      formatHotKernelMetric, shortKernelName, nodeTitle, nodeTitleById,
       formatMetricPair, metricDeltaClass, jobOptionLabel, isNodeHighlighted, isEdgeHighlighted,
-      nodeOptimizationClass, edgeOptimizationClass,
+      isBaselineNode, isBestNode, nodeOptimizationClass, edgeOptimizationClass,
       appendDraftVariableToTitle, appendAllDraftVariablesToTitle,
       fmtDate, fmtDateTime, statusText,
     };
