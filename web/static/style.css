@@ -1347,7 +1347,7 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 .exp-status-dot.error { background: var(--red); box-shadow: 0 0 0 3px rgba(239,68,68,.16); }
 .exp-node-primary {
   display: grid;
-  grid-template-columns: minmax(0, auto) auto minmax(0, 1fr);
+  grid-template-columns: auto auto max-content;
   align-items: baseline;
   gap: 7px;
   min-width: 0;
@@ -1372,9 +1372,9 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 .exp-node-primary .exp-delta {
   justify-self: end;
   align-self: center;
-  max-width: min(120px, 42%);
-  overflow: hidden;
-  text-overflow: ellipsis;
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
   white-space: nowrap;
 }
 .exp-node-secondary {

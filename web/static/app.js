@@ -134,7 +134,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.4.8");
+const appVersion = ref("0.4.9");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -586,6 +586,15 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.4.9",
+    date: "2026-06-28",
+    title: "实验树自动尺寸修正",
+    items: [
+      "自动整理时按 Compute time 主指标、右侧 delta chip 和次级指标共同估算节点宽度。",
+      "节点主指标行的 delta chip 保持完整显示，同时减少自动尺寸带来的多余空白。",
+    ],
+  },
   {
     version: "0.4.8",
     date: "2026-06-28",
@@ -1546,7 +1555,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.4.8";
+  appVersion.value = cfg.version || "0.4.9";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -7760,24 +7769,51 @@ const ExperimentTree = {
     const clampNodeWidth = value => Math.max(NODE_MIN_W, Math.min(NODE_MAX_W, roundLayout(hasLayoutNumber(value) ? value : NODE_W)));
     const clampNodeHeight = value => Math.max(NODE_MIN_H, Math.min(NODE_MAX_H, roundLayout(hasLayoutNumber(value) ? value : NODE_H)));
     const nodeAutoSize = node => {
-      const nodePaddingX = 28;
+      const nodePaddingX = 14;
       const rowGap = 10;
-      const handleReserveX = 30;
-      const titleWidth = nodePaddingX + 22 + 8 + textWidth(nodeTitleText(node)) + 48;
+      const titleWidth = 10 + 8 + textWidth(nodeTitleText(node)) * 1.15 + (node?.status !== "done" ? 64 : 0);
       const parentEdge = edges.value.find(edge => edge.child_job_id === node?.id);
       const parent = parentEdge ? nodes.value.find(item => item.id === parentEdge.parent_job_id) : null;
-      const metricText = (key, kind = "ms") => {
-        const value = kind === "count" ? compactCountText(node?.[key]) : compactMsText(node?.[key]);
+      const metricValueText = (key, kind = "ms") => (kind === "count" ? compactCountText(node?.[key]) : compactMsText(node?.[key]));
+      const metricDelta = key => {
         const childValue = Number(node?.[key]);
         const parentValue = Number(parent?.[key]);
-        if (!Number.isFinite(childValue) || !Number.isFinite(parentValue)) return value;
-        const delta = childValue - parentValue;
-        const deltaText = kind === "count" ? compactSignedCountText(delta) : compactSignedMsText(delta);
-        return `${value} (${deltaText})`;
+        if (!Number.isFinite(childValue) || !Number.isFinite(parentValue)) return null;
+        return childValue - parentValue;
       };
-      const primaryWidth = textWidth(metricText("e2e_ms", "ms")) + 92;
-      const secondaryWidth = Math.max(textWidth(metricText("compute_ms", "ms")), textWidth(metricText("kernel_count", "count"))) + 82;
-      const statsWidth = nodePaddingX + Math.max(primaryWidth, secondaryWidth) + handleReserveX;
+      const metricPctDeltaText = key => {
+        const delta = metricDelta(key);
+        const parentValue = Number(parent?.[key]);
+        if (delta === null || !Number.isFinite(parentValue) || parentValue === 0) return "";
+        return compactPctDeltaText(Math.round((delta / Math.abs(parentValue)) * 1000) / 10);
+      };
+      const metricChipText = (key, label, kind = "ms") => {
+        if (node?.status !== "done") return "";
+        const delta = metricDelta(key);
+        if (delta === null) return "";
+        if (kind === "count") {
+          const value = Math.abs(delta).toFixed(delta % 1 ? 1 : 0);
+          return delta === 0 ? `${label} 0` : `${label} ${delta < 0 ? "▼" : "▲"}${value}`;
+        }
+        const deltaText = metricPctDeltaText(key);
+        return deltaText ? `${label} ${deltaText}` : "";
+      };
+      const chipWidth = text => text ? Math.max(44, textWidth(text) + 24) : 0;
+      const primaryNumber = Number.isFinite(Number(node?.compute_ms)) ? Number(node.compute_ms).toFixed(2) : "-";
+      const primaryWidth = textWidth(primaryNumber) * 1.45
+        + textWidth("ms · compute time")
+        + chipWidth(metricPctDeltaText("compute_ms"))
+        + 18;
+      const secondaryRowWidth = (label, key, kind = "ms") => {
+        const labelWidth = Math.max(48, textWidth(label) + 4);
+        const valueWidth = textWidth(metricValueText(key, kind)) + 8;
+        return labelWidth + valueWidth + chipWidth(metricChipText(key, label.toLowerCase(), kind)) + 16;
+      };
+      const secondaryWidth = Math.max(
+        secondaryRowWidth("E2E", "e2e_ms", "ms"),
+        secondaryRowWidth("Kernel", "kernel_count", "count"),
+      );
+      const statsWidth = nodePaddingX * 2 + Math.max(titleWidth, primaryWidth, secondaryWidth, 180);
       const statsHeight = 76;
       const contentHeight = 15 + 18 + rowGap + statsHeight + 18;
       const scaledWidth = NODE_W * nodeScale(node);
