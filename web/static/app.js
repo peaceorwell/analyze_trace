@@ -134,7 +134,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.4.5");
+const appVersion = ref("0.4.6");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -586,6 +586,15 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.4.6",
+    date: "2026-06-28",
+    title: "实验树悬浮详情层级修复",
+    items: [
+      "节点悬浮详情改为页面级浮层，不再被右侧详情面板遮挡。",
+      "悬浮详情会随画布缩放和平移换算屏幕坐标，并自动限制在当前窗口内。",
+    ],
+  },
   {
     version: "0.4.5",
     date: "2026-06-28",
@@ -1519,7 +1528,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.4.5";
+  appVersion.value = cfg.version || "0.4.6";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -7396,26 +7405,6 @@ const ExperimentTree = {
               >↘</button>
             </article>
 
-            <div
-              v-if="hoverNode"
-              class="exp-tooltip"
-              :style="{ left: (hoverNode.x + nodeWidth(hoverNode) + 12) + 'px', top: (hoverNode.y - 8) + 'px' }"
-            >
-              <strong>{{ nodeTitle(hoverNode) }}</strong>
-              <div class="exp-node-detail exp-tooltip-detail">
-                <div
-                  v-for="row in hoverNodeDetailRows"
-                  :key="row.key"
-                  :class="['exp-node-detail-row', 'tone-' + row.tone]"
-                >
-                  <span :title="row.title || row.label">{{ row.label }}</span>
-                  <b>
-                    <i>{{ row.value }}</i>
-                    <em v-if="row.deltaText" :class="row.deltaClass">{{ row.deltaText }}</em>
-                  </b>
-                </div>
-              </div>
-            </div>
           </div>
           <button
             v-if="panelCollapsed"
@@ -7426,6 +7415,27 @@ const ExperimentTree = {
             @click.stop="panelCollapsed=false"
           >‹</button>
           <div class="exp-canvas-hint">拖拽排布 · 滚轮缩放 · 拖空白平移</div>
+        </div>
+
+        <div
+          v-if="hoverNode"
+          class="exp-tooltip"
+          :style="hoverTooltipStyle"
+        >
+          <strong>{{ nodeTitle(hoverNode) }}</strong>
+          <div class="exp-node-detail exp-tooltip-detail">
+            <div
+              v-for="row in hoverNodeDetailRows"
+              :key="row.key"
+              :class="['exp-node-detail-row', 'tone-' + row.tone]"
+            >
+              <span :title="row.title || row.label">{{ row.label }}</span>
+              <b>
+                <i>{{ row.value }}</i>
+                <em v-if="row.deltaText" :class="row.deltaClass">{{ row.deltaText }}</em>
+              </b>
+            </div>
+          </div>
         </div>
 
         <aside v-if="!panelCollapsed" class="exp-panel">
@@ -7920,6 +7930,24 @@ const ExperimentTree = {
     const selectedNodeDetailRows = computed(() => nodeDetailRows(selectedNode.value));
     const hoverNode = computed(() => nodeById.value[hoverNodeId.value] || null);
     const hoverNodeDetailRows = computed(() => nodeDetailRows(hoverNode.value));
+    const hoverTooltipStyle = computed(() => {
+      const node = hoverNode.value;
+      const viewport = viewportRef.value;
+      if (!node || !viewport || typeof window === "undefined") return {};
+      const rect = viewport.getBoundingClientRect();
+      const scale = view.value.scale || 1;
+      const width = 360;
+      const margin = 12;
+      const height = Math.min(430, Math.max(140, window.innerHeight - margin * 2));
+      const rawLeft = rect.left + view.value.tx + (node.x + nodeWidth(node) + 12) * scale;
+      const rawTop = rect.top + view.value.ty + (node.y - 8) * scale;
+      const maxLeft = Math.max(margin, window.innerWidth - width - margin);
+      const maxTop = Math.max(margin, window.innerHeight - height - margin);
+      return {
+        left: `${Math.min(Math.max(rawLeft, margin), maxLeft)}px`,
+        top: `${Math.min(Math.max(rawTop, margin), maxTop)}px`,
+      };
+    });
     const hasSelection = computed(() => Boolean(selectedNodeId.value || selectedEdgeId.value));
     const lineage = computed(() => {
       const nodeIds = new Set();
@@ -8938,7 +8966,7 @@ const ExperimentTree = {
 
     return {
       viewportRef, loading, saving, nodes, unconnected, edges, selectedNodeId, selectedEdgeId,
-      selectedNode, selectedEdge, selectedEdgePerfNote, hoverNode, hoverEdgeId, showAddEdge, panelCollapsed, addForm, edgeDraft,
+      selectedNode, selectedEdge, selectedEdgePerfNote, hoverNode, hoverEdgeId, hoverTooltipStyle, showAddEdge, panelCollapsed, addForm, edgeDraft,
       nodeNameDraft, nodeNameSaving, nodeNameDirty,
       draftVariableInsertItems, selectedNodeTopKernels, selectedNodeDetailRows, hoverNodeDetailRows,
       view, projectName, displayNodes, edgePaths, canvasSize, bestNodeId,

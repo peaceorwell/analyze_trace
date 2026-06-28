@@ -1448,9 +1448,10 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   background: var(--purple-bg);
 }
 .exp-tooltip {
-  position: absolute;
-  z-index: 8;
+  position: fixed;
+  z-index: 3900;
   width: 360px;
+  max-width: calc(100vw - 24px);
   max-height: 430px;
   padding: 12px;
   overflow: hidden;
