@@ -70,7 +70,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.4.10",
+        "version": "0.4.11",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,

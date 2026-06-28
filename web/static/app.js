@@ -134,7 +134,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.4.10");
+const appVersion = ref("0.4.11");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -586,6 +586,15 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.4.11",
+    date: "2026-06-29",
+    title: "实验树提示与指标对齐优化",
+    items: [
+      "收紧折线图悬浮提示宽度，减少指标名和数值之间的空白。",
+      "画布节点多行指标的右侧 delta 统一右对齐，提升卡片扫描效率。",
+    ],
+  },
   {
     version: "0.4.10",
     date: "2026-06-29",
@@ -1565,7 +1574,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.4.10";
+  appVersion.value = cfg.version || "0.4.11";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;

@@ -1503,9 +1503,9 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 }
 .exp-node-secondary div {
   display: grid;
-  grid-template-columns: minmax(42px, max-content) max-content minmax(0, max-content);
+  grid-template-columns: minmax(42px, max-content) max-content minmax(0, 1fr);
   align-items: center;
-  justify-content: start;
+  justify-content: stretch;
   gap: 8px;
   min-width: 0;
   overflow: hidden;
@@ -1531,17 +1531,17 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   text-align: left;
 }
 .exp-node-secondary .exp-delta {
-  justify-self: start;
+  justify-self: end;
   max-width: none;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow: visible;
+  text-overflow: clip;
   white-space: nowrap;
 }
 .exp-chart-tooltip {
   position: fixed;
   z-index: 3900;
-  width: 248px;
-  max-width: calc(100vw - 24px);
+  width: max-content;
+  max-width: min(260px, calc(100vw - 24px));
   padding: 10px 12px;
   border: 1px solid rgba(148,163,184,.34);
   border-radius: 8px;
@@ -1583,9 +1583,9 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 }
 .exp-chart-tooltip-row {
   display: grid;
-  grid-template-columns: minmax(0, 92px) minmax(0, 1fr);
+  grid-template-columns: max-content max-content;
   align-items: baseline;
-  gap: 12px;
+  gap: 18px;
   padding: 6px 0;
   border-bottom: 1px solid rgba(148,163,184,.14);
 }
@@ -1593,12 +1593,13 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   border-bottom: 0;
 }
 .exp-chart-tooltip-row span {
+  white-space: nowrap;
   color: var(--text3);
   font-size: 11px;
   font-weight: 650;
 }
 .exp-chart-tooltip-row b {
-  min-width: 0;
+  min-width: max-content;
   color: var(--text);
   text-align: right;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
