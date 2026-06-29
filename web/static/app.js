@@ -1478,6 +1478,10 @@ const tableColumnWidth = field => {
   return 132;
 };
 const tableColumnStyle = field => ({ width: `${tableColumnWidth(field)}px` });
+const tableStyle = computed(() => {
+  const width = displayedFields.value.reduce((total, field) => total + tableColumnWidth(field), 0);
+  return { width: `${Math.max(1, width)}px` };
+});
 const tableHeaderClass = field => ({
   "num-col": isNumericTableField(field),
   "long-col": isLongTableField(field),
@@ -7252,7 +7256,7 @@ const JobDetail = {
               <span class="spinner-small"></span> 加载表格...
             </div>
             <div class="csv-table-wrap">
-            <table class="data-table">
+            <table class="data-table" :style="tableStyle">
               <colgroup>
                 <col v-for="f in displayedFields" :key="f"
                      :style="tableColumnStyle(f)" />
@@ -7423,7 +7427,7 @@ const JobDetail = {
       hasColFilters, colSums, isKernelTypeTab, canDrillKernelTypeRow,
       isKernelTypeDrillCell, drillDownKernelType,
       isEfficiencyTable, isEfficiencyField, applyEfficiencyColumnPreset,
-      tableColumnStyle, tableHeaderClass, tableCellClass, tableRowClass, familyChipClass, efficiencyTone,
+      tableStyle, tableColumnStyle, tableHeaderClass, tableCellClass, tableRowClass, familyChipClass, efficiencyTone,
       isTritonStepTab, tritonStatus, allowFileDownload, allowCodeExecution,
       claudeAnalysisEnabled, aiAnalysisMeta, aiAnalysisLoading, aiAnalysisStarting,
       aiAnalysisError, aiAnalysisContent, aiAnalysisArtifacts, aiAnalysisVisibleArtifacts,
