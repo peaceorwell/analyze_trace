@@ -7335,37 +7335,45 @@ const ExperimentTree = {
             <div class="exp-subtitle">{{ projectName }}</div>
           </div>
         </div>
+        <div class="exp-view-toggle exp-toolbar-view-toggle" role="tablist" aria-label="实验树视图">
+          <button
+            type="button"
+            :class="['exp-view-tab', viewMode === 'canvas' ? 'active' : '']"
+            :aria-selected="viewMode === 'canvas'"
+            @click="viewMode='canvas'"
+          >画布</button>
+          <button
+            type="button"
+            :class="['exp-view-tab', viewMode === 'chart' ? 'active' : '']"
+            :aria-selected="viewMode === 'chart'"
+            @click="viewMode='chart'"
+          >折线图</button>
+          <button
+            type="button"
+            :class="['exp-view-tab', viewMode === 'roi' ? 'active' : '']"
+            :aria-selected="viewMode === 'roi'"
+            @click="viewMode='roi'"
+          >变量收益</button>
+        </div>
         <div class="exp-toolbar-actions">
+          <button class="btn btn-sm btn-primary" type="button" @click="openAddEdge()">标记优化关系</button>
           <button
             v-if="viewMode === 'canvas'"
-            class="btn btn-sm btn-outline exp-toolbar-stable-action"
+            class="btn btn-sm btn-outline exp-icon-btn"
             type="button"
+            title="自动整理"
+            aria-label="自动整理"
             @click="resetLayout"
             :disabled="saving"
-          >自动整理</button>
-          <span v-else class="exp-toolbar-stable-action exp-toolbar-spacer" aria-hidden="true"></span>
-          <button class="btn btn-sm btn-primary" type="button" @click="openAddEdge()">标记优化关系</button>
-          <div class="exp-view-toggle" role="tablist" aria-label="实验树视图">
-            <button
-              type="button"
-              :class="['exp-view-tab', viewMode === 'canvas' ? 'active' : '']"
-              :aria-selected="viewMode === 'canvas'"
-              @click="viewMode='canvas'"
-            >画布</button>
-            <button
-              type="button"
-              :class="['exp-view-tab', viewMode === 'chart' ? 'active' : '']"
-              :aria-selected="viewMode === 'chart'"
-              @click="viewMode='chart'"
-            >折线图</button>
-            <button
-              type="button"
-              :class="['exp-view-tab', viewMode === 'roi' ? 'active' : '']"
-              :aria-selected="viewMode === 'roi'"
-              @click="viewMode='roi'"
-            >变量收益</button>
-          </div>
-          <button class="btn btn-sm btn-outline" type="button" @click="loadGraph" :disabled="loading">刷新</button>
+          >⤢</button>
+          <button
+            class="btn btn-sm btn-outline exp-icon-btn"
+            type="button"
+            title="刷新"
+            aria-label="刷新"
+            @click="loadGraph"
+            :disabled="loading"
+          >⟳</button>
         </div>
       </header>
 
@@ -7428,7 +7436,22 @@ const ExperimentTree = {
               @mouseleave="hoverEdgeId = ''"
             >
               <div class="exp-edge-label-main">
-                <span>{{ edgeCanvasText(item.edge) }}</span>
+                <div class="exp-edge-label-content">
+                  <span
+                    v-if="edgeLabelDescription(item.edge)"
+                    class="exp-edge-label-text"
+                    :title="edgeLabelDescription(item.edge)"
+                  >{{ edgeLabelDescription(item.edge) }}</span>
+                  <div v-if="edgeLabelVariables(item.edge).length" class="exp-edge-chip-row">
+                    <span
+                      v-for="(variable, index) in edgeLabelVariables(item.edge)"
+                      :key="index + '-' + variable.name + '-' + variable.from + '-' + variable.to"
+                      class="exp-edge-var-chip"
+                      :title="variableDisplayLabel(variable)"
+                    >{{ variableDisplayLabel(variable) }}</span>
+                  </div>
+                  <span v-if="!edgeLabelDescription(item.edge) && !edgeLabelVariables(item.edge).length" class="exp-edge-label-text">优化关系</span>
+                </div>
                 <em :class="deltaClass(item.edge)">{{ edgeDeltaChipText(item.edge) }}</em>
               </div>
               <button
@@ -7498,7 +7521,7 @@ const ExperimentTree = {
         >
           <div v-if="loading" class="exp-loading">加载中...</div>
           <template v-else>
-            <div class="exp-chart-toolbar">
+            <div class="exp-chart-toolbar exp-subtoolbar">
               <div class="exp-chart-controls">
                 <label class="exp-chart-field">
                   <span>主指标</span>
@@ -7555,7 +7578,7 @@ const ExperimentTree = {
         >
           <div v-if="loading" class="exp-loading">加载中...</div>
           <template v-else>
-            <div class="exp-roi-toolbar">
+            <div class="exp-roi-toolbar exp-subtoolbar">
               <div class="exp-chart-controls">
                 <label class="exp-chart-field">
                   <span>主指标</span>
@@ -7600,7 +7623,7 @@ const ExperimentTree = {
                 <div><span>退化最多</span><b :class="roiGainClass(roiSummary.worst?.totalGainMs)">{{ roiSummary.worst ? roiSummary.worst.label : '—' }}</b></div>
               </div>
 
-              <div class="exp-roi-bars">
+              <div v-if="roiBarItems.length" class="exp-roi-bars">
                 <button
                   v-for="item in roiBarItems"
                   :key="item.key"
@@ -7616,17 +7639,18 @@ const ExperimentTree = {
                   <b :class="roiGainClass(item.barValue)">{{ formatRoiGainMs(item.barValue) }}</b>
                 </button>
               </div>
+              <div v-else class="exp-roi-isolated-empty">当前只有组合变更，暂无法单独归因；做单变量实验后这里会显示各变量收益</div>
 
               <div class="exp-roi-table-wrap">
                 <table class="exp-roi-table">
                   <thead>
                     <tr>
-                      <th><button type="button" @click="setRoiSort('label')">变量{{ roiSortMark('label') }}</button></th>
-                      <th><button type="button" @click="setRoiSort('isolatedCount')">单独(组合){{ roiSortMark('isolatedCount') }}</button></th>
-                      <th><button type="button" @click="setRoiSort('averageGainMs')">平均收益{{ roiSortMark('averageGainMs') }}</button></th>
-                      <th><button type="button" @click="setRoiSort('totalGainMs')">总收益{{ roiSortMark('totalGainMs') }}</button></th>
-                      <th><button type="button" @click="setRoiSort('hitRate')">命中率{{ roiSortMark('hitRate') }}</button></th>
-                      <th><button type="button" @click="setRoiSort('bestGainMs')">最佳一次{{ roiSortMark('bestGainMs') }}</button></th>
+                      <th><button type="button" :class="{ active: roiSort.key === 'label' }" @click="setRoiSort('label')">变量<span class="exp-sort-mark">{{ roiSortMark('label') || '↕' }}</span></button></th>
+                      <th><button type="button" :class="{ active: roiSort.key === 'isolatedCount' }" @click="setRoiSort('isolatedCount')">单独(组合)<span class="exp-sort-mark">{{ roiSortMark('isolatedCount') || '↕' }}</span></button></th>
+                      <th><button type="button" :class="{ active: roiSort.key === 'averageGainMs' }" @click="setRoiSort('averageGainMs')">平均收益<span class="exp-sort-mark">{{ roiSortMark('averageGainMs') || '↕' }}</span></button></th>
+                      <th><button type="button" :class="{ active: roiSort.key === 'totalGainMs' }" @click="setRoiSort('totalGainMs')">总收益<span class="exp-sort-mark">{{ roiSortMark('totalGainMs') || '↕' }}</span></button></th>
+                      <th><button type="button" :class="{ active: roiSort.key === 'hitRate' }" @click="setRoiSort('hitRate')">命中率<span class="exp-sort-mark">{{ roiSortMark('hitRate') || '↕' }}</span></button></th>
+                      <th><button type="button" :class="{ active: roiSort.key === 'bestGainMs' }" @click="setRoiSort('bestGainMs')">最佳一次<span class="exp-sort-mark">{{ roiSortMark('bestGainMs') || '↕' }}</span></button></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -7643,11 +7667,11 @@ const ExperimentTree = {
                       <td><b>{{ row.isolatedCount }}</b><span>({{ row.combinedCount }})</span></td>
                       <td :class="roiGainClass(row.averageGainMs)">
                         <b>{{ formatRoiGainMs(row.averageGainMs) }}</b>
-                        <span>{{ formatRoiGainPct(row.averageGainPct) }}</span>
+                        <span v-if="isFiniteRoiValue(row.averageGainPct)">{{ formatRoiGainPct(row.averageGainPct) }}</span>
                       </td>
                       <td :class="roiGainClass(row.totalGainMs)">
                         <b>{{ formatRoiGainMs(row.totalGainMs) }}</b>
-                        <span>{{ formatRoiGainPct(row.totalGainPct) }}</span>
+                        <span v-if="isFiniteRoiValue(row.totalGainPct)">{{ formatRoiGainPct(row.totalGainPct) }}</span>
                       </td>
                       <td>{{ formatHitRate(row.hitRate) }}</td>
                       <td>
@@ -7693,11 +7717,11 @@ const ExperimentTree = {
                   <table class="exp-roi-table exp-node-metric-table">
                     <thead>
                       <tr>
-                        <th><button type="button" @click="setNodeMetricSort('label')">节点{{ nodeMetricSortMark('label') }}</button></th>
-                        <th><button type="button" @click="setNodeMetricSort('e2e_ms')">E2E{{ nodeMetricSortMark('e2e_ms') }}</button></th>
-                        <th><button type="button" @click="setNodeMetricSort('compute_ms')">Compute{{ nodeMetricSortMark('compute_ms') }}</button></th>
-                        <th><button type="button" @click="setNodeMetricSort('comm_ms')">Comm{{ nodeMetricSortMark('comm_ms') }}</button></th>
-                        <th><button type="button" @click="setNodeMetricSort('kernel_count')">Kernel{{ nodeMetricSortMark('kernel_count') }}</button></th>
+                        <th><button type="button" :class="{ active: nodeMetricSort.key === 'label' }" @click="setNodeMetricSort('label')">节点<span class="exp-sort-mark">{{ nodeMetricSortMark('label') || '↕' }}</span></button></th>
+                        <th><button type="button" :class="{ active: nodeMetricSort.key === 'e2e_ms' }" @click="setNodeMetricSort('e2e_ms')">E2E<span class="exp-sort-mark">{{ nodeMetricSortMark('e2e_ms') || '↕' }}</span></button></th>
+                        <th><button type="button" :class="{ active: nodeMetricSort.key === 'compute_ms' }" @click="setNodeMetricSort('compute_ms')">Compute<span class="exp-sort-mark">{{ nodeMetricSortMark('compute_ms') || '↕' }}</span></button></th>
+                        <th><button type="button" :class="{ active: nodeMetricSort.key === 'comm_ms' }" @click="setNodeMetricSort('comm_ms')">Comm<span class="exp-sort-mark">{{ nodeMetricSortMark('comm_ms') || '↕' }}</span></button></th>
+                        <th><button type="button" :class="{ active: nodeMetricSort.key === 'kernel_count' }" @click="setNodeMetricSort('kernel_count')">Kernel<span class="exp-sort-mark">{{ nodeMetricSortMark('kernel_count') || '↕' }}</span></button></th>
                         <th>操作</th>
                       </tr>
                     </thead>
@@ -8058,7 +8082,7 @@ const ExperimentTree = {
     const EDGE_LABEL_W = 320;
     const EDGE_LABEL_H = 58;
     const EDGE_LABEL_MIN_W = 210;
-    const EDGE_LABEL_MIN_H = 44;
+    const EDGE_LABEL_MIN_H = 58;
     const EDGE_LABEL_MAX_W = 900;
     const EDGE_LABEL_MAX_H = 420;
     const EDGE_LABEL_AUTO_MAX_W = 520;
@@ -8198,7 +8222,7 @@ const ExperimentTree = {
     const nodeHeight = node => nodeAutoSize(node).height;
     const clampEdgeLabelWidth = value => Math.max(EDGE_LABEL_MIN_W, Math.min(EDGE_LABEL_MAX_W, roundLayout(value || EDGE_LABEL_W)));
     const clampEdgeLabelHeight = value => Math.max(EDGE_LABEL_MIN_H, Math.min(EDGE_LABEL_MAX_H, roundLayout(value || EDGE_LABEL_H)));
-    const edgeLabelAutoSize = edge => autoTextBoxSize(edgeCanvasText(edge), {
+    const edgeLabelAutoSize = edge => autoTextBoxSize(edgeLabelSizingText(edge), {
       minWidth: EDGE_LABEL_MIN_W,
       maxWidth: EDGE_LABEL_AUTO_MAX_W,
       minHeight: EDGE_LABEL_MIN_H,
@@ -9092,24 +9116,26 @@ const ExperimentTree = {
       if (!roiRows.value.length) return "暂无可聚合的变量收益";
       return "";
     });
+    const isFiniteRoiValue = value => value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value));
     const roiGainClass = value => {
+      if (!isFiniteRoiValue(value)) return "neutral";
       const number = Number(value);
-      if (!Number.isFinite(number) || number === 0) return "neutral";
+      if (number === 0) return "neutral";
       return number > 0 ? "good" : "bad";
     };
     const formatRoiGainMs = value => {
+      if (!isFiniteRoiValue(value)) return "—";
       const number = Number(value);
-      if (!Number.isFinite(number)) return "—";
       return `${number > 0 ? "+" : ""}${number.toFixed(2)} ms`;
     };
     const formatRoiGainPct = value => {
+      if (!isFiniteRoiValue(value)) return "—";
       const number = Number(value);
-      if (!Number.isFinite(number)) return "—";
       return `${number > 0 ? "+" : ""}${number.toFixed(1)}%`;
     };
     const formatHitRate = value => {
+      if (!isFiniteRoiValue(value)) return "—";
       const number = Number(value);
-      if (!Number.isFinite(number)) return "—";
       return `${Math.round(number * 100)}%`;
     };
     const roiSortValue = (row, key) => {
@@ -9149,7 +9175,7 @@ const ExperimentTree = {
         ? { key, dir: current.dir === "asc" ? "desc" : "asc" }
         : { key, dir: defaultDir };
     };
-    const sortMark = (sortRef, key) => sortRef.value.key === key ? (sortRef.value.dir === "asc" ? " ↑" : " ↓") : "";
+    const sortMark = (sortRef, key) => sortRef.value.key === key ? (sortRef.value.dir === "asc" ? "↑" : "↓") : "";
     const setRoiSort = key => setSort(roiSort, key, key === "label" ? "asc" : "desc");
     const roiSortMark = key => sortMark(roiSort, key);
     const roiBarItems = computed(() => {
@@ -9158,7 +9184,7 @@ const ExperimentTree = {
           ...row,
           barValue: roiBarMode.value === "average" ? row.averageGainMs : row.totalGainMs,
         }))
-        .filter(row => Number.isFinite(Number(row.barValue)))
+        .filter(row => isFiniteRoiValue(row.barValue))
         .slice(0, 12);
       const maxAbs = Math.max(1, ...items.map(row => Math.abs(Number(row.barValue))));
       return items.map(row => ({
@@ -9167,7 +9193,7 @@ const ExperimentTree = {
       }));
     });
     const roiSummary = computed(() => {
-      const evaluableRows = roiRows.value.filter(row => Number.isFinite(Number(row.totalGainMs)));
+      const evaluableRows = roiRows.value.filter(row => isFiniteRoiValue(row.totalGainMs));
       const byGainDesc = evaluableRows.slice().sort((a, b) => Number(b.totalGainMs) - Number(a.totalGainMs));
       const degradedRows = evaluableRows
         .filter(row => Number(row.totalGainMs) < 0)
@@ -9379,8 +9405,8 @@ const ExperimentTree = {
           grid: "rgba(148,163,184,.16)",
           gridStrong: "rgba(148,163,184,.28)",
           axis: "rgba(100,116,139,.36)",
-          target: "#ef4444",
-          targetSoft: "rgba(239,68,68,.10)",
+          target: "#6366f1",
+          targetSoft: "rgba(99,102,241,.10)",
           pointBorder: "#ffffff",
           pointLabelBg: "rgba(255,255,255,.92)",
           pointLabelBorder: "rgba(148,163,184,.32)",
@@ -9395,8 +9421,8 @@ const ExperimentTree = {
         grid: chartAlphaColor(border, 0.46),
         gridStrong: chartAlphaColor(border, 0.74),
         axis: chartAlphaColor(border, 0.95),
-        target: read("--red", "#ef4444"),
-        targetSoft: read("--red-bg", "rgba(239,68,68,.10)"),
+        target: read("--purple-l", "#6366f1"),
+        targetSoft: read("--purple-bg", "rgba(99,102,241,.10)"),
         pointBorder: read("--exp-surface", "#ffffff"),
         pointLabelBg: read("--exp-surface", "#ffffff"),
         pointLabelBorder: chartAlphaColor(border, 0.88),
@@ -10377,14 +10403,22 @@ const ExperimentTree = {
     };
     const appendDraftVariableToTitle = text => appendLinesToDraftTitle([text]);
     const appendAllDraftVariablesToTitle = () => appendLinesToDraftTitle(draftVariableInsertItems.value.map(item => item.text));
+    const edgeLabelVariables = edge =>
+      edge?.id && edge.id === selectedEdgeId.value
+        ? cleanVariables(draftVariables())
+        : cleanVariables(edge?.variables || []);
+    const edgeLabelDescription = edge =>
+      String(edge?.id && edge.id === selectedEdgeId.value ? edgeDraft.value.title || "" : edge?.title || "").trim();
+    const edgeLabelSizingText = edge => {
+      const description = edgeLabelDescription(edge);
+      const variables = edgeLabelVariables(edge).map(variableDisplayLabel);
+      return [description, ...variables, (!description && !variables.length ? "优化关系" : "")].filter(Boolean).join("\n");
+    };
     const edgeCanvasText = edge => {
-      if (edge?.id && edge.id === selectedEdgeId.value) {
-        const draftTitle = (edgeDraft.value.title || "").trim();
-        if (draftTitle) return draftTitle;
-        const draftVariableText = variableListText(draftVariables());
-        if (draftVariableText) return draftVariableText;
-      }
-      return (edge?.title || "").trim() || variableListText(edge?.variables) || "优化关系";
+      const description = edgeLabelDescription(edge);
+      if (description) return description;
+      const variableText = variableListText(edgeLabelVariables(edge));
+      return variableText || "优化关系";
     };
     const edgeLabel = edge => edgeCanvasText(edge);
     const looksLikeFileName = value => /\.(json|gz|zip|tgz|tar|trace|pt)(\.|$)/i.test(String(value || ""));
@@ -10572,6 +10606,7 @@ const ExperimentTree = {
       selectedNodeId.value = "";
       selectedEdgeId.value = "";
       hoverEdgeId.value = "";
+      panelCollapsed.value = viewMode.value !== "canvas";
     });
     watch(selectedNodeId, () => {
       resetNodeNameDraft();
@@ -10588,7 +10623,7 @@ const ExperimentTree = {
       viewportRef, lineageChartCanvas, loading, saving, nodes, unconnected, edges, selectedNodeId, selectedEdgeId,
       selectedNode, selectedEdge, selectedEdgePerfNote, hoverEdgeId, showAddEdge, panelCollapsed, addForm, edgeDraft,
       viewMode, lineageMetricKey, lineageMetricOptions, lineageChartEmptyText, lineageChartWarning,
-      roiMetricKey, roiMetricOptions, roiGroupMode, roiBarMode, currentRoiMetricLabel, roiSkippedEdgeCount, roiEmptyText,
+      roiMetricKey, roiMetricOptions, roiGroupMode, roiBarMode, roiSort, currentRoiMetricLabel, roiSkippedEdgeCount, roiEmptyText,
       roiSummary, roiBarItems, sortedRoiRows, roiCombinedEdges,
       projectMetricTargetDraft, projectMetricTargetSaving, projectMetricTargetDirty, currentMetricTargetValue, currentMetricTargetTitle, currentMetricTargetValueLabel,
       nodeNameDraft, nodeNameSaving, nodeNameDirty, nodeCompareTargetId, nodeCompareSaving, nodeCompareTargetOptions,
@@ -10597,7 +10632,7 @@ const ExperimentTree = {
       draftVariableInsertItems, selectedNodeTopKernels, selectedNodeDetailRows, selectedNodeAttachments,
       nodePrimaryDeltaText,
       view, projectName, displayNodes, edgePaths, canvasSize, bestNodeId,
-      candidateOptions, hasSelection, sortedNodeMetricRows,
+      candidateOptions, hasSelection, sortedNodeMetricRows, nodeMetricSort,
       loadGraph, openAddEdge, closeAddEdge, submitAddEdge, selectNode, selectEdge, openJob,
       saveNodeName, resetNodeNameDraft, uploadNodeAttachment, downloadNodeAttachment, deleteNodeAttachment,
       appendQuickVariable, compareSelectedNode,
@@ -10605,14 +10640,14 @@ const ExperimentTree = {
       saveEdge, deleteSelectedEdge, refreshPerf, createCompare, resetLayout,
       startPan, startNodeDrag, startEdgeLabelDrag, startEdgeLabelResize,
       nodeStyle, nodeWidth, edgeLabelStyle, zoomBy, onWheel,
-      edgeLabel, edgeCanvasText, metricRows, formatMs, formatSignedMs, formatPct,
+      edgeLabel, edgeCanvasText, edgeLabelDescription, edgeLabelVariables, variableDisplayLabel, metricRows, formatMs, formatSignedMs, formatPct,
       formatCount, formatNodeMetric, formatNodeMetricNumber, formatNodeMetricValue,
       nodeMetricChipText, nodeMetricChipClass, deltaClass, edgeDeltaChipText,
       formatHotKernelMetric, shortKernelName, nodeTitle, nodeTitleById,
       formatMetricPair, metricDeltaClass, jobOptionLabel, isNodeHighlighted, isEdgeHighlighted,
       isBaselineNode, isBestNode, nodeOptimizationClass, edgeOptimizationClass,
       appendDraftVariableToTitle, appendAllDraftVariablesToTitle,
-      setRoiSort, roiSortMark, roiGainClass, formatRoiGainMs, formatRoiGainPct, formatHitRate,
+      setRoiSort, roiSortMark, roiGainClass, isFiniteRoiValue, formatRoiGainMs, formatRoiGainPct, formatHitRate,
       focusRoiGroup, focusEdge, openRoiBestEdge, setNodeMetricSort, nodeMetricSortMark, selectNodeFromRoi,
       fmtDate, fmtDateTime, fmtBytes, statusText,
     };

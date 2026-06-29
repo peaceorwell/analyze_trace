@@ -49,13 +49,13 @@
   --exp-best-shadow: 0 18px 38px rgba(99,102,241,.16);
   --exp-good-bg: rgba(16,185,129,.12);
   --exp-good-bg-strong: rgba(16,185,129,.18);
-  --exp-good-border: #10b981;
-  --exp-good-ink: #6ee7b7;
+  --exp-good-border: var(--green);
+  --exp-good-ink: var(--green);
   --exp-good-shadow: 0 18px 38px rgba(16,185,129,.14);
   --exp-bad-bg: rgba(239,68,68,.10);
   --exp-bad-bg-strong: rgba(239,68,68,.16);
-  --exp-bad-border: #ef4444;
-  --exp-bad-ink: #fecaca;
+  --exp-bad-border: var(--red);
+  --exp-bad-ink: var(--red);
   --exp-bad-shadow: 0 18px 38px rgba(239,68,68,.12);
   --shadow:    0 4px 24px rgba(0,0,0,.45);
   --modal-bg:  rgba(0,0,0,.65);
@@ -131,13 +131,13 @@
   --exp-best-shadow: 0 18px 34px rgba(79,70,229,.12);
   --exp-good-bg: #ecfdf5;
   --exp-good-bg-strong: #d1fae5;
-  --exp-good-border: #10b981;
-  --exp-good-ink: #047857;
+  --exp-good-border: var(--green);
+  --exp-good-ink: var(--green);
   --exp-good-shadow: 0 18px 34px rgba(16,185,129,.12);
   --exp-bad-bg: #fef2f2;
   --exp-bad-bg-strong: #fee2e2;
-  --exp-bad-border: #ef4444;
-  --exp-bad-ink: #b91c1c;
+  --exp-bad-border: var(--red);
+  --exp-bad-ink: var(--red);
   --exp-bad-shadow: 0 18px 34px rgba(239,68,68,.10);
   --exp-edge-stroke: rgba(99,102,241,.70);
   --exp-edge-active: #6366f1;
@@ -923,9 +923,9 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 }
 .exp-toolbar {
   min-height: 52px;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto minmax(180px, 1fr);
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
   padding: 12px 14px;
   border: 1px solid rgba(148,163,184,.24);
@@ -939,6 +939,9 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   align-items: center;
   gap: 8px;
   min-width: 0;
+}
+.exp-toolbar-actions {
+  justify-content: flex-end;
 }
 .exp-toolbar-actions .btn-primary {
   box-shadow: 0 10px 22px rgba(99,102,241,.20);
@@ -954,17 +957,28 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 .exp-view-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: 0;
   padding: 3px;
   border: 1px solid rgba(148,163,184,.28);
   border-radius: 8px;
   background: var(--exp-surface-soft);
 }
+.exp-toolbar-view-toggle {
+  justify-self: center;
+}
+.exp-icon-btn {
+  width: 32px;
+  height: 32px;
+  justify-content: center;
+  padding: 0;
+  font-size: 15px;
+  line-height: 1;
+}
 .exp-view-tab {
   min-height: 28px;
   padding: 4px 10px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 0;
   background: transparent;
   color: var(--text3);
   cursor: pointer;
@@ -974,14 +988,23 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   line-height: 1;
   transition: background-color .15s, color .15s, box-shadow .15s;
 }
+.exp-view-tab:first-child {
+  border-radius: 6px 0 0 6px;
+}
+.exp-view-tab:last-child {
+  border-radius: 0 6px 6px 0;
+}
+.exp-view-tab + .exp-view-tab {
+  border-left: 1px solid rgba(148,163,184,.20);
+}
 .exp-view-tab:hover {
   color: var(--text);
   background: rgba(148,163,184,.12);
 }
 .exp-view-tab.active {
-  background: var(--purple);
-  color: #fff;
-  box-shadow: 0 8px 16px rgba(99,102,241,.24);
+  background: var(--purple-bg);
+  color: var(--purple-l);
+  box-shadow: inset 0 0 0 1px rgba(99,102,241,.24);
 }
 .exp-title {
   font-size: 16px;
@@ -1047,6 +1070,12 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   gap: 10px;
   min-height: 38px;
   cursor: default;
+}
+.exp-subtoolbar {
+  padding: 8px 10px;
+  border: 1px solid rgba(148,163,184,.20);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--exp-surface) 74%, transparent);
 }
 .exp-chart-controls {
   display: flex;
@@ -1122,7 +1151,7 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 .exp-segmented {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: 0;
   padding: 3px;
   border: 1px solid rgba(148,163,184,.26);
   border-radius: 8px;
@@ -1132,7 +1161,7 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   min-height: 28px;
   padding: 4px 9px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 0;
   background: transparent;
   color: var(--text3);
   cursor: pointer;
@@ -1140,14 +1169,23 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   font-size: 12px;
   font-weight: 800;
 }
+.exp-segmented-btn:first-child {
+  border-radius: 6px 0 0 6px;
+}
+.exp-segmented-btn:last-child {
+  border-radius: 0 6px 6px 0;
+}
+.exp-segmented-btn + .exp-segmented-btn {
+  border-left: 1px solid rgba(148,163,184,.18);
+}
 .exp-segmented-btn:hover {
   color: var(--text);
   background: rgba(148,163,184,.12);
 }
 .exp-segmented-btn.active {
-  background: var(--card);
-  color: var(--text);
-  box-shadow: 0 6px 14px rgba(15,23,42,.10);
+  background: var(--purple-bg);
+  color: var(--purple-l);
+  box-shadow: inset 0 0 0 1px rgba(99,102,241,.24);
 }
 .exp-roi-summary {
   display: grid;
@@ -1207,6 +1245,17 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   border: 1px solid rgba(148,163,184,.22);
   border-radius: 8px;
   background: var(--exp-surface);
+}
+.exp-roi-isolated-empty {
+  padding: 18px 20px;
+  border: 1px dashed rgba(148,163,184,.32);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--exp-surface) 68%, transparent);
+  color: var(--text3);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.55;
+  text-align: center;
 }
 .exp-roi-bar-row {
   display: grid;
@@ -1294,6 +1343,9 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   font-weight: 850;
 }
 .exp-roi-table th button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   border: 0;
   background: transparent;
   color: inherit;
@@ -1304,6 +1356,18 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   white-space: nowrap;
 }
 .exp-roi-table th button:hover {
+  color: var(--purple-l);
+}
+.exp-roi-table th button.active {
+  color: var(--purple-l);
+}
+.exp-sort-mark {
+  min-width: 10px;
+  color: var(--text3);
+  font-size: 10px;
+  line-height: 1;
+}
+.exp-roi-table th button.active .exp-sort-mark {
   color: var(--purple-l);
 }
 .exp-roi-table tbody tr {
@@ -1332,8 +1396,10 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   font-weight: 850;
 }
 .exp-roi-table td b {
+  display: block;
   font-family: var(--mono);
   font-size: 12px;
+  line-height: 1.35;
 }
 .exp-roi-best-link {
   min-width: 74px;
@@ -1497,7 +1563,7 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   justify-content: stretch;
   padding: 10px 12px 11px;
   border: 1px solid var(--edge-label-border);
-  border-radius: 10px;
+  border-radius: 8px;
   background:
     linear-gradient(135deg, var(--edge-label-bg-soft), transparent 72%),
     var(--edge-label-bg);
@@ -1507,7 +1573,7 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   font-family: var(--sans);
   font-size: 13px;
   line-height: 1.36;
-  overflow: auto;
+  overflow: hidden;
   pointer-events: auto;
   text-align: left;
   transition: border-color .15s, box-shadow .15s, opacity .15s, background-color .15s;
@@ -1520,14 +1586,45 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   align-items: start;
   gap: 8px;
 }
-.exp-edge-label-main span {
+.exp-edge-label-content {
   min-width: 0;
-  display: block;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.exp-edge-label-text {
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   padding-left: 2px;
-  white-space: pre-wrap;
+  overflow: hidden;
   overflow-wrap: anywhere;
   color: var(--edge-label-ink);
   font-weight: 700;
+  white-space: normal;
+}
+.exp-edge-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+}
+.exp-edge-var-chip {
+  max-width: 100%;
+  min-height: 20px;
+  padding: 2px 6px;
+  border: 1px solid rgba(148,163,184,.24);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--exp-surface) 76%, transparent);
+  color: var(--text2);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .exp-edge-label-main .exp-delta {
   margin-top: 1px;
@@ -2456,14 +2553,34 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   grid-column: 1 / -1;
 }
 
+@media (max-width: 1200px) {
+  .exp-toolbar {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+  }
+  .exp-toolbar-view-toggle {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-self: start;
+  }
+  .exp-toolbar-actions {
+    flex-wrap: wrap;
+  }
+}
+
 @media (max-width: 980px) {
   .exp-toolbar {
-    align-items: flex-start;
-    flex-direction: column;
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+  .exp-toolbar-view-toggle {
+    grid-column: auto;
+    grid-row: auto;
+    justify-self: start;
   }
   .exp-toolbar-actions {
     width: 100%;
-    flex-wrap: wrap;
+    justify-content: flex-start;
   }
   .exp-body {
     grid-template-columns: 1fr;
@@ -2484,6 +2601,12 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 }
 
 @media (max-width: 640px) {
+  .exp-toolbar-view-toggle {
+    width: 100%;
+  }
+  .exp-toolbar-view-toggle .exp-view-tab {
+    flex: 1;
+  }
   .exp-chart-field,
   .exp-chart-select,
   .exp-chart-target-input,
@@ -2493,7 +2616,8 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   .exp-chart-controls {
     width: 100%;
   }
-  .exp-chart-toolbar {
+  .exp-chart-toolbar,
+  .exp-roi-toolbar {
     align-items: stretch;
   }
   .exp-edge-form {
