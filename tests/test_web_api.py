@@ -714,67 +714,6 @@ def test_ai_analysis_keeps_report_versions(client, isolated_server, tmp_path, mo
     assert "# Report 1" in download.text
 
 
-def test_ai_analysis_version_attachment_upload_download_and_delete(client, isolated_server):
-    async def insert_job():
-        db = await web_db.get_db()
-        try:
-            await db.execute(
-                "INSERT INTO jobs(id, user_token, label, mode, status) VALUES(?,?,?,?,?)",
-                ("ai-attachment-job", "owner", "AI attachment", "single", "done"),
-            )
-            await db.commit()
-        finally:
-            await db.close()
-
-    asyncio.run(insert_job())
-    version_id = "20260629T010203Z-test"
-    version_dir = Path(web_server.ai_analysis_version_dir("ai-attachment-job", version_id))
-    version_dir.mkdir(parents=True, exist_ok=True)
-    Path(web_server.ai_analysis_version_report_path("ai-attachment-job", version_id)).write_text(
-        "# Report\n",
-        encoding="utf-8",
-    )
-    Path(web_server.ai_analysis_version_meta_path("ai-attachment-job", version_id)).write_text(
-        json.dumps({
-            "id": version_id,
-            "job_id": "ai-attachment-job",
-            "status": "done",
-            "generated_at": "2026-06-29T01:02:03+00:00",
-            "report_path": f"versions/{version_id}/report.md",
-            "report_exists": True,
-        }),
-        encoding="utf-8",
-    )
-
-    upload = client.post(
-        f"/api/jobs/ai-attachment-job/ai-analysis/versions/{version_id}/attachments",
-        files={"file": ("notes.txt", b"attachment data", "text/plain")},
-        headers={"X-Remote-User": "owner"},
-    )
-
-    assert upload.status_code == 200
-    attachment = upload.json()["attachments"][0]
-    assert attachment["filename"] == "notes.txt"
-    assert attachment["size_bytes"] == len(b"attachment data")
-    assert attachment["uploaded_by"] == "owner"
-
-    detail = client.get(f"/api/jobs/ai-attachment-job/ai-analysis?version_id={version_id}")
-    assert detail.status_code == 200
-    assert detail.json()["selected_version"]["attachments"][0]["filename"] == "notes.txt"
-
-    download = client.get(attachment["url"])
-    assert download.status_code == 200
-    assert download.content == b"attachment data"
-    assert "notes.txt" in download.headers["content-disposition"]
-
-    delete = client.delete(attachment["url"], headers={"X-Remote-User": "owner"})
-    assert delete.status_code == 204
-
-    after_delete = client.get(f"/api/jobs/ai-attachment-job/ai-analysis?version_id={version_id}")
-    assert after_delete.status_code == 200
-    assert after_delete.json()["selected_version"]["attachments"] == []
-
-
 def test_ai_analysis_completion_sends_email_with_result_link(client, isolated_server, tmp_path, monkeypatch):
     trace_path = tmp_path / "trace.pt.trace.json.gz"
     with gzip.open(trace_path, "wt", encoding="utf-8") as f:
@@ -3869,6 +3808,62 @@ def test_experiment_edge_lifecycle_and_cycle_detection(client):
     deleted = client.delete(f"/api/experiments/edges/{edge['id']}")
     assert deleted.status_code == 204
     assert client.get("/api/projects/exp-project/experiments").json()["edges"] == []
+
+
+def test_experiment_node_attachment_upload_download_and_delete(client):
+    async def insert_rows():
+        db = await web_db.get_db()
+        try:
+            await db.execute("INSERT INTO projects(id, name) VALUES(?,?)", ("exp-attach-project", "Attach"))
+            await db.executemany(
+                "INSERT INTO jobs(id, project_id, user_token, label, mode, status, file_a_name) VALUES(?,?,?,?,?,?,?)",
+                [
+                    ("exp-attach-a", "exp-attach-project", "owner", "baseline", "single", "done", "a.json"),
+                    ("exp-attach-b", "exp-attach-project", "owner", "optimized", "single", "done", "b.json"),
+                ],
+            )
+            await db.execute(
+                """
+                INSERT INTO experiment_edges(id, project_id, parent_job_id, child_job_id, title)
+                VALUES(?,?,?,?,?)
+                """,
+                ("exp-attach-edge", "exp-attach-project", "exp-attach-a", "exp-attach-b", "opt"),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_rows())
+
+    upload = client.post(
+        "/api/jobs/exp-attach-a/experiment-attachments",
+        files={"file": ("notes.txt", b"node attachment", "text/plain")},
+        headers={"X-Remote-User": "owner"},
+    )
+
+    assert upload.status_code == 200
+    assert web_server.EXPERIMENT_NODE_ATTACHMENT_MAX_BYTES == 500 * 1024 * 1024
+    attachment = upload.json()["attachments"][0]
+    assert attachment["filename"] == "notes.txt"
+    assert attachment["size_bytes"] == len(b"node attachment")
+    assert attachment["uploaded_by"] == "owner"
+
+    graph = client.get("/api/projects/exp-attach-project/experiments", headers={"X-Remote-User": "owner"})
+    assert graph.status_code == 200
+    node = next(item for item in graph.json()["nodes"] if item["id"] == "exp-attach-a")
+    assert node["attachments"][0]["id"] == attachment["id"]
+    assert node["attachments"][0]["url"] == attachment["url"]
+
+    download = client.get(attachment["url"], headers={"X-Remote-User": "owner"})
+    assert download.status_code == 200
+    assert download.content == b"node attachment"
+    assert "notes.txt" in download.headers["content-disposition"]
+
+    deleted = client.delete(attachment["url"], headers={"X-Remote-User": "owner"})
+    assert deleted.status_code == 204
+    graph_after_delete = client.get("/api/projects/exp-attach-project/experiments", headers={"X-Remote-User": "owner"})
+    node_after_delete = next(item for item in graph_after_delete.json()["nodes"] if item["id"] == "exp-attach-a")
+    assert node_after_delete["attachments"] == []
 
 
 def test_experiment_perf_warns_on_step_count_mismatch(client):

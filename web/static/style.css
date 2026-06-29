@@ -1976,6 +1976,84 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 .exp-node-detail > .exp-node-detail-row em.bad {
   color: var(--red);
 }
+.exp-node-attachments {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding-top: 12px;
+  border-top: 1px solid rgba(148,163,184,.18);
+}
+.exp-node-attachments-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.exp-node-attachments-head > div {
+  min-width: 0;
+}
+.exp-node-attachments-head strong,
+.exp-node-attachments-head span {
+  display: block;
+}
+.exp-node-attachments-head strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 800;
+}
+.exp-node-attachments-head span,
+.exp-node-attachment-empty,
+.exp-node-attachment-item span {
+  color: var(--text3);
+  font-size: 11px;
+}
+.exp-node-upload-btn {
+  position: relative;
+  flex: 0 0 auto;
+  overflow: hidden;
+}
+.exp-node-upload-btn input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.exp-node-upload-btn.disabled input {
+  cursor: not-allowed;
+}
+.exp-node-attachment-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.exp-node-attachment-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(148,163,184,.14);
+}
+.exp-node-attachment-item > div:first-child {
+  min-width: 0;
+}
+.exp-node-attachment-item strong {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 750;
+}
+.exp-node-attachment-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 .exp-inline-note {
   display: flex;
   align-items: flex-start;
@@ -2841,85 +2919,6 @@ body.result-reading-active { overflow: hidden; }
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.ai-version-attachments {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 9px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--card);
-}
-.ai-version-attachments-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-.ai-version-attachments-head > div {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-.ai-version-attachments-head strong {
-  color: var(--text1);
-  font-size: 12px;
-  font-weight: 800;
-}
-.ai-version-attachments-head span,
-.ai-version-attachment-empty {
-  color: var(--text3);
-  font-size: 11px;
-  font-weight: 700;
-}
-.ai-version-upload-btn {
-  position: relative;
-  overflow: hidden;
-}
-.ai-version-upload-btn input {
-  position: absolute;
-  inset: 0;
-  opacity: 0;
-  cursor: pointer;
-}
-.ai-version-attachment-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.ai-version-attachment-item {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 10px;
-  padding: 7px 8px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--bg);
-}
-.ai-version-attachment-item strong {
-  display: block;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text1);
-  font-size: 12px;
-  font-weight: 800;
-}
-.ai-version-attachment-item span {
-  display: block;
-  margin-top: 2px;
-  color: var(--text3);
-  font-size: 11px;
-  font-weight: 700;
-}
-.ai-version-attachment-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
 }
 .ai-analysis-running {
   display: flex; align-items: center; gap: 8px;
