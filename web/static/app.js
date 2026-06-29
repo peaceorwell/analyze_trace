@@ -1230,6 +1230,28 @@ const currentTable = computed(() => {
 const isKernelTypeTab = computed(() =>
   ["kernel_types_avg.csv", "kernel_types_cmp.csv"].includes(resultTab.value)
 );
+const EFFICIENCY_TABLE_FILES = new Set(["non_triton_kernel_efficiency_avg.csv"]);
+const EFFICIENCY_COLUMN_PRESET = [
+  "kernel_name",
+  "family",
+  "operator",
+  "avg_count",
+  "avg_dur_ms",
+  "avg_us_per_call",
+  "avg_compute_efficiency",
+  "avg_io_efficiency",
+  "avg_op_efficiency",
+];
+const LONG_TABLE_FIELD_RE = /(input|stride|concrete|shape|dims|types|details)/i;
+const NUMERIC_TABLE_FIELD_RE = /(^|_)(count|dur|duration|time|us|ms|gb|efficiency|delta|avg|total|pct|percent|call|calls)$/i;
+const EFFICIENCY_FIELD_RE = /efficiency$/i;
+
+const isEfficiencyTable = computed(() =>
+  EFFICIENCY_TABLE_FILES.has(resultTab.value)
+  || ["avg_compute_efficiency", "avg_io_efficiency", "avg_op_efficiency"].every(field =>
+    (currentTable.value.fields || []).includes(field)
+  )
+);
 
 const tableTotalRows = computed(() =>
   currentTable.value.filtered_total ?? currentTable.value.total ?? currentTable.value.rows?.length ?? 0
@@ -1387,6 +1409,16 @@ const resetVisibleColumns = () => {
   visibleColumns.value = [...currentTable.value.fields];
 };
 
+const efficiencyPresetColumns = (fields = currentTable.value.fields || []) => {
+  const available = new Set(fields);
+  const keep = EFFICIENCY_COLUMN_PRESET.filter(field => available.has(field));
+  return keep.length ? keep : fields.slice(0, Math.min(fields.length, 8));
+};
+
+const applyEfficiencyColumnPreset = () => {
+  visibleColumns.value = efficiencyPresetColumns();
+};
+
 const applyCoreColumnPreset = () => {
   const fields = currentTable.value.fields;
   if (!fields.length) return;
@@ -1406,6 +1438,48 @@ const toggleColumnVisibility = field => {
     return;
   }
   visibleColumns.value = [...visibleColumns.value, field];
+};
+
+const isNumericTableField = field => NUMERIC_TABLE_FIELD_RE.test(String(field || ""));
+const isEfficiencyField = field => EFFICIENCY_FIELD_RE.test(String(field || ""));
+const tableHeaderClass = field => ({
+  "num-col": isNumericTableField(field),
+  "long-col": LONG_TABLE_FIELD_RE.test(String(field || "")),
+  "eff-col": isEfficiencyField(field),
+});
+const tableCellClass = (field, value) => ({
+  ...tableHeaderClass(field),
+  [`eff-${efficiencyTone(value)}`]: isEfficiencyField(field),
+});
+const tableRowClass = row => {
+  if (!isEfficiencyTable.value) return {};
+  const op = parseFloat(row?.avg_op_efficiency);
+  if (!Number.isFinite(op)) return {};
+  return {
+    "eff-row-bad": op < 30,
+    "eff-row-warn": op >= 30 && op < 45,
+  };
+};
+const familyChipClass = value => {
+  const key = String(value || "").toLowerCase();
+  if (key.includes("gemm") || key.includes("matmul")) return "fam-gemm";
+  if (key.includes("triton")) return "fam-triton";
+  if (key.includes("reduce")) return "fam-reduce";
+  if (key.includes("comm") || key.includes("cncl") || key.includes("nccl")) return "fam-comm";
+  return "";
+};
+const efficiencyTone = value => {
+  const number = parseFloat(value);
+  if (!Number.isFinite(number)) return "neutral";
+  if (number >= 60) return "good";
+  if (number >= 35) return "warn";
+  return "bad";
+};
+const shouldUseEfficiencyPreset = (filename, fields, state = null) => {
+  if (!EFFICIENCY_TABLE_FILES.has(filename)) return false;
+  if (!fields?.length) return false;
+  const saved = state?.visibleColumns || [];
+  return !saved.length;
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -3916,6 +3990,9 @@ const activateCsvTab = async (filename, { updateRoute = true, savePrevious = tru
     resultTable.value = data;
     tableLimit.value = data.limit || state.tableLimit || tableLimit.value;
     tableOffset.value = data.offset || state.tableOffset || 0;
+    if (shouldUseEfficiencyPreset(filename, data.fields || [], state)) {
+      visibleColumns.value = efficiencyPresetColumns(data.fields || []);
+    }
     resultTableLoading.value = false;
     resultTableError.value = "";
     showColumnMenu.value = false;
@@ -7100,6 +7177,12 @@ const JobDetail = {
               <span v-if="isKernelTypeTab" class="filter-active-tip">点击类型行下钻到相关 Kernel</span>
             </div>
             <div class="table-toolbar-actions">
+              <button
+                v-if="isEfficiencyTable"
+                class="btn btn-sm btn-outline"
+                type="button"
+                @click="applyEfficiencyColumnPreset"
+              >效率视图</button>
               <div class="column-menu-wrap" @click.stop>
                 <button class="btn btn-sm btn-outline" @click="showColumnMenu=!showColumnMenu">
                   列{{ hiddenColumnCount ? ' (' + hiddenColumnCount + ' 已隐藏)' : '' }}
@@ -7141,7 +7224,8 @@ const JobDetail = {
               <thead>
                 <tr>
                   <th v-for="f in displayedFields" :key="f"
-                      @click="setSort(f)" class="th-sortable"
+                      @click="setSort(f)"
+                      :class="['th-sortable', tableHeaderClass(f)]"
                       :style="colWidths[f] ? { width: colWidths[f] + 'px' } : {}">
                     <span class="th-label">{{ f }}</span>
                     <span v-if="sortCol===f" class="th-sort-icon">{{ sortAsc?'↑':'↓' }}</span>
@@ -7152,6 +7236,7 @@ const JobDetail = {
                 </tr>
                 <tr class="filter-row">
                   <th v-for="f in displayedFields" :key="f"
+                      :class="tableHeaderClass(f)"
                       :style="colWidths[f] ? { width: colWidths[f] + 'px' } : {}">
                     <div class="col-filter-wrap">
                       <select v-model="colFilterOps[f]" class="col-filter-op"
@@ -7178,10 +7263,10 @@ const JobDetail = {
               </thead>
               <tbody>
                 <tr v-for="(row,i) in filteredRows" :key="i"
-                    :class="{ 'drill-row': canDrillKernelTypeRow(row) }"
+                    :class="[{ 'drill-row': canDrillKernelTypeRow(row) }, tableRowClass(row)]"
                     @click="drillDownKernelType(row)">
                   <td v-for="f in displayedFields" :key="f"
-                      :class="deltaCellClass(f, row[f])"
+                      :class="[deltaCellClass(f, row[f]), tableCellClass(f, row[f])]"
                       :title="row[f]">
                     <template v-if="isKernelTypeDrillCell(f, row)">
                       <button type="button"
@@ -7216,13 +7301,19 @@ const JobDetail = {
                                 :title="'点击重新运行'">↻</button>
                       </template>
                     </template>
+                    <template v-else-if="f === 'family'">
+                      <span :class="['family-chip', familyChipClass(row[f])]">{{ row[f] || '-' }}</span>
+                    </template>
+                    <template v-else-if="isEfficiencyField(f)">
+                      <span :class="['eff-badge', 'eff-' + efficiencyTone(row[f])]">{{ row[f] || '-' }}</span>
+                    </template>
                     <span v-else>{{ row[f] }}</span>
                   </td>
                 </tr>
               </tbody>
               <tfoot v-if="filteredRows.length > 0">
                 <tr class="sum-row">
-                  <td v-for="(f, i) in displayedFields" :key="f" class="sum-cell">
+                  <td v-for="(f, i) in displayedFields" :key="f" :class="['sum-cell', tableHeaderClass(f)]">
                     <template v-if="i === 0">Σ 合计</template>
                     <template v-else-if="colSums[f] !== null">{{ fmtSum(colSums[f]) }}</template>
                   </td>
@@ -7295,6 +7386,8 @@ const JobDetail = {
       resultTableLoading, resultTableError, preparingResultTab, prevTablePage, nextTablePage,
       hasColFilters, colSums, isKernelTypeTab, canDrillKernelTypeRow,
       isKernelTypeDrillCell, drillDownKernelType,
+      isEfficiencyTable, isEfficiencyField, applyEfficiencyColumnPreset,
+      tableHeaderClass, tableCellClass, tableRowClass, familyChipClass, efficiencyTone,
       isTritonStepTab, tritonStatus, allowFileDownload, allowCodeExecution,
       claudeAnalysisEnabled, aiAnalysisMeta, aiAnalysisLoading, aiAnalysisStarting,
       aiAnalysisError, aiAnalysisContent, aiAnalysisArtifacts, aiAnalysisVisibleArtifacts,
