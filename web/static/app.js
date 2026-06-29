@@ -7358,10 +7358,20 @@ const ExperimentTree = {
               :aria-selected="viewMode === 'chart'"
               @click="viewMode='chart'"
             >折线图</button>
+            <button
+              type="button"
+              :class="['exp-view-tab', viewMode === 'roi' ? 'active' : '']"
+              :aria-selected="viewMode === 'roi'"
+              @click="viewMode='roi'"
+            >变量收益</button>
           </div>
           <button class="btn btn-sm btn-outline" type="button" @click="loadGraph" :disabled="loading">刷新</button>
         </div>
       </header>
+
+      <datalist id="exp-variable-name-options">
+        <option v-for="name in variableNameOptions" :key="name" :value="name"></option>
+      </datalist>
 
       <div :class="['exp-body', panelCollapsed ? 'panel-collapsed' : '']">
         <div
@@ -7483,7 +7493,7 @@ const ExperimentTree = {
         </div>
 
         <div
-          v-else
+          v-else-if="viewMode === 'chart'"
           class="exp-chart-view"
         >
           <div v-if="loading" class="exp-loading">加载中...</div>
@@ -7539,6 +7549,183 @@ const ExperimentTree = {
           <div class="exp-canvas-hint">拖空白平移</div>
         </div>
 
+        <div
+          v-else-if="viewMode === 'roi'"
+          class="exp-roi-view"
+        >
+          <div v-if="loading" class="exp-loading">加载中...</div>
+          <template v-else>
+            <div class="exp-roi-toolbar">
+              <div class="exp-chart-controls">
+                <label class="exp-chart-field">
+                  <span>主指标</span>
+                  <select v-model="roiMetricKey" class="input exp-chart-select">
+                    <option v-for="metric in roiMetricOptions" :key="metric.key" :value="metric.key">{{ metric.label }}</option>
+                  </select>
+                </label>
+                <div class="exp-segmented" role="group" aria-label="收益聚合口径">
+                  <button
+                    type="button"
+                    :class="['exp-segmented-btn', roiGroupMode === 'variable' ? 'active' : '']"
+                    @click="roiGroupMode='variable'"
+                  >按变量</button>
+                  <button
+                    type="button"
+                    :class="['exp-segmented-btn', roiGroupMode === 'change' ? 'active' : '']"
+                    @click="roiGroupMode='change'"
+                  >按具体变更</button>
+                </div>
+                <div class="exp-segmented" role="group" aria-label="条形图指标">
+                  <button
+                    type="button"
+                    :class="['exp-segmented-btn', roiBarMode === 'total' ? 'active' : '']"
+                    @click="roiBarMode='total'"
+                  >总收益</button>
+                  <button
+                    type="button"
+                    :class="['exp-segmented-btn', roiBarMode === 'average' ? 'active' : '']"
+                    @click="roiBarMode='average'"
+                  >平均收益</button>
+                </div>
+              </div>
+              <div v-if="roiSkippedEdgeCount" class="exp-chart-note">有 {{ roiSkippedEdgeCount }} 条带变量关系缺少 {{ currentRoiMetricLabel }} delta，已计入无法评估。</div>
+            </div>
+
+            <div v-if="roiEmptyText" class="exp-chart-empty">{{ roiEmptyText }}</div>
+            <template v-else>
+              <div class="exp-roi-summary">
+                <div><span>变量种类</span><b>{{ roiSummary.variableCount }}</b></div>
+                <div><span>可评估关系</span><b>{{ roiSummary.evaluableEdgeCount }}</b></div>
+                <div><span>收益最高</span><b :class="roiGainClass(roiSummary.best?.totalGainMs)">{{ roiSummary.best ? roiSummary.best.label : '—' }}</b></div>
+                <div><span>退化最多</span><b :class="roiGainClass(roiSummary.worst?.totalGainMs)">{{ roiSummary.worst ? roiSummary.worst.label : '—' }}</b></div>
+              </div>
+
+              <div class="exp-roi-bars">
+                <button
+                  v-for="item in roiBarItems"
+                  :key="item.key"
+                  class="exp-roi-bar-row"
+                  type="button"
+                  :title="item.distributionText"
+                  @click="focusRoiGroup(item)"
+                >
+                  <span class="exp-roi-bar-label">{{ item.label }}</span>
+                  <span class="exp-roi-bar-track">
+                    <i :class="roiGainClass(item.barValue)" :style="{ width: item.barWidth + '%' }"></i>
+                  </span>
+                  <b :class="roiGainClass(item.barValue)">{{ formatRoiGainMs(item.barValue) }}</b>
+                </button>
+              </div>
+
+              <div class="exp-roi-table-wrap">
+                <table class="exp-roi-table">
+                  <thead>
+                    <tr>
+                      <th><button type="button" @click="setRoiSort('label')">变量{{ roiSortMark('label') }}</button></th>
+                      <th><button type="button" @click="setRoiSort('isolatedCount')">单独(组合){{ roiSortMark('isolatedCount') }}</button></th>
+                      <th><button type="button" @click="setRoiSort('averageGainMs')">平均收益{{ roiSortMark('averageGainMs') }}</button></th>
+                      <th><button type="button" @click="setRoiSort('totalGainMs')">总收益{{ roiSortMark('totalGainMs') }}</button></th>
+                      <th><button type="button" @click="setRoiSort('hitRate')">命中率{{ roiSortMark('hitRate') }}</button></th>
+                      <th><button type="button" @click="setRoiSort('bestGainMs')">最佳一次{{ roiSortMark('bestGainMs') }}</button></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr
+                      v-for="row in sortedRoiRows"
+                      :key="row.key"
+                      :title="row.distributionText"
+                      @click="focusRoiGroup(row)"
+                    >
+                      <td>
+                        <strong>{{ row.label }}</strong>
+                        <span v-if="row.groupMode === 'change'">{{ row.variableName }}</span>
+                      </td>
+                      <td><b>{{ row.isolatedCount }}</b><span>({{ row.combinedCount }})</span></td>
+                      <td :class="roiGainClass(row.averageGainMs)">
+                        <b>{{ formatRoiGainMs(row.averageGainMs) }}</b>
+                        <span>{{ formatRoiGainPct(row.averageGainPct) }}</span>
+                      </td>
+                      <td :class="roiGainClass(row.totalGainMs)">
+                        <b>{{ formatRoiGainMs(row.totalGainMs) }}</b>
+                        <span>{{ formatRoiGainPct(row.totalGainPct) }}</span>
+                      </td>
+                      <td>{{ formatHitRate(row.hitRate) }}</td>
+                      <td>
+                        <button
+                          v-if="row.bestEdgeId"
+                          class="btn btn-xs btn-outline exp-roi-best-link"
+                          type="button"
+                          @click.stop="openRoiBestEdge(row)"
+                        >{{ formatRoiGainMs(row.bestGainMs) }}</button>
+                        <span v-else>—</span>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <section class="exp-roi-section">
+                <div class="exp-roi-section-head">
+                  <strong>组合变更</strong>
+                  <span>组合效果，未拆分到单变量</span>
+                </div>
+                <div v-if="roiCombinedEdges.length" class="exp-roi-combined-list">
+                  <button
+                    v-for="item in roiCombinedEdges"
+                    :key="item.edge.id"
+                    class="exp-roi-combined-item"
+                    type="button"
+                    @click="focusEdge(item.edge)"
+                  >
+                    <span>{{ item.variablesText }}</span>
+                    <b :class="roiGainClass(item.gainMs)">{{ formatRoiGainMs(item.gainMs) }} <em>{{ formatRoiGainPct(item.gainPct) }}</em></b>
+                  </button>
+                </div>
+                <div v-else class="exp-empty-small">暂无组合变更关系</div>
+              </section>
+
+              <section class="exp-roi-section">
+                <div class="exp-roi-section-head">
+                  <strong>多版本指标</strong>
+                  <span>所有节点关键指标</span>
+                </div>
+                <div class="exp-roi-table-wrap">
+                  <table class="exp-roi-table exp-node-metric-table">
+                    <thead>
+                      <tr>
+                        <th><button type="button" @click="setNodeMetricSort('label')">节点{{ nodeMetricSortMark('label') }}</button></th>
+                        <th><button type="button" @click="setNodeMetricSort('e2e_ms')">E2E{{ nodeMetricSortMark('e2e_ms') }}</button></th>
+                        <th><button type="button" @click="setNodeMetricSort('compute_ms')">Compute{{ nodeMetricSortMark('compute_ms') }}</button></th>
+                        <th><button type="button" @click="setNodeMetricSort('comm_ms')">Comm{{ nodeMetricSortMark('comm_ms') }}</button></th>
+                        <th><button type="button" @click="setNodeMetricSort('kernel_count')">Kernel{{ nodeMetricSortMark('kernel_count') }}</button></th>
+                        <th>操作</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="node in sortedNodeMetricRows" :key="node.id" @click="selectNodeFromRoi(node)">
+                        <td><strong>{{ nodeTitle(node) }}</strong><span>{{ statusText(node.status) }}</span></td>
+                        <td>{{ formatMs(node.e2e_ms) }}</td>
+                        <td>{{ formatMs(node.compute_ms) }}</td>
+                        <td>{{ formatMs(node.comm_ms) }}</td>
+                        <td>{{ formatCount(node.kernel_count) }}</td>
+                        <td><button class="btn btn-xs btn-outline" type="button" @click.stop="openJob(node.id)">详情</button></td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            </template>
+          </template>
+          <button
+            v-if="panelCollapsed"
+            class="exp-panel-expand-btn"
+            type="button"
+            title="展开右侧面板"
+            aria-label="展开右侧面板"
+            @click.stop="panelCollapsed=false"
+          >‹</button>
+        </div>
+
         <aside v-if="!panelCollapsed" class="exp-panel">
           <button
             class="exp-panel-fold-btn"
@@ -7569,6 +7756,18 @@ const ExperimentTree = {
                   type="button"
                   @click="edgeDraft.variablesText=''"
                 >清空</button>
+              </div>
+              <div class="exp-variable-quick">
+                <input
+                  v-model="edgeVariableQuick.name"
+                  class="input"
+                  list="exp-variable-name-options"
+                  placeholder="变量名"
+                  @keydown.enter.prevent="appendQuickVariable('edge')"
+                />
+                <input v-model="edgeVariableQuick.from" class="input" placeholder="from" @keydown.enter.prevent="appendQuickVariable('edge')" />
+                <input v-model="edgeVariableQuick.to" class="input" placeholder="to" @keydown.enter.prevent="appendQuickVariable('edge')" />
+                <button class="btn btn-sm btn-outline" type="button" @click="appendQuickVariable('edge')">加入</button>
               </div>
               <textarea
                 v-model="edgeDraft.variablesText"
@@ -7646,6 +7845,18 @@ const ExperimentTree = {
                   <em v-if="row.deltaText" :class="row.deltaClass">{{ row.deltaText }}</em>
                 </b>
               </div>
+            </div>
+            <div class="exp-node-compare">
+              <label class="exp-field">
+                <span>与节点对比</span>
+                <select v-model="nodeCompareTargetId" class="input">
+                  <option value="">选择另一个节点</option>
+                  <option v-for="job in nodeCompareTargetOptions" :key="job.id" :value="job.id">{{ jobOptionLabel(job) }}</option>
+                </select>
+              </label>
+              <button class="btn btn-sm btn-outline" type="button" @click="compareSelectedNode" :disabled="nodeCompareSaving || !nodeCompareTargetId">
+                {{ nodeCompareSaving ? '生成中...' : '打开对比' }}
+              </button>
             </div>
             <div class="exp-node-attachments">
               <div class="exp-node-attachments-head">
@@ -7754,6 +7965,18 @@ const ExperimentTree = {
               <div class="exp-field-title">
                 <span>变更项</span>
               </div>
+              <div class="exp-variable-quick">
+                <input
+                  v-model="addVariableQuick.name"
+                  class="input"
+                  list="exp-variable-name-options"
+                  placeholder="变量名"
+                  @keydown.enter.prevent="appendQuickVariable('add')"
+                />
+                <input v-model="addVariableQuick.from" class="input" placeholder="from" @keydown.enter.prevent="appendQuickVariable('add')" />
+                <input v-model="addVariableQuick.to" class="input" placeholder="to" @keydown.enter.prevent="appendQuickVariable('add')" />
+                <button class="btn btn-sm btn-outline" type="button" @click="appendQuickVariable('add')">加入</button>
+              </div>
               <textarea
                 v-model="addForm.variablesText"
                 class="input exp-variable-textarea exp-variable-textarea-compact"
@@ -7790,6 +8013,14 @@ const ExperimentTree = {
     const panelCollapsed = ref(false);
     const viewMode = ref("canvas");
     const lineageMetricKey = ref("compute_ms");
+    const roiMetricKey = ref("e2e_ms");
+    const roiGroupMode = ref("variable");
+    const roiBarMode = ref("total");
+    const roiSort = ref({ key: "totalGainMs", dir: "desc" });
+    const nodeMetricSort = ref({ key: "created_at", dir: "asc" });
+    const roiHighlightEdgeIds = ref([]);
+    const nodeCompareTargetId = ref("");
+    const nodeCompareSaving = ref(false);
     const nodeNameDraft = ref("");
     const nodeNameOriginal = ref("");
     const nodeNameSaving = ref(false);
@@ -7804,6 +8035,9 @@ const ExperimentTree = {
       variablesText: "",
     });
     const edgeDraft = ref({ title: "", description: "", variables: [], variablesText: "" });
+    const emptyVariableQuick = () => ({ name: "", from: "", to: "" });
+    const edgeVariableQuick = ref(emptyVariableQuick());
+    const addVariableQuick = ref(emptyVariableQuick());
     let panState = null;
     let dragState = null;
     let edgeDragState = null;
@@ -7844,6 +8078,11 @@ const ExperimentTree = {
       { key: "aten_ops_ms", label: "ATen 耗时", unit: "ms", beginAtZero: false },
       { key: "aten_ops_count", label: "ATen 操作数", unit: "count", beginAtZero: true },
       { key: "step_dur_ms", label: "Step 耗时", unit: "ms", beginAtZero: false },
+    ];
+    const ROI_METRIC_DEFS = [
+      { key: "e2e_ms", label: "端到端耗时" },
+      { key: "compute_ms", label: "计算耗时" },
+      { key: "comm_ms", label: "通信耗时" },
     ];
     const roundLayout = value => Math.round(Number(value || 0) * 10) / 10;
     const hasLayoutNumber = value => value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value));
@@ -8447,10 +8686,20 @@ const ExperimentTree = {
         deltaClass: "neutral",
       }));
     };
-    const hasSelection = computed(() => Boolean(selectedNodeId.value || selectedEdgeId.value));
+    const hasSelection = computed(() => Boolean(selectedNodeId.value || selectedEdgeId.value || roiHighlightEdgeIds.value.length));
     const lineage = computed(() => {
       const nodeIds = new Set();
       const edgeIds = new Set();
+      if (roiHighlightEdgeIds.value.length) {
+        const highlighted = new Set(roiHighlightEdgeIds.value);
+        edges.value.forEach(edge => {
+          if (!highlighted.has(edge.id)) return;
+          edgeIds.add(edge.id);
+          nodeIds.add(edge.parent_job_id);
+          nodeIds.add(edge.child_job_id);
+        });
+        return { nodeIds, edgeIds };
+      }
       if (selectedEdge.value) {
         edgeIds.add(selectedEdge.value.id);
         nodeIds.add(selectedEdge.value.parent_job_id);
@@ -8591,10 +8840,42 @@ const ExperimentTree = {
     const cleanVariables = variables => (variables || [])
       .map(item => ({
         name: String(item.name || "").trim(),
-        from: String(item.from ?? ""),
-        to: String(item.to ?? ""),
+        from: String(item.from ?? "").trim(),
+        to: String(item.to ?? "").trim(),
       }))
       .filter(item => item.name);
+    const normalizeVariableNameKey = value => String(value || "").trim().toLocaleLowerCase();
+    const normalizeVariableValue = value => String(value ?? "").trim();
+    const incrementCount = (map, key, inc = 1) => {
+      if (!key) return;
+      map.set(key, (map.get(key) || 0) + inc);
+    };
+    const mostCommonText = counts => {
+      let best = "";
+      let bestCount = -1;
+      counts.forEach((count, text) => {
+        if (count > bestCount || (count === bestCount && String(text).localeCompare(best) < 0)) {
+          best = text;
+          bestCount = count;
+        }
+      });
+      return best;
+    };
+    const variableNameOptions = computed(() => {
+      const byKey = new Map();
+      edges.value.forEach(edge => {
+        cleanVariables(edge?.variables || []).forEach(variable => {
+          const key = normalizeVariableNameKey(variable.name);
+          if (!key) return;
+          if (!byKey.has(key)) byKey.set(key, new Map());
+          incrementCount(byKey.get(key), variable.name);
+        });
+      });
+      return Array.from(byKey.values())
+        .map(mostCommonText)
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
+    });
     const variableDisplayLabel = variable => {
       const from = String(variable?.from || "").trim();
       const to = String(variable?.to || "").trim();
@@ -8628,6 +8909,29 @@ const ExperimentTree = {
       .split(/\r?\n/)
       .map(parseVariableLine)
       .filter(item => item?.name);
+    const quickVariableLine = quick => {
+      const name = String(quick?.name || "").trim();
+      const from = normalizeVariableValue(quick?.from);
+      const to = normalizeVariableValue(quick?.to);
+      if (!name) return "";
+      return from || to ? `${name}: ${from} -> ${to}` : name;
+    };
+    const appendVariableLine = (target, line) => {
+      if (!line) return;
+      const current = String(target.variablesText || "").replace(/\s+$/, "");
+      target.variablesText = current ? `${current}\n${line}` : line;
+    };
+    const appendQuickVariable = targetName => {
+      const isAdd = targetName === "add";
+      const quickRef = isAdd ? addVariableQuick : edgeVariableQuick;
+      const line = quickVariableLine(quickRef.value);
+      if (!line) {
+        showToast("请先填写变量名", "error");
+        return;
+      }
+      appendVariableLine(isAdd ? addForm.value : edgeDraft.value, line);
+      quickRef.value = emptyVariableQuick();
+    };
     const draftVariables = () => parseVariablesText(edgeDraft.value.variablesText);
     const hydrateEdgeDraft = edge => {
       const variables = cleanVariables(edge?.variables || []);
@@ -8641,6 +8945,314 @@ const ExperimentTree = {
     watch(selectedEdge, edge => {
       if (edge) hydrateEdgeDraft(edge);
     });
+
+    const roiMetricOptions = computed(() => ROI_METRIC_DEFS);
+    const currentRoiMetricLabel = computed(() =>
+      (roiMetricOptions.value.find(item => item.key === roiMetricKey.value) || roiMetricOptions.value[0]).label
+    );
+    const metricNumber = value => {
+      const number = Number(value);
+      return Number.isFinite(number) ? number : null;
+    };
+    const roiMetricForEdge = edge => {
+      if (!edge?.perf || edge.perf.incomplete) return null;
+      const metric = edge.perf.metrics?.[roiMetricKey.value] || null;
+      const deltaPct = metricNumber(metric?.delta_pct);
+      if (deltaPct === null) return null;
+      const parent = metricNumber(metric?.parent);
+      const child = metricNumber(metric?.child);
+      return {
+        gainMs: parent !== null && child !== null ? parent - child : null,
+        gainPct: -deltaPct,
+      };
+    };
+    const changeValueKey = value => normalizeVariableValue(value).toLocaleLowerCase();
+    const createRoiGroup = (key, label, variableName, groupMode) => ({
+      key,
+      label,
+      variableName,
+      groupMode,
+      isolatedCount: 0,
+      combinedCount: 0,
+      evaluableIsolatedCount: 0,
+      totalGainMsRaw: 0,
+      totalGainPctRaw: 0,
+      hitCount: 0,
+      bestGainMs: null,
+      bestGainPct: null,
+      bestEdge: null,
+      bestEdgeId: "",
+      edgeIds: new Set(),
+      nameCounts: new Map(),
+      distributionCounts: new Map(),
+    });
+    const roiGroupForVariable = (groups, variable) => {
+      const nameKey = normalizeVariableNameKey(variable.name);
+      if (!nameKey) return null;
+      const from = normalizeVariableValue(variable.from);
+      const to = normalizeVariableValue(variable.to);
+      const mode = roiGroupMode.value;
+      if (mode === "change" && (!from || !to)) return null;
+      const key = mode === "change"
+        ? `${nameKey}\u0000${changeValueKey(from)}\u0000${changeValueKey(to)}`
+        : nameKey;
+      if (!groups.has(key)) {
+        const label = mode === "change" ? `${variable.name}: ${from} → ${to}` : variable.name;
+        groups.set(key, createRoiGroup(key, label, variable.name, mode));
+      }
+      const group = groups.get(key);
+      incrementCount(group.nameCounts, variable.name);
+      incrementCount(group.distributionCounts, `${from || "未填"} → ${to || "未填"}`);
+      if (mode === "variable") group.label = mostCommonText(group.nameCounts) || group.label;
+      return group;
+    };
+    const finalizeRoiGroup = group => {
+      const evaluable = group.evaluableIsolatedCount;
+      const distribution = Array.from(group.distributionCounts.entries())
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], "zh-Hans-CN"))
+        .map(([label, count]) => `${label} x${count}`)
+        .join("；");
+      return {
+        ...group,
+        edgeIds: Array.from(group.edgeIds),
+        totalGainMs: evaluable ? group.totalGainMsRaw : null,
+        totalGainPct: evaluable ? group.totalGainPctRaw : null,
+        averageGainMs: evaluable ? group.totalGainMsRaw / evaluable : null,
+        averageGainPct: evaluable ? group.totalGainPctRaw / evaluable : null,
+        hitRate: evaluable ? group.hitCount / evaluable : null,
+        distributionText: distribution ? `取值分布：${distribution}` : "暂无取值分布",
+      };
+    };
+    const roiAggregation = computed(() => {
+      const groups = new Map();
+      const variableNameKeys = new Set();
+      const evaluableEdgeIds = new Set();
+      const combined = [];
+      let skippedEdgeCount = 0;
+      edges.value.forEach(edge => {
+        const variables = cleanVariables(edge?.variables || []);
+        if (!variables.length) return;
+        variables.forEach(variable => variableNameKeys.add(normalizeVariableNameKey(variable.name)));
+        const metric = roiMetricForEdge(edge);
+        if (!metric) skippedEdgeCount += 1;
+        else evaluableEdgeIds.add(edge.id);
+        const isolated = variables.length === 1;
+        if (!isolated) {
+          combined.push({
+            edge,
+            variablesText: variables.map(variableDisplayLabel).join("；"),
+            gainMs: metric?.gainMs ?? null,
+            gainPct: metric?.gainPct ?? null,
+          });
+        }
+        variables.forEach(variable => {
+          const group = roiGroupForVariable(groups, variable);
+          if (!group) return;
+          group.edgeIds.add(edge.id);
+          if (isolated) {
+            group.isolatedCount += 1;
+            if (metric && metric.gainMs !== null) {
+              group.evaluableIsolatedCount += 1;
+              group.totalGainMsRaw += metric.gainMs;
+              group.totalGainPctRaw += metric.gainPct;
+              if (metric.gainMs > 0) group.hitCount += 1;
+              if (group.bestGainMs === null || metric.gainMs > group.bestGainMs) {
+                group.bestGainMs = metric.gainMs;
+                group.bestGainPct = metric.gainPct;
+                group.bestEdge = edge;
+                group.bestEdgeId = edge.id;
+              }
+            }
+          } else {
+            group.combinedCount += 1;
+          }
+        });
+      });
+      const rows = Array.from(groups.values()).map(finalizeRoiGroup);
+      combined.sort((a, b) => {
+        const av = Number.isFinite(Number(a.gainMs)) ? Math.abs(Number(a.gainMs)) : -1;
+        const bv = Number.isFinite(Number(b.gainMs)) ? Math.abs(Number(b.gainMs)) : -1;
+        return bv - av || String(a.edge?.created_at || "").localeCompare(String(b.edge?.created_at || ""));
+      });
+      return {
+        rows,
+        combined,
+        skippedEdgeCount,
+        evaluableEdgeCount: evaluableEdgeIds.size,
+        variableCount: Array.from(variableNameKeys).filter(Boolean).length,
+        edgeWithVariablesCount: edges.value.filter(edge => cleanVariables(edge?.variables || []).length).length,
+      };
+    });
+    const roiRows = computed(() => roiAggregation.value.rows);
+    const roiCombinedEdges = computed(() => roiAggregation.value.combined);
+    const roiSkippedEdgeCount = computed(() => roiAggregation.value.skippedEdgeCount);
+    const roiEmptyText = computed(() => {
+      if (!roiAggregation.value.edgeWithVariablesCount) return "在标记优化关系时填写『变更项』，这里会自动汇总各变量收益";
+      if (!roiRows.value.length && roiGroupMode.value === "change") return "具体变更聚合需要同时填写 from 和 to";
+      if (!roiRows.value.length) return "暂无可聚合的变量收益";
+      return "";
+    });
+    const roiGainClass = value => {
+      const number = Number(value);
+      if (!Number.isFinite(number) || number === 0) return "neutral";
+      return number > 0 ? "good" : "bad";
+    };
+    const formatRoiGainMs = value => {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return "—";
+      return `${number > 0 ? "+" : ""}${number.toFixed(2)} ms`;
+    };
+    const formatRoiGainPct = value => {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return "—";
+      return `${number > 0 ? "+" : ""}${number.toFixed(1)}%`;
+    };
+    const formatHitRate = value => {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return "—";
+      return `${Math.round(number * 100)}%`;
+    };
+    const roiSortValue = (row, key) => {
+      if (key === "label") return String(row.label || "");
+      if (key === "bestGainMs") return row.bestGainMs;
+      return row[key];
+    };
+    const sortRows = (items, sortRef, valueFor) => {
+      const { key, dir } = sortRef.value;
+      const direction = dir === "asc" ? 1 : -1;
+      return items.slice().sort((a, b) => {
+        const av = valueFor(a, key);
+        const bv = valueFor(b, key);
+        const aMissing = av === null || av === undefined || av === "";
+        const bMissing = bv === null || bv === undefined || bv === "";
+        if (aMissing || bMissing) {
+          if (aMissing && bMissing) return 0;
+          return aMissing ? 1 : -1;
+        }
+        const an = Number(av);
+        const bn = Number(bv);
+        const aNumeric = Number.isFinite(an);
+        const bNumeric = Number.isFinite(bn);
+        if (aNumeric || bNumeric) {
+          if (!aNumeric && !bNumeric) return 0;
+          if (!aNumeric) return 1;
+          if (!bNumeric) return -1;
+          return (an - bn) * direction;
+        }
+        return String(av || "").localeCompare(String(bv || ""), "zh-Hans-CN") * direction;
+      });
+    };
+    const sortedRoiRows = computed(() => sortRows(roiRows.value, roiSort, roiSortValue));
+    const setSort = (sortRef, key, defaultDir = "desc") => {
+      const current = sortRef.value;
+      sortRef.value = current.key === key
+        ? { key, dir: current.dir === "asc" ? "desc" : "asc" }
+        : { key, dir: defaultDir };
+    };
+    const sortMark = (sortRef, key) => sortRef.value.key === key ? (sortRef.value.dir === "asc" ? " ↑" : " ↓") : "";
+    const setRoiSort = key => setSort(roiSort, key, key === "label" ? "asc" : "desc");
+    const roiSortMark = key => sortMark(roiSort, key);
+    const roiBarItems = computed(() => {
+      const items = sortedRoiRows.value
+        .map(row => ({
+          ...row,
+          barValue: roiBarMode.value === "average" ? row.averageGainMs : row.totalGainMs,
+        }))
+        .filter(row => Number.isFinite(Number(row.barValue)))
+        .slice(0, 12);
+      const maxAbs = Math.max(1, ...items.map(row => Math.abs(Number(row.barValue))));
+      return items.map(row => ({
+        ...row,
+        barWidth: Math.max(4, Math.round((Math.abs(Number(row.barValue)) / maxAbs) * 1000) / 10),
+      }));
+    });
+    const roiSummary = computed(() => {
+      const evaluableRows = roiRows.value.filter(row => Number.isFinite(Number(row.totalGainMs)));
+      const byGainDesc = evaluableRows.slice().sort((a, b) => Number(b.totalGainMs) - Number(a.totalGainMs));
+      const degradedRows = evaluableRows
+        .filter(row => Number(row.totalGainMs) < 0)
+        .sort((a, b) => Number(a.totalGainMs) - Number(b.totalGainMs));
+      return {
+        variableCount: roiAggregation.value.variableCount,
+        evaluableEdgeCount: roiAggregation.value.evaluableEdgeCount,
+        best: byGainDesc[0] || null,
+        worst: degradedRows[0] || null,
+      };
+    });
+    const focusRoiGroup = row => {
+      const edgeIds = Array.from(row?.edgeIds || []);
+      if (!edgeIds.length) return;
+      roiHighlightEdgeIds.value = edgeIds;
+      selectedNodeId.value = "";
+      selectedEdgeId.value = "";
+      hoverEdgeId.value = "";
+      viewMode.value = "canvas";
+      nextTick().then(fitGraphToViewport);
+    };
+    const focusEdge = edge => {
+      if (!edge) return;
+      roiHighlightEdgeIds.value = [];
+      viewMode.value = "canvas";
+      nextTick().then(() => selectEdge(edge));
+    };
+    const openRoiBestEdge = row => {
+      if (row?.bestEdge?.compare_job_id) {
+        openJob(row.bestEdge.compare_job_id);
+        return;
+      }
+      focusEdge(row?.bestEdge);
+    };
+    const allMetricNodes = computed(() => {
+      const byId = new Map();
+      [...nodes.value, ...unconnected.value].forEach(node => {
+        if (node?.id) byId.set(node.id, node);
+      });
+      return Array.from(byId.values());
+    });
+    const nodeMetricSortValue = (node, key) => {
+      if (key === "label") return nodeTitleText(node);
+      if (key === "created_at") return String(node?.created_at || "");
+      return metricNumber(node?.[key]);
+    };
+    const sortedNodeMetricRows = computed(() => sortRows(allMetricNodes.value, nodeMetricSort, nodeMetricSortValue));
+    const setNodeMetricSort = key => setSort(nodeMetricSort, key, key === "label" ? "asc" : "desc");
+    const nodeMetricSortMark = key => sortMark(nodeMetricSort, key);
+    const selectNodeFromRoi = node => {
+      if (!node?.id) return;
+      roiHighlightEdgeIds.value = [];
+      viewMode.value = "canvas";
+      nextTick().then(() => selectNode(node));
+    };
+    const nodeCompareTargetOptions = computed(() =>
+      candidateOptions.value.filter(job => job.id !== selectedNode.value?.id && job.mode === "single")
+    );
+    const compareSelectedNode = async () => {
+      if (!selectedNode.value?.id || !nodeCompareTargetId.value || nodeCompareSaving.value) return;
+      nodeCompareSaving.value = true;
+      try {
+        const payload = await fetchJson(
+          `/api/projects/${encodeURIComponent(projectId.value)}/experiments/compare`,
+          {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              job_id_a: selectedNode.value.id,
+              job_id_b: nodeCompareTargetId.value,
+            }),
+          },
+          "生成节点对比失败",
+        );
+        if (payload.compare_job_id) {
+          showToast(payload.existing ? "已打开已有对比" : "节点对比已创建", "success");
+          router.push({ path: `/job/${payload.compare_job_id}` });
+        }
+      } catch (e) {
+        showToast(normalizeApiError(e, "生成节点对比失败"), "error");
+      } finally {
+        nodeCompareSaving.value = false;
+      }
+    };
 
     const loadCandidates = async () => {
       if (!projectId.value) return;
@@ -8733,6 +9345,7 @@ const ExperimentTree = {
       else edges.value.push(edge);
     };
     const selectNode = node => {
+      roiHighlightEdgeIds.value = [];
       selectedNodeId.value = node.id;
       selectedEdgeId.value = "";
     };
@@ -8741,6 +9354,7 @@ const ExperimentTree = {
       if (node) selectNode(node);
     };
     const selectEdge = edge => {
+      roiHighlightEdgeIds.value = [];
       selectedEdgeId.value = edge.id;
       selectedNodeId.value = "";
       hydrateEdgeDraft(edge);
@@ -9961,6 +10575,7 @@ const ExperimentTree = {
     });
     watch(selectedNodeId, () => {
       resetNodeNameDraft();
+      nodeCompareTargetId.value = "";
     });
 
     watch(() => route.params.pid, () => {
@@ -9973,14 +10588,19 @@ const ExperimentTree = {
       viewportRef, lineageChartCanvas, loading, saving, nodes, unconnected, edges, selectedNodeId, selectedEdgeId,
       selectedNode, selectedEdge, selectedEdgePerfNote, hoverEdgeId, showAddEdge, panelCollapsed, addForm, edgeDraft,
       viewMode, lineageMetricKey, lineageMetricOptions, lineageChartEmptyText, lineageChartWarning,
+      roiMetricKey, roiMetricOptions, roiGroupMode, roiBarMode, currentRoiMetricLabel, roiSkippedEdgeCount, roiEmptyText,
+      roiSummary, roiBarItems, sortedRoiRows, roiCombinedEdges,
       projectMetricTargetDraft, projectMetricTargetSaving, projectMetricTargetDirty, currentMetricTargetValue, currentMetricTargetTitle, currentMetricTargetValueLabel,
-      nodeNameDraft, nodeNameSaving, nodeNameDirty, nodeAttachmentUploading, nodeAttachmentDeletingId,
+      nodeNameDraft, nodeNameSaving, nodeNameDirty, nodeCompareTargetId, nodeCompareSaving, nodeCompareTargetOptions,
+      nodeAttachmentUploading, nodeAttachmentDeletingId,
+      edgeVariableQuick, addVariableQuick, variableNameOptions,
       draftVariableInsertItems, selectedNodeTopKernels, selectedNodeDetailRows, selectedNodeAttachments,
       nodePrimaryDeltaText,
       view, projectName, displayNodes, edgePaths, canvasSize, bestNodeId,
-      candidateOptions, hasSelection,
+      candidateOptions, hasSelection, sortedNodeMetricRows,
       loadGraph, openAddEdge, closeAddEdge, submitAddEdge, selectNode, selectEdge, openJob,
       saveNodeName, resetNodeNameDraft, uploadNodeAttachment, downloadNodeAttachment, deleteNodeAttachment,
+      appendQuickVariable, compareSelectedNode,
       saveProjectMetricTarget, clearProjectMetricTarget,
       saveEdge, deleteSelectedEdge, refreshPerf, createCompare, resetLayout,
       startPan, startNodeDrag, startEdgeLabelDrag, startEdgeLabelResize,
@@ -9992,6 +10612,8 @@ const ExperimentTree = {
       formatMetricPair, metricDeltaClass, jobOptionLabel, isNodeHighlighted, isEdgeHighlighted,
       isBaselineNode, isBestNode, nodeOptimizationClass, edgeOptimizationClass,
       appendDraftVariableToTitle, appendAllDraftVariablesToTitle,
+      setRoiSort, roiSortMark, roiGainClass, formatRoiGainMs, formatRoiGainPct, formatHitRate,
+      focusRoiGroup, focusEdge, openRoiBestEdge, setNodeMetricSort, nodeMetricSortMark, selectNodeFromRoi,
       fmtDate, fmtDateTime, fmtBytes, statusText,
     };
   },

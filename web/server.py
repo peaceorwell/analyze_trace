@@ -3955,8 +3955,8 @@ def _normalize_experiment_variables(raw) -> list[dict]:
             raise HTTPException(400, "variables items require name")
         variables.append({
             "name": name,
-            "from": "" if item.get("from") is None else str(item.get("from")),
-            "to": "" if item.get("to") is None else str(item.get("to")),
+            "from": "" if item.get("from") is None else str(item.get("from")).strip(),
+            "to": "" if item.get("to") is None else str(item.get("to")).strip(),
         })
     return variables
 
@@ -8324,6 +8324,103 @@ async def create_experiment_edge_compare(request: Request, eid: str):
 
     await enqueue_analysis_job(compare_job_id)
     return {"compare_job_id": compare_job_id}
+
+
+@app.post("/api/projects/{pid}/experiments/compare", status_code=201)
+async def create_experiment_node_compare(request: Request, pid: str, body: dict):
+    job_id_a = (body.get("job_id_a") or "").strip()
+    job_id_b = (body.get("job_id_b") or "").strip()
+    if not job_id_a or not job_id_b:
+        raise HTTPException(400, "job_id_a and job_id_b are required")
+    if job_id_a == job_id_b:
+        raise HTTPException(400, "不能自比")
+
+    compare_job_id = ""
+    db = await get_db()
+    try:
+        user_token = await ensure_user_row(db, request)
+        await validate_project_access(db, request, pid)
+        src_a = await load_accessible_job(db, request, job_id_a)
+        src_b = await load_accessible_job(db, request, job_id_b)
+        if not src_a or not src_b:
+            raise HTTPException(404, "Source job not found")
+        if (
+            src_a.get("project_id") != pid
+            or src_b.get("project_id") != pid
+            or src_a.get("mode") != "single"
+            or src_b.get("mode") != "single"
+        ):
+            raise HTTPException(400, "节点必须是本项目的单文件任务")
+        if not _trace_path_exists(src_a):
+            raise HTTPException(409, "节点 A 源文件已被删除")
+        if not _trace_path_exists(src_b):
+            raise HTTPException(409, "节点 B 源文件已被删除")
+
+        clauses = [
+            "j.mode='compare'",
+            "j.project_id=?",
+            "j.source_job_a=?",
+            "j.source_job_b=?",
+        ]
+        params = [pid, job_id_a, job_id_b]
+        access_sql, access_params = _job_access_clause(request, "j")
+        if access_sql:
+            clauses.append(access_sql)
+            params.extend(access_params)
+        existing = await row_to_dict(
+            await (
+                await db.execute(
+                    f"""
+                    SELECT j.id
+                    FROM jobs j
+                    WHERE {' AND '.join(clauses)}
+                    ORDER BY j.created_at DESC, j.id DESC
+                    LIMIT 1
+                    """,
+                    params,
+                )
+            ).fetchone()
+        )
+        if existing:
+            await db.commit()
+            return {"compare_job_id": existing["id"], "existing": True}
+
+        compare_job_id = str(uuid.uuid4())
+        label = (
+            f"{src_a.get('label') or src_a.get('file_a_name') or job_id_a}"
+            f" vs {src_b.get('label') or src_b.get('file_a_name') or job_id_b}"
+        )
+        await db.execute(
+            """INSERT INTO jobs(id, project_id, user_token, label, mode,
+                   file_a_name, file_b_name, source_job_a, source_job_b,
+                   save_triton_csv, save_triton_code)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                compare_job_id,
+                pid,
+                user_token,
+                label,
+                "compare",
+                src_a.get("file_a_name"),
+                src_b.get("file_a_name"),
+                job_id_a,
+                job_id_b,
+                0,
+                0,
+            ),
+        )
+        await _refresh_job_storage_cache(db, compare_job_id)
+        await write_audit(
+            db, request, "experiment.node_compare_create",
+            resource_type="job", resource_id=compare_job_id,
+            details={"project_id": pid, "source_job_a": job_id_a, "source_job_b": job_id_b},
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+    await enqueue_analysis_job(compare_job_id)
+    return {"compare_job_id": compare_job_id, "existing": False}
 
 
 @app.put("/api/projects/{pid}/experiments/layout")

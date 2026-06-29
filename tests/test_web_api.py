@@ -2923,6 +2923,70 @@ def test_compare_from_history_accepts_tar_gzip_sources(
     assert compare_job["status"] in {"pending", "running", "done"}
 
 
+def test_experiment_node_compare_reuses_existing_job(client, sample_trace_file, tmp_path, monkeypatch):
+    queued = []
+
+    async def fake_enqueue(job_id):
+        queued.append(job_id)
+
+    monkeypatch.setattr(web_server, "enqueue_analysis_job", fake_enqueue)
+
+    stored_a = tmp_path / "node-a.json"
+    stored_b = tmp_path / "node-b.json"
+    shutil.copyfile(sample_trace_file, stored_a)
+    shutil.copyfile(sample_trace_file, stored_b)
+
+    async def insert_jobs():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                "INSERT INTO projects(id, name) VALUES(?,?)",
+                ("exp-compare-project", "Experiment Compare"),
+            )
+            await db.executemany(
+                """
+                INSERT INTO jobs(
+                    id, project_id, label, mode, status, file_a_name, file_a_path, file_a_exists
+                ) VALUES(?,?,?,?,?,?,?,?)
+                """,
+                [
+                    ("node-a", "exp-compare-project", "baseline", "single", "done", "a.json", str(stored_a), 1),
+                    ("node-b", "exp-compare-project", "candidate", "single", "done", "b.json", str(stored_b), 1),
+                ],
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_jobs())
+
+    created = client.post(
+        "/api/projects/exp-compare-project/experiments/compare",
+        json={"job_id_a": "node-a", "job_id_b": "node-b"},
+    )
+
+    assert created.status_code == 201
+    payload = created.json()
+    assert payload["existing"] is False
+    assert queued == [payload["compare_job_id"]]
+
+    reused = client.post(
+        "/api/projects/exp-compare-project/experiments/compare",
+        json={"job_id_a": "node-a", "job_id_b": "node-b"},
+    )
+
+    assert reused.status_code == 201
+    assert reused.json() == {"compare_job_id": payload["compare_job_id"], "existing": True}
+    assert queued == [payload["compare_job_id"]]
+
+    detail = client.get(f"/api/jobs/{payload['compare_job_id']}")
+    assert detail.status_code == 200
+    job = detail.json()
+    assert job["mode"] == "compare"
+    assert job["source_job_a"] == "node-a"
+    assert job["source_job_b"] == "node-b"
+
+
 def test_batch_compare_creates_jobs_from_baseline(client, sample_trace_file, monkeypatch):
     queued = []
 
@@ -3703,7 +3767,7 @@ def test_experiment_edge_lifecycle_and_cycle_detection(client):
             "parent_job_id": "exp-a",
             "child_job_id": "exp-b",
             "title": "算子融合",
-            "variables": [{"name": "dtype", "from": "fp16", "to": "bf16"}],
+            "variables": [{"name": " dtype ", "from": " fp16 ", "to": " bf16 "}],
         },
     )
 

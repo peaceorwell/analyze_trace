@@ -1023,7 +1023,8 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   user-select: none;
 }
 .exp-canvas:active { cursor: grabbing; }
-.exp-chart-view {
+.exp-chart-view,
+.exp-roi-view {
   position: relative;
   min-height: 0;
   overflow: hidden;
@@ -1105,6 +1106,295 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   width: 100% !important;
   height: 100% !important;
   cursor: default;
+}
+.exp-roi-view {
+  overflow: auto;
+  user-select: text;
+}
+.exp-roi-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  cursor: default;
+}
+.exp-segmented {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid rgba(148,163,184,.26);
+  border-radius: 8px;
+  background: var(--exp-surface-soft);
+}
+.exp-segmented-btn {
+  min-height: 28px;
+  padding: 4px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text3);
+  cursor: pointer;
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 800;
+}
+.exp-segmented-btn:hover {
+  color: var(--text);
+  background: rgba(148,163,184,.12);
+}
+.exp-segmented-btn.active {
+  background: var(--card);
+  color: var(--text);
+  box-shadow: 0 6px 14px rgba(15,23,42,.10);
+}
+.exp-roi-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+.exp-roi-summary > div {
+  min-width: 0;
+  padding: 10px 11px;
+  border: 1px solid rgba(148,163,184,.22);
+  border-radius: 8px;
+  background: var(--exp-surface);
+}
+.exp-roi-summary span,
+.exp-roi-section-head span,
+.exp-roi-table td span,
+.exp-roi-combined-item em {
+  color: var(--text3);
+  font-size: 11px;
+  font-weight: 750;
+}
+.exp-roi-summary b {
+  display: block;
+  min-width: 0;
+  margin-top: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+.exp-roi-summary b.good,
+.exp-roi-table td.good,
+.exp-roi-combined-item b.good,
+.exp-roi-bar-row b.good {
+  color: var(--exp-good-ink);
+}
+.exp-roi-summary b.bad,
+.exp-roi-table td.bad,
+.exp-roi-combined-item b.bad,
+.exp-roi-bar-row b.bad {
+  color: var(--exp-bad-ink);
+}
+.exp-roi-summary b.neutral,
+.exp-roi-table td.neutral,
+.exp-roi-combined-item b.neutral,
+.exp-roi-bar-row b.neutral {
+  color: var(--text3);
+}
+.exp-roi-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid rgba(148,163,184,.22);
+  border-radius: 8px;
+  background: var(--exp-surface);
+}
+.exp-roi-bar-row {
+  display: grid;
+  grid-template-columns: minmax(110px, .9fr) minmax(120px, 2fr) minmax(88px, auto);
+  align-items: center;
+  gap: 10px;
+  min-height: 30px;
+  border: 0;
+  border-radius: 7px;
+  padding: 5px 7px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font-family: var(--sans);
+  text-align: left;
+}
+.exp-roi-bar-row:hover {
+  background: var(--exp-surface-soft);
+}
+.exp-roi-bar-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 800;
+}
+.exp-roi-bar-track {
+  position: relative;
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(148,163,184,.18);
+  overflow: hidden;
+}
+.exp-roi-bar-track i {
+  display: block;
+  height: 100%;
+  min-width: 3px;
+  border-radius: inherit;
+}
+.exp-roi-bar-track i.good {
+  background: var(--green);
+}
+.exp-roi-bar-track i.bad {
+  background: var(--red);
+}
+.exp-roi-bar-track i.neutral {
+  background: var(--text3);
+}
+.exp-roi-bar-row b {
+  justify-self: end;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.exp-roi-table-wrap {
+  min-width: 0;
+  overflow: auto;
+  border: 1px solid rgba(148,163,184,.22);
+  border-radius: 8px;
+  background: var(--exp-surface);
+}
+.exp-roi-table {
+  width: 100%;
+  min-width: 760px;
+  border-collapse: collapse;
+  color: var(--text);
+  font-size: 12px;
+}
+.exp-roi-table th,
+.exp-roi-table td {
+  padding: 9px 10px;
+  border-bottom: 1px solid rgba(148,163,184,.16);
+  vertical-align: middle;
+}
+.exp-roi-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--exp-surface);
+  color: var(--text3);
+  text-align: left;
+  font-size: 11px;
+  font-weight: 850;
+}
+.exp-roi-table th button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+  text-align: left;
+  white-space: nowrap;
+}
+.exp-roi-table th button:hover {
+  color: var(--purple-l);
+}
+.exp-roi-table tbody tr {
+  cursor: pointer;
+}
+.exp-roi-table tbody tr:hover {
+  background: var(--exp-surface-soft);
+}
+.exp-roi-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+.exp-roi-table td,
+.exp-roi-table td b {
+  font-variant-numeric: tabular-nums;
+}
+.exp-roi-table td strong,
+.exp-roi-table td span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.exp-roi-table td strong {
+  color: var(--text);
+  font-weight: 850;
+}
+.exp-roi-table td b {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.exp-roi-best-link {
+  min-width: 74px;
+  justify-content: center;
+}
+.exp-roi-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.exp-roi-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.exp-roi-section-head strong {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 850;
+}
+.exp-roi-combined-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.exp-roi-combined-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid rgba(148,163,184,.22);
+  border-radius: 8px;
+  background: var(--exp-surface);
+  color: var(--text);
+  cursor: pointer;
+  font-family: var(--sans);
+  text-align: left;
+}
+.exp-roi-combined-item:hover {
+  border-color: rgba(99,102,241,.42);
+  background: var(--purple-bg);
+}
+.exp-roi-combined-item span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 800;
+}
+.exp-roi-combined-item b {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.exp-node-metric-table {
+  min-width: 720px;
 }
 .exp-loading {
   position: absolute;
@@ -1754,6 +2044,14 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   flex-direction: column;
   gap: 10px;
 }
+.exp-variable-quick {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr) minmax(0, .9fr) auto;
+  gap: 8px;
+}
+.exp-variable-quick .input {
+  min-height: 34px;
+}
 .exp-field-hint {
   color: var(--text3);
   font-size: 11px;
@@ -1976,6 +2274,18 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 .exp-node-detail > .exp-node-detail-row em.bad {
   color: var(--red);
 }
+.exp-node-compare {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding-top: 12px;
+  border-top: 1px solid rgba(148,163,184,.18);
+}
+.exp-node-compare .exp-field {
+  margin-bottom: 0;
+}
 .exp-node-attachments {
   display: flex;
   flex-direction: column;
@@ -2165,6 +2475,9 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   .exp-chart-canvas-wrap {
     min-height: 420px;
   }
+  .exp-roi-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
   .exp-panel {
     max-height: 42vh;
   }
@@ -2173,7 +2486,8 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 @media (max-width: 640px) {
   .exp-chart-field,
   .exp-chart-select,
-  .exp-chart-target-input {
+  .exp-chart-target-input,
+  .exp-segmented {
     width: 100%;
   }
   .exp-chart-controls {
@@ -2193,6 +2507,16 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   }
   .exp-var-row .btn {
     width: 100%;
+  }
+  .exp-roi-summary,
+  .exp-roi-bar-row,
+  .exp-roi-combined-item,
+  .exp-variable-quick,
+  .exp-node-compare {
+    grid-template-columns: 1fr;
+  }
+  .exp-roi-bar-row b {
+    justify-self: start;
   }
 }
 .empty-main {
