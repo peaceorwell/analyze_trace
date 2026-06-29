@@ -5382,7 +5382,7 @@ const startResize = (field, e) => {
 };
 
 const downloadCsv = filename => {
-  const fields = displayedFields.value;
+  const fields = currentTable.value.fields || [];
   const rows   = filteredRows.value;
   if (!fields.length) return;
   const escape = v => {
