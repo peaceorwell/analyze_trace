@@ -7359,21 +7359,21 @@ const ExperimentTree = {
           <button class="btn btn-sm btn-primary" type="button" @click="openAddEdge()">标记优化关系</button>
           <button
             v-if="viewMode === 'canvas'"
-            class="btn btn-sm btn-outline exp-icon-btn"
+            class="btn btn-sm btn-outline exp-action-btn"
             type="button"
             title="自动整理"
             aria-label="自动整理"
             @click="resetLayout"
             :disabled="saving"
-          >⤢</button>
+          ><span aria-hidden="true">⤢</span>自动整理</button>
           <button
-            class="btn btn-sm btn-outline exp-icon-btn"
+            class="btn btn-sm btn-outline exp-action-btn"
             type="button"
             title="刷新"
             aria-label="刷新"
             @click="loadGraph"
             :disabled="loading"
-          >⟳</button>
+          ><span aria-hidden="true">⟳</span>刷新</button>
         </div>
       </header>
 
