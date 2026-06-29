@@ -86,10 +86,13 @@ AI_ANALYSIS_REPORT_FILE = "ai_analysis.md"
 AI_ANALYSIS_VERSIONS_DIR = "versions"
 AI_ANALYSIS_VERSION_META_FILE = "metadata.json"
 AI_ANALYSIS_VERSION_REPORT_FILE = "report.md"
+AI_ANALYSIS_VERSION_ATTACHMENTS_DIR = "attachments"
+AI_ANALYSIS_VERSION_ATTACHMENTS_META_FILE = "attachments.json"
 AI_ANALYSIS_USER_PROMPT_MAX_CHARS = 20000
 AI_ANALYSIS_ARTIFACT_MAX_BYTES = 256 * 1024
 AI_ANALYSIS_ARTIFACT_MAX_TOTAL_BYTES = 1024 * 1024
 AI_ANALYSIS_CODE_PREVIEW_MAX_BYTES = int(os.environ.get("TRACE_AI_CODE_PREVIEW_MAX_BYTES", str(2 * 1024 * 1024)))
+AI_ANALYSIS_VERSION_ATTACHMENT_MAX_BYTES = int(os.environ.get("TRACE_AI_VERSION_ATTACHMENT_MAX_BYTES", str(500 * 1024 * 1024)))
 AI_ANALYSIS_ARTIFACT_EXTENSIONS = {
     ".csv", ".json", ".log", ".md", ".py", ".text", ".tsv", ".txt", ".yaml", ".yml",
 }
@@ -102,6 +105,7 @@ AI_ANALYSIS_INTERNAL_FILES = {
     "command.json",
 }
 AI_ANALYSIS_VERSION_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,96}$")
+AI_ANALYSIS_ATTACHMENT_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,96}$")
 AI_ANALYSIS_FAILURE_PATTERNS = (
     "all tool calls are being denied",
     "cannot proceed because the execution environment has restricted permissions",
@@ -1204,6 +1208,14 @@ def ai_analysis_version_meta_path(job_id: str, version_id: str) -> str:
     return os.path.join(ai_analysis_version_dir(job_id, version_id), AI_ANALYSIS_VERSION_META_FILE)
 
 
+def ai_analysis_version_attachments_dir(job_id: str, version_id: str) -> str:
+    return os.path.join(ai_analysis_version_dir(job_id, version_id), AI_ANALYSIS_VERSION_ATTACHMENTS_DIR)
+
+
+def ai_analysis_version_attachments_meta_path(job_id: str, version_id: str) -> str:
+    return os.path.join(ai_analysis_version_dir(job_id, version_id), AI_ANALYSIS_VERSION_ATTACHMENTS_META_FILE)
+
+
 def feedback_dir() -> str:
     return os.path.join(STORAGE_DIR, FEEDBACK_DIRNAME)
 
@@ -1734,6 +1746,106 @@ def _write_ai_version_metadata(path: str, metadata: dict) -> None:
     os.replace(tmp_path, path)
 
 
+def _safe_ai_analysis_attachment_id(attachment_id: str) -> str:
+    value = (attachment_id or "").strip()
+    if not value or not AI_ANALYSIS_ATTACHMENT_ID_RE.match(value):
+        return ""
+    return value
+
+
+def _ai_version_attachment_response(jid: str, version_id: str, item: dict) -> dict:
+    attachment_id = item.get("id") or ""
+    return {
+        "id": attachment_id,
+        "filename": item.get("filename") or "",
+        "content_type": item.get("content_type") or "",
+        "size_bytes": int(item.get("size_bytes") or 0),
+        "uploaded_at": item.get("uploaded_at") or "",
+        "uploaded_by": item.get("uploaded_by") or "",
+        "url": (
+            f"/api/jobs/{quote(jid)}/ai-analysis/versions/{quote(version_id)}"
+            f"/attachments/{quote(attachment_id)}"
+        ),
+    }
+
+
+def _read_ai_version_attachment_records(jid: str, version_id: str) -> list[dict]:
+    safe_version_id = _safe_ai_analysis_version_id(version_id)
+    if not safe_version_id:
+        return []
+    meta_path = ai_analysis_version_attachments_meta_path(jid, safe_version_id)
+    try:
+        with open(meta_path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        data = []
+    if not isinstance(data, list):
+        return []
+
+    root = ai_analysis_version_attachments_dir(jid, safe_version_id)
+    result = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        attachment_id = _safe_ai_analysis_attachment_id(item.get("id") or "")
+        stored_name = os.path.basename(str(item.get("stored_name") or ""))
+        if not attachment_id or not stored_name:
+            continue
+        try:
+            full = _safe_child_path(root, stored_name, "Invalid AI analysis attachment path")
+        except HTTPException:
+            continue
+        if not os.path.isfile(full):
+            continue
+        normalized = {
+            **item,
+            "id": attachment_id,
+            "stored_name": stored_name,
+            "size_bytes": _path_size(full),
+        }
+        result.append(normalized)
+    return result
+
+
+def _read_ai_version_attachments(jid: str, version_id: str) -> list[dict]:
+    safe_version_id = _safe_ai_analysis_version_id(version_id)
+    if not safe_version_id:
+        return []
+    return [
+        _ai_version_attachment_response(jid, safe_version_id, item)
+        for item in _read_ai_version_attachment_records(jid, safe_version_id)
+    ]
+
+
+def _write_ai_version_attachments(jid: str, version_id: str, attachments: list[dict]) -> None:
+    safe_version_id = _safe_ai_analysis_version_id(version_id)
+    if not safe_version_id:
+        raise HTTPException(400, "Invalid AI analysis version")
+    meta_path = ai_analysis_version_attachments_meta_path(jid, safe_version_id)
+    os.makedirs(os.path.dirname(meta_path), exist_ok=True)
+    stored = []
+    for item in attachments:
+        if not isinstance(item, dict):
+            continue
+        attachment_id = _safe_ai_analysis_attachment_id(item.get("id") or "")
+        stored_name = os.path.basename(str(item.get("stored_name") or ""))
+        if not attachment_id or not stored_name:
+            continue
+        stored.append({
+            "id": attachment_id,
+            "filename": item.get("filename") or "",
+            "stored_name": stored_name,
+            "content_type": item.get("content_type") or "",
+            "size_bytes": int(item.get("size_bytes") or 0),
+            "uploaded_at": item.get("uploaded_at") or "",
+            "uploaded_by": item.get("uploaded_by") or "",
+        })
+    tmp_path = f"{meta_path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(stored, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, meta_path)
+
+
 def _ai_version_report_path_from_metadata(jid: str, metadata: dict) -> str:
     analysis_root = os.path.abspath(ai_analysis_dir(jid))
     rel_path = metadata.get("report_path") or ""
@@ -1855,6 +1967,7 @@ def _legacy_ai_analysis_version(jid: str, status: dict) -> dict:
         "report_path": AI_ANALYSIS_REPORT_FILE,
         "report_exists": True,
         "legacy": True,
+        "attachments": _read_ai_version_attachments(jid, "current"),
     }
 
 
@@ -1879,6 +1992,7 @@ def _collect_ai_analysis_versions(jid: str, status: Optional[dict] = None) -> li
             metadata["id"] = version_id
             report_path = _ai_version_report_path_from_metadata(jid, metadata)
             metadata["report_exists"] = bool(report_path and os.path.exists(report_path))
+            metadata["attachments"] = _read_ai_version_attachments(jid, version_id)
             metadata.setdefault("model", "未知")
             metadata.setdefault("generated_at", metadata.get("finished_at") or metadata.get("updated_at") or "")
             with contextlib.suppress(OSError):
@@ -8716,6 +8830,189 @@ async def download_job_ai_analysis_report(request: Request, jid: str):
         media_type="text/markdown; charset=utf-8",
         headers={"Content-Disposition": _content_disposition(filename)},
     )
+
+
+@app.post("/api/jobs/{jid}/ai-analysis/versions/{version_id}/attachments")
+async def upload_job_ai_analysis_version_attachment(
+    request: Request,
+    jid: str,
+    version_id: str,
+    file: UploadFile = File(...),
+):
+    db = await get_db()
+    try:
+        row = await load_accessible_job(db, request, jid, "id, label, status, user_token")
+    finally:
+        await db.close()
+    if not row:
+        raise HTTPException(404)
+
+    safe_version_id = _safe_ai_analysis_version_id(version_id)
+    selected_version = _select_ai_analysis_version(jid, safe_version_id)
+    if not safe_version_id or not selected_version:
+        raise HTTPException(404, "AI analysis version not found")
+
+    data = await file.read(AI_ANALYSIS_VERSION_ATTACHMENT_MAX_BYTES + 1)
+    if len(data) > AI_ANALYSIS_VERSION_ATTACHMENT_MAX_BYTES:
+        raise HTTPException(413, f"附件不能超过 {AI_ANALYSIS_VERSION_ATTACHMENT_MAX_BYTES // 1024 // 1024}MB")
+    if not data:
+        raise HTTPException(400, "附件内容为空")
+
+    filename = _safe_download_name(file.filename, "attachment")[:240]
+    extension = re.sub(r"[^A-Za-z0-9.]+", "", os.path.splitext(filename)[1])[:24]
+    attachment_id = str(uuid.uuid4())
+    stored_name = f"{attachment_id}{extension}"
+    target_dir = ai_analysis_version_attachments_dir(jid, safe_version_id)
+    target_path = _safe_child_path(target_dir, stored_name, "Invalid AI analysis attachment path")
+    os.makedirs(target_dir, exist_ok=True)
+    async with aiofiles.open(target_path, "wb") as f:
+        await f.write(data)
+
+    user = request_user(request)
+    records = _read_ai_version_attachment_records(jid, safe_version_id)
+    records.append({
+        "id": attachment_id,
+        "filename": filename,
+        "stored_name": stored_name,
+        "content_type": file.content_type or mimetypes.guess_type(filename)[0] or "application/octet-stream",
+        "size_bytes": len(data),
+        "uploaded_at": _utc_now_iso(),
+        "uploaded_by": user,
+    })
+    _write_ai_version_attachments(jid, safe_version_id, records)
+
+    audit_db = await get_db()
+    try:
+        await write_audit(
+            audit_db, request, "job.ai_analysis_version_attachment_upload",
+            resource_type="job", resource_id=jid,
+            details={"version_id": safe_version_id, "attachment_id": attachment_id, "filename": filename, "size": len(data)},
+        )
+        await audit_db.commit()
+    finally:
+        await audit_db.close()
+
+    return {"attachments": _read_ai_version_attachments(jid, safe_version_id)}
+
+
+@app.get("/api/jobs/{jid}/ai-analysis/versions/{version_id}/attachments/{attachment_id}")
+async def download_job_ai_analysis_version_attachment(
+    request: Request,
+    jid: str,
+    version_id: str,
+    attachment_id: str,
+):
+    if not ALLOW_FILE_DOWNLOAD:
+        raise HTTPException(403, "File download is disabled")
+
+    db = await get_db()
+    try:
+        row = await load_accessible_job(db, request, jid, "id, label, status")
+    finally:
+        await db.close()
+    if not row:
+        raise HTTPException(404)
+
+    safe_version_id = _safe_ai_analysis_version_id(version_id)
+    safe_attachment_id = _safe_ai_analysis_attachment_id(attachment_id)
+    selected_version = _select_ai_analysis_version(jid, safe_version_id)
+    if not safe_version_id or not selected_version or not safe_attachment_id:
+        raise HTTPException(404, "AI analysis attachment not found")
+    record = next(
+        (item for item in _read_ai_version_attachment_records(jid, safe_version_id) if item.get("id") == safe_attachment_id),
+        None,
+    )
+    if not record:
+        raise HTTPException(404, "AI analysis attachment not found")
+    full_path = _safe_child_path(
+        ai_analysis_version_attachments_dir(jid, safe_version_id),
+        record["stored_name"],
+        "Invalid AI analysis attachment path",
+    )
+    if not os.path.isfile(full_path):
+        raise HTTPException(404, "AI analysis attachment not found")
+
+    audit_db = await get_db()
+    try:
+        await write_audit(
+            audit_db, request, "job.ai_analysis_version_attachment_download",
+            resource_type="job", resource_id=jid,
+            details={"version_id": safe_version_id, "attachment_id": safe_attachment_id, "size": _path_size(full_path)},
+        )
+        await audit_db.commit()
+    finally:
+        await audit_db.close()
+
+    filename = _safe_download_name(record.get("filename"), os.path.basename(full_path))
+    media_type = record.get("content_type") or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    return FileResponse(
+        full_path,
+        media_type=media_type,
+        headers={"Content-Disposition": _content_disposition(filename)},
+    )
+
+
+@app.delete("/api/jobs/{jid}/ai-analysis/versions/{version_id}/attachments/{attachment_id}", status_code=204)
+async def delete_job_ai_analysis_version_attachment(
+    request: Request,
+    jid: str,
+    version_id: str,
+    attachment_id: str,
+):
+    db = await get_db()
+    try:
+        row = await load_accessible_job(db, request, jid, "id, label, status, user_token")
+    finally:
+        await db.close()
+    if not row:
+        raise HTTPException(404)
+
+    safe_version_id = _safe_ai_analysis_version_id(version_id)
+    safe_attachment_id = _safe_ai_analysis_attachment_id(attachment_id)
+    selected_version = _select_ai_analysis_version(jid, safe_version_id)
+    if not safe_version_id or not selected_version or not safe_attachment_id:
+        raise HTTPException(404, "AI analysis attachment not found")
+    records = _read_ai_version_attachment_records(jid, safe_version_id)
+    record = next((item for item in records if item.get("id") == safe_attachment_id), None)
+    if not record:
+        raise HTTPException(404, "AI analysis attachment not found")
+
+    actor = request_user(request)
+    can_delete = (
+        not AUTH_ENABLED
+        or request_is_admin(request)
+        or actor == (row.get("user_token") or "")
+        or actor == (record.get("uploaded_by") or "")
+    )
+    if not can_delete:
+        raise HTTPException(403, "No permission to delete this attachment")
+
+    full_path = _safe_child_path(
+        ai_analysis_version_attachments_dir(jid, safe_version_id),
+        record["stored_name"],
+        "Invalid AI analysis attachment path",
+    )
+    if os.path.isfile(full_path):
+        with contextlib.suppress(OSError):
+            os.remove(full_path)
+    _write_ai_version_attachments(
+        jid,
+        safe_version_id,
+        [item for item in records if item.get("id") != safe_attachment_id],
+    )
+
+    audit_db = await get_db()
+    try:
+        await write_audit(
+            audit_db, request, "job.ai_analysis_version_attachment_delete",
+            resource_type="job", resource_id=jid,
+            details={"version_id": safe_version_id, "attachment_id": safe_attachment_id},
+        )
+        await audit_db.commit()
+    finally:
+        await audit_db.close()
+
+    return None
 
 
 @app.get("/api/jobs/{jid}/ai-analysis/artifacts/{artifact_path:path}")

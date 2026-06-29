@@ -2842,6 +2842,85 @@ body.result-reading-active { overflow: hidden; }
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.ai-version-attachments {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+}
+.ai-version-attachments-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.ai-version-attachments-head > div {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.ai-version-attachments-head strong {
+  color: var(--text1);
+  font-size: 12px;
+  font-weight: 800;
+}
+.ai-version-attachments-head span,
+.ai-version-attachment-empty {
+  color: var(--text3);
+  font-size: 11px;
+  font-weight: 700;
+}
+.ai-version-upload-btn {
+  position: relative;
+  overflow: hidden;
+}
+.ai-version-upload-btn input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.ai-version-attachment-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ai-version-attachment-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg);
+}
+.ai-version-attachment-item strong {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text1);
+  font-size: 12px;
+  font-weight: 800;
+}
+.ai-version-attachment-item span {
+  display: block;
+  margin-top: 2px;
+  color: var(--text3);
+  font-size: 11px;
+  font-weight: 700;
+}
+.ai-version-attachment-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 .ai-analysis-running {
   display: flex; align-items: center; gap: 8px;
   padding: 12px 14px; border-radius: 8px;

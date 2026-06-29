@@ -186,6 +186,8 @@ const aiAnalysisContent = ref("");
 const aiAnalysisArtifacts = ref([]);
 const aiAnalysisVersions = ref([]);
 const aiAnalysisSelectedVersionId = ref("");
+const aiAttachmentUploading = ref(false);
+const aiAttachmentDeletingId = ref("");
 const showAiPromptModal = ref(false);
 const aiPromptForce = ref(false);
 const aiAnalysisPrompt = ref("");
@@ -3303,6 +3305,9 @@ const aiAnalysisVersionModel = computed(() => {
   const version = aiAnalysisSelectedVersion.value || {};
   return version.model || aiAnalysisMeta.value?.model || "未知";
 });
+const aiAnalysisVersionAttachments = computed(() =>
+  Array.isArray(aiAnalysisSelectedVersion.value?.attachments) ? aiAnalysisSelectedVersion.value.attachments : []
+);
 const aiAnalysisVersionLabel = version => {
   const timeText = fmtDateTime(version.generated_at || version.finished_at) || "未知时间";
   const statusText = aiAnalysisStatusText(version.status || "done");
@@ -3677,6 +3682,88 @@ const downloadAiAnalysisArtifact = artifact => {
   a.href = url;
   a.download = artifact?.name || artifact?.path || "";
   a.click();
+};
+
+const aiVersionAttachmentUrl = attachment => {
+  if (attachment?.url) return attachment.url;
+  if (!selectedJobId.value || !aiAnalysisSelectedVersionId.value || !attachment?.id) return "";
+  return `/api/jobs/${encodeURIComponent(selectedJobId.value)}/ai-analysis/versions/${encodeURIComponent(aiAnalysisSelectedVersionId.value)}/attachments/${encodeURIComponent(attachment.id)}`;
+};
+
+const uploadAiVersionAttachment = async event => {
+  const input = event?.target;
+  const file = input?.files?.[0];
+  if (input) input.value = "";
+  if (!file || !selectedJobId.value || !aiAnalysisSelectedVersionId.value || aiAttachmentUploading.value) return;
+  const jobId = selectedJobId.value;
+  const versionId = aiAnalysisSelectedVersionId.value;
+  const form = new FormData();
+  form.append("file", file);
+  aiAttachmentUploading.value = true;
+  aiAnalysisError.value = "";
+  try {
+    const r = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/ai-analysis/versions/${encodeURIComponent(versionId)}/attachments`, {
+      method: "POST",
+      credentials: "include",
+      body: form,
+    });
+    const payload = await readJsonResponse(r, {});
+    if (!r.ok) {
+      throw new ApiRequestError(apiErrorMessage(r, payload, "上传附件失败"), {
+        status: r.status,
+        authExpired: r.status === 401,
+      });
+    }
+    if (selectedJobId.value !== jobId) return;
+    await refreshAiAnalysis({ silent: true, versionId });
+    showToast("附件已上传", "success");
+  } catch (e) {
+    const message = normalizeApiError(e, "上传附件失败");
+    aiAnalysisError.value = message;
+    showToast(message, "error");
+  } finally {
+    aiAttachmentUploading.value = false;
+  }
+};
+
+const downloadAiVersionAttachment = attachment => {
+  const url = aiVersionAttachmentUrl(attachment);
+  if (!url) return;
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = attachment?.filename || "";
+  a.click();
+};
+
+const deleteAiVersionAttachment = async attachment => {
+  if (!selectedJobId.value || !aiAnalysisSelectedVersionId.value || !attachment?.id) return;
+  if (!window.confirm(`删除附件「${attachment.filename || "未命名附件"}」？`)) return;
+  const jobId = selectedJobId.value;
+  const versionId = aiAnalysisSelectedVersionId.value;
+  aiAttachmentDeletingId.value = attachment.id;
+  aiAnalysisError.value = "";
+  try {
+    const r = await fetch(aiVersionAttachmentUrl(attachment), {
+      method: "DELETE",
+      credentials: "include",
+    });
+    if (!r.ok) {
+      const payload = await readJsonResponse(r, {});
+      throw new ApiRequestError(apiErrorMessage(r, payload, "删除附件失败"), {
+        status: r.status,
+        authExpired: r.status === 401,
+      });
+    }
+    if (selectedJobId.value !== jobId) return;
+    await refreshAiAnalysis({ silent: true, versionId });
+    showToast("附件已删除", "success");
+  } catch (e) {
+    const message = normalizeApiError(e, "删除附件失败");
+    aiAnalysisError.value = message;
+    showToast(message, "error");
+  } finally {
+    aiAttachmentDeletingId.value = "";
+  }
 };
 
 const openAiCodeViewer = async artifactOrPath => {
@@ -7001,6 +7088,42 @@ const JobDetail = {
             <strong>本版本补充 Prompt</strong>
             <pre :title="aiAnalysisSelectedVersion.user_prompt">{{ aiAnalysisSelectedVersion.user_prompt }}</pre>
           </div>
+          <div v-if="aiAnalysisSelectedVersion" class="ai-version-attachments">
+            <div class="ai-version-attachments-head">
+              <div>
+                <strong>版本附件</strong>
+                <span>{{ aiAnalysisVersionAttachments.length ? aiAnalysisVersionAttachments.length + ' 个附件' : '暂无附件' }}</span>
+              </div>
+              <label class="btn btn-sm btn-outline ai-version-upload-btn">
+                <input type="file" @change="uploadAiVersionAttachment" :disabled="aiAttachmentUploading" />
+                {{ aiAttachmentUploading ? '上传中...' : '上传附件' }}
+              </label>
+            </div>
+            <div v-if="aiAnalysisVersionAttachments.length" class="ai-version-attachment-list">
+              <div v-for="attachment in aiAnalysisVersionAttachments"
+                   :key="attachment.id"
+                   class="ai-version-attachment-item">
+                <div>
+                  <strong :title="attachment.filename">{{ attachment.filename || '未命名附件' }}</strong>
+                  <span>
+                    {{ fmtBytes(attachment.size_bytes) }}
+                    <template v-if="attachment.uploaded_by"> · {{ attachment.uploaded_by }}</template>
+                    <template v-if="attachment.uploaded_at"> · {{ fmtDateTime(attachment.uploaded_at) }}</template>
+                  </span>
+                </div>
+                <div class="ai-version-attachment-actions">
+                  <button class="btn btn-xs btn-outline" type="button" @click="downloadAiVersionAttachment(attachment)">下载</button>
+                  <button
+                    class="btn btn-xs btn-outline"
+                    type="button"
+                    @click="deleteAiVersionAttachment(attachment)"
+                    :disabled="aiAttachmentDeletingId === attachment.id"
+                  >{{ aiAttachmentDeletingId === attachment.id ? '删除中' : '删除' }}</button>
+                </div>
+              </div>
+            </div>
+            <div v-else class="ai-version-attachment-empty">支持上传当前版本相关文件，单个附件最大 500MB。</div>
+          </div>
 
           <div v-if="!claudeAnalysisEnabled && !aiAnalysisMeta.report_exists" class="info-box">
             AI 分析未启用。服务端设置 TRACE_ENABLE_CLAUDE_ANALYSIS=1 后可使用。
@@ -7299,6 +7422,7 @@ const JobDetail = {
       claudeAnalysisEnabled, aiAnalysisMeta, aiAnalysisLoading, aiAnalysisStarting,
       aiAnalysisError, aiAnalysisContent, aiAnalysisArtifacts, aiAnalysisVisibleArtifacts,
       aiAnalysisVersions, aiAnalysisSelectedVersionId, aiAnalysisSelectedVersion,
+      aiAnalysisVersionAttachments, aiAttachmentUploading, aiAttachmentDeletingId,
       showAiPromptModal, aiAnalysisPrompt, aiPromptForce,
       aiAnalysisVersionTrigger, aiAnalysisVersionModel, aiAnalysisVersionLabel,
       aiArtifactsExpanded, aiArtifactSummary, aiAnalysisHtml, aiAnalysisStatusText,
@@ -7307,6 +7431,7 @@ const JobDetail = {
       refreshAiAnalysis, startAiAnalysis, openAiPromptModal, closeAiPromptModal, confirmAiPromptModal,
       copyAiAnalysisReport,
       downloadAiAnalysisReport, changeAiAnalysisVersion, copyAiAnalysisArtifact, downloadAiAnalysisArtifact,
+      uploadAiVersionAttachment, downloadAiVersionAttachment, deleteAiVersionAttachment,
       handleAiAnalysisReportClick,
       runAiDiagnostics, copyAiDiagnostics,
       openActionMenu, toggleActionMenu, closeActionMenu,
