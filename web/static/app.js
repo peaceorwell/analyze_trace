@@ -8644,9 +8644,9 @@ const ExperimentTree = {
         let cursorX = 0;
         items.forEach((node, index) => {
           const pinned = Number(node.pinned) === 1 && Number.isFinite(Number(node.x)) && Number.isFinite(Number(node.y));
-          node.x = pinned ? Math.max(Number(node.x), cursorX) : cursorX;
+          node.x = pinned ? Number(node.x) : cursorX;
           const layerTop = layerTops[Number(key)] || 0;
-          node.y = pinned ? Math.max(Number(node.y), layerTop) : layerTop;
+          node.y = pinned ? Number(node.y) : layerTop;
           node.scale = 1;
           node.pinned = pinned ? 1 : 0;
           cursorX = Math.max(cursorX, node.x + nodeWidth(node) + SIBLING_GAP);
