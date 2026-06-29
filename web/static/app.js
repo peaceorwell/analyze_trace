@@ -7485,7 +7485,6 @@ const ExperimentTree = {
         <div
           v-else
           class="exp-chart-view"
-          @mousedown="startLineageChartPan"
         >
           <div v-if="loading" class="exp-loading">加载中...</div>
           <template v-else>
@@ -7753,7 +7752,6 @@ const ExperimentTree = {
     const panelCollapsed = ref(false);
     const viewMode = ref("canvas");
     const lineageMetricKey = ref("compute_ms");
-    const lineageChartAxisOffset = ref({ x: 0, y: 0 });
     const nodeNameDraft = ref("");
     const nodeNameOriginal = ref("");
     const nodeNameSaving = ref(false);
@@ -7770,8 +7768,6 @@ const ExperimentTree = {
     let dragState = null;
     let edgeDragState = null;
     let edgeResizeState = null;
-    let lineagePanState = null;
-    let suppressLineageChartClick = false;
     let lineageChartInst = null;
     let lineageChartTooltipEl = null;
     let lineageChartBuildToken = 0;
@@ -8128,6 +8124,20 @@ const ExperimentTree = {
       const number = Number(value);
       return `${number > 0 ? "+" : ""}${number.toFixed(1)}%`;
     };
+    const formatLineageAxisTick = (value, metricDef = currentLineageMetricDef.value) => {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return value;
+      const trimZeros = text => {
+        const trimmed = text.replace(/\.?0+$/, "");
+        return trimmed && trimmed !== "-" ? trimmed : "0";
+      };
+      if (metricDef.unit === "count") {
+        return Number.isInteger(number) ? String(number) : number.toFixed(1).replace(/\.0$/, "");
+      }
+      const abs = Math.abs(number);
+      const decimals = abs >= 100 ? 0 : abs >= 10 ? 1 : 2;
+      return trimZeros(number.toFixed(decimals));
+    };
     const lineageChartModel = computed(() => {
       const graph = lineageTopology.value;
       const metricDef = currentLineageMetricDef.value;
@@ -8212,15 +8222,10 @@ const ExperimentTree = {
       const points = lineageChartDataPoints.value;
       if (!points.length) return {};
       const metricDef = currentLineageMetricDef.value;
-      const offset = lineageChartAxisOffset.value || { x: 0, y: 0 };
       const xValues = points.map(point => Number(point.x)).filter(Number.isFinite);
       const yValues = points.map(point => Number(point.rawValue)).filter(Number.isFinite);
       const targetValue = lineageMetricTargetLineValue.value;
       const yDomainValues = targetValue === null ? yValues : [...yValues, targetValue];
-      const withOffset = (bounds, value) => ({
-        min: bounds.min + value,
-        max: bounds.max + value,
-      });
       const boundsFor = (values, options = {}) => {
         if (!values.length) return {};
         const minValue = Math.min(...values);
@@ -8242,17 +8247,29 @@ const ExperimentTree = {
         if (!values.length) return {};
         const minValue = Math.min(...values);
         const maxValue = Math.max(...values);
-        const min = minValue >= 0 ? minValue * 0.8 : minValue * 1.25;
+        let min = minValue >= 0 ? minValue * 0.8 : minValue * 1.25;
         let max = maxValue >= 0 ? maxValue * 1.25 : maxValue * 0.8;
         if (max <= min) {
           const fallbackSpan = metricDef.unit === "count" ? 2 : Math.max(1, Math.abs(maxValue || minValue || 1) * 0.25);
           max = min + fallbackSpan;
         }
+        const span = Math.max(1e-9, max - min);
+        const roughStep = span / 5;
+        const exponent = 10 ** Math.floor(Math.log10(roughStep));
+        const fraction = roughStep / exponent;
+        const niceFraction = fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 5 ? 5 : 10;
+        const step = Math.max(metricDef.unit === "count" ? 1 : 0, niceFraction * exponent);
+        min = Math.floor(min / step) * step;
+        max = Math.ceil(max / step) * step;
+        const decimals = step >= 1 ? 0 : Math.min(6, Math.ceil(Math.abs(Math.log10(step))) + 1);
+        min = Number(min.toFixed(decimals));
+        max = Number(max.toFixed(decimals));
+        if (max <= min) max = Number((min + step).toFixed(decimals));
         return { min, max };
       };
       return {
-        x: withOffset(boundsFor(xValues, { fallbackSpan: 2, paddingFactor: 1.25, clampMinZero: true }), offset.x || 0),
-        y: withOffset(yBoundsFor(yDomainValues), offset.y || 0),
+        x: boundsFor(xValues, { fallbackSpan: 2, paddingFactor: 1.25, clampMinZero: true }),
+        y: yBoundsFor(yDomainValues),
       };
     });
 
@@ -8708,6 +8725,8 @@ const ExperimentTree = {
           target: "#ef4444",
           targetSoft: "rgba(239,68,68,.10)",
           pointBorder: "#ffffff",
+          pointLabelBg: "rgba(255,255,255,.92)",
+          pointLabelBorder: "rgba(148,163,184,.32)",
         };
       }
       const style = getComputedStyle(document.documentElement);
@@ -8722,6 +8741,8 @@ const ExperimentTree = {
         target: read("--red", "#ef4444"),
         targetSoft: read("--red-bg", "rgba(239,68,68,.10)"),
         pointBorder: read("--exp-surface", "#ffffff"),
+        pointLabelBg: read("--exp-surface", "#ffffff"),
+        pointLabelBorder: chartAlphaColor(border, 0.88),
       };
     };
     const ensureLineageChartTooltip = () => {
@@ -8794,56 +8815,55 @@ const ExperimentTree = {
       if (!chart || !hit) return null;
       return chart.data.datasets?.[hit.datasetIndex]?.data?.[hit.index] || null;
     };
-    const applyLineageChartAxisBounds = () => {
-      if (!lineageChartInst) return;
-      const axisBounds = lineageChartAxisBounds.value;
-      lineageChartInst.options.scales.x.min = axisBounds.x?.min ?? 0;
-      lineageChartInst.options.scales.x.max = axisBounds.x?.max;
-      lineageChartInst.options.scales.y.min = axisBounds.y?.min;
-      lineageChartInst.options.scales.y.max = axisBounds.y?.max;
-      lineageChartInst.update("none");
+    const chartEventPoint = (chart, event) => {
+      const directX = Number(event?.x);
+      const directY = Number(event?.y);
+      if (Number.isFinite(directX) && Number.isFinite(directY)) return { x: directX, y: directY };
+      const native = event?.native || event;
+      const rect = chart?.canvas?.getBoundingClientRect?.();
+      if (!rect || !Number.isFinite(Number(native?.clientX)) || !Number.isFinite(Number(native?.clientY))) return null;
+      return { x: Number(native.clientX) - rect.left, y: Number(native.clientY) - rect.top };
     };
-    const startLineageChartPan = event => {
-      if (lineageChartEmptyText.value || !lineageChartInst) return;
-      if (event.target.closest(".exp-chart-toolbar, .exp-panel, button, input, textarea, select")) return;
-      const bounds = lineageChartAxisBounds.value;
-      const area = lineageChartInst.chartArea || {};
-      const plotWidth = Math.max(1, (area.right || 0) - (area.left || 0));
-      const plotHeight = Math.max(1, (area.bottom || 0) - (area.top || 0));
-      lineagePanState = {
-        x: event.clientX,
-        y: event.clientY,
-        startOffset: { ...lineageChartAxisOffset.value },
-        xSpan: Math.max(1e-9, (bounds.x?.max ?? 1) - (bounds.x?.min ?? 0)),
-        ySpan: Math.max(1e-9, (bounds.y?.max ?? 1) - (bounds.y?.min ?? 0)),
-        plotWidth,
-        plotHeight,
-        moved: false,
-      };
-      window.addEventListener("mousemove", moveLineageChartPan);
-      window.addEventListener("mouseup", stopLineageChartPan);
+    const pointSegmentDistance = (point, start, end) => {
+      const dx = end.x - start.x;
+      const dy = end.y - start.y;
+      const lengthSquared = dx * dx + dy * dy;
+      if (!lengthSquared) return Math.hypot(point.x - start.x, point.y - start.y);
+      const t = Math.max(0, Math.min(1, ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared));
+      return Math.hypot(point.x - (start.x + t * dx), point.y - (start.y + t * dy));
     };
-    const moveLineageChartPan = event => {
-      if (!lineagePanState) return;
-      const dx = event.clientX - lineagePanState.x;
-      const dy = event.clientY - lineagePanState.y;
-      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
-        lineagePanState.moved = true;
-        suppressLineageChartClick = true;
-      }
-      lineageChartAxisOffset.value = {
-        x: lineagePanState.startOffset.x - dx / lineagePanState.plotWidth * lineagePanState.xSpan,
-        y: lineagePanState.startOffset.y + dy / lineagePanState.plotHeight * lineagePanState.ySpan,
-      };
-      applyLineageChartAxisBounds();
-    };
-    const stopLineageChartPan = () => {
-      const moved = Boolean(lineagePanState?.moved);
-      lineagePanState = null;
-      window.removeEventListener("mousemove", moveLineageChartPan);
-      window.removeEventListener("mouseup", stopLineageChartPan);
-      if (moved) setTimeout(() => { suppressLineageChartClick = false; }, 0);
-      else suppressLineageChartClick = false;
+    const edgeBetweenNodes = (parentId, childId) =>
+      edges.value.find(edge => edge.parent_job_id === parentId && edge.child_job_id === childId) || null;
+    const chartSegmentFromEvent = (chart, event) => {
+      const eventPoint = chartEventPoint(chart, event);
+      if (!eventPoint || !chart?.scales?.x || !chart?.scales?.y) return null;
+      let best = null;
+      const hitDistance = 12;
+      chart.data.datasets.forEach((dataset, datasetIndex) => {
+        if (typeof chart.isDatasetVisible === "function" && !chart.isDatasetVisible(datasetIndex)) return;
+        const data = dataset.data || [];
+        for (let index = 1; index < data.length; index += 1) {
+          const startPoint = data[index - 1];
+          const endPoint = data[index];
+          if (startPoint?.rawValue === null || endPoint?.rawValue === null) continue;
+          const edge = edgeBetweenNodes(endPoint.parentNodeId, endPoint.nodeId);
+          if (!edge) continue;
+          const start = {
+            x: chart.scales.x.getPixelForValue(startPoint.x),
+            y: chart.scales.y.getPixelForValue(startPoint.rawValue),
+          };
+          const end = {
+            x: chart.scales.x.getPixelForValue(endPoint.x),
+            y: chart.scales.y.getPixelForValue(endPoint.rawValue),
+          };
+          if (![start.x, start.y, end.x, end.y].every(Number.isFinite)) continue;
+          const distance = pointSegmentDistance(eventPoint, start, end);
+          if (distance <= hitDistance && (!best || distance < best.distance)) {
+            best = { edge, distance };
+          }
+        }
+      });
+      return best;
     };
     const buildLineageChart = () => {
       if (typeof Chart === "undefined" || !lineageChartCanvas.value || viewMode.value !== "chart" || lineageChartEmptyText.value) {
@@ -8892,6 +8912,50 @@ const ExperimentTree = {
           ctx.restore();
         },
       };
+      const pointValueLabelPlugin = {
+        id: "lineageMetricPointValueLabels",
+        afterDatasetsDraw(chart) {
+          const { ctx, chartArea } = chart;
+          const drawn = new Set();
+          ctx.save();
+          ctx.font = "750 10px Inter, system-ui, sans-serif";
+          ctx.textBaseline = "middle";
+          chart.data.datasets.forEach((dataset, datasetIndex) => {
+            if (typeof chart.isDatasetVisible === "function" && !chart.isDatasetVisible(datasetIndex)) return;
+            const meta = chart.getDatasetMeta(datasetIndex);
+            (dataset.data || []).forEach((point, pointIndex) => {
+              if (point?.rawValue === null || point?.rawValue === undefined) return;
+              const element = meta.data?.[pointIndex];
+              const x = Number(element?.x);
+              const y = Number(element?.y);
+              if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+              const key = `${point.nodeId}:${point.rawValue}`;
+              if (drawn.has(key)) return;
+              drawn.add(key);
+              const label = formatLineageMetricValue(point.rawValue, metricDef);
+              const textWidth = ctx.measureText(label).width;
+              const boxW = textWidth + 10;
+              const boxH = 18;
+              const boxX = Math.min(Math.max(x - boxW / 2, chartArea.left + 4), chartArea.right - boxW - 4);
+              let boxY = y - boxH - 10;
+              if (boxY < chartArea.top + 4) boxY = y + 10;
+              if (boxY + boxH > chartArea.bottom - 2) boxY = chartArea.bottom - boxH - 2;
+              ctx.fillStyle = colors.pointLabelBg;
+              ctx.strokeStyle = colors.pointLabelBorder;
+              ctx.lineWidth = 1;
+              ctx.beginPath();
+              if (typeof ctx.roundRect === "function") ctx.roundRect(boxX, boxY, boxW, boxH, 6);
+              else ctx.rect(boxX, boxY, boxW, boxH);
+              ctx.fill();
+              ctx.stroke();
+              ctx.fillStyle = colors.title;
+              ctx.textAlign = "center";
+              ctx.fillText(label, boxX + boxW / 2, boxY + boxH / 2 + 0.5);
+            });
+          });
+          ctx.restore();
+        },
+      };
       const datasets = lineageChartModel.value.datasets.map(dataset => ({
         ...dataset,
         pointBorderColor: colors.pointBorder,
@@ -8903,14 +8967,14 @@ const ExperimentTree = {
         data: {
           datasets,
         },
-        plugins: targetLineValue === null ? [] : [targetLinePlugin],
+        plugins: targetLineValue === null ? [pointValueLabelPlugin] : [targetLinePlugin, pointValueLabelPlugin],
         options: {
           responsive: true,
           maintainAspectRatio: false,
           parsing: false,
           normalized: true,
           layout: {
-            padding: { top: 2, right: 12, bottom: 2, left: 4 },
+            padding: { top: 16, right: 16, bottom: 8, left: 8 },
           },
           elements: {
             line: {
@@ -8923,14 +8987,18 @@ const ExperimentTree = {
           },
           interaction: { mode: "nearest", intersect: true },
           onClick: (event, _elements, chart) => {
-            if (suppressLineageChartClick) return;
             const hits = chart.getElementsAtEventForMode(event, "nearest", { intersect: true }, false);
             const point = chartPointFromHit(chart, hits?.[0]);
-            if (point?.nodeId) selectNodeById(point.nodeId);
+            if (point?.nodeId) {
+              selectNodeById(point.nodeId);
+              return;
+            }
+            const segment = chartSegmentFromEvent(chart, event);
+            if (segment?.edge) selectEdge(segment.edge);
           },
           onHover: (event, elements) => {
             const target = event?.native?.target || lineageChartCanvas.value;
-            if (target) target.style.cursor = elements?.length ? "pointer" : "grab";
+            if (target) target.style.cursor = elements?.length || chartSegmentFromEvent(event.chart || lineageChartInst, event) ? "pointer" : "default";
           },
           plugins: {
             legend: {
@@ -8956,37 +9024,53 @@ const ExperimentTree = {
               type: "linear",
               min: axisBounds.x?.min ?? 0,
               max: axisBounds.x?.max,
-              title: { display: true, text: "子孙代数", color: colors.title, font: { size: 12, weight: "700" } },
+              title: {
+                display: true,
+                text: "子孙代数",
+                color: colors.title,
+                padding: { top: 10 },
+                font: { size: 13, weight: "800" },
+              },
               ticks: {
                 stepSize: 1,
                 precision: 0,
-                color: colors.text,
-                padding: 8,
-                font: { size: 11, weight: "650" },
+                color: colors.title,
+                padding: 10,
+                font: { size: 12, weight: "800" },
                 callback: value => Number.isInteger(Number(value)) ? value : "",
               },
               grid: {
                 color: context => Number(context.tick?.value) === 0 ? colors.gridStrong : colors.grid,
-                tickLength: 0,
+                lineWidth: context => Number(context.tick?.value) === 0 ? 1.4 : 0.8,
+                tickLength: 4,
+                tickColor: colors.axis,
               },
-              border: { color: colors.axis },
+              border: { color: colors.axis, width: 2 },
             },
             y: {
               beginAtZero: false,
               min: axisBounds.y?.min,
               max: axisBounds.y?.max,
-              title: { display: true, text: axisTitle, color: colors.title, font: { size: 12, weight: "700" } },
+              title: {
+                display: true,
+                text: axisTitle,
+                color: colors.title,
+                padding: { bottom: 10 },
+                font: { size: 13, weight: "800" },
+              },
               ticks: {
-                color: colors.text,
-                padding: 8,
-                font: { size: 11, weight: "650" },
-                callback: value => metricDef.unit === "count" ? value : Number(value).toFixed(2),
+                color: colors.title,
+                padding: 10,
+                font: { size: 12, weight: "800" },
+                callback: value => formatLineageAxisTick(value, metricDef),
               },
               grid: {
                 color: colors.grid,
-                tickLength: 0,
+                lineWidth: 0.8,
+                tickLength: 4,
+                tickColor: colors.axis,
               },
-              border: { color: colors.axis },
+              border: { color: colors.axis, width: 2 },
             },
           },
         },
@@ -9443,7 +9527,6 @@ const ExperimentTree = {
     };
     onBeforeUnmount(() => {
       destroyLineageChart();
-      stopLineageChartPan();
       stopPan();
       window.removeEventListener("mousemove", moveNode);
       window.removeEventListener("mouseup", stopNodeDrag);
@@ -9734,7 +9817,6 @@ const ExperimentTree = {
       () => [viewMode.value, lineageMetricKey.value, currentMetricTargetValue.value, isDark.value, nodes.value, edges.value, lineageChartEmptyText.value],
       () => {
         if (viewMode.value !== "chart") {
-          stopLineageChartPan();
           destroyLineageChart();
           return;
         }
@@ -9771,7 +9853,6 @@ const ExperimentTree = {
       saveNodeName, resetNodeNameDraft,
       saveProjectMetricTarget, clearProjectMetricTarget,
       saveEdge, deleteSelectedEdge, refreshPerf, createCompare, resetLayout,
-      startLineageChartPan,
       startPan, startNodeDrag, startEdgeLabelDrag, startEdgeLabelResize,
       nodeStyle, nodeWidth, edgeLabelStyle, zoomBy, onWheel,
       edgeLabel, edgeCanvasText, metricRows, formatMs, formatSignedMs, formatPct,

@@ -1035,10 +1035,9 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   border-radius: 8px;
   background: var(--exp-canvas-bg);
   box-shadow: inset 0 1px 0 rgba(255,255,255,.04);
-  cursor: grab;
+  cursor: default;
   user-select: none;
 }
-.exp-chart-view:active { cursor: grabbing; }
 .exp-chart-toolbar {
   display: flex;
   align-items: center;
@@ -1105,7 +1104,7 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 .exp-chart-canvas-wrap canvas {
   width: 100% !important;
   height: 100% !important;
-  cursor: grab;
+  cursor: default;
 }
 .exp-loading {
   position: absolute;
