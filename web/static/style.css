@@ -3852,7 +3852,7 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
   overflow: auto; flex: 1; min-height: 0;
   border: 1px solid var(--border); border-radius: 8px;
 }
-.data-table { width: 100%; border-collapse: collapse; font-size: 11px; table-layout: fixed; }
+.data-table { width: max-content; min-width: 100%; border-collapse: collapse; font-size: 11px; table-layout: fixed; }
 .data-table thead { position: sticky; top: 0; z-index: 1; }
 
 .data-table th {

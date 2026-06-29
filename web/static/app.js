@@ -134,7 +134,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.4.12");
+const appVersion = ref("0.4.13");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -586,6 +586,15 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.4.13",
+    date: "2026-06-29",
+    title: "CSV 表格对齐与列宽优化",
+    items: [
+      "统一 CSV 表格数值列、效率列、长文本列的识别规则，修复带括号单位字段的对齐问题。",
+      "为不同字段类型设置默认列宽，并让宽表按列宽横向滚动，提升多表扫描稳定性。",
+    ],
+  },
   {
     version: "0.4.12",
     date: "2026-06-29",
@@ -1242,9 +1251,12 @@ const EFFICIENCY_COLUMN_PRESET = [
   "avg_io_efficiency",
   "avg_op_efficiency",
 ];
-const LONG_TABLE_FIELD_RE = /(input|stride|concrete|shape|dims|types|details)/i;
-const NUMERIC_TABLE_FIELD_RE = /(^|_)(count|dur|duration|time|us|ms|gb|efficiency|delta|avg|total|pct|percent|call|calls)$/i;
-const EFFICIENCY_FIELD_RE = /efficiency$/i;
+const LONG_TABLE_FIELD_RE = /(^|_)(input|stride|concrete|shape|dims|types|details|tiling|config|code_file)(_|$)/i;
+const NUMERIC_TABLE_FIELD_RE = /(^|_)(count|dur|duration|time|us|ms|gb|efficiency|delta|avg|total|pct|percent|call|calls)(_|$)/i;
+const EFFICIENCY_FIELD_RE = /(^|_)efficiency(_|$)/i;
+const KERNEL_NAME_FIELD_RE = /^kernel_name(?:_[ab])?$/i;
+const TEXT_NAME_FIELD_RE = /(^|_)(name|operator|op_name)(_|$)/i;
+const SHORT_TEXT_FIELD_RE = /^(type|family|match_method)$/i;
 
 const isEfficiencyTable = computed(() =>
   EFFICIENCY_TABLE_FILES.has(resultTab.value)
@@ -1440,11 +1452,35 @@ const toggleColumnVisibility = field => {
   visibleColumns.value = [...visibleColumns.value, field];
 };
 
-const isNumericTableField = field => NUMERIC_TABLE_FIELD_RE.test(String(field || ""));
-const isEfficiencyField = field => EFFICIENCY_FIELD_RE.test(String(field || ""));
+const normalizedTableField = field =>
+  String(field || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_|_$/g, "");
+
+const isNumericTableField = field => NUMERIC_TABLE_FIELD_RE.test(normalizedTableField(field));
+const isEfficiencyField = field => EFFICIENCY_FIELD_RE.test(normalizedTableField(field));
+const isLongTableField = field => LONG_TABLE_FIELD_RE.test(normalizedTableField(field));
+const tableColumnWidth = field => {
+  const customWidth = Number(colWidths.value[field]);
+  if (Number.isFinite(customWidth) && customWidth > 0) return customWidth;
+  const key = normalizedTableField(field);
+  if (KERNEL_NAME_FIELD_RE.test(key)) return 240;
+  if (TEXT_NAME_FIELD_RE.test(key)) return 180;
+  if (SHORT_TEXT_FIELD_RE.test(key)) return 112;
+  if (key === "triton_code_file") return 150;
+  if (isLongTableField(field)) return 180;
+  if (isEfficiencyField(field)) return 122;
+  if (/(^|_)count(_|$)/i.test(key)) return 96;
+  if (isNumericTableField(field)) return 112;
+  return 132;
+};
+const tableColumnStyle = field => ({ width: `${tableColumnWidth(field)}px` });
 const tableHeaderClass = field => ({
   "num-col": isNumericTableField(field),
-  "long-col": LONG_TABLE_FIELD_RE.test(String(field || "")),
+  "long-col": isLongTableField(field),
   "eff-col": isEfficiencyField(field),
 });
 const tableCellClass = (field, value) => ({
@@ -1657,7 +1693,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.4.12";
+  appVersion.value = cfg.version || "0.4.13";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -7219,14 +7255,14 @@ const JobDetail = {
             <table class="data-table">
               <colgroup>
                 <col v-for="f in displayedFields" :key="f"
-                     :style="colWidths[f] ? { width: colWidths[f] + 'px' } : {}" />
+                     :style="tableColumnStyle(f)" />
               </colgroup>
               <thead>
                 <tr>
                   <th v-for="f in displayedFields" :key="f"
                       @click="setSort(f)"
                       :class="['th-sortable', tableHeaderClass(f)]"
-                      :style="colWidths[f] ? { width: colWidths[f] + 'px' } : {}">
+                      :style="tableColumnStyle(f)">
                     <span class="th-label">{{ f }}</span>
                     <span v-if="sortCol===f" class="th-sort-icon">{{ sortAsc?'↑':'↓' }}</span>
                     <div class="col-resize-handle"
@@ -7237,7 +7273,7 @@ const JobDetail = {
                 <tr class="filter-row">
                   <th v-for="f in displayedFields" :key="f"
                       :class="tableHeaderClass(f)"
-                      :style="colWidths[f] ? { width: colWidths[f] + 'px' } : {}">
+                      :style="tableColumnStyle(f)">
                     <div class="col-filter-wrap">
                       <select v-model="colFilterOps[f]" class="col-filter-op"
                               :class="{ 'op-active': colFilterOps[f] && colFilterOps[f] !== '~' }"
@@ -7387,7 +7423,7 @@ const JobDetail = {
       hasColFilters, colSums, isKernelTypeTab, canDrillKernelTypeRow,
       isKernelTypeDrillCell, drillDownKernelType,
       isEfficiencyTable, isEfficiencyField, applyEfficiencyColumnPreset,
-      tableHeaderClass, tableCellClass, tableRowClass, familyChipClass, efficiencyTone,
+      tableColumnStyle, tableHeaderClass, tableCellClass, tableRowClass, familyChipClass, efficiencyTone,
       isTritonStepTab, tritonStatus, allowFileDownload, allowCodeExecution,
       claudeAnalysisEnabled, aiAnalysisMeta, aiAnalysisLoading, aiAnalysisStarting,
       aiAnalysisError, aiAnalysisContent, aiAnalysisArtifacts, aiAnalysisVisibleArtifacts,
