@@ -3852,7 +3852,7 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
   overflow: auto; flex: 1; min-height: 0;
   border: 1px solid var(--border); border-radius: 8px;
 }
-.data-table { border-collapse: collapse; font-size: 11px; table-layout: fixed; }
+.data-table { width: 100%; border-collapse: collapse; font-size: 11px; table-layout: fixed; }
 .data-table thead { position: sticky; top: 0; z-index: 1; }
 
 .data-table th {
@@ -4024,6 +4024,14 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
   border-bottom: 1px solid var(--border2);
 }
 .filter-row th:first-child { background: var(--filter-first-bg); }
+.filter-row th.num-col .col-filter-wrap {
+  justify-content: flex-end;
+}
+.filter-row th.num-col .col-filter-input {
+  flex: 0 1 90px;
+  min-width: 58px;
+  text-align: right;
+}
 .col-filter-wrap { display: flex; gap: 2px; align-items: center; }
 .col-filter-op {
   flex-shrink: 0; width: 44px; border: 1px solid var(--border2); border-radius: 4px;

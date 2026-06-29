@@ -271,7 +271,7 @@ const saveResultViewState = (jobId = selectedJobId.value, tab = resultTab.value)
       sortAsc: sortAsc.value,
       tableLimit: tableLimit.value,
       tableOffset: tableOffset.value,
-      colWidths: colWidths.value,
+      colWidths: sanitizeTableColumnWidths(colWidths.value),
       colFilters: colFilters.value,
       colFilterOps: colFilterOps.value,
       visibleColumns: visibleColumns.value,
@@ -320,7 +320,7 @@ const applyResultViewState = state => {
   sortAsc.value = state.sortAsc ?? true;
   tableLimit.value = state.tableLimit || 100;
   tableOffset.value = state.tableOffset || 0;
-  colWidths.value = state.colWidths || {};
+  colWidths.value = sanitizeTableColumnWidths(state.colWidths);
   colFilters.value = state.colFilters || {};
   colFilterOps.value = state.colFilterOps || {};
   visibleColumns.value = state.visibleColumns || [];
@@ -1257,6 +1257,10 @@ const EFFICIENCY_FIELD_RE = /(^|_)efficiency(_|$)/i;
 const KERNEL_NAME_FIELD_RE = /^kernel_name(?:_[ab])?$/i;
 const TEXT_NAME_FIELD_RE = /(^|_)(name|operator|op_name)(_|$)/i;
 const SHORT_TEXT_FIELD_RE = /^(type|family|match_method)$/i;
+const TABLE_COLUMN_MIN_WIDTH = 60;
+const TABLE_COLUMN_MAX_WIDTH = 520;
+const TABLE_COLUMN_WEIGHT_UNIT = 120;
+const TABLE_COLUMN_MIN_TABLE_WIDTH = 640;
 
 const isEfficiencyTable = computed(() =>
   EFFICIENCY_TABLE_FILES.has(resultTab.value)
@@ -1463,25 +1467,52 @@ const normalizedTableField = field =>
 const isNumericTableField = field => NUMERIC_TABLE_FIELD_RE.test(normalizedTableField(field));
 const isEfficiencyField = field => EFFICIENCY_FIELD_RE.test(normalizedTableField(field));
 const isLongTableField = field => LONG_TABLE_FIELD_RE.test(normalizedTableField(field));
-const tableColumnWidth = field => {
-  const customWidth = Number(colWidths.value[field]);
-  if (Number.isFinite(customWidth) && customWidth > 0) return customWidth;
+const tableColumnWeight = field => {
   const key = normalizedTableField(field);
-  if (KERNEL_NAME_FIELD_RE.test(key)) return 240;
-  if (TEXT_NAME_FIELD_RE.test(key)) return 180;
-  if (SHORT_TEXT_FIELD_RE.test(key)) return 112;
-  if (key === "triton_code_file") return 150;
-  if (isLongTableField(field)) return 180;
-  if (isEfficiencyField(field)) return 122;
-  if (/(^|_)count(_|$)/i.test(key)) return 96;
-  if (isNumericTableField(field)) return 112;
-  return 132;
+  if (KERNEL_NAME_FIELD_RE.test(key)) return 3.2;
+  if (TEXT_NAME_FIELD_RE.test(key)) return 2.0;
+  if (SHORT_TEXT_FIELD_RE.test(key)) return 1.25;
+  if (key === "triton_code_file") return 1.4;
+  if (isLongTableField(field)) return 1.6;
+  if (isEfficiencyField(field)) return 0.9;
+  if (/(^|_)count(_|$)/i.test(key)) return 0.75;
+  if (isNumericTableField(field)) return 0.85;
+  return 1;
 };
-const tableColumnStyle = field => ({ width: `${tableColumnWidth(field)}px` });
+const clampTableColumnWidth = width => {
+  const value = Number(width);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  return Math.min(TABLE_COLUMN_MAX_WIDTH, Math.max(TABLE_COLUMN_MIN_WIDTH, value));
+};
+const tableColumnWidth = field => {
+  if (colWidths.value[field] === undefined) return null;
+  return clampTableColumnWidth(colWidths.value[field]);
+};
+const tableColumnStyle = field => {
+  const width = tableColumnWidth(field);
+  if (width) return { width: `${width}px` };
+  const totalWeight = displayedFields.value.reduce((total, item) => total + tableColumnWeight(item), 0) || 1;
+  return { width: `${(tableColumnWeight(field) / totalWeight * 100).toFixed(3)}%` };
+};
 const tableStyle = computed(() => {
-  const width = displayedFields.value.reduce((total, field) => total + tableColumnWidth(field), 0);
-  return { width: `${Math.max(1, width)}px` };
+  const minWidth = displayedFields.value.reduce((total, field) => {
+    const customWidth = tableColumnWidth(field);
+    return total + (customWidth || tableColumnWeight(field) * TABLE_COLUMN_WEIGHT_UNIT);
+  }, 0);
+  return {
+    width: "100%",
+    minWidth: `${Math.max(TABLE_COLUMN_MIN_TABLE_WIDTH, Math.round(minWidth))}px`,
+  };
 });
+const sanitizeTableColumnWidths = widths => {
+  if (!widths || typeof widths !== "object") return {};
+  const result = {};
+  for (const [field, width] of Object.entries(widths)) {
+    const clamped = clampTableColumnWidth(width);
+    if (clamped) result[field] = clamped;
+  }
+  return result;
+};
 const tableHeaderClass = field => ({
   "num-col": isNumericTableField(field),
   "long-col": isLongTableField(field),
@@ -5339,7 +5370,7 @@ const startResize = (field, e) => {
   const startX = e.clientX;
   const startWidth = th.offsetWidth;
   const onMove = ev => {
-    const w = Math.max(60, startWidth + ev.clientX - startX);
+    const w = clampTableColumnWidth(startWidth + ev.clientX - startX);
     colWidths.value = { ...colWidths.value, [field]: w };
   };
   const onUp = () => {
