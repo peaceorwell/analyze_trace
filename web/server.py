@@ -6509,7 +6509,8 @@ async def update_project(request: Request, pid: str, body: dict):
     parsed_metric_targets = _parse_project_metric_targets(body.get("metric_targets")) if has_metric_targets else None
     db = await get_db()
 
-    row = await load_owned_project(db, request, pid)
+    target_only_update = set(body.keys()).issubset({"metric_targets", "compute_target_ms"})
+    row = await (load_accessible_project(db, request, pid) if target_only_update else load_owned_project(db, request, pid))
     if not row:
         await db.close()
         raise HTTPException(404)

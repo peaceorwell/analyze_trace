@@ -2014,6 +2014,21 @@ def test_ldap_auth_requires_login_and_isolates_user_data(isolated_server, monkey
         assert shared_detail.status_code == 200
         assert shared_detail.json()["is_owner"] is False
 
+        shared_target = test_client.put(
+            f"/api/projects/{shared_project['id']}",
+            json={"metric_targets": {"compute_ms": 31.25, "kernel_count": 1500}},
+        )
+        assert shared_target.status_code == 200
+        assert shared_target.json()["is_owner"] is False
+        assert shared_target.json()["compute_target_ms"] == 31.25
+        assert shared_target.json()["metric_targets"] == {"compute_ms": 31.25, "kernel_count": 1500.0}
+
+        cannot_rename_shared_project = test_client.put(
+            f"/api/projects/{shared_project['id']}",
+            json={"name": "Bob rename"},
+        )
+        assert cannot_rename_shared_project.status_code == 404
+
         cannot_patch = test_client.patch("/api/jobs/shared-job", json={"label": "bob edit"})
         assert cannot_patch.status_code == 404
 
