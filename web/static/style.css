@@ -4111,7 +4111,7 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
   overflow: auto; flex: 1; min-height: 0;
   border: 1px solid var(--border); border-radius: 8px;
 }
-.data-table { width: 100%; border-collapse: collapse; font-size: 11px; table-layout: fixed; }
+.data-table { width: auto; border-collapse: collapse; font-size: 11px; table-layout: fixed; }
 .data-table thead { position: sticky; top: 0; z-index: 1; }
 
 .data-table th {
@@ -4289,7 +4289,7 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
 .filter-row th:first-child { background: var(--filter-first-bg); }
 .filter-row th.num-col .col-filter-input {
   flex: 1 1 auto;
-  min-width: 58px;
+  min-width: 36px;
   text-align: right;
 }
 .col-filter-wrap { width: 100%; display: flex; gap: 2px; align-items: center; }

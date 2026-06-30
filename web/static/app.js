@@ -136,7 +136,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.4.18");
+const appVersion = ref("0.4.19");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -627,6 +627,15 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.4.19",
+    date: "2026-06-30",
+    title: "CSV 列宽按内容自适应",
+    items: [
+      "CSV 列宽按内容自适应：数字等列贴合最宽值，列少或内容短时不再强行铺满整页。",
+      "kernel name 等长文本列限制最大宽度并截断显示。",
+    ],
+  },
   {
     version: "0.4.18",
     date: "2026-06-30",
@@ -1356,8 +1365,16 @@ const TABLE_COLUMN_MIN_WIDTH = 60;
 // only a sanity guard against corrupt/absurd values — columns (incl. the sticky
 // title column) can be dragged as wide as this.
 const TABLE_COLUMN_SAFETY_MAX = 2000;
-const TABLE_COLUMN_WEIGHT_UNIT = 120;
-const TABLE_COLUMN_MIN_TABLE_WIDTH = 640;
+// Content-based auto sizing: columns fit their widest value (header + cells)
+// instead of stretching to fill the page. Long text columns (kernel name, etc.)
+// are capped so they truncate; short/numeric columns shrink to content.
+const TABLE_AUTO_MIN_WIDTH = 96;       // floor so the filter-row op + input stay usable
+const TABLE_WIDE_COL_MAX = 440;        // truncation cap for long text columns
+const TABLE_CELL_PADDING_X = 9;        // matches td/th horizontal padding
+const TABLE_AUTO_MEASURE_SAMPLE = 400; // rows sampled when measuring width
+const TABLE_HEADER_FONT = "600 10.5px 'JetBrains Mono', monospace";
+const TABLE_MONO_VALUE_FONT = "11px 'JetBrains Mono', monospace";
+const TABLE_TEXT_VALUE_FONT = "11px 'Inter', -apple-system, BlinkMacSystemFont, sans-serif";
 
 const isEfficiencyTable = computed(() =>
   EFFICIENCY_TABLE_FILES.has(resultTab.value)
@@ -1564,49 +1581,76 @@ const normalizedTableField = field =>
 const isNumericTableField = field => NUMERIC_TABLE_FIELD_RE.test(normalizedTableField(field));
 const isEfficiencyField = field => EFFICIENCY_FIELD_RE.test(normalizedTableField(field));
 const isLongTableField = field => LONG_TABLE_FIELD_RE.test(normalizedTableField(field));
-const tableColumnWeight = field => {
+// Long text columns whose content should truncate rather than dictate width.
+const isWideTextField = field => {
   const key = normalizedTableField(field);
-  if (KERNEL_NAME_FIELD_RE.test(key)) return 3.2;
-  if (TEXT_NAME_FIELD_RE.test(key)) return 2.0;
-  if (SHORT_TEXT_FIELD_RE.test(key)) return 1.25;
-  if (key === "triton_code_file") return 1.4;
-  if (isLongTableField(field)) return 1.6;
-  if (isEfficiencyField(field)) return 0.9;
-  if (/(^|_)count(_|$)/i.test(key)) return 0.75;
-  if (isNumericTableField(field)) return 0.85;
-  return 1;
+  return KERNEL_NAME_FIELD_RE.test(key) || TEXT_NAME_FIELD_RE.test(key) || isLongTableField(field);
 };
 const clampTableColumnWidth = (width, { max = TABLE_COLUMN_SAFETY_MAX } = {}) => {
   const value = Number(width);
   if (!Number.isFinite(value) || value <= 0) return null;
   return Math.min(max, Math.max(TABLE_COLUMN_MIN_WIDTH, value));
 };
-const tableColumnWidth = field => {
-  if (colWidths.value[field] === undefined) return null;
-  return clampTableColumnWidth(colWidths.value[field]);
+
+let _tableMeasureCtx = null;
+const measureTextWidth = (text, font) => {
+  if (typeof document === "undefined") return 0;
+  if (!_tableMeasureCtx) _tableMeasureCtx = document.createElement("canvas").getContext("2d");
+  if (!_tableMeasureCtx) return 0;
+  _tableMeasureCtx.font = font;
+  return _tableMeasureCtx.measureText(String(text ?? "")).width;
 };
-const hasCustomTableColumnWidths = computed(() =>
-  displayedFields.value.some(field => tableColumnWidth(field))
-);
+// Width a column needs to fit its widest value; long text columns are capped so
+// they ellipsize, everything else snaps to content.
+const measureColumnContentWidth = (field, rows) => {
+  // triton_code_file renders action buttons, not the path text — fixed width.
+  if (field === "triton_code_file") return 110;
+  const numeric = isNumericTableField(field);
+  const valueFont = numeric ? TABLE_MONO_VALUE_FONT : TABLE_TEXT_VALUE_FONT;
+  // Header reserves room for the sort icon (~16px).
+  let max = measureTextWidth(field, TABLE_HEADER_FONT) + 16;
+  // Badge/chip cells carry extra horizontal padding around the value.
+  const badgeExtra = isEfficiencyField(field) || normalizedTableField(field) === "family" ? 16 : 0;
+  const sample = rows.length > TABLE_AUTO_MEASURE_SAMPLE ? rows.slice(0, TABLE_AUTO_MEASURE_SAMPLE) : rows;
+  for (const row of sample) {
+    const value = row?.[field];
+    if (value === undefined || value === null || value === "") continue;
+    const w = measureTextWidth(value, valueFont) + badgeExtra;
+    if (w > max) max = w;
+  }
+  let width = Math.ceil(max) + TABLE_CELL_PADDING_X * 2 + 6;
+  if (isWideTextField(field)) width = Math.min(width, TABLE_WIDE_COL_MAX);
+  return Math.max(TABLE_AUTO_MIN_WIDTH, Math.min(TABLE_COLUMN_SAFETY_MAX, width));
+};
+// Auto widths recompute only when the table data changes (not on filtering or
+// column toggles), so column widths stay stable while the user filters.
+const autoColWidths = computed(() => {
+  const table = currentTable.value;
+  const fields = table.fields || [];
+  if (!fields.length) return {};
+  const rows = table.rows || [];
+  const widths = {};
+  for (const field of fields) widths[field] = measureColumnContentWidth(field, rows);
+  return widths;
+});
+const tableColumnWidth = field => {
+  if (colWidths.value[field] !== undefined) return clampTableColumnWidth(colWidths.value[field]);
+  const auto = autoColWidths.value[field];
+  return auto ? clampTableColumnWidth(auto) : null;
+};
 const tableColumnStyle = field => {
   const width = tableColumnWidth(field);
-  if (width) return { width: `${width}px` };
-  if (hasCustomTableColumnWidths.value) {
-    return { width: `${Math.round(tableColumnWeight(field) * TABLE_COLUMN_WEIGHT_UNIT)}px` };
-  }
-  const totalWeight = displayedFields.value.reduce((total, item) => total + tableColumnWeight(item), 0) || 1;
-  return { width: `${(tableColumnWeight(field) / totalWeight * 100).toFixed(3)}%` };
+  return width ? { width: `${width}px` } : {};
 };
+// Table width = sum of column widths, so a few short columns stay narrow instead
+// of stretching across the page; wide content scrolls inside .table-scroll.
 const tableStyle = computed(() => {
-  const minWidth = displayedFields.value.reduce((total, field) => {
-    const customWidth = tableColumnWidth(field);
-    return total + (customWidth || tableColumnWeight(field) * TABLE_COLUMN_WEIGHT_UNIT);
-  }, 0);
-  const roundedMinWidth = Math.max(TABLE_COLUMN_MIN_TABLE_WIDTH, Math.round(minWidth));
-  return {
-    width: hasCustomTableColumnWidths.value ? `${roundedMinWidth}px` : "100%",
-    minWidth: `${roundedMinWidth}px`,
-  };
+  const total = displayedFields.value.reduce(
+    (sum, field) => sum + (tableColumnWidth(field) || TABLE_AUTO_MIN_WIDTH),
+    0,
+  );
+  const width = `${Math.round(total)}px`;
+  return { tableLayout: "fixed", width, minWidth: width };
 });
 const sanitizeTableColumnWidths = widths => {
   if (!widths || typeof widths !== "object") return {};
@@ -1616,31 +1660,6 @@ const sanitizeTableColumnWidths = widths => {
     if (clamped) result[field] = clamped;
   }
   return result;
-};
-const snapshotRenderedTableColumnWidths = () => {
-  if (typeof document === "undefined") return {};
-  const headers = Array.from(document.querySelectorAll(".data-table thead tr:first-child th"));
-  if (!headers.length) return {};
-  return displayedFields.value.reduce((widths, field, index) => {
-    const width = clampTableColumnWidth(headers[index]?.getBoundingClientRect?.().width);
-    if (width) widths[field] = Math.round(width);
-    return widths;
-  }, {});
-};
-const freezeRenderedTableColumnWidths = () => {
-  const renderedWidths = snapshotRenderedTableColumnWidths();
-  if (!Object.keys(renderedWidths).length) return colWidths.value;
-  let changed = false;
-  const nextWidths = { ...colWidths.value };
-  for (const field of displayedFields.value) {
-    if (nextWidths[field] !== undefined) continue;
-    const width = renderedWidths[field];
-    if (!width) continue;
-    nextWidths[field] = width;
-    changed = true;
-  }
-  if (changed) colWidths.value = nextWidths;
-  return nextWidths;
 };
 const tableHeaderClass = field => ({
   "num-col": isNumericTableField(field),
@@ -1956,7 +1975,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.4.18";
+  appVersion.value = cfg.version || "0.4.19";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -5747,7 +5766,6 @@ const startResize = (field, e) => {
   // `clientX - left` mapping would jump the column by the grab offset on the
   // first mousemove. Delta keeps the edge tracking the pointer 1:1.
   const startWidth = clampTableColumnWidth(startRect.width) || startRect.width;
-  freezeRenderedTableColumnWidths();
   const isRtl = getComputedStyle(th).direction === "rtl";
   const previousCursor = document.body.style.cursor;
   const previousUserSelect = document.body.style.userSelect;
