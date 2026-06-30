@@ -47,6 +47,7 @@ def classify_kernel(name, args=None):
 # Ordered (keywords, family_label) pairs for semantic kernel family detection.
 # First matching keyword wins. Keywords are checked as lowercase substrings.
 _FAMILY_PATTERNS = [
+    (["union1bmm", "blockbmm"], "bmm"),
     (["gemm", "sgemm", "dgemm", "hgemm", "igemm", "bgemm", "cutlass", "matmul", "cublas"], "gemm"),
     (["flash_attn", "flash_attention", "fmha", "scaled_dot_product", "self_attention"],     "attention"),
     (["layer_norm", "layernorm", "rms_norm", "rmsnorm", "group_norm", "groupnorm",
@@ -128,16 +129,17 @@ def extract_kernel_family(name: str) -> str:
 
     # Triton kernels — group by sub-type token
     if nl.startswith("triton_"):
-        parts = name.split("_")
-        if len(parts) >= 2:
-            sub = parts[1].lower()
-            if sub in ("red", "per"):    # reduction / persistent-reduction
-                return "triton_reduce"
-            if sub in ("poi", "tem"):    # pointwise / template-pointwise
-                return "triton_pointwise"
-            if sub == "mm":
+        if "poi" in nl:    # pointwise / template-pointwise
+            return "triton_pointwise"
+        if "tem" in nl:
+            if "_tritonfusion_" in nl:
+                return "tritonfusion"
+            if "_mm_" in nl:
                 return "triton_mm"
-            return f"triton_{sub}"
+            if "_bmm_" in nl:
+                return "triton_bmm"
+        if any(x in nl for x in ("red", "per")):
+            return "triton_reduce"
         return "triton"
 
     # Collective / communication — must come before _FAMILY_PATTERNS so that names like
