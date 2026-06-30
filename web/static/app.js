@@ -136,7 +136,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.4.15");
+const appVersion = ref("0.4.16");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -610,6 +610,14 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.4.16",
+    date: "2026-06-30",
+    title: "版本更新",
+    items: [
+      "版本号更新到 0.4.16。",
+    ],
+  },
   {
     version: "0.4.15",
     date: "2026-06-30",
@@ -1869,7 +1877,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.4.15";
+  appVersion.value = cfg.version || "0.4.16";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
