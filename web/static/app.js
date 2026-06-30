@@ -382,8 +382,21 @@ const errorModalMsg = ref("");
 const errorModalTitle = ref("错误信息");
 
 // ── Layout / Modals ─────────────────────────────────────────────────────
+const COMPACT_SIDEBAR_QUERY = "(max-width: 720px)";
+const isCompactSidebarViewport = () =>
+  window.matchMedia?.(COMPACT_SIDEBAR_QUERY).matches ?? false;
 const sidebarWidth     = ref(readStoredNumber("tpa-sidebar-width", 240));
-const sidebarCollapsed = ref(readStoredBool("tpa-sidebar-collapsed", false));
+const sidebarCollapsed = ref(
+  isCompactSidebarViewport()
+    ? true
+    : readStoredBool("tpa-sidebar-collapsed", false)
+);
+let sidebarWasCompact = isCompactSidebarViewport();
+window.addEventListener("resize", () => {
+  const compact = isCompactSidebarViewport();
+  if (compact && !sidebarWasCompact) sidebarCollapsed.value = true;
+  sidebarWasCompact = compact;
+});
 
 const toasts = ref([]);
 let toastSeq = 0;
