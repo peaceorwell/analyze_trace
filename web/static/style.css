@@ -4316,10 +4316,27 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
 .btn-clear-filter:hover { background: rgba(99,102,241,.2); }
 
 .col-resize-handle {
-  position: absolute; top: 0; right: 0; bottom: 0; width: 4px;
+  position: absolute; top: 0; right: 0; bottom: 0; width: 8px;
   cursor: col-resize; z-index: 2; transition: background .15s;
 }
-.col-resize-handle:hover { background: var(--purple); opacity: .5; }
+.col-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 5px;
+  right: 1px;
+  bottom: 5px;
+  width: 1px;
+  border-radius: 1px;
+  background: rgba(148, 163, 184, .32);
+  transition: background .15s, width .15s;
+}
+.col-resize-handle:hover {
+  background: rgba(99, 102, 241, .08);
+}
+.col-resize-handle:hover::after {
+  width: 2px;
+  background: rgba(99, 102, 241, .55);
+}
 
 /* ═══════════════════════════════════════════════
    LOADING / ERROR

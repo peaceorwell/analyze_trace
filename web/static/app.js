@@ -136,7 +136,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.4.16");
+const appVersion = ref("0.4.17");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -261,7 +261,11 @@ const readResultMemory = jobId =>
 const hasResultMemory = jobId => Boolean(jobId && localStorage.getItem(resultStateKey(jobId)) !== null);
 const writeResultMemory = (jobId, memory) => {
   if (!jobId) return;
-  localStorage.setItem(resultStateKey(jobId), JSON.stringify(memory));
+  try {
+    localStorage.setItem(resultStateKey(jobId), JSON.stringify(memory));
+  } catch (e) {
+    console.warn("Failed to persist result view state", e);
+  }
 };
 let restoringResultState = false;
 let restoreResultStateToken = 0;
@@ -623,6 +627,15 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.4.17",
+    date: "2026-06-30",
+    title: "CSV 列宽调整修复",
+    items: [
+      "修复 CSV 表格列宽拖拽方向和视觉宽度不一致的问题。",
+      "拖拽列宽时不再误触发表头排序，并为列边界增加浅色分割线。",
+    ],
+  },
   {
     version: "0.4.16",
     date: "2026-06-30",
@@ -1558,9 +1571,15 @@ const tableColumnWidth = field => {
   if (colWidths.value[field] === undefined) return null;
   return clampTableColumnWidth(colWidths.value[field]);
 };
+const hasCustomTableColumnWidths = computed(() =>
+  displayedFields.value.some(field => tableColumnWidth(field))
+);
 const tableColumnStyle = field => {
   const width = tableColumnWidth(field);
   if (width) return { width: `${width}px` };
+  if (hasCustomTableColumnWidths.value) {
+    return { width: `${Math.round(tableColumnWeight(field) * TABLE_COLUMN_WEIGHT_UNIT)}px` };
+  }
   const totalWeight = displayedFields.value.reduce((total, item) => total + tableColumnWeight(item), 0) || 1;
   return { width: `${(tableColumnWeight(field) / totalWeight * 100).toFixed(3)}%` };
 };
@@ -1569,9 +1588,10 @@ const tableStyle = computed(() => {
     const customWidth = tableColumnWidth(field);
     return total + (customWidth || tableColumnWeight(field) * TABLE_COLUMN_WEIGHT_UNIT);
   }, 0);
+  const roundedMinWidth = Math.max(TABLE_COLUMN_MIN_TABLE_WIDTH, Math.round(minWidth));
   return {
-    width: "100%",
-    minWidth: `${Math.max(TABLE_COLUMN_MIN_TABLE_WIDTH, Math.round(minWidth))}px`,
+    width: hasCustomTableColumnWidths.value ? `${roundedMinWidth}px` : "100%",
+    minWidth: `${roundedMinWidth}px`,
   };
 });
 const sanitizeTableColumnWidths = widths => {
@@ -1897,7 +1917,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.4.16";
+  appVersion.value = cfg.version || "0.4.17";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -5633,27 +5653,86 @@ const unshareProject = async (project) => {
   showToast("项目已转为个人", "success");
 };
 
-const setSort = col => {
+let tableResizeSortGuard = null;
+let tableResizeSortGuardTimer = null;
+const armTableResizeSortGuard = field => {
+  if (tableResizeSortGuardTimer) clearTimeout(tableResizeSortGuardTimer);
+  tableResizeSortGuard = { field, until: Date.now() + 450 };
+  tableResizeSortGuardTimer = setTimeout(() => {
+    if (tableResizeSortGuard && Date.now() >= tableResizeSortGuard.until) {
+      tableResizeSortGuard = null;
+    }
+    tableResizeSortGuardTimer = null;
+  }, 500);
+};
+const consumeTableResizeSortGuard = field => {
+  if (!tableResizeSortGuard) return false;
+  if (Date.now() > tableResizeSortGuard.until) {
+    tableResizeSortGuard = null;
+    return false;
+  }
+  const matched = tableResizeSortGuard.field === field;
+  if (matched) {
+    tableResizeSortGuard = null;
+    if (tableResizeSortGuardTimer) {
+      clearTimeout(tableResizeSortGuardTimer);
+      tableResizeSortGuardTimer = null;
+    }
+  }
+  return matched;
+};
+
+const setSort = (col, e) => {
+  if (consumeTableResizeSortGuard(col)) {
+    e?.preventDefault?.();
+    e?.stopPropagation?.();
+    return;
+  }
   if (sortCol.value === col) sortAsc.value = !sortAsc.value;
   else { sortCol.value = col; sortAsc.value = true; }
 };
 
+let activeTableResizeCleanup = null;
 const startResize = (field, e) => {
-  e.preventDefault();
-  e.stopPropagation();
-  const th = e.target.closest('th');
-  const startX = e.clientX;
-  const startWidth = th.offsetWidth;
-  const onMove = ev => {
-    const w = clampTableColumnWidth(startWidth + ev.clientX - startX);
+  e?.preventDefault?.();
+  e?.stopPropagation?.();
+  const source = e?.currentTarget || e?.target;
+  const th = source?.closest?.("th");
+  const startX = Number(e?.clientX);
+  if (!th || !Number.isFinite(startX)) return;
+  if (activeTableResizeCleanup) activeTableResizeCleanup();
+  armTableResizeSortGuard(field);
+  const startRect = th.getBoundingClientRect();
+  const isRtl = getComputedStyle(th).direction === "rtl";
+  const previousCursor = document.body.style.cursor;
+  const previousUserSelect = document.body.style.userSelect;
+  document.body.style.cursor = "col-resize";
+  document.body.style.userSelect = "none";
+  const resizeTo = clientX => {
+    const w = clampTableColumnWidth(
+      isRtl ? startRect.right - clientX : clientX - startRect.left,
+    );
+    if (!w) return;
     colWidths.value = { ...colWidths.value, [field]: w };
   };
-  const onUp = () => {
-    window.removeEventListener('mousemove', onMove);
-    window.removeEventListener('mouseup', onUp);
+  const onMove = ev => {
+    const clientX = Number(ev?.clientX);
+    if (!Number.isFinite(clientX)) return;
+    resizeTo(clientX);
   };
-  window.addEventListener('mousemove', onMove);
-  window.addEventListener('mouseup', onUp);
+  const cleanup = () => {
+    armTableResizeSortGuard(field);
+    document.body.style.cursor = previousCursor;
+    document.body.style.userSelect = previousUserSelect;
+    window.removeEventListener("mousemove", onMove);
+    window.removeEventListener("mouseup", cleanup);
+    window.removeEventListener("blur", cleanup);
+    activeTableResizeCleanup = null;
+  };
+  activeTableResizeCleanup = cleanup;
+  window.addEventListener("mousemove", onMove);
+  window.addEventListener("mouseup", cleanup);
+  window.addEventListener("blur", cleanup);
 };
 
 const downloadCsv = filename => {
@@ -7573,14 +7652,14 @@ const JobDetail = {
               <thead>
                 <tr>
                   <th v-for="f in displayedFields" :key="f"
-                      @click="setSort(f)"
+                      @click="setSort(f, $event)"
                       :class="['th-sortable', tableHeaderClass(f)]"
                       :style="tableColumnStyle(f)">
                     <span class="th-label">{{ f }}</span>
                     <span v-if="sortCol===f" class="th-sort-icon">{{ sortAsc?'↑':'↓' }}</span>
                     <div class="col-resize-handle"
-                         @mousedown.stop="startResize(f, $event)"
-                         @click.stop></div>
+                         @mousedown.stop.prevent="startResize(f, $event)"
+                         @click.stop.prevent></div>
                   </th>
                 </tr>
                 <tr class="filter-row">
