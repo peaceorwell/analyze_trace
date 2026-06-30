@@ -2,6 +2,11 @@
 
 本文件记录 Torch Profiler Analyzer 的主要版本更新。
 
+## [0.4.21] - 2026-07-01
+
+- 收紧 `avg_dur_ms`、`avg_us_per_call` 等短数值列的默认宽度，减少表格中的空白列占位。
+- 保留手动拖拽扩宽能力，仅调整自动列宽上限。
+
 ## [0.4.20] - 2026-07-01
 
 - 未知 Triton family 统一归类为 `triton_other`，并在旧 CSV 展示中兼容合并 `triton` / `triton_other` 行。

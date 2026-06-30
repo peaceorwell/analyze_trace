@@ -136,7 +136,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.4.20");
+const appVersion = ref("0.4.21");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -627,6 +627,15 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.4.21",
+    date: "2026-07-01",
+    title: "CSV 默认列宽收紧",
+    items: [
+      "收紧 avg_dur_ms、avg_us_per_call 等短数值列的默认宽度，减少空白列占位。",
+      "保留手动拖拽扩宽能力，已调整过的列仍可按需拉宽。",
+    ],
+  },
   {
     version: "0.4.20",
     date: "2026-07-01",
@@ -1370,6 +1379,20 @@ const EFFICIENCY_FIELD_RE = /(^|_)efficiency(_|$)/i;
 const KERNEL_NAME_FIELD_RE = /^kernel_name(?:_[ab])?$/i;
 const TEXT_NAME_FIELD_RE = /(^|_)(name|operator|op_name)(_|$)/i;
 const SHORT_TEXT_FIELD_RE = /^(type|family|match_method)$/i;
+const COMPACT_NUMERIC_COLUMN_MAX = {
+  avg_count: 104,
+  avg_count_a: 112,
+  avg_count_b: 112,
+  delta_count: 112,
+  avg_dur_ms: 118,
+  avg_dur_ms_a: 126,
+  avg_dur_ms_b: 126,
+  delta_dur_ms: 126,
+  avg_us_per_call: 126,
+  avg_io_gb: 112,
+  avg_io_gb_a: 118,
+  avg_io_gb_b: 118,
+};
 const TABLE_COLUMN_MIN_WIDTH = 60;
 // Single generous ceiling for both manual dragging and width preservation. It's
 // only a sanity guard against corrupt/absurd values — columns (incl. the sticky
@@ -1596,6 +1619,7 @@ const isWideTextField = field => {
   const key = normalizedTableField(field);
   return KERNEL_NAME_FIELD_RE.test(key) || TEXT_NAME_FIELD_RE.test(key) || isLongTableField(field);
 };
+const compactNumericColumnMax = field => COMPACT_NUMERIC_COLUMN_MAX[normalizedTableField(field)] || null;
 const clampTableColumnWidth = (width, { max = TABLE_COLUMN_SAFETY_MAX } = {}) => {
   const value = Number(width);
   if (!Number.isFinite(value) || value <= 0) return null;
@@ -1630,6 +1654,8 @@ const measureColumnContentWidth = (field, rows) => {
   }
   let width = Math.ceil(max) + TABLE_CELL_PADDING_X * 2 + 6;
   if (isWideTextField(field)) width = Math.min(width, TABLE_WIDE_COL_MAX);
+  const compactMax = compactNumericColumnMax(field);
+  if (compactMax) width = Math.min(width, compactMax);
   return Math.max(TABLE_AUTO_MIN_WIDTH, Math.min(TABLE_COLUMN_SAFETY_MAX, width));
 };
 // Auto widths recompute only when the table data changes (not on filtering or
@@ -1985,7 +2011,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.4.20";
+  appVersion.value = cfg.version || "0.4.21";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
