@@ -3526,10 +3526,13 @@ def _csv_filter_match(row: dict, q: Optional[str], filters: dict, filter_ops: di
         cell = row.get(field, "")
         op = filter_ops.get(field) or "~"
         text = str(value)
-        if op in ("~", "!~"):
+        if op in ("~", "!~", "=="):
             terms = [term.lower() for term in text.split("|") if term]
-            hit = any(term in str(cell).lower() for term in terms)
-            if (op == "~" and not hit) or (op == "!~" and hit):
+            if op == "==":
+                hit = any(term == str(cell).lower() for term in terms)
+            else:
+                hit = any(term in str(cell).lower() for term in terms)
+            if (op == "~" and not hit) or (op == "!~" and hit) or (op == "==" and not hit):
                 return False
             continue
 
