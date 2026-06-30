@@ -4475,7 +4475,7 @@ const drillDownKernelType = async row => {
     sortAsc: false,
     tableSearch: canFilterFamily ? "" : type,
     colFilters: canFilterFamily ? { family: type } : {},
-    colFilterOps: canFilterFamily ? { family: "~" } : {},
+    colFilterOps: canFilterFamily ? { family: "==" } : {},
     visibleColumns: canFilterFamily ? fields.filter(field => field !== "family") : fields,
   };
   const memory = readResultMemory(selectedJobId.value);
@@ -7734,6 +7734,7 @@ const JobDetail = {
                               @click.stop>
                         <option value="~">包含</option>
                         <option value="!~">不包含</option>
+                        <option value="==">等于</option>
                         <option value=">=">&gt;=</option>
                         <option value="<=">&lt;=</option>
                         <option value=">">&gt;</option>
@@ -7744,7 +7745,7 @@ const JobDetail = {
                         v-model="colFilters[f]"
                         class="col-filter-input"
                         :class="{ active: colFilters[f] }"
-                        :type="(colFilterOps[f] && ['~', '!~'].includes(colFilterOps[f])) ? 'text' : 'number'"
+                        :type="(colFilterOps[f] && ['~', '!~', '=='].includes(colFilterOps[f])) ? 'text' : 'number'"
                         placeholder="筛选..."
                         @click.stop />
                     </div>

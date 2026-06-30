@@ -47,7 +47,7 @@ def classify_kernel(name, args=None):
 # Ordered (keywords, family_label) pairs for semantic kernel family detection.
 # First matching keyword wins. Keywords are checked as lowercase substrings.
 _FAMILY_PATTERNS = [
-    (["union1bmm", "blockbmm"], "bmm"),
+    (["union1bmm", "blockbmm", "stridebatchedgemm"], "bmm"),
     (["gemm", "sgemm", "dgemm", "hgemm", "igemm", "bgemm", "cutlass", "matmul", "cublas"], "gemm"),
     (["flash_attn", "flash_attention", "fmha", "scaled_dot_product", "self_attention"],     "attention"),
     (["layer_norm", "layernorm", "rms_norm", "rmsnorm", "group_norm", "groupnorm",
