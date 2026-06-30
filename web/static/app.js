@@ -62,6 +62,7 @@ const filterProject = ref(localStorage.getItem("tpa-filter-project") || "");
 const historyProjectView = ref(localStorage.getItem("tpa-history-project-view") || "all");
 const storedSidebarTab = localStorage.getItem("tpa-sidebar-tab") || "jobs";
 const sidebarTab    = ref(storedSidebarTab === "compare" ? "jobs" : storedSidebarTab);
+const recentViewedProjects = ref([]);
 const selectedJobId = ref(null);
 const selectedJob   = ref(null);
 const jobLoading    = ref(false);
@@ -134,13 +135,16 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.4.13");
+const appVersion = ref("0.4.14");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
 const currentUser = ref(null);
 const currentUserIsAdmin = ref(false);
 const PROJECT_EXPANSION_STORAGE_PREFIX = "tpa-expanded-groups-v2";
+const RECENT_VIEWED_PROJECTS_STORAGE_PREFIX = "tpa-recent-viewed-projects-v1";
+const RECENT_VIEWED_PROJECT_LIMIT = 6;
+const RECENT_VIEWED_PROJECT_STORE_LIMIT = 12;
 const LOGIN_USERNAME_KEY = "tpa-login-username";
 const LOGIN_REMEMBER_USERNAME_KEY = "tpa-login-remember-username";
 const loginRememberUsername = ref(readStoredBool(LOGIN_REMEMBER_USERNAME_KEY, true));
@@ -171,6 +175,9 @@ const projectExpansionStorageKey = () =>
 const restoreProjectExpansionState = () => {
   collapsedGroups.value = readStoredJson(projectExpansionStorageKey(), {});
 };
+
+const recentViewedProjectsStorageKey = () =>
+  `${RECENT_VIEWED_PROJECTS_STORAGE_PREFIX}:${projectExpansionUserKey()}`;
 const perfettoOpening = ref({});
 const compareRerunLoading = ref(false);
 const singleTraceAnalyzeLoadingSlot = ref("");
@@ -586,6 +593,15 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.4.14",
+    date: "2026-06-30",
+    title: "最近查看与 CSV 筛选优化",
+    items: [
+      "侧边栏新增最近查看项目入口，打开任务、实验树或展开项目后可快速回到上下文。",
+      "优化 CSV 表格列筛选行，筛选输入框铺满单元格剩余宽度。",
+    ],
+  },
   {
     version: "0.4.13",
     date: "2026-06-29",
@@ -1575,11 +1591,110 @@ const fmtDateTime = iso => {
 const statusIcon = s => ({ pending: "⏳", running: "⟳", done: "✓", error: "✗" }[s] || s);
 const statusText = s => ({ pending: "排队中", running: "分析中", done: "已完成", error: "失败" }[s] || s);
 
+const findProjectMeta = projectId => {
+  if (!projectId || projectId === "__none__") return null;
+  return projects.value.find(project => project.id === projectId)
+    || historyProjectGroups.value.find(group => group.id === projectId)
+    || null;
+};
+
+const normalizeRecentViewedProject = (projectOrId, viewedAt) => {
+  const id = typeof projectOrId === "string" ? projectOrId : projectOrId?.id;
+  if (!id || id === "__none__") return null;
+  const source = typeof projectOrId === "string"
+    ? findProjectMeta(projectOrId)
+    : { ...(findProjectMeta(id) || {}), ...(projectOrId || {}) };
+  const label = String(source?.name || source?.label || "").trim();
+  return {
+    id,
+    label: label || `项目 ${String(id).slice(0, 8)}`,
+    is_public: source?.is_public ? 1 : 0,
+    is_owner: source?.is_owner !== false,
+    is_favorite: source?.is_favorite ? 1 : 0,
+    has_experiment_tree: source?.has_experiment_tree ? 1 : 0,
+    viewed_at: viewedAt || source?.viewed_at || new Date().toISOString(),
+  };
+};
+
+const writeRecentViewedProjects = () => {
+  try {
+    localStorage.setItem(
+      recentViewedProjectsStorageKey(),
+      JSON.stringify(recentViewedProjects.value.slice(0, RECENT_VIEWED_PROJECT_STORE_LIMIT)),
+    );
+  } catch (e) {}
+};
+
+const restoreRecentViewedProjects = () => {
+  const stored = readStoredJson(recentViewedProjectsStorageKey(), []);
+  recentViewedProjects.value = (Array.isArray(stored) ? stored : [])
+    .map(item => normalizeRecentViewedProject(item, item?.viewed_at))
+    .filter(Boolean)
+    .slice(0, RECENT_VIEWED_PROJECT_STORE_LIMIT);
+};
+
+const syncRecentViewedProjectsWithProjects = () => {
+  const accessibleProjects = new Set(projects.value.map(project => project.id));
+  const next = recentViewedProjects.value
+    .filter(item => accessibleProjects.has(item.id))
+    .map(item => normalizeRecentViewedProject(item, item.viewed_at))
+    .filter(Boolean)
+    .slice(0, RECENT_VIEWED_PROJECT_STORE_LIMIT);
+  recentViewedProjects.value = next;
+  writeRecentViewedProjects();
+};
+
+const rememberRecentProject = projectOrId => {
+  const record = normalizeRecentViewedProject(projectOrId);
+  if (!record) return;
+  recentViewedProjects.value = [
+    record,
+    ...recentViewedProjects.value.filter(item => item.id !== record.id),
+  ].slice(0, RECENT_VIEWED_PROJECT_STORE_LIMIT);
+  writeRecentViewedProjects();
+};
+
+const recentViewedProjectItems = computed(() =>
+  recentViewedProjects.value
+    .map(item => normalizeRecentViewedProject(item, item.viewed_at))
+    .filter(Boolean)
+    .slice(0, RECENT_VIEWED_PROJECT_LIMIT)
+);
+
+const recentProjectSubtitle = project => {
+  const visibility = project.is_public
+    ? (project.is_owner ? "我创建 · 已共享" : "共享给我")
+    : "我创建";
+  const viewedAt = fmtDate(project.viewed_at);
+  return viewedAt ? `${visibility} · ${viewedAt}` : visibility;
+};
+
+const clearRecentViewedProjects = () => {
+  recentViewedProjects.value = [];
+  writeRecentViewedProjects();
+};
+
+const openRecentProject = project => {
+  if (!project?.id) return;
+  rememberRecentProject(project);
+  historyProjectView.value = "all";
+  filterProject.value = project.id;
+  collapsedGroups.value = { ...collapsedGroups.value, [project.id]: true };
+  loadHistoryGroupJobs(project.id, true);
+};
+
+const openRecentProjectTree = project => {
+  if (!project?.id) return;
+  rememberRecentProject(project);
+  router.push({ path: `/project/${project.id}/tree` });
+};
+
 const toggleGroup = async label => {
   const opening = !collapsedGroups.value[label];
   collapsedGroups.value[label] = opening;
   if (opening) {
     const group = historyGroups.value.find(item => item.id === label);
+    rememberRecentProject(group);
     if (group && !group.jobs_loaded) await loadHistoryGroupJobs(label, true);
   }
 };
@@ -1728,7 +1843,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.4.13";
+  appVersion.value = cfg.version || "0.4.14";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -1743,6 +1858,7 @@ const loadMe = async () => {
     currentUserIsAdmin.value = false;
     authChecked.value = true;
     restoreProjectExpansionState();
+    restoreRecentViewedProjects();
     return null;
   }
   if (!r.ok) {
@@ -1754,6 +1870,7 @@ const loadMe = async () => {
   currentUserIsAdmin.value = Boolean(data.is_admin);
   authChecked.value = true;
   restoreProjectExpansionState();
+  restoreRecentViewedProjects();
   return currentUser.value;
 };
 
@@ -1801,6 +1918,7 @@ const submitLogin = async () => {
     currentUser.value = data.user || null;
     currentUserIsAdmin.value = Boolean(data.is_admin);
     restoreProjectExpansionState();
+    restoreRecentViewedProjects();
     window.setTimeout(() => {
       loginForm.value.password = "";
       loginForm.value.captcha = "";
@@ -1826,6 +1944,7 @@ const logout = async () => {
   projects.value = [];
   historyGroups.value = [];
   historyJobs.value = [];
+  recentViewedProjects.value = [];
   collapsedGroups.value = {};
   compareJobs.value = [];
   selectedJobId.value = null;
@@ -1847,6 +1966,7 @@ const loadProjects = async () => {
     ) {
       filterProject.value = "";
     }
+    syncRecentViewedProjectsWithProjects();
   } catch (e) {
     const message = normalizeApiError(e, "加载项目失败");
     console.error("loadProjects error:", e);
@@ -3399,6 +3519,7 @@ const loadJob = async id => {
   }
   selectedJob.value = data;
   clearProjectFilterIfJobIsHidden(data);
+  rememberRecentProject(data.project_id);
   resultTable.value = { fields: [], rows: [], total: 0, filtered_total: 0, limit: tableLimit.value, offset: tableOffset.value };
   resultTableFile.value = "";
   consoleSearch.value = "";
@@ -9470,6 +9591,7 @@ const ExperimentTree = {
           projectMeta.value = payload.project;
           const projectIndex = projects.value.findIndex(project => project.id === payload.project.id);
           if (projectIndex >= 0) projects.value.splice(projectIndex, 1, { ...projects.value[projectIndex], ...payload.project });
+          rememberRecentProject(payload.project);
           refreshProjectMetricTargetDraft();
         }
         nodes.value = payload.nodes || [];
@@ -11152,6 +11274,8 @@ const App = {
       historyJobs, historyJobsTotal, historyJobsLimit, historyJobsOffset, historyJobsLoading,
       historyProjectGroups, historyAllJobCount, activeHistoryProject, historyListTitle, historyListSubtitle,
       projectQuickViews, activeProjectView, historyProjectView,
+      recentViewedProjectItems, recentProjectSubtitle, clearRecentViewedProjects,
+      openRecentProject, openRecentProjectTree,
       historySearch, filterProject, sidebarTab, selectedJobId, selectedJob,
       collapsedGroups, groupedJobs, loadedHistoryJobIds,
       draggingProjectId, dragOverProjectId, projectOrderSaving,
