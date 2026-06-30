@@ -1603,6 +1603,31 @@ const sanitizeTableColumnWidths = widths => {
   }
   return result;
 };
+const snapshotRenderedTableColumnWidths = () => {
+  if (typeof document === "undefined") return {};
+  const headers = Array.from(document.querySelectorAll(".data-table thead tr:first-child th"));
+  if (!headers.length) return {};
+  return displayedFields.value.reduce((widths, field, index) => {
+    const width = clampTableColumnWidth(headers[index]?.getBoundingClientRect?.().width);
+    if (width) widths[field] = Math.round(width);
+    return widths;
+  }, {});
+};
+const freezeRenderedTableColumnWidths = () => {
+  const renderedWidths = snapshotRenderedTableColumnWidths();
+  if (!Object.keys(renderedWidths).length) return colWidths.value;
+  let changed = false;
+  const nextWidths = { ...colWidths.value };
+  for (const field of displayedFields.value) {
+    if (nextWidths[field] !== undefined) continue;
+    const width = renderedWidths[field];
+    if (!width) continue;
+    nextWidths[field] = width;
+    changed = true;
+  }
+  if (changed) colWidths.value = nextWidths;
+  return nextWidths;
+};
 const tableHeaderClass = field => ({
   "num-col": isNumericTableField(field),
   "long-col": isLongTableField(field),
@@ -5703,6 +5728,7 @@ const startResize = (field, e) => {
   if (activeTableResizeCleanup) activeTableResizeCleanup();
   armTableResizeSortGuard(field);
   const startRect = th.getBoundingClientRect();
+  freezeRenderedTableColumnWidths();
   const isRtl = getComputedStyle(th).direction === "rtl";
   const previousCursor = document.body.style.cursor;
   const previousUserSelect = document.body.style.userSelect;
