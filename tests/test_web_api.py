@@ -70,7 +70,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.4.17",
+        "version": "0.4.20",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -3684,6 +3684,59 @@ def test_all_kernels_cmp_without_family_exposes_virtual_family(client):
     assert filtered.json()["filtered_total"] == 1
     assert filtered.json()["rows"][0]["kernel_name"] == "gemm_kernel"
     assert filtered.json()["rows"][0]["family"] == "gemm"
+
+
+def test_kernel_type_tables_normalize_legacy_triton_rows(client):
+    result_dir = Path(web_server.result_dir("kernel-type-normalize-job"))
+    result_dir.mkdir(parents=True)
+    (result_dir / "kernel_types_cmp.csv").write_text(
+        "type,avg_dur_ms_A,avg_dur_ms_B,delta_dur_ms,avg_count_A,avg_count_B\n"
+        "triton,1,2,1,10,20\n"
+        "triton_other,3,5,2,30,50\n"
+        "gemm,8,7,-1,4,4\n",
+        encoding="utf-8",
+    )
+    (result_dir / "all_kernels_avg.csv").write_text(
+        "kernel_name,family,avg_count,avg_dur_ms\n"
+        "legacy_kernel,triton,1,2\n",
+        encoding="utf-8",
+    )
+
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                "INSERT INTO jobs(id, label, mode, status, result_dir) VALUES(?,?,?,?,?)",
+                ("kernel-type-normalize-job", "types", "compare", "done", str(result_dir)),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+
+    detail = client.get("/api/jobs/kernel-type-normalize-job")
+    assert detail.status_code == 200
+    assert detail.json()["result_files"]["kernel_types_cmp.csv"]["fields"] == [
+        "type", "avg_dur_ms_A", "avg_dur_ms_B", "delta_dur_ms",
+        "avg_count_A", "avg_count_B", "delta_count",
+    ]
+
+    page = client.get("/api/jobs/kernel-type-normalize-job/results/kernel_types_cmp.csv")
+    assert page.status_code == 200
+    rows = page.json()["rows"]
+    triton_rows = [row for row in rows if row["type"] == "triton_other"]
+    assert len(triton_rows) == 1
+    assert triton_rows[0]["avg_dur_ms_A"] == "4"
+    assert triton_rows[0]["avg_dur_ms_B"] == "7"
+    assert triton_rows[0]["delta_dur_ms"] == "3"
+    assert triton_rows[0]["avg_count_A"] == "40"
+    assert triton_rows[0]["avg_count_B"] == "70"
+    assert triton_rows[0]["delta_count"] == "30"
+
+    kernels = client.get("/api/jobs/kernel-type-normalize-job/results/all_kernels_avg.csv")
+    assert kernels.status_code == 200
+    assert kernels.json()["rows"][0]["family"] == "triton_other"
 
 
 def test_result_table_can_return_more_than_default_page_cap(client):

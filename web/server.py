@@ -45,6 +45,7 @@ from trace_analyzer import (  # noqa: E402
     compute_avgs,
     extract_kernel_family,
     filter_parsed_steps,
+    fmt3,
     parse_step_filter,
     parse_trace,
     run_triton_code_and_get_efficiency,
@@ -58,7 +59,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.4.19"
+APP_VERSION = "0.4.20"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -1589,8 +1590,10 @@ def csv_to_rows(path: str) -> dict:
         return {"fields": [], "rows": []}
     with open(path, newline="") as f:
         reader = csv.DictReader(f)
-        fields = _result_csv_fields(os.path.basename(path), reader.fieldnames or [])
-        rows = [_result_csv_row(os.path.basename(path), row) for row in reader]
+        filename = os.path.basename(path)
+        fields = _result_csv_fields(filename, reader.fieldnames or [])
+        rows = [_result_csv_row(filename, row) for row in reader]
+        rows = _aggregate_kernel_type_rows(filename, fields, rows)
         return {"fields": fields, "rows": rows}
 
 
@@ -1637,17 +1640,93 @@ def _filter_result_csv_row(row: dict) -> dict:
 
 
 def _augment_result_csv_fields(filename: str, fields: list[str]) -> list[str]:
-    if filename != "all_kernels_cmp.csv" or "family" in fields or "kernel_name" not in fields:
-        return fields
-    idx = fields.index("kernel_name") + 1
-    return fields[:idx] + ["family"] + fields[idx:]
+    fields = list(fields)
+    if filename == "all_kernels_cmp.csv" and "family" not in fields and "kernel_name" in fields:
+        idx = fields.index("kernel_name") + 1
+        fields = fields[:idx] + ["family"] + fields[idx:]
+    if (
+        filename == "kernel_types_cmp.csv"
+        and "delta_count" not in fields
+        and "avg_count_A" in fields
+        and "avg_count_B" in fields
+    ):
+        idx = fields.index("avg_count_B") + 1
+        fields = fields[:idx] + ["delta_count"] + fields[idx:]
+    return fields
+
+
+def _normalize_result_category_label(value: object) -> object:
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    return "triton_other" if text == "triton" else text
 
 
 def _augment_result_csv_row(filename: str, row: dict) -> dict:
     if filename == "all_kernels_cmp.csv" and "family" not in row and row.get("kernel_name"):
         row = dict(row)
         row["family"] = extract_kernel_family(row["kernel_name"])
+    if "family" in row:
+        row = dict(row)
+        row["family"] = _normalize_result_category_label(row.get("family"))
+    if filename in {"kernel_types_avg.csv", "kernel_types_cmp.csv"} and "type" in row:
+        row = dict(row)
+        row["type"] = _normalize_result_category_label(row.get("type"))
     return row
+
+
+def _is_kernel_type_result_csv(filename: str) -> bool:
+    return filename in {"kernel_types_avg.csv", "kernel_types_cmp.csv"}
+
+
+def _sum_csv_number(rows: list[dict], field: str) -> float:
+    total = 0.0
+    for row in rows:
+        value = _float_or_none(row.get(field))
+        if value is not None:
+            total += value
+    return total
+
+
+def _aggregate_kernel_type_rows(filename: str, fields: list[str], rows: list[dict]) -> list[dict]:
+    if not _is_kernel_type_result_csv(filename) or "type" not in fields:
+        return rows
+
+    grouped: dict[str, list[dict]] = {}
+    order: list[str] = []
+    for row in rows:
+        key = _normalize_result_category_label(row.get("type"))
+        if not key:
+            continue
+        if key not in grouped:
+            grouped[key] = []
+            order.append(key)
+        grouped[key].append({**row, "type": key})
+
+    merged = []
+    for key in order:
+        bucket = grouped[key]
+        row = {field: bucket[0].get(field, "") for field in fields}
+        row["type"] = key
+        if filename == "kernel_types_avg.csv":
+            for field in ("avg_count", "avg_dur_ms"):
+                if field in fields:
+                    row[field] = fmt3(_sum_csv_number(bucket, field))
+        else:
+            for field in ("avg_dur_ms_A", "avg_dur_ms_B", "avg_count_A", "avg_count_B"):
+                if field in fields:
+                    row[field] = fmt3(_sum_csv_number(bucket, field))
+            dur_a = _sum_csv_number(bucket, "avg_dur_ms_A")
+            dur_b = _sum_csv_number(bucket, "avg_dur_ms_B")
+            count_a = _sum_csv_number(bucket, "avg_count_A")
+            count_b = _sum_csv_number(bucket, "avg_count_B")
+            if "delta_dur_ms" in fields:
+                row["delta_dur_ms"] = fmt3(dur_b - dur_a)
+            if "delta_count" in fields:
+                row["delta_count"] = fmt3(count_b - count_a)
+        merged.append(row)
+
+    return merged
 
 
 def _result_csv_fields(filename: str, fields: list[str]) -> list[str]:
@@ -3586,6 +3665,29 @@ def read_csv_page(
         rows = []
         total = 0
         filtered_total = 0
+        if _is_kernel_type_result_csv(filename):
+            rows = _aggregate_kernel_type_rows(
+                filename,
+                fields,
+                [_result_csv_row(filename, row) for row in reader],
+            )
+            total = len(rows)
+            rows = [row for row in rows if _csv_filter_match(row, q, filters, filter_ops)]
+            filtered_total = len(rows)
+            if sort_col and sort_col in fields:
+                rows.sort(
+                    key=lambda item: _sort_value(item.get(sort_col)),
+                    reverse=(sort_dir == "desc"),
+                )
+            page_rows = rows[offset:offset + limit]
+            return {
+                "fields": fields,
+                "rows": page_rows,
+                "total": total,
+                "filtered_total": filtered_total,
+                "limit": limit,
+                "offset": offset,
+            }
         requires_materialize = bool(q or filters or sort_col)
         if requires_materialize:
             for row in reader:

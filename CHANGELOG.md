@@ -2,6 +2,12 @@
 
 本文件记录 Torch Profiler Analyzer 的主要版本更新。
 
+## [0.4.20] - 2026-07-01
+
+- 未知 Triton family 统一归类为 `triton_other`，并在旧 CSV 展示中兼容合并 `triton` / `triton_other` 行。
+- `kernel_types_cmp.csv` 补充 `delta_count`，类型对比统计更完整。
+- 侧边栏打开任务时只保留高亮，不再把当前条目挪到项目内第一位。
+
 ## [0.4.19] - 2026-06-30
 
 - CSV 列宽改为按内容自适应：数字等列贴合最宽值，列少或内容较短时不再强行铺满整页，宽表则横向滚动。

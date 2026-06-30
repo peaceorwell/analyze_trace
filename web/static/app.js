@@ -136,7 +136,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.4.19");
+const appVersion = ref("0.4.20");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -627,6 +627,16 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.4.20",
+    date: "2026-07-01",
+    title: "CSV 分类与侧边栏顺序修复",
+    items: [
+      "未知 Triton family 统一显示为 triton_other，并兼容合并旧 CSV 中的 triton / triton_other 行。",
+      "类型对比 CSV 补充调用数 Delta，统计展示更完整。",
+      "侧边栏打开任务时只高亮当前条目，不再改变项目内原有顺序。",
+    ],
+  },
   {
     version: "0.4.19",
     date: "2026-06-30",
@@ -1975,7 +1985,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.4.19";
+  appVersion.value = cfg.version || "0.4.20";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -3569,11 +3579,15 @@ const upsertHistoryGroupJob = (groupId, job) => {
   if (!groupId || !job?.id) return;
   const group = historyGroups.value.find(item => item.id === groupId);
   if (!group) return;
-  const rest = (group.jobs || []).filter(item => item.id !== job.id);
+  const jobs = group.jobs || [];
+  const index = jobs.findIndex(item => item.id === job.id);
+  if (index < 0) return;
+  const nextJobs = [...jobs];
+  nextJobs.splice(index, 1, { ...jobs[index], ...sidebarJobSnapshot(job) });
   updateHistoryGroup(groupId, {
-    jobs: [sidebarJobSnapshot(job), ...rest],
+    jobs: nextJobs,
     jobs_loaded: true,
-    jobs_total: Math.max(Number(group.jobs_total || 0), Number(group.job_count || 0), rest.length + 1),
+    jobs_total: Math.max(Number(group.jobs_total || 0), Number(group.job_count || 0), jobs.length),
   });
 };
 

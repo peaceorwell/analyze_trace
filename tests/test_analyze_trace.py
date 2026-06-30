@@ -62,6 +62,10 @@ class TestClassifyKernel:
         result = classify_kernel("triton_poi_fused_add")
         assert result == "triton_pointwise"
 
+    def test_triton_unknown_family(self):
+        result = classify_kernel("triton_xyz_kernel")
+        assert result == "triton_other"
+
     def test_auto_family(self):
         result = classify_kernel("gemm_cuda_kernel")
         assert result == "gemm"
@@ -741,11 +745,13 @@ class TestEndToEnd:
 
         assert rows[0]["type"] == "attention"
         assert rows[0]["delta_dur_ms"] == "-30"
+        assert rows[0]["delta_count"] == "0"
         assert rows[1]["type"] == "gemm"
         assert rows[1]["delta_dur_ms"] == "8"
 
         cmp_fields = rows[0].keys()
 
+        assert "delta_count" in cmp_fields
         assert "dur_pct_A" not in cmp_fields
         assert "dur_pct_B" not in cmp_fields
         assert not os.path.exists(os.path.join(temp_output_dir, "kernel_types_delta.csv"))

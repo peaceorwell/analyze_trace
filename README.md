@@ -516,7 +516,7 @@ analyze-trace baseline.json.gz optimized.json.gz -o ./output
 
 Kernel family 规则：
 
-- `triton`：名称以 `triton_` 开头，并进一步细分为 `triton_mm`、`triton_reduce`、`triton_pointwise` 等。
+- `triton_other`：名称以 `triton_` 开头但未命中 `triton_mm`、`triton_bmm`、`triton_reduce`、`triton_pointwise` 等细分规则的兜底类型。
 - `collective`：TCDP 前缀或包含 `nccl`、`cncl`、`allreduce`、`allgather` 等通信关键词，单独统计，不计入 compute 分析。
 - 语义聚类：匹配 `gemm`、`conv`、`embedding`、`pool`、`norm`、`attention` 等常见类型。
 - fallback：无法匹配规则的 kernel 按名称前缀归类，兜底归入 `other`。

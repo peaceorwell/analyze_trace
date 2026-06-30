@@ -119,7 +119,7 @@ def extract_kernel_family(name: str) -> str:
     """Map a GPU kernel name to a semantic family label.
 
     Priority order:
-    1. triton_ prefix  → triton sub-type (triton_reduce / triton_pointwise / triton_<sub>)
+    1. triton_ prefix  -> triton sub-type (triton_reduce / triton_pointwise / triton_other)
     2. Collective / communication keywords  (checked BEFORE semantic patterns to avoid
        misclassifying e.g. TCDP_RING_ALLREDUCE as "reduce")
     3. Known semantic patterns from _FAMILY_PATTERNS
@@ -140,7 +140,7 @@ def extract_kernel_family(name: str) -> str:
                 return "triton_bmm"
         if any(x in nl for x in ("red", "per")):
             return "triton_reduce"
-        return "triton"
+        return "triton_other"
 
     # Collective / communication — must come before _FAMILY_PATTERNS so that names like
     # TCDP_RING_ALLREDUCE_* are not matched by the "reduce_" pattern first.
@@ -2384,7 +2384,7 @@ def _write_kernel_types_cmp_csv(path, data_a, data_b):
     with open(path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=[
             "type", "avg_dur_ms_A", "avg_dur_ms_B",
-            "delta_dur_ms", "avg_count_A", "avg_count_B",
+            "delta_dur_ms", "avg_count_A", "avg_count_B", "delta_count",
         ], extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
