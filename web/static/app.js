@@ -1047,6 +1047,13 @@ const loadedHistoryJobIds = computed(() =>
 const historyAllJobCount = computed(() =>
   historyProjectGroups.value.reduce((sum, group) => sum + Number(group.job_count || 0), 0)
 );
+const sidebarProjectIdForJob = job => job ? (job.project_id || "__none__") : "";
+const currentSidebarProjectId = computed(() => sidebarProjectIdForJob(selectedJob.value));
+const isSidebarProjectActive = projectOrGroup =>
+  Boolean(projectOrGroup?.id && (
+    filterProject.value === projectOrGroup.id ||
+    currentSidebarProjectId.value === projectOrGroup.id
+  ));
 const projectViewStats = computed(() => {
   const allProjects = projects.value.filter(project => project.id);
   return {
@@ -3284,6 +3291,8 @@ let compareJobsController = null;
 let projectBulkJobsController = null;
 let resultTableController = null;
 let loadJobRequestSeq = 0;
+let suppressSidebarAutoRefresh = false;
+let suppressSidebarAutoRefreshToken = 0;
 const historyGroupControllers = {};
 
 const cancelResultTableRequest = () => {
@@ -3392,6 +3401,17 @@ const updateHistoryGroup = (groupId, patch) => {
   );
 };
 
+const mergeHistoryJobs = (existing = [], incoming = []) => {
+  const seen = new Set();
+  const merged = [];
+  for (const job of [...existing, ...incoming]) {
+    if (!job?.id || seen.has(job.id)) continue;
+    seen.add(job.id);
+    merged.push(job);
+  }
+  return merged;
+};
+
 const loadHistoryGroupJobs = async (groupId, reset = false) => {
   const group = historyGroups.value.find(item => item.id === groupId);
   if (!group) return;
@@ -3421,11 +3441,12 @@ const loadHistoryGroupJobs = async (groupId, reset = false) => {
     if (historyGroupControllers[groupId] !== controller) return;
     const latest = historyGroups.value.find(item => item.id === groupId);
     if (!latest) return;
-    const jobs = reset ? (data.data || []) : [...latest.jobs, ...(data.data || [])];
+    const incomingJobs = data.data || [];
+    const jobs = reset ? incomingJobs : mergeHistoryJobs(latest.jobs, incomingJobs);
     updateHistoryGroup(groupId, {
       jobs,
       jobs_total: data.total || 0,
-      jobs_offset: jobs.length,
+      jobs_offset: reset ? incomingJobs.length : offset + incomingJobs.length,
       jobs_loaded: true,
       jobs_loading: false,
     });
@@ -3438,6 +3459,87 @@ const loadHistoryGroupJobs = async (groupId, reset = false) => {
     if (historyGroupControllers[groupId] === controller) {
       delete historyGroupControllers[groupId];
     }
+  }
+};
+
+const sidebarJobSnapshot = job => ({
+  id: job.id,
+  seq: job.seq,
+  label: job.label,
+  status: job.status,
+  mode: job.mode,
+  created_at: job.created_at,
+  is_pinned: job.is_pinned,
+  is_owner: job.is_owner,
+  project_id: job.project_id,
+});
+
+const upsertHistoryGroupJob = (groupId, job) => {
+  if (!groupId || !job?.id) return;
+  const group = historyGroups.value.find(item => item.id === groupId);
+  if (!group) return;
+  const rest = (group.jobs || []).filter(item => item.id !== job.id);
+  updateHistoryGroup(groupId, {
+    jobs: [sidebarJobSnapshot(job), ...rest],
+    jobs_loaded: true,
+    jobs_total: Math.max(Number(group.jobs_total || 0), Number(group.job_count || 0), rest.length + 1),
+  });
+};
+
+const setSidebarFiltersSilently = patch => {
+  const token = ++suppressSidebarAutoRefreshToken;
+  suppressSidebarAutoRefresh = true;
+  if (Object.prototype.hasOwnProperty.call(patch, "historySearch")) historySearch.value = patch.historySearch;
+  if (Object.prototype.hasOwnProperty.call(patch, "historyProjectView")) historyProjectView.value = patch.historyProjectView;
+  if (Object.prototype.hasOwnProperty.call(patch, "filterProject")) filterProject.value = patch.filterProject;
+  historyGroupsOffset.value = 0;
+  historyJobsOffset.value = 0;
+  compareJobsOffset.value = 0;
+  historySelection.value = [];
+  localStorage.setItem("tpa-filter-project", filterProject.value);
+  localStorage.setItem("tpa-history-project-view", historyProjectView.value);
+  nextTick(() => {
+    if (suppressSidebarAutoRefreshToken === token) suppressSidebarAutoRefresh = false;
+  });
+};
+
+const focusCurrentJobInSidebar = async job => {
+  if (!job?.id) return;
+  const focusJobId = job.id;
+  const groupId = sidebarProjectIdForJob(job);
+  if (!groupId) return;
+  sidebarTab.value = "jobs";
+  collapsedGroups.value = { ...collapsedGroups.value, [groupId]: true };
+
+  try {
+    let needsReload = false;
+    if (historySearch.value.trim()) {
+      setSidebarFiltersSilently({ historySearch: "" });
+      needsReload = true;
+    }
+    if (!historyGroups.value.some(group => group.id === groupId)) {
+      needsReload = true;
+    }
+    if (needsReload) await loadHistoryGroups();
+
+    if (!historyGroups.value.some(group => group.id === groupId)) {
+      setSidebarFiltersSilently({
+        historySearch: "",
+        historyProjectView: "all",
+        filterProject: groupId,
+      });
+      await refreshSidebarData();
+    }
+
+    const group = historyGroups.value.find(item => item.id === groupId);
+    if (!group || selectedJobId.value !== focusJobId) return;
+    collapsedGroups.value = { ...collapsedGroups.value, [groupId]: true };
+    if (!group.jobs_loaded || !(group.jobs || []).some(item => item.id === focusJobId)) {
+      await loadHistoryGroupJobs(groupId, true);
+    }
+    if (selectedJobId.value === focusJobId) upsertHistoryGroupJob(groupId, job);
+  } catch (e) {
+    if (e.name !== "AbortError") console.warn("focusCurrentJobInSidebar failed", e);
   }
 };
 
@@ -11082,6 +11184,7 @@ const loadJobRoute = async to => {
   }
   sidebarTab.value = "jobs";
   jobLoading.value = false;
+  focusCurrentJobInSidebar(selectedJob.value);
   return true;
 };
 
@@ -11214,6 +11317,7 @@ const App = {
       compareJobsOffset.value = 0;
       historySelection.value = [];
       localStorage.setItem("tpa-filter-project", filterProject.value);
+      if (suppressSidebarAutoRefresh) return;
       refreshSidebarData();
     });
 
@@ -11222,11 +11326,13 @@ const App = {
       historyJobsOffset.value = 0;
       historySelection.value = [];
       localStorage.setItem("tpa-history-project-view", historyProjectView.value);
+      if (suppressSidebarAutoRefresh) return;
       refreshSidebarData();
     });
 
     watch(historySearch, () => {
       clearTimeout(historySearchTimer);
+      if (suppressSidebarAutoRefresh) return;
       historySearchTimer = setTimeout(() => {
         historyGroupsOffset.value = 0;
         historyJobsOffset.value = 0;
@@ -11329,6 +11435,7 @@ const App = {
       historyJobs, historyJobsTotal, historyJobsLimit, historyJobsOffset, historyJobsLoading,
       historyProjectGroups, historyAllJobCount, activeHistoryProject, historyListTitle, historyListSubtitle,
       projectQuickViews, activeProjectView, historyProjectView,
+      currentSidebarProjectId, isSidebarProjectActive,
       recentViewedProjectItems, recentProjectSubtitle, clearRecentViewedProjects,
       openRecentProject, openRecentProjectTree,
       historySearch, filterProject, sidebarTab, selectedJobId, selectedJob,

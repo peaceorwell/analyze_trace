@@ -218,7 +218,7 @@
               <div
                 v-for="project in recentViewedProjectItems"
                 :key="project.id"
-                :class="['recent-viewed-item', filterProject===project.id ? 'active' : '']"
+                :class="['recent-viewed-item', isSidebarProjectActive(project) ? 'active' : '']"
                 role="button"
                 tabindex="0"
                 :title="project.label"
@@ -267,7 +267,7 @@
             <div v-if="historyGroupsLoading" class="sidebar-loading">加载项目...</div>
             <div v-for="group in historyProjectGroups" :key="group.id" class="project-tree-node">
               <div
-                :class="['project-tree-head', filterProject===group.id ? 'active' : '']"
+                :class="['project-tree-head', isSidebarProjectActive(group) ? 'active' : '', currentSidebarProjectId===group.id ? 'current' : '']"
                 role="button"
                 tabindex="0"
                 @click="toggleGroup(group.id)"
