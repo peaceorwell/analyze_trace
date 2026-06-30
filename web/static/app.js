@@ -64,6 +64,7 @@ const storedSidebarTab = localStorage.getItem("tpa-sidebar-tab") || "jobs";
 const sidebarTab    = ref(storedSidebarTab === "compare" ? "jobs" : storedSidebarTab);
 const recentViewedProjects = ref([]);
 const selectedJobId = ref(null);
+const selectedJobHandle = ref(null);
 const selectedJob   = ref(null);
 const jobLoading    = ref(false);
 const collapsedGroups = ref({});
@@ -135,7 +136,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.4.14");
+const appVersion = ref("0.4.15");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -239,6 +240,22 @@ const openReleaseNotes = () => {
 };
 
 const resultStateKey = jobId => `tpa-result-state:${jobId}`;
+const jobRouteHandle = jobOrId => {
+  if (jobOrId && typeof jobOrId === "object") {
+    const seq = jobOrId.seq;
+    if (seq !== null && seq !== undefined && seq !== "") return String(seq);
+    return String(jobOrId.id || "");
+  }
+  return String(jobOrId || "");
+};
+const jobRoutePath = (jobOrId, tab = "") => {
+  const handle = jobRouteHandle(jobOrId);
+  if (!handle) return "";
+  const suffix = tab ? `/${encodeURIComponent(tab)}` : "";
+  return `/job/${encodeURIComponent(handle)}${suffix}`;
+};
+const currentJobRouteHandle = () =>
+  jobRouteHandle(selectedJob.value) || selectedJobHandle.value || selectedJobId.value || "";
 const readResultMemory = jobId =>
   jobId ? readStoredJson(resultStateKey(jobId), { lastTab: DEFAULT_RESULT_TAB, tabs: {} }) : { lastTab: DEFAULT_RESULT_TAB, tabs: {} };
 const hasResultMemory = jobId => Boolean(jobId && localStorage.getItem(resultStateKey(jobId)) !== null);
@@ -593,6 +610,15 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.4.15",
+    date: "2026-06-30",
+    title: "任务数字短链",
+    items: [
+      "新任务 URL 改为 8 位数字短 ID，同时保留旧 UUID 链接兼容。",
+      "分享链接、AI 分析通知和实验树跳转统一优先使用短链。",
+    ],
+  },
   {
     version: "0.4.14",
     date: "2026-06-30",
@@ -1843,7 +1869,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.4.14";
+  appVersion.value = cfg.version || "0.4.15";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -1948,6 +1974,7 @@ const logout = async () => {
   collapsedGroups.value = {};
   compareJobs.value = [];
   selectedJobId.value = null;
+  selectedJobHandle.value = null;
   selectedJob.value = null;
   clearAiDiagnostics();
   router.push({ path: "/" });
@@ -3499,11 +3526,11 @@ const initializeAppData = async () => {
 };
 
 const loadJob = async id => {
-  const jobId = String(id || "");
+  const jobHandle = String(id || "");
   const requestSeq = ++loadJobRequestSeq;
-  const r = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`, { credentials: "include" });
+  const r = await fetch(`/api/jobs/${encodeURIComponent(jobHandle)}`, { credentials: "include" });
   const data = await readJsonResponse(r, {});
-  if (requestSeq !== loadJobRequestSeq || selectedJobId.value !== jobId) return "stale";
+  if (requestSeq !== loadJobRequestSeq) return "stale";
   if (!r.ok) {
     if (r.status === 401) {
       handleAuthExpired();
@@ -3518,6 +3545,7 @@ const loadJob = async id => {
     return false;
   }
   selectedJob.value = data;
+  selectedJobId.value = data.id;
   clearProjectFilterIfJobIsHidden(data);
   rememberRecentProject(data.project_id);
   resultTable.value = { fields: [], rows: [], total: 0, filtered_total: 0, limit: tableLimit.value, offset: tableOffset.value };
@@ -3785,7 +3813,10 @@ const notifyAiAnalysisCompleted = ({ jobId, label, status, error }) => {
       });
       notification.onclick = () => {
         window.focus();
-        if (jobId) window.location.hash = `#/job/${encodeURIComponent(jobId)}/ai`;
+        if (jobId) {
+          const handle = selectedJobId.value === jobId ? currentJobRouteHandle() : jobId;
+          window.location.hash = `#${jobRoutePath(handle, "ai")}`;
+        }
         notification.close();
       };
       notified = true;
@@ -4191,7 +4222,7 @@ const activateCsvTab = async (filename, { updateRoute = true, savePrevious = tru
     skipNextResultTabWatch();
     resultTab.value = filename;
     saveResultViewState(jobId, filename);
-    if (updateRoute) router.push({ path: `/job/${jobId}/${filename}` });
+    if (updateRoute) router.push({ path: jobRoutePath(selectedJob.value || jobId, filename) });
   } catch (e) {
     if (e.name === "AbortError") return;
     if (selectedJobId.value !== jobId) return;
@@ -4204,7 +4235,7 @@ const activateCsvTab = async (filename, { updateRoute = true, savePrevious = tru
     skipNextResultTabWatch();
     resultTab.value = filename;
     saveResultViewState(jobId, filename);
-    if (updateRoute) router.push({ path: `/job/${jobId}/${filename}` });
+    if (updateRoute) router.push({ path: jobRoutePath(selectedJob.value || jobId, filename) });
   } finally {
     if (resultTableController === controller) {
       resultTableController = null;
@@ -4890,7 +4921,7 @@ const submitJob = async () => {
         ? failedItems[0].name
         : (failedItems.length ? `${failedItems.length} 个文件` : "");
     }
-    if (lastJob) router.push({ path: `/job/${lastJob.id}` });
+    if (lastJob) router.push({ path: jobRoutePath(lastJob) });
   } else {
     showToast("提交失败，请检查上传队列", "error");
   }
@@ -4935,7 +4966,7 @@ const submitQuickCompare = () => new Promise(resolve => {
     clearQuickCompareFiles();
     await refreshSidebarData();
     sidebarTab.value = "jobs";
-    router.push({ path: `/job/${job.id}` });
+    router.push({ path: jobRoutePath(job) });
     showToast("已提交两文件对比任务", "success");
     resolve(job);
   };
@@ -5264,7 +5295,7 @@ const handleHistoryJobClick = job => {
     toggleHistorySelection(job);
     return;
   }
-  navigateToJob(job.id);
+  navigateToJob(job);
 };
 
 const toggleSelectLoadedHistoryJobs = () => {
@@ -5669,7 +5700,7 @@ const shareJob = async () => {
     return;
   }
   const data = await r.json();
-  const url = data.url || `${window.location.origin}${window.location.pathname}#/job/${selectedJobId.value}`;
+  const url = data.url || `${window.location.origin}${window.location.pathname}#${jobRoutePath(currentJobRouteHandle())}`;
   await copyTextToClipboard(url);
   if (data.changed) {
     await loadProjects();
@@ -6434,7 +6465,7 @@ const submitCompare = async () => {
   showCompareModal.value = false;
   sidebarTab.value = "jobs";
   await refreshSidebarData();
-  router.push({ path: `/job/${job.id}` });
+  router.push({ path: jobRoutePath(job) });
 };
 
 const submitBatchCompare = async () => {
@@ -6467,7 +6498,7 @@ const submitBatchCompare = async () => {
     showCompareModal.value = false;
     sidebarTab.value = "jobs";
     await refreshSidebarData();
-    if (jobs[0]?.id) router.push({ path: `/job/${jobs[0].id}` });
+    if (jobs[0]?.id) router.push({ path: jobRoutePath(jobs[0]) });
   } catch (e) {
     showToast("批量对比失败: 网络或服务器错误", "error");
   } finally {
@@ -6477,7 +6508,7 @@ const submitBatchCompare = async () => {
 
 const openCompareSource = source => {
   if (!source?.id) return;
-  router.push({ path: `/job/${source.id}` });
+  router.push({ path: jobRoutePath(source) });
 };
 
 const analyzeCompareTraceSlot = async slot => {
@@ -6503,7 +6534,7 @@ const analyzeCompareTraceSlot = async slot => {
     }
     showToast(`已创建 ${normalizedSlot.toUpperCase()} trace 单独分析任务`, "success");
     await refreshSidebarData();
-    router.push({ path: `/job/${job.id}` });
+    router.push({ path: jobRoutePath(job) });
   } catch (e) {
     showToast(`单独分析 ${normalizedSlot.toUpperCase()} 失败: 网络错误`, "error");
   } finally {
@@ -6531,7 +6562,7 @@ const rerunCompareSwapped = async () => {
     }
     showToast("已提交交换 A/B 对比", "success");
     await refreshSidebarData();
-    router.push({ path: `/job/${job.id}` });
+    router.push({ path: jobRoutePath(job) });
   } catch (e) {
     showToast("重新对比失败: 网络错误", "error");
   } finally {
@@ -6592,7 +6623,7 @@ const confirmStepReanalysis = async () => {
     showStepReanalysisModal.value = false;
     showToast("已创建指定 Step 重分析任务", "success");
     await refreshSidebarData();
-    router.push({ path: `/job/${payload.id}` });
+    router.push({ path: jobRoutePath(payload) });
   } catch (e) {
     showToast("指定 Step 重分析失败: 网络错误", "error");
   } finally {
@@ -6767,7 +6798,10 @@ const scrollConsoleSection = section => {
 // Navigation helper (used by sidebar click in index.html)
 // ══════════════════════════════════════════════════════════════════════════════
 
-const navigateToJob = (id) => router.push({ path: `/job/${id}` });
+const navigateToJob = jobOrId => {
+  const path = jobRoutePath(jobOrId);
+  if (path) router.push({ path });
+};
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Route components
@@ -6953,13 +6987,13 @@ const Home = {
 const JobDetail = {
   template: `
     <!-- Loading state -->
-    <div v-if="jobLoading && selectedJobId" class="empty-main">
+    <div v-if="jobLoading && (selectedJobId || selectedJobHandle)" class="empty-main">
       <div class="empty-main-icon">⟳</div>
       <div class="empty-main-title">加载任务...</div>
     </div>
 
     <!-- 404 state -->
-    <div v-else-if="!selectedJob && selectedJobId" class="empty-main">
+    <div v-else-if="!selectedJob && (selectedJobId || selectedJobHandle)" class="empty-main">
       <div class="empty-main-icon">🔍</div>
       <div class="empty-main-title">任务未找到</div>
     </div>
@@ -7557,12 +7591,12 @@ const JobDetail = {
         return;
       }
       cancelResultTableRequest();
-      router.push({ path: `/job/${selectedJobId.value}/${key}` });
+      router.push({ path: jobRoutePath(selectedJob.value || selectedJobId.value, key) });
     };
 
     return {
       ktChart: ktChartRef, ktPieChart: ktPieChartRef, ktPieChartB: ktPieChartBRef,
-      selectedJob, selectedJobId, jobLoading, resultTab, availableTabs, currentTable,
+      selectedJob, selectedJobId, selectedJobHandle, jobLoading, resultTab, availableTabs, currentTable,
       jobStepFilterLabel,
       isReadingMode, toggleReadingMode,
       compareRerunLoading, openStepReanalysisModal,
@@ -7762,7 +7796,7 @@ const ExperimentTree = {
               :style="nodeStyle(node)"
               @mousedown.stop="startNodeDrag(node, $event)"
               @click.stop="selectNode(node)"
-              @dblclick.stop="openJob(node.id)"
+              @dblclick.stop="openJob(node)"
             >
               <div class="exp-node-head">
                 <span :class="['exp-status-dot', node.status]"></span>
@@ -8017,7 +8051,7 @@ const ExperimentTree = {
                         <td>{{ formatMs(node.compute_ms) }}</td>
                         <td>{{ formatMs(node.comm_ms) }}</td>
                         <td>{{ formatCount(node.kernel_count) }}</td>
-                        <td><button class="btn btn-xs btn-outline" type="button" @click.stop="openJob(node.id)">详情</button></td>
+                        <td><button class="btn btn-xs btn-outline" type="button" @click.stop="openJob(node)">详情</button></td>
                       </tr>
                     </tbody>
                   </table>
@@ -8206,7 +8240,7 @@ const ExperimentTree = {
               <div v-else class="exp-node-attachment-empty">支持上传当前节点相关文件，单个附件最大 500MB。</div>
             </div>
             <div class="exp-panel-actions">
-              <button class="btn btn-primary" type="button" @click="openJob(selectedNode.id)">打开完整分析</button>
+              <button class="btn btn-primary" type="button" @click="openJob(selectedNode)">打开完整分析</button>
             </div>
           </template>
 
@@ -8232,7 +8266,7 @@ const ExperimentTree = {
                 </div>
                 <div class="exp-unconnected-actions">
                   <button class="btn btn-xs btn-primary" type="button" @click="openAddEdge('', job.id)">设为优化结果</button>
-                  <button class="btn btn-xs btn-outline" type="button" @click="openJob(job.id)">详情</button>
+                  <button class="btn btn-xs btn-outline" type="button" @click="openJob(job)">详情</button>
                 </div>
               </div>
               <div v-if="!unconnected.length" class="exp-empty-small">暂无未连接任务</div>
@@ -9556,7 +9590,7 @@ const ExperimentTree = {
         );
         if (payload.compare_job_id) {
           showToast(payload.existing ? "已打开已有对比" : "节点对比已创建", "success");
-          router.push({ path: `/job/${payload.compare_job_id}` });
+          router.push({ path: jobRoutePath({ id: payload.compare_job_id, seq: payload.compare_job_seq }) });
         }
       } catch (e) {
         showToast(normalizeApiError(e, "生成节点对比失败"), "error");
@@ -9671,8 +9705,9 @@ const ExperimentTree = {
       selectedNodeId.value = "";
       hydrateEdgeDraft(edge);
     };
-    const openJob = id => {
-      if (id) router.push({ path: `/job/${id}` });
+    const openJob = jobOrId => {
+      const path = jobRoutePath(jobOrId);
+      if (path) router.push({ path });
     };
     const chartAlphaColor = (color, alpha) => {
       const text = String(color || "").trim();
@@ -10181,7 +10216,7 @@ const ExperimentTree = {
         if (payload.compare_job_id) {
           selectedEdge.value.compare_job_id = payload.compare_job_id;
           showToast("详细对比已创建", "success");
-          router.push({ path: `/job/${payload.compare_job_id}` });
+          router.push({ path: jobRoutePath({ id: payload.compare_job_id, seq: payload.compare_job_seq }) });
         }
       } catch (e) {
         showToast(normalizeApiError(e, "生成详细对比失败"), "error");
@@ -10968,9 +11003,11 @@ const resetJobRuntimeState = () => {
 const clearSelectedJobRoute = () => {
   saveResultViewState();
   resetJobRuntimeState();
+  loadJobRequestSeq += 1;
   clearInterval(pollTimer);
   pollTimer = null;
   selectedJobId.value = null;
+  selectedJobHandle.value = null;
   selectedJob.value = null;
   jobLoading.value = false;
   resultTab.value = DEFAULT_RESULT_TAB;
@@ -10979,20 +11016,21 @@ const clearSelectedJobRoute = () => {
 };
 
 const loadJobRoute = async to => {
-  const newJobId = to.params?.id || null;
-  if (!newJobId) return true;
+  const newJobHandle = to.params?.id || null;
+  if (!newJobHandle) return true;
 
   saveResultViewState();
   resetJobRuntimeState();
 
-  selectedJobId.value = newJobId;
+  selectedJobId.value = null;
+  selectedJobHandle.value = newJobHandle;
   selectedJob.value = null;
   jobLoading.value = true;
   resultTableFile.value = "";
 
   let loaded;
   try {
-    loaded = await loadJob(newJobId);
+    loaded = await loadJob(newJobHandle);
   } catch (e) {
     jobLoading.value = false;
     const message = normalizeApiError(e, "加载任务失败");
@@ -11006,22 +11044,24 @@ const loadJobRoute = async to => {
   }
   if (!loaded) {
     selectedJobId.value = null;
+    selectedJobHandle.value = null;
     clearAiDiagnostics();
     jobLoading.value = false;
     return { path: "/" };
   }
 
+  const canonicalJobId = selectedJobId.value;
   const requestedTab = to.params?.tab || "";
   const validTabs = availableTabs.value.map(t => t.key);
-  const targetTab = resolveResultTab(newJobId, requestedTab, validTabs);
-  activeResultStateJobId = newJobId;
+  const targetTab = resolveResultTab(canonicalJobId, requestedTab, validTabs);
+  activeResultStateJobId = canonicalJobId;
   if (targetTab.endsWith(".csv")) {
     await activateCsvTab(targetTab, { updateRoute: false, savePrevious: false });
   } else {
     skipNextResultTabWatch();
     resultTab.value = targetTab;
-    restoreResultViewState(newJobId, targetTab);
-    rememberResultTabSelection(newJobId, targetTab);
+    restoreResultViewState(canonicalJobId, targetTab);
+    rememberResultTabSelection(canonicalJobId, targetTab);
   }
   if (targetTab === "chart" && selectedJob.value.status === "done") {
     scheduleBuildChart();
@@ -11090,9 +11130,9 @@ router.beforeEach(async (to, from) => {
     destroyFeedbackMarkdownEditors();
   }
 
-  const newJobId = to.params?.id || null;
+  const newJobHandle = to.params?.id || null;
 
-  if (!newJobId) {
+  if (!newJobHandle) {
     // Navigated to home -- clean up
     clearSelectedJobRoute();
     return;
@@ -11101,9 +11141,16 @@ router.beforeEach(async (to, from) => {
   const requestedTabForSameJob = to.params?.tab || "";
 
   // Same job, just switch tab
-  if (newJobId === selectedJobId.value) {
+  const sameLoadedJob = selectedJob.value && (
+    newJobHandle === selectedJobHandle.value ||
+    newJobHandle === selectedJobId.value ||
+    newJobHandle === jobRouteHandle(selectedJob.value)
+  );
+  if (sameLoadedJob) {
+    selectedJobHandle.value = newJobHandle;
+    const canonicalJobId = selectedJobId.value;
     const validTabs = availableTabs.value.map(t => t.key);
-    const targetTab = resolveResultTab(newJobId, requestedTabForSameJob, validTabs);
+    const targetTab = resolveResultTab(canonicalJobId, requestedTabForSameJob, validTabs);
     if (targetTab !== resultTab.value) {
       if (targetTab.endsWith(".csv")) {
         await activateCsvTab(targetTab, { updateRoute: false });

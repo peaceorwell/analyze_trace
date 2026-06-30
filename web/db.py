@@ -92,6 +92,7 @@ async def init_db():
 
             CREATE TABLE IF NOT EXISTS jobs (
                 id               TEXT PRIMARY KEY,
+                seq              INTEGER,
                 project_id       TEXT REFERENCES projects(id) ON DELETE CASCADE,
                 user_token       TEXT REFERENCES users(user_token) ON DELETE CASCADE,
                 created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -252,6 +253,7 @@ async def init_db():
         await add_column_if_missing(db, "jobs", "is_pinned", "INTEGER DEFAULT 0")
         await add_column_if_missing(db, "jobs", "step_filter_a", "TEXT DEFAULT ''")
         await add_column_if_missing(db, "jobs", "step_filter_b", "TEXT DEFAULT ''")
+        await add_column_if_missing(db, "jobs", "seq", "INTEGER")
         await add_column_if_missing(db, "folders", "password_hash", "TEXT DEFAULT NULL")
         await add_column_if_missing(db, "feedback_messages", "edited_at", "DATETIME DEFAULT NULL")
         await add_column_if_missing(db, "feedback_messages", "edit_count", "INTEGER DEFAULT 0")
@@ -263,6 +265,32 @@ async def init_db():
         await add_column_if_missing(db, "experiment_node_layout", "scale", "REAL DEFAULT 1.0")
         await add_column_if_missing(db, "experiment_node_layout", "width", "REAL")
         await add_column_if_missing(db, "experiment_node_layout", "height", "REAL")
+
+        await db.executescript("""
+            CREATE TABLE IF NOT EXISTS job_seq_counter (
+                id    INTEGER PRIMARY KEY CHECK(id=1),
+                value INTEGER NOT NULL
+            );
+            INSERT OR IGNORE INTO job_seq_counter(id, value) VALUES (1, 10000000);
+        """)
+        current_counter_row = await (
+            await db.execute("SELECT value FROM job_seq_counter WHERE id=1")
+        ).fetchone()
+        max_seq_row = await (
+            await db.execute("SELECT COALESCE(MAX(seq), 10000000) FROM jobs")
+        ).fetchone()
+        next_seq = max(
+            int(current_counter_row[0] if current_counter_row else 10000000),
+            int(max_seq_row[0] if max_seq_row else 10000000),
+            10000000,
+        )
+        missing_seq_rows = await (
+            await db.execute("SELECT id FROM jobs WHERE seq IS NULL ORDER BY created_at, id")
+        ).fetchall()
+        for row in missing_seq_rows:
+            next_seq += 1
+            await db.execute("UPDATE jobs SET seq=? WHERE id=?", (next_seq, row[0]))
+        await db.execute("UPDATE job_seq_counter SET value=? WHERE id=1", (next_seq,))
 
         await db.executescript("""
             CREATE TABLE IF NOT EXISTS deleted_jobs (
@@ -310,6 +338,7 @@ async def init_db():
             CREATE INDEX IF NOT EXISTS idx_jobs_project_created ON jobs(project_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_jobs_mode_status_created ON jobs(mode, status, created_at);
             CREATE INDEX IF NOT EXISTS idx_jobs_pinned_created ON jobs(is_pinned, created_at);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_seq ON jobs(seq);
             CREATE INDEX IF NOT EXISTS idx_jobs_source_a ON jobs(source_job_a);
             CREATE INDEX IF NOT EXISTS idx_jobs_source_b ON jobs(source_job_b);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_expedge_pair ON experiment_edges(project_id, parent_job_id, child_job_id);
@@ -326,6 +355,12 @@ async def init_db():
             CREATE INDEX IF NOT EXISTS idx_feedback_messages_parent_created ON feedback_messages(parent_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_feedback_attachments_message ON feedback_attachments(message_id);
             CREATE INDEX IF NOT EXISTS idx_feedback_reactions_message ON feedback_reactions(message_id);
+            CREATE TRIGGER IF NOT EXISTS trg_jobs_assign_seq
+            AFTER INSERT ON jobs WHEN NEW.seq IS NULL
+            BEGIN
+                UPDATE job_seq_counter SET value = value + 1 WHERE id = 1;
+                UPDATE jobs SET seq = (SELECT value FROM job_seq_counter WHERE id = 1) WHERE id = NEW.id;
+            END;
         """)
         await add_column_if_missing(db, "deleted_jobs", "is_pinned", "INTEGER DEFAULT 0")
         await add_column_if_missing(db, "deleted_jobs", "step_filter_a", "TEXT DEFAULT ''")

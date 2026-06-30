@@ -70,13 +70,106 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.4.14",
+        "version": "0.4.15",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
         "allow_code_execution": False,
         "claude_analysis_enabled": False,
     }
+
+
+def test_job_seq_auto_assigns_and_resolves_uuid_or_numeric_handle(client):
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                "INSERT INTO jobs(id, label, mode, status) VALUES(?,?,?,?)",
+                ("numeric-job", "numeric", "single", "done"),
+            )
+            await db.commit()
+            return await (
+                await db.execute("SELECT id, seq FROM jobs WHERE id=?", ("numeric-job",))
+            ).fetchone()
+        finally:
+            await db.close()
+
+    row = asyncio.run(insert_job())
+    assert row["seq"] == 10000001
+
+    by_uuid = client.get("/api/jobs/numeric-job")
+    by_seq = client.get(f"/api/jobs/{row['seq']}")
+    missing_seq = client.get("/api/jobs/99999999")
+
+    assert by_uuid.status_code == 200
+    assert by_seq.status_code == 200
+    assert by_uuid.json()["id"] == by_seq.json()["id"] == "numeric-job"
+    assert by_seq.json()["seq"] == 10000001
+    assert missing_seq.status_code == 404
+
+
+def test_job_seq_backfills_existing_null_rows_in_created_order(client):
+    async def seed_legacy_rows_and_rerun_init():
+        db = await web_db.get_db()
+        try:
+            await db.execute("DROP TRIGGER IF EXISTS trg_jobs_assign_seq")
+            await db.executemany(
+                "INSERT INTO jobs(id, label, mode, status, created_at, seq) VALUES(?,?,?,?,?,NULL)",
+                [
+                    ("legacy-b", "legacy b", "single", "done", "2024-01-02 00:00:00"),
+                    ("legacy-a", "legacy a", "single", "done", "2024-01-01 00:00:00"),
+                ],
+            )
+            await db.execute("UPDATE job_seq_counter SET value=10000000 WHERE id=1")
+            await db.commit()
+        finally:
+            await db.close()
+
+        await web_db.init_db()
+
+        db = await web_db.get_db()
+        try:
+            rows = await (
+                await db.execute("SELECT id, seq FROM jobs ORDER BY seq")
+            ).fetchall()
+            counter = await (
+                await db.execute("SELECT value FROM job_seq_counter WHERE id=1")
+            ).fetchone()
+            return [(row["id"], row["seq"]) for row in rows], counter["value"]
+        finally:
+            await db.close()
+
+    rows, counter = asyncio.run(seed_legacy_rows_and_rerun_init())
+
+    assert rows == [("legacy-a", 10000001), ("legacy-b", 10000002)]
+    assert counter == 10000002
+
+
+def test_job_seq_is_not_reused_after_delete(client):
+    async def insert_job(job_id):
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                "INSERT INTO jobs(id, label, mode, status) VALUES(?,?,?,?)",
+                (job_id, job_id, "single", "done"),
+            )
+            await db.commit()
+            row = await (
+                await db.execute("SELECT seq FROM jobs WHERE id=?", (job_id,))
+            ).fetchone()
+            return row["seq"]
+        finally:
+            await db.close()
+
+    first_seq = asyncio.run(insert_job("seq-delete-a"))
+
+    delete_response = client.delete(f"/api/jobs/{first_seq}")
+    second_seq = asyncio.run(insert_job("seq-delete-b"))
+
+    assert delete_response.status_code == 204
+    assert second_seq == first_seq + 1
+    assert client.get(f"/api/jobs/{first_seq}").status_code == 404
+    assert client.get(f"/api/jobs/{second_seq}").json()["id"] == "seq-delete-b"
 
 
 def test_collect_results_hides_empty_pytorch_csvs_for_tensorflow_trace(isolated_server):
@@ -789,8 +882,8 @@ def test_ai_analysis_completion_sends_email_with_result_link(client, isolated_se
     assert len(sent) == 1
     assert sent[0]["recipients"] == ["runner@cambricon.com", "owner@cambricon.com"]
     assert "AI分析完成" in sent[0]["subject"]
-    assert "打开 AI 分析结果: http://trace.example/#/job/ai-mail-job/ai" in sent[0]["body"]
-    assert "下载 Markdown 报告: http://trace.example/api/jobs/ai-mail-job/ai-analysis/report.md" in sent[0]["body"]
+    assert "打开 AI 分析结果: http://trace.example/#/job/10000001/ai" in sent[0]["body"]
+    assert "下载 Markdown 报告: http://trace.example/api/jobs/10000001/ai-analysis/report.md" in sent[0]["body"]
 
 
 def test_compare_ai_analysis_completion_sends_email_with_result_link(client, isolated_server, tmp_path, monkeypatch):
@@ -879,8 +972,8 @@ def test_compare_ai_analysis_completion_sends_email_with_result_link(client, iso
     assert sent[0]["recipients"] == ["runner@cambricon.com", "compare-owner@cambricon.com"]
     assert "AI分析完成" in sent[0]["subject"]
     assert "类型: 对比" in sent[0]["body"]
-    assert "打开 AI 分析结果: http://trace.example/#/job/ai-compare-mail-job/ai" in sent[0]["body"]
-    assert "下载 Markdown 报告: http://trace.example/api/jobs/ai-compare-mail-job/ai-analysis/report.md" in sent[0]["body"]
+    assert "打开 AI 分析结果: http://trace.example/#/job/10000001/ai" in sent[0]["body"]
+    assert "下载 Markdown 报告: http://trace.example/api/jobs/10000001/ai-analysis/report.md" in sent[0]["body"]
 
 
 def test_source_compare_ai_analysis_emails_trigger_compare_owner_and_source_owners(client, isolated_server, tmp_path, monkeypatch):
@@ -2172,7 +2265,7 @@ def test_job_share_converts_private_project_and_allows_other_users(isolated_serv
         payload = share.json()
         assert payload["project_is_public"] is True
         assert payload["changed"] is True
-        assert payload["url"] == "http://tpa.cambricon.com:1818/#/job/share-job"
+        assert payload["url"] == "http://tpa.cambricon.com:1818/#/job/10000001"
 
         assert test_client.post("/api/logout").status_code == 200
         assert test_client.post("/api/login", json={"username": "bob", "password": "ok"}).status_code == 200
@@ -2976,7 +3069,11 @@ def test_experiment_node_compare_reuses_existing_job(client, sample_trace_file, 
     )
 
     assert reused.status_code == 201
-    assert reused.json() == {"compare_job_id": payload["compare_job_id"], "existing": True}
+    assert reused.json() == {
+        "compare_job_id": payload["compare_job_id"],
+        "compare_job_seq": payload["compare_job_seq"],
+        "existing": True,
+    }
     assert queued == [payload["compare_job_id"]]
 
     detail = client.get(f"/api/jobs/{payload['compare_job_id']}")

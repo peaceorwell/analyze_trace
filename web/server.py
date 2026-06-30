@@ -58,7 +58,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.4.14"
+APP_VERSION = "0.4.15"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -722,7 +722,23 @@ async def ensure_user_row(db, request: Request) -> Optional[str]:
     return token
 
 
+async def resolve_job_pk(db, handle: str) -> Optional[str]:
+    """Resolve a public job handle to the canonical jobs.id UUID."""
+    if handle is None:
+        return None
+    text = str(handle).strip()
+    if not text:
+        return None
+    if text.isdigit():
+        row = await (await db.execute("SELECT id FROM jobs WHERE seq=?", (int(text),))).fetchone()
+        return row[0] if row else None
+    return text
+
+
 async def load_owned_job(db, request: Request, job_id: str, columns: str = "*") -> Optional[dict]:
+    job_id = await resolve_job_pk(db, job_id)
+    if not job_id:
+        return None
     owner_sql, owner_params = _owner_clause(request)
     clauses = ["id=?"]
     params = [job_id]
@@ -736,6 +752,9 @@ async def load_owned_job(db, request: Request, job_id: str, columns: str = "*") 
 
 
 async def load_accessible_job(db, request: Request, job_id: str, columns: str = "*") -> Optional[dict]:
+    job_id = await resolve_job_pk(db, job_id)
+    if not job_id:
+        return None
     access_sql, access_params = _job_access_clause(request)
     clauses = ["id=?"]
     params = [job_id]
@@ -1482,6 +1501,11 @@ def _app_base_url(request: Request) -> str:
 
 def _job_share_url(request: Request, jid: str) -> str:
     return f"{_app_base_url(request)}/#/job/{jid}"
+
+
+def _job_public_handle(job: dict) -> str:
+    seq = (job or {}).get("seq")
+    return str(seq) if seq is not None else str((job or {}).get("id") or "")
 
 
 def _markdown_cell(value, max_len: int = 160) -> str:
@@ -4136,7 +4160,7 @@ async def _compare_dependents(db, request: Request, source_job_id: str):
     rows = await (
         await db.execute(
             f"""
-            SELECT id, label, created_at, project_id
+            SELECT id, seq, label, created_at, project_id
             FROM jobs
             WHERE mode='compare' AND (source_job_a=? OR source_job_b=?){access_filter}
             ORDER BY created_at DESC
@@ -4161,7 +4185,7 @@ async def _compare_source_summaries(request: Request, job: dict):
         rows = await (
             await db.execute(
                 f"""
-                SELECT j.id, j.label, j.project_id, j.created_at, j.file_a_name,
+                SELECT j.id, j.seq, j.label, j.project_id, j.created_at, j.file_a_name,
                        p.name AS project_name,
                        j.file_a_path, j.file_a_gzip_path
                 FROM jobs j
@@ -5734,6 +5758,7 @@ async def _send_ai_analysis_completion_notification(
         status.get("owner_user_token"),
     ])
     owner_tokens = _dedupe_identity_values([*owner_tokens, *await _compare_source_owner_tokens(job)])
+    public_handle = _job_public_handle(job)
     payload = {
         "job_id": jid,
         "job_label": notification_context.get("job_label") or job.get("label") or jid,
@@ -5751,8 +5776,8 @@ async def _send_ai_analysis_completion_notification(
         "finished_at": status.get("finished_at") or _utc_now_iso(),
         "duration_ms": timing.get("duration_ms") or timing.get("elapsed_ms"),
         "report_exists": os.path.exists(ai_analysis_report_path(jid)),
-        "ai_url": _job_ai_analysis_url(jid),
-        "report_url": _job_ai_report_url(jid),
+        "ai_url": _job_ai_analysis_url(public_handle),
+        "report_url": _job_ai_report_url(public_handle),
     }
     return await _send_ai_analysis_email_notification(payload)
 
@@ -7687,6 +7712,11 @@ async def compare_jobs(request: Request, body: dict):
     if not src_a or not src_b:
         await db.close()
         raise HTTPException(404, "Source job not found")
+    job_id_a = src_a["id"]
+    job_id_b = src_b["id"]
+    if job_id_a == job_id_b:
+        await db.close()
+        raise HTTPException(400, "不能自比")
 
     if not _trace_path_exists(src_a):
         await db.close()
@@ -7786,7 +7816,7 @@ async def get_project_experiments(request: Request, pid: str):
             rows = await (
                 await db.execute(
                     f"""
-                    SELECT j.id, j.label, j.file_a_name, j.created_at, j.status, j.mode, j.console_out
+                    SELECT j.id, j.seq, j.label, j.file_a_name, j.created_at, j.status, j.mode, j.console_out
                     FROM jobs j
                     WHERE {' AND '.join(clauses)}
                     ORDER BY j.created_at, j.id
@@ -7853,7 +7883,7 @@ async def get_project_experiments(request: Request, pid: str):
         unconnected_rows = await (
             await db.execute(
                 f"""
-                SELECT j.id, j.label, j.file_a_name, j.created_at, j.status, j.mode, j.console_out
+                SELECT j.id, j.seq, j.label, j.file_a_name, j.created_at, j.status, j.mode, j.console_out
                 FROM jobs j
                 WHERE {' AND '.join(unconnected_clauses)}
                 ORDER BY j.created_at DESC, j.id
@@ -7902,6 +7932,7 @@ async def upload_experiment_node_attachment(
         await db.close()
     if not row:
         raise HTTPException(404)
+    jid = row["id"]
 
     filename = _safe_download_name(file.filename, "attachment")[:240]
     extension = re.sub(r"[^A-Za-z0-9.]+", "", os.path.splitext(filename)[1])[:24]
@@ -7966,6 +7997,7 @@ async def download_experiment_node_attachment(request: Request, jid: str, attach
         await db.close()
     if not row:
         raise HTTPException(404)
+    jid = row["id"]
 
     safe_attachment_id = _safe_experiment_node_attachment_id(attachment_id)
     if not safe_attachment_id:
@@ -8013,6 +8045,7 @@ async def delete_experiment_node_attachment(request: Request, jid: str, attachme
         await db.close()
     if not row:
         raise HTTPException(404)
+    jid = row["id"]
 
     safe_attachment_id = _safe_experiment_node_attachment_id(attachment_id)
     if not safe_attachment_id:
@@ -8077,6 +8110,10 @@ async def create_experiment_edge(request: Request, pid: str, body: dict):
         child = await load_accessible_job(db, request, child_job_id, "id, project_id, mode, console_out")
         if not parent or not child:
             raise HTTPException(404, "节点不存在")
+        parent_job_id = parent["id"]
+        child_job_id = child["id"]
+        if parent_job_id == child_job_id:
+            raise HTTPException(400, "不能自连")
         if (
             parent.get("project_id") != pid
             or child.get("project_id") != pid
@@ -8344,6 +8381,8 @@ async def create_experiment_node_compare(request: Request, pid: str, body: dict)
         src_b = await load_accessible_job(db, request, job_id_b)
         if not src_a or not src_b:
             raise HTTPException(404, "Source job not found")
+        job_id_a = src_a["id"]
+        job_id_b = src_b["id"]
         if (
             src_a.get("project_id") != pid
             or src_b.get("project_id") != pid
@@ -8371,7 +8410,7 @@ async def create_experiment_node_compare(request: Request, pid: str, body: dict)
             await (
                 await db.execute(
                     f"""
-                    SELECT j.id
+                    SELECT j.id, j.seq
                     FROM jobs j
                     WHERE {' AND '.join(clauses)}
                     ORDER BY j.created_at DESC, j.id DESC
@@ -8383,7 +8422,7 @@ async def create_experiment_node_compare(request: Request, pid: str, body: dict)
         )
         if existing:
             await db.commit()
-            return {"compare_job_id": existing["id"], "existing": True}
+            return {"compare_job_id": existing["id"], "compare_job_seq": existing.get("seq"), "existing": True}
 
         compare_job_id = str(uuid.uuid4())
         label = (
@@ -8420,7 +8459,18 @@ async def create_experiment_node_compare(request: Request, pid: str, body: dict)
         await db.close()
 
     await enqueue_analysis_job(compare_job_id)
-    return {"compare_job_id": compare_job_id, "existing": False}
+    db = await get_db()
+    try:
+        created = await row_to_dict(
+            await (await db.execute("SELECT id, seq FROM jobs WHERE id=?", (compare_job_id,))).fetchone()
+        )
+    finally:
+        await db.close()
+    return {
+        "compare_job_id": compare_job_id,
+        "compare_job_seq": (created or {}).get("seq"),
+        "existing": False,
+    }
 
 
 @app.put("/api/projects/{pid}/experiments/layout")
@@ -8442,6 +8492,7 @@ async def update_experiment_layout(request: Request, pid: str, body: dict):
             job = await load_accessible_job(db, request, job_id, "id, project_id")
             if not job or job.get("project_id") != pid:
                 raise HTTPException(400, "节点必须属于本项目")
+            job_id = job["id"]
             try:
                 x = float(item.get("x"))
                 y = float(item.get("y"))
@@ -8545,6 +8596,7 @@ async def batch_compare_jobs(request: Request, body: dict):
     if not baseline:
         await db.close()
         raise HTTPException(404, "Baseline job not found")
+    baseline_job_id = baseline["id"]
     if not _trace_path_exists(baseline):
         await db.close()
         raise HTTPException(409, "Baseline source file has been deleted")
@@ -8665,6 +8717,7 @@ async def analyze_compare_trace_slot(request: Request, jid: str, body: dict):
         job = await load_accessible_job(db, request, jid)
         if not job:
             raise HTTPException(404, "Job not found")
+        jid = job["id"]
         if job.get("mode") != "compare":
             raise HTTPException(400, "Only compare jobs can derive a single trace analysis")
         if job.get("status") in {"pending", "running"}:
@@ -8744,6 +8797,7 @@ async def reanalyze_job_steps(request: Request, jid: str, body: dict):
         job = await load_accessible_job(db, request, jid)
         if not job:
             raise HTTPException(404, "Job not found")
+        jid = job["id"]
         if job.get("status") in {"pending", "running"}:
             raise HTTPException(409, "任务仍在分析中，暂不能指定 step 重分析")
 
@@ -8836,6 +8890,7 @@ async def rerun_compare_swapped(request: Request, jid: str):
         job = await load_accessible_job(db, request, jid)
         if not job:
             raise HTTPException(404, "Job not found")
+        jid = job["id"]
         if job.get("mode") != "compare":
             raise HTTPException(400, "Only compare jobs can be swapped")
 
@@ -8929,8 +8984,10 @@ async def share_job(request: Request, jid: str):
         row = await load_accessible_job(db, request, jid)
         if row is None:
             raise HTTPException(404)
+        jid = row["id"]
 
         job = _job_response(row, request)
+        public_handle = _job_public_handle(job)
         project_id = job.get("project_id")
         project_is_public = False
         if AUTH_ENABLED:
@@ -8978,8 +9035,8 @@ async def share_job(request: Request, jid: str):
         await db.close()
 
     return {
-        "url": _job_share_url(request, jid),
-        "path": f"/#/job/{jid}",
+        "url": _job_share_url(request, public_handle),
+        "path": f"/#/job/{public_handle}",
         "project_id": project_id,
         "project_is_public": project_is_public,
         "changed": changed,
@@ -8997,6 +9054,7 @@ async def get_job(request: Request, jid: str):
         raise HTTPException(404)
 
     job = _job_response(dict(row), request)
+    jid = job["id"]
     # Verify actual file existence on disk (DB flag may be stale)
     # For compare jobs, resolve via source jobs
     for slot in ("a", "b"):
@@ -9034,6 +9092,7 @@ async def get_job_ai_analysis(request: Request, jid: str):
         await db.close()
     if not row:
         raise HTTPException(404)
+    jid = row["id"]
 
     version_id = request.query_params.get("version_id", "")
     payload = collect_ai_analysis(jid)
@@ -9059,6 +9118,7 @@ async def download_job_ai_analysis_report(request: Request, jid: str):
         await db.close()
     if not row:
         raise HTTPException(404)
+    jid = row["id"]
 
     version_id = request.query_params.get("version_id", "")
     selected_version = _select_ai_analysis_version(jid, version_id)
@@ -9098,6 +9158,7 @@ async def download_job_ai_analysis_artifact(request: Request, jid: str, artifact
         await db.close()
     if not row:
         raise HTTPException(404)
+    jid = row["id"]
 
     full_path, normalized_path = _safe_ai_analysis_artifact_path(jid, artifact_path)
 
@@ -9133,6 +9194,7 @@ async def read_job_ai_analysis_artifact_content(request: Request, jid: str, arti
         await db.close()
     if not row:
         raise HTTPException(404)
+    jid = row["id"]
 
     full_path, normalized_path = _safe_ai_analysis_artifact_path(jid, artifact_path)
     if not _is_ai_code_preview_artifact(normalized_path):
@@ -9190,6 +9252,7 @@ async def start_job_ai_analysis(request: Request, jid: str, body: Optional[dict]
             row = await load_accessible_job(db, request, jid)
             if not row:
                 raise HTTPException(404)
+            jid = row["id"]
             if row.get("status") != "done":
                 raise HTTPException(409, "Job is not completed")
 
@@ -9265,6 +9328,7 @@ async def download_job_report(request: Request, jid: str):
         raise HTTPException(404)
 
     job = _job_response(dict(row), request)
+    jid = job["id"]
     compare_sources = await _compare_source_summaries(request, job) if job.get("mode") == "compare" else {}
     lines = [
         f"# {job.get('label') or job['id']}",
@@ -9345,6 +9409,7 @@ async def get_job_result_table(
         await db.close()
     if not row:
         raise HTTPException(404)
+    jid = row["id"]
     if row["status"] != "done":
         raise HTTPException(409, "Job is not done")
 
@@ -9377,6 +9442,7 @@ async def patch_job(request: Request, jid: str, body: dict):
     if not row:
         await db.close()
         raise HTTPException(404)
+    jid = row["id"]
 
     if "project_id" in body:
         await validate_project_access(db, request, body["project_id"] or None)
@@ -9417,6 +9483,7 @@ async def delete_job(request: Request, jid: str):
     if not row:
         await db.close()
         raise HTTPException(404)
+    jid = row["id"]
 
     if _job_delete_locked(row):
         await db.close()
@@ -9445,6 +9512,7 @@ async def run_job_triton(request: Request, jid: str):
 
     if row is None:
         raise HTTPException(404)
+    jid = row["id"]
 
     if row.get("status") != "done":
         raise HTTPException(400, "Job not completed")
@@ -9596,6 +9664,7 @@ async def run_single_triton(request: Request, jid: str, body: dict):
 
     if row is None:
         raise HTTPException(404)
+    jid = row["id"]
 
     if row.get("status") != "done":
         raise HTTPException(400, "Job not completed")
@@ -9803,6 +9872,7 @@ async def get_job_file(request: Request, jid: str, slot: str, format: Optional[s
 
     if not row:
         raise HTTPException(404)
+    jid = row["id"]
 
     if slot not in ("a", "b"):
         raise HTTPException(400, "slot must be 'a' or 'b'")
@@ -9873,6 +9943,7 @@ async def delete_job_file(request: Request, jid: str, slot: str):
     if not row:
         await db.close()
         raise HTTPException(404)
+    jid = row["id"]
     if slot not in ("a", "b"):
         await db.close()
         raise HTTPException(400, "slot must be 'a' or 'b'")
@@ -9901,6 +9972,7 @@ async def get_delete_file_impact(request: Request, jid: str, slot: str):
         row = await load_owned_job(db, request, jid)
         if not row:
             raise HTTPException(404)
+        jid = row["id"]
         dependents = await _compare_dependents(db, request, jid) if slot == "a" else []
     finally:
         await db.close()
@@ -9919,6 +9991,7 @@ async def get_triton_code(request: Request, jid: str, path: str):
 
     if not row:
         raise HTTPException(404)
+    jid = row["id"]
 
     full_path = _safe_child_path(result_dir(jid), path, "Invalid path")
 
