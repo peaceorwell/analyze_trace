@@ -4118,7 +4118,7 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
   background-color: var(--th-bg); color: var(--text2);
   border-bottom: 1px solid var(--border2);
   border-right: 1px solid var(--grid-line);
-  padding: 6px 9px; text-align: left; white-space: nowrap;
+  padding: 6px 9px; text-align: center; white-space: nowrap;
   position: relative; overflow: hidden;
   font-weight: 600; font-size: 10.5px; letter-spacing: .04em; font-family: var(--mono);
 }
@@ -4145,16 +4145,16 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
 .data-table tr:hover td { background-color: var(--td-hover) !important; }
 .data-table tbody tr.drill-row { cursor: pointer; }
 
-/* Numeric columns: right-aligned, monospace, tabular — 让数值可对比 */
-.data-table th.num-col { text-align: right; }
+/* Numeric columns: centered, monospace, tabular — 让数值仍保持等宽可对比 */
+.data-table th.num-col { text-align: center; }
 .data-table th.num-col .th-label { max-width: calc(100% - 14px); }
 .data-table td.num-col {
-  text-align: right;
+  text-align: center;
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
 }
 .data-table td.num-col:not(.cell-pos):not(.cell-neg) { color: var(--text); }
-.data-table tfoot td.num-col { text-align: right; font-family: var(--mono); }
+.data-table tfoot td.num-col { text-align: center; font-family: var(--mono); }
 
 /* family semantic chips */
 .family-chip {
@@ -4177,7 +4177,7 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
   background-image: linear-gradient(90deg, rgba(99,102,241,.035), rgba(99,102,241,0));
 }
 .eff-badge {
-  display: inline-flex; align-items: center; justify-content: flex-end;
+  display: inline-flex; align-items: center; justify-content: center;
   min-width: 50px; max-width: 100%;
   padding: 1px 7px; border-radius: 999px;
   border: 1px solid transparent;
@@ -4290,7 +4290,7 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
 .filter-row th.num-col .col-filter-input {
   flex: 1 1 auto;
   min-width: 36px;
-  text-align: right;
+  text-align: center;
 }
 .col-filter-wrap { width: 100%; display: flex; gap: 2px; align-items: center; }
 .col-filter-op {

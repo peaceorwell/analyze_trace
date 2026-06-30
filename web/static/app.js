@@ -136,7 +136,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.4.21");
+const appVersion = ref("0.4.22");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -627,6 +627,15 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.4.22",
+    date: "2026-07-01",
+    title: "CSV 数值列居中",
+    items: [
+      "CSV 表格数值列改为居中对齐，并支持按列内容识别数字列。",
+      "CSV 表头字段统一居中，筛选输入和效率徽标对齐同步优化。",
+    ],
+  },
   {
     version: "0.4.21",
     date: "2026-07-01",
@@ -1375,6 +1384,7 @@ const EFFICIENCY_COLUMN_PRESET = [
 ];
 const LONG_TABLE_FIELD_RE = /(^|_)(input|stride|concrete|shape|dims|types|details|tiling|config|code_file)(_|$)/i;
 const NUMERIC_TABLE_FIELD_RE = /(^|_)(count|dur|duration|time|us|ms|gb|efficiency|delta|avg|total|pct|percent|call|calls)(_|$)/i;
+const NUMERIC_TABLE_VALUE_RE = /^[+-]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:e[+-]?\d+)?%?$/i;
 const EFFICIENCY_FIELD_RE = /(^|_)efficiency(_|$)/i;
 const KERNEL_NAME_FIELD_RE = /^kernel_name(?:_[ab])?$/i;
 const TEXT_NAME_FIELD_RE = /(^|_)(name|operator|op_name)(_|$)/i;
@@ -1612,6 +1622,24 @@ const normalizedTableField = field =>
     .replace(/^_|_$/g, "");
 
 const isNumericTableField = field => NUMERIC_TABLE_FIELD_RE.test(normalizedTableField(field));
+const isNumericTableValue = value => {
+  if (typeof value === "number") return Number.isFinite(value);
+  const text = String(value ?? "").trim();
+  if (!text) return false;
+  return NUMERIC_TABLE_VALUE_RE.test(text.replace(/,/g, ""));
+};
+const isNumericTableColumn = (field, rows = currentTable.value.rows || []) => {
+  if (isNumericTableField(field)) return true;
+  let seen = 0;
+  const sample = rows.length > TABLE_AUTO_MEASURE_SAMPLE ? rows.slice(0, TABLE_AUTO_MEASURE_SAMPLE) : rows;
+  for (const row of sample) {
+    const value = row?.[field];
+    if (value === undefined || value === null || value === "") continue;
+    if (!isNumericTableValue(value)) return false;
+    seen += 1;
+  }
+  return seen > 0;
+};
 const isEfficiencyField = field => EFFICIENCY_FIELD_RE.test(normalizedTableField(field));
 const isLongTableField = field => LONG_TABLE_FIELD_RE.test(normalizedTableField(field));
 // Long text columns whose content should truncate rather than dictate width.
@@ -1639,7 +1667,7 @@ const measureTextWidth = (text, font) => {
 const measureColumnContentWidth = (field, rows) => {
   // triton_code_file renders action buttons, not the path text — fixed width.
   if (field === "triton_code_file") return 110;
-  const numeric = isNumericTableField(field);
+  const numeric = isNumericTableColumn(field, rows);
   const valueFont = numeric ? TABLE_MONO_VALUE_FONT : TABLE_TEXT_VALUE_FONT;
   // Header reserves room for the sort icon (~16px).
   let max = measureTextWidth(field, TABLE_HEADER_FONT) + 16;
@@ -1688,6 +1716,11 @@ const tableStyle = computed(() => {
   const width = `${Math.round(total)}px`;
   return { tableLayout: "fixed", width, minWidth: width };
 });
+const numericTableColumns = computed(() => {
+  const table = currentTable.value;
+  const rows = table.rows || [];
+  return new Set((table.fields || []).filter(field => isNumericTableColumn(field, rows)));
+});
 const sanitizeTableColumnWidths = widths => {
   if (!widths || typeof widths !== "object") return {};
   const result = {};
@@ -1698,7 +1731,7 @@ const sanitizeTableColumnWidths = widths => {
   return result;
 };
 const tableHeaderClass = field => ({
-  "num-col": isNumericTableField(field),
+  "num-col": numericTableColumns.value.has(field),
   "long-col": isLongTableField(field),
   "eff-col": isEfficiencyField(field),
 });
@@ -2011,7 +2044,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.4.21";
+  appVersion.value = cfg.version || "0.4.22";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
