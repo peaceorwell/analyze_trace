@@ -136,7 +136,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.4.17");
+const appVersion = ref("0.4.18");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -627,6 +627,17 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.4.18",
+    date: "2026-06-30",
+    title: "CSV 列宽拖拽手感优化",
+    items: [
+      "列宽拖拽改为基于抓取位置的增量调整，消除抓住分割线时的跳动，边缘跟手更自然。",
+      "首次调整列宽时其余列不再被压缩跳动，保留自动布局的宽度。",
+      "移除列宽上限，标题列等可以手动拖得更宽。",
+      "CSV 单元格之间增加浅色细分割线。",
+    ],
+  },
   {
     version: "0.4.17",
     date: "2026-06-30",
@@ -1341,7 +1352,10 @@ const KERNEL_NAME_FIELD_RE = /^kernel_name(?:_[ab])?$/i;
 const TEXT_NAME_FIELD_RE = /(^|_)(name|operator|op_name)(_|$)/i;
 const SHORT_TEXT_FIELD_RE = /^(type|family|match_method)$/i;
 const TABLE_COLUMN_MIN_WIDTH = 60;
-const TABLE_COLUMN_MAX_WIDTH = 520;
+// Single generous ceiling for both manual dragging and width preservation. It's
+// only a sanity guard against corrupt/absurd values — columns (incl. the sticky
+// title column) can be dragged as wide as this.
+const TABLE_COLUMN_SAFETY_MAX = 2000;
 const TABLE_COLUMN_WEIGHT_UNIT = 120;
 const TABLE_COLUMN_MIN_TABLE_WIDTH = 640;
 
@@ -1562,10 +1576,10 @@ const tableColumnWeight = field => {
   if (isNumericTableField(field)) return 0.85;
   return 1;
 };
-const clampTableColumnWidth = width => {
+const clampTableColumnWidth = (width, { max = TABLE_COLUMN_SAFETY_MAX } = {}) => {
   const value = Number(width);
   if (!Number.isFinite(value) || value <= 0) return null;
-  return Math.min(TABLE_COLUMN_MAX_WIDTH, Math.max(TABLE_COLUMN_MIN_WIDTH, value));
+  return Math.min(max, Math.max(TABLE_COLUMN_MIN_WIDTH, value));
 };
 const tableColumnWidth = field => {
   if (colWidths.value[field] === undefined) return null;
@@ -1942,7 +1956,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.4.17";
+  appVersion.value = cfg.version || "0.4.18";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -5728,6 +5742,11 @@ const startResize = (field, e) => {
   if (activeTableResizeCleanup) activeTableResizeCleanup();
   armTableResizeSortGuard(field);
   const startRect = th.getBoundingClientRect();
+  // Resize relative to the column's width at grab time (delta-based) rather than
+  // snapping the edge to the cursor. The handle is 8px wide, so an absolute
+  // `clientX - left` mapping would jump the column by the grab offset on the
+  // first mousemove. Delta keeps the edge tracking the pointer 1:1.
+  const startWidth = clampTableColumnWidth(startRect.width) || startRect.width;
   freezeRenderedTableColumnWidths();
   const isRtl = getComputedStyle(th).direction === "rtl";
   const previousCursor = document.body.style.cursor;
@@ -5735,9 +5754,8 @@ const startResize = (field, e) => {
   document.body.style.cursor = "col-resize";
   document.body.style.userSelect = "none";
   const resizeTo = clientX => {
-    const w = clampTableColumnWidth(
-      isRtl ? startRect.right - clientX : clientX - startRect.left,
-    );
+    const delta = clientX - startX;
+    const w = clampTableColumnWidth(startWidth + (isRtl ? -delta : delta));
     if (!w) return;
     colWidths.value = { ...colWidths.value, [field]: w };
   };

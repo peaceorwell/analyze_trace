@@ -14,6 +14,7 @@
   --card2:     #20263a;
   --border:    #283047;
   --border2:   #38415f;
+  --grid-line: #20273b;
   --orange:    #f97316;
   --orange-d:  #ea580c;
   --purple:    #6366f1;
@@ -105,6 +106,7 @@
   --card2:     #f5f7fc;
   --border:    #e1e7f1;
   --border2:   #c8d4e6;
+  --grid-line: #edf1f8;
   --orange:    #f97316;
   --orange-d:  #ea580c;
   --purple:    #6366f1;
@@ -4115,10 +4117,13 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
 .data-table th {
   background-color: var(--th-bg); color: var(--text2);
   border-bottom: 1px solid var(--border2);
+  border-right: 1px solid var(--grid-line);
   padding: 6px 9px; text-align: left; white-space: nowrap;
   position: relative; overflow: hidden;
   font-weight: 600; font-size: 10.5px; letter-spacing: .04em; font-family: var(--mono);
 }
+.data-table th:last-child,
+.data-table td:last-child { border-right: none; }
 .data-table th:first-child { background: var(--th-first-bg); border-right: 1px solid var(--border); }
 .th-label { display: inline-block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: calc(100% - 16px); vertical-align: middle; }
 .th-sort-icon { margin-left: 2px; flex-shrink: 0; color: var(--purple-l); }
@@ -4127,6 +4132,7 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
 
 .data-table td {
   padding: 5px 9px; border-bottom: 1px solid var(--border);
+  border-right: 1px solid var(--grid-line);
   white-space: nowrap; font-variant-numeric: tabular-nums;
   overflow: hidden; text-overflow: ellipsis; color: var(--text2); font-size: 11px;
 }
