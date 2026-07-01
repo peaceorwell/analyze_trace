@@ -1453,7 +1453,9 @@
               <li><strong>性能总览</strong> 是默认页：先看总耗时、Top 回退/改善、占比和 Delta 图，通信类 kernel/op 默认不计入计算统计</li>
               <li><strong>AI 分析</strong> 适合快速得到 Markdown 报告；<strong>控制台</strong> 适合核对脚本原始摘要和生成文件</li>
               <li><strong>Kernel 类型</strong>、<strong>所有 Kernel</strong>、<strong>Triton</strong>、<strong>ATen Ops</strong>、<strong>CNCL Ops</strong> 用于下钻；图表和类型行可点击跳到相关表格</li>
+              <li><strong>类型对比</strong> 会同时展示耗时 delta 和调用数 delta；未知 Triton family 统一显示为 <code>triton_other</code></li>
               <li>CSV 表格支持搜索、筛选、排序、列显隐、分页大小调整、显示全部和下载当前页</li>
+              <li>列宽会按内容自适应，短数值列默认更紧凑；数字列按字段名和列内容识别，并与表头字段一起居中显示</li>
             </ul>
           </section>
           <section class="guide-section">
@@ -1479,6 +1481,7 @@
             <h3>5. 历史、项目和文件</h3>
             <ul>
               <li>左侧历史按项目分组，支持搜索、分页、置顶、多选、批量移动、删除任务和删除原始文件</li>
+              <li>打开任务或实验树时，侧栏只高亮当前条目，不会改变项目内原有排序</li>
               <li>登录模式下有个人项目和共享项目；共享项目便于团队查看和复用 trace 做对比</li>
               <li>删除任务会一起清理 trace、压缩副本、结果 CSV、AI 产物和 Triton 代码；删除项目会先进回收站</li>
               <li>Perfetto 按钮可打开 trace；下载默认提供压缩后的 <code>.json.gz</code></li>

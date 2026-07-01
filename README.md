@@ -2,13 +2,13 @@
 
 Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/内网性能分析工具，并兼容 TensorFlow Chrome Trace。它可以解析 `.json`、`.json.gz`、`.gz`、`.json.zip`、`.zip`、`.tar.gz` 和 `.tgz` trace 文件，统计 GPU kernel、Triton kernel、ATen Ops、TensorFlow Ops、CNCL/NCCL 通信算子，并提供单 trace 分析、双 trace 对比、历史管理、AI 分析和 Web 可视化界面。
 
-当前版本：`0.4.17`
+当前版本：`0.4.22`
 
 ## 主要功能
 
 - **上传与对比**：单个 trace 分析、两个 trace 直接对比、多个 trace 逐个分析，以及基于历史任务的 A/B / 批量基线对比。
 - **结果阅读**：默认进入性能总览，提供摘要卡片、Top 回退/改善、图表下钻、控制台全屏阅读和全量 CSV 表格能力。
-- **定位细节**：Kernel 类型、所有 Kernel、Triton、ATen Ops、TF Ops、CNCL Ops、Triton Step 等页签支持搜索、筛选、排序、列显隐、分页和下载。
+- **定位细节**：Kernel 类型、所有 Kernel、Triton、ATen Ops、TF Ops、CNCL Ops、Triton Step 等页签支持搜索、筛选、排序、列显隐、分页、列宽调整和下载。
 - **Step 重分析**：完成任务后可指定 step 派生新分析；对比任务支持 A/B 分别指定不同 step。
 - **实验树**：按项目把多次实验连接成优化谱系，支持 Compute time 优先的节点/关系状态配色、边 delta 芯片、节点拖拽、关系标签拖拽缩放、自动避让、变量变更记录和 step 口径告警。
 - **AI 分析**：Claude Code + 自定义 skill 生成 Markdown 报告，支持补充 Prompt、环境诊断、进度/耗时、历史版本、下载和完成通知。
@@ -115,7 +115,7 @@ Web 首页有三种上传模式：
 
 - `性能总览`：摘要卡片、TopN 柱状图、占比图、对比回退/优化列表，默认排除通信类 kernel/op，支持点击下钻到相关表格。
 - `控制台`：展示分析脚本输出，支持搜索、section 跳转、折叠生成文件日志和 Delta 着色。
-- `Kernel 类型` / `类型对比`：按 family 聚合，点击类型行可跳到相关 Kernel 表格。
+- `Kernel 类型` / `类型对比`：按 family 聚合，未知 Triton 兜底显示为 `triton_other`；对比表会同时展示耗时和调用数 delta，点击类型行可跳到相关 Kernel 表格。
 - `所有 Kernel`、`Triton`、`ATen Ops`、`CNCL Ops`：表格化查看明细；`Triton 对比` 会优先用 Triton code 指纹、code signature、多 step 指纹交集和规整化名称匹配 A/B kernel，减少末尾数字后缀不同导致的错位。
 - `Triton Step N`：当保存了 per-step Triton CSV 时显示。
 - `AI 分析`：服务端启用 Claude Code 后显示。
@@ -123,7 +123,9 @@ Web 首页有三种上传模式：
 表格能力：
 
 - 全局搜索、列筛选、排序。
-- 列宽拖拽和列显隐。
+- 列宽按内容自适应，短数值列默认更紧凑；也可以手动拖拽扩宽。
+- 数字列会按字段名和列内容识别，单元格、表头字段、筛选输入和效率徽标居中对齐。
+- 列显隐，支持全部列和核心列快捷视图。
 - 每页数量可选，也支持快捷显示全部。
 - 下载当前页 CSV。
 - 下钻打开的 Kernel 表默认隐藏冗余列，方便聚焦相关 kernel。
@@ -141,6 +143,7 @@ Web 首页有三种上传模式：
 - 历史按项目分组展示，默认折叠时按项目条目分页。
 - 侧栏支持项目过滤和任务/文件/项目搜索。
 - 展开项目后按需加载任务，避免大量历史一次性渲染。
+- 打开任务或实验树时，侧栏只高亮当前条目，不会改变项目内原有排序。
 - 多选模式支持批量移动任务、删除任务、删除原始文件。
 - 删除任务会清理该任务对应的 trace、压缩 trace、结果 CSV、Triton 代码、AI 分析产物等文件。
 - 项目删除后进入回收站，可在保留期内恢复；也支持永久删除。
@@ -503,7 +506,7 @@ analyze-trace baseline.json.gz optimized.json.gz -o ./output
 | `all_kernels_cmp.csv` | 两个 trace 的 kernel 耗时和调用次数 delta |
 | `triton_kernels_cmp.csv` | Triton kernel 对比；包含 `match_method`、`kernel_name_A`、`kernel_name_B`，优先按 exact name、code hash、多 step code hash 交集、code signature、规整化名称 + tiling、规整化名称匹配 |
 | `aten_ops_cmp.csv` | ATen Ops 对比 |
-| `kernel_types_cmp.csv` | Kernel family 对比 |
+| `kernel_types_cmp.csv` | Kernel family 对比，包含 A/B 平均耗时、耗时 delta、A/B 平均调用数和调用数 delta |
 | `cncl_ops_cmp.csv` | CNCL/NCCL 通信算子对比 |
 
 ## 解析逻辑
