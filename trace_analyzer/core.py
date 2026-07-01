@@ -79,7 +79,6 @@ _SPOOL_MEMORY_BYTES = 128 * 1024 * 1024
 _FAST_TRACE_JSON_BYTES_DEFAULT = 256 * 1024 * 1024
 _EVENT_KERNEL = 1
 _EVENT_ATEN = 2
-_EVENT_CNCL = 3
 _EVENT_KERNEL_EFFICIENCY = 4
 _KERNEL_EFFICIENCY_COUNTER_NAMES = {
     "Compute Efficiency(%)",
@@ -802,7 +801,6 @@ def _parse_tensorflow_trace(trace_file, *, keep_triton_code=False, progress_call
     step_to_kernels = defaultdict(lambda: defaultdict(lambda: {"count": 0, "dur_ms": 0.0}))
     step_to_aten = defaultdict(lambda: defaultdict(lambda: {"count": 0, "dur_ms": 0.0}))
     step_to_tf_ops = defaultdict(lambda: defaultdict(lambda: {"count": 0, "dur_ms": 0.0}))
-    step_to_cncl = defaultdict(lambda: defaultdict(lambda: {"count": 0, "dur_ms": 0.0}))
     step_to_non_triton_kernel_events = defaultdict(list)
     step_to_kernel_efficiency_counters = defaultdict(list)
     kernel_families = {}
@@ -943,9 +941,6 @@ def _parse_tensorflow_trace(trace_file, *, keep_triton_code=False, progress_call
                 family = "triton_custom"
             if name not in kernel_families or family == "collective":
                 kernel_families[name] = family
-            if family == "collective":
-                step_to_cncl[step][name]["count"] += 1
-                step_to_cncl[step][name]["dur_ms"] += dur_ms
 
             if is_triton_kernel:
                 step_to_triton[step].append({
@@ -1142,7 +1137,6 @@ def _parse_tensorflow_trace(trace_file, *, keep_triton_code=False, progress_call
             "step_to_kernels": step_to_kernels,
             "step_to_aten": step_to_aten,
             "step_to_tf_ops": step_to_tf_ops,
-            "step_to_cncl": step_to_cncl,
             "step_to_non_triton_kernel_efficiency": build_non_triton_kernel_efficiency(),
             "step_durations": step_durations,
             "step_ranges": step_ranges,
@@ -1161,7 +1155,6 @@ def _parse_pytorch_trace(trace_file, *, keep_triton_code=False, progress_callbac
                                         tiling config, triton hashes, optional triton_output_code}]
         step_to_kernels:      step -> {kernel_name -> {"count": int, "dur_ms": float}}
         step_to_aten:         step -> {op_name -> {"count": int, "dur_ms": float}}
-        step_to_cncl:         step -> {op/kernel_name -> {"count": int, "dur_ms": float}}
         step_durations:       step -> wall-clock duration in ms (from ProfilerStep#/step_N event)
         kernel_families:      kernel_name -> automatic family label
 
@@ -1183,7 +1176,6 @@ def _parse_pytorch_trace(trace_file, *, keep_triton_code=False, progress_callbac
     step_to_triton       = defaultdict(list)
     step_to_kernels      = defaultdict(lambda: defaultdict(lambda: {"count": 0, "dur_ms": 0.0}))
     step_to_aten         = defaultdict(lambda: defaultdict(lambda: {"count": 0, "dur_ms": 0.0}))
-    step_to_cncl         = defaultdict(lambda: defaultdict(lambda: {"count": 0, "dur_ms": 0.0}))
     step_to_non_triton_kernel_events = defaultdict(list)
     step_to_kernel_efficiency_counters = defaultdict(list)
     operator_details_by_external_id = {}
@@ -1252,7 +1244,6 @@ def _parse_pytorch_trace(trace_file, *, keep_triton_code=False, progress_callbac
         return (
             cat == "kernel"
             or name.startswith("aten::")
-            or (cat == "gpu_user_annotation" and (name.startswith("cncl") or name.startswith("nccl")))
             or name in _KERNEL_EFFICIENCY_COUNTER_NAMES
         )
 
@@ -1293,10 +1284,8 @@ def _parse_pytorch_trace(trace_file, *, keep_triton_code=False, progress_callbac
             )
         if name.startswith("aten::"):
             return (_EVENT_ATEN, name, ts, dur_ms)
-        if name in _KERNEL_EFFICIENCY_COUNTER_NAMES:
-            value = safe_float(args.get("utils")) if isinstance(args, dict) else None
-            return (_EVENT_KERNEL_EFFICIENCY, name, ts, value, e.get("tid"))
-        return (_EVENT_CNCL, name, ts, dur_ms)
+        value = safe_float(args.get("utils")) if isinstance(args, dict) else None
+        return (_EVENT_KERNEL_EFFICIENCY, name, ts, value, e.get("tid"))
 
     def aggregate_record(record, step):
         kind = record[0]
@@ -1334,9 +1323,6 @@ def _parse_pytorch_trace(trace_file, *, keep_triton_code=False, progress_callbac
                 family = "triton_custom"
             if name not in kernel_families or family == "collective":
                 kernel_families[name] = family
-            if family == "collective":
-                step_to_cncl[step][name]["count"] += 1
-                step_to_cncl[step][name]["dur_ms"] += dur_ms
 
             if is_triton_kernel:
                 step_to_triton[step].append({
@@ -1376,12 +1362,8 @@ def _parse_pytorch_trace(trace_file, *, keep_triton_code=False, progress_callbac
             return
 
         _, name, _ts, dur_ms = record
-        if kind == _EVENT_ATEN:
-            step_to_aten[step][name]["count"] += 1
-            step_to_aten[step][name]["dur_ms"] += dur_ms
-        elif kind == _EVENT_CNCL:
-            step_to_cncl[step][name]["count"] += 1
-            step_to_cncl[step][name]["dur_ms"] += dur_ms
+        step_to_aten[step][name]["count"] += 1
+        step_to_aten[step][name]["dur_ms"] += dur_ms
 
     def scan_event(e, record_sink=None, *, allow_direct=False):
         name = e.get("name", "")
@@ -1574,7 +1556,6 @@ def _parse_pytorch_trace(trace_file, *, keep_triton_code=False, progress_callbac
             "step_to_triton":       step_to_triton,
             "step_to_kernels":      step_to_kernels,
             "step_to_aten":         step_to_aten,
-            "step_to_cncl":         step_to_cncl,
             "step_to_non_triton_kernel_efficiency": build_non_triton_kernel_efficiency(),
             "step_durations":       step_durations,
             "step_ranges":          step_ranges,
@@ -1663,7 +1644,7 @@ def filter_parsed_steps(parsed, steps, *, require_match=True):
         raise TypeError("filter_parsed_steps expects the dict returned by parse_trace")
 
     available_steps = set(parsed.get("step_durations", {}))
-    for key in ("step_to_triton", "step_to_kernels", "step_to_aten", "step_to_tf_ops", "step_to_cncl"):
+    for key in ("step_to_triton", "step_to_kernels", "step_to_aten", "step_to_tf_ops"):
         available_steps.update(parsed.get(key, {}))
 
     missing = [step for step in selected_steps if step not in available_steps]
@@ -1697,7 +1678,6 @@ def filter_parsed_steps(parsed, steps, *, require_match=True):
     filtered["step_to_kernels"] = filter_mapping("step_to_kernels")
     filtered["step_to_aten"] = filter_mapping("step_to_aten")
     filtered["step_to_tf_ops"] = filter_mapping("step_to_tf_ops")
-    filtered["step_to_cncl"] = filter_mapping("step_to_cncl")
     filtered["step_to_non_triton_kernel_efficiency"] = filter_mapping("step_to_non_triton_kernel_efficiency")
 
     kernel_names = set()
@@ -1742,7 +1722,6 @@ def compute_avgs(parsed):
         step_to_kernels      = parsed["step_to_kernels"]
         step_to_aten         = parsed["step_to_aten"]
         step_to_tf_ops       = parsed.get("step_to_tf_ops", defaultdict(lambda: defaultdict(lambda: {"count": 0, "dur_ms": 0.0})))
-        step_to_cncl         = parsed["step_to_cncl"]
         step_to_non_triton_kernel_efficiency = parsed.get("step_to_non_triton_kernel_efficiency", defaultdict(list))
         step_durations       = parsed["step_durations"]
         step_ranges          = parsed.get("step_ranges", {})
@@ -1762,7 +1741,6 @@ def compute_avgs(parsed):
         | set(step_to_kernels)
         | set(step_to_aten)
         | set(step_to_tf_ops)
-        | set(step_to_cncl)
         | set(step_to_non_triton_kernel_efficiency)
     )
     n_steps   = len(all_steps)
@@ -1775,16 +1753,11 @@ def compute_avgs(parsed):
         step_triton = step_to_triton.get(step, [])
         step_aten = step_to_aten.get(step, {})
         step_tf_ops = step_to_tf_ops.get(step, {})
-        step_cncl = step_to_cncl.get(step, {})
         kc  = sum(v["count"]  for v in step_kernels.values())
-        collective_names = set(step_cncl)
         ckd = sum(
             v["dur_ms"]
             for name, v in step_kernels.items()
-            if (
-                name not in collective_names
-                and (kernel_families.get(name) or extract_kernel_family(name)) != "collective"
-            )
+            if (kernel_families.get(name) or extract_kernel_family(name)) != "collective"
         )
         tc  = len(step_triton)
         td  = sum((k["dur(ms)"] or 0.0) for k in step_triton)
@@ -1792,11 +1765,9 @@ def compute_avgs(parsed):
         ad  = sum(v["dur_ms"] for v in step_aten.values())
         fc  = sum(v["count"]  for v in step_tf_ops.values())
         fd  = sum(v["dur_ms"] for v in step_tf_ops.values())
-        cc  = sum(v["count"]  for v in step_cncl.values())
-        cd  = sum(v["dur_ms"] for v in step_cncl.values())
-        step_stats[step] = (sd, kc, ckd, tc, td, ac, ad, fc, fd, cc, cd)
+        step_stats[step] = (sd, kc, ckd, tc, td, ac, ad, fc, fd)
 
-    avg_row = tuple(mean([step_stats[s][i] for s in all_steps]) for i in range(11))
+    avg_row = tuple(mean([step_stats[s][i] for s in all_steps]) for i in range(9))
 
     # Auto-classify kernel families from aggregated per-kernel stats
     avg_kernels_data = avg_stats(step_to_kernels, all_steps)
@@ -2007,7 +1978,6 @@ def compute_avgs(parsed):
         "avg_kernels":    avg_kernels_data,
         "avg_aten":       avg_stats(step_to_aten, all_steps),
         "avg_tf_ops":     avg_stats(step_to_tf_ops, all_steps),
-        "avg_cncl":       avg_stats(step_to_cncl, all_steps),
         "avg_triton":     avg_triton,
         "avg_non_triton_kernel_efficiency": avg_non_triton_kernel_efficiency,
         "step_to_triton": step_to_triton,
@@ -2020,7 +1990,7 @@ def compute_avgs(parsed):
 
 _HDR = (f"{'step':<8} {'step_dur(ms)':<14} {'kernels':<10} {'compute_kernel_dur(ms)':<24}"
         f" {'triton':<10} {'triton_dur(ms)':<16} {'aten_ops':<10} {'aten_dur(ms)':<14}"
-        f" {'tf_ops':<10} {'tf_dur(ms)':<12} {'cncl':<8} {'cncl_dur(ms)':<14}")
+        f" {'tf_ops':<10} {'tf_dur(ms)':<12}")
 
 
 def print_step_summary(data, label=""):
@@ -2031,13 +2001,13 @@ def print_step_summary(data, label=""):
     print(_HDR)
     print("-" * len(_HDR))
     for step in data["all_steps"]:
-        sd, kc, ckd, tc, td, ac, ad, fc, fd, cc, cd = data["step_stats"][step]
+        sd, kc, ckd, tc, td, ac, ad, fc, fd = data["step_stats"][step]
         print(f"{step:<8} {sd:<14.3f} {kc:<10} {ckd:<24.3f} {tc:<10} {td:<16.3f}"
-              f" {ac:<10} {ad:<14.3f} {fc:<10} {fd:<12.3f} {cc:<8} {cd:<14.3f}")
-    avg_sd, avg_kc, avg_ckd, avg_tc, avg_td, avg_ac, avg_ad, avg_fc, avg_fd, avg_cc, avg_cd = data["avg_row"]
+              f" {ac:<10} {ad:<14.3f} {fc:<10} {fd:<12.3f}")
+    avg_sd, avg_kc, avg_ckd, avg_tc, avg_td, avg_ac, avg_ad, avg_fc, avg_fd = data["avg_row"]
     print("-" * len(_HDR))
     print(f"{'avg':<8} {avg_sd:<14.3f} {avg_kc:<10.1f} {avg_ckd:<24.3f} {avg_tc:<10.1f} {avg_td:<16.3f}"
-          f" {avg_ac:<10.1f} {avg_ad:<14.3f} {avg_fc:<10.1f} {avg_fd:<12.3f} {avg_cc:<8.1f} {avg_cd:<14.3f}")
+          f" {avg_ac:<10.1f} {avg_ad:<14.3f} {avg_fc:<10.1f} {avg_fd:<12.3f}")
 
 
 def print_kernel_type_breakdown(data, label=""):
@@ -2110,7 +2080,6 @@ def print_comparison(data_a, data_b, label_a, label_b):
     METRICS = [
         "step_dur(ms)", "kernels", "compute_kernel_dur(ms)", "triton",
         "triton_dur(ms)", "aten_ops", "aten_dur(ms)", "tf_ops", "tf_dur(ms)",
-        "cncl", "cncl_dur(ms)",
     ]
     la, lb = label_a[:16], label_b[:16]
     print(f"\n=== Avg Comparison ({label_a} vs {label_b}) ===")
@@ -2489,8 +2458,6 @@ def write_single(data, args):
     if data.get("avg_tf_ops"):
         write_avg_csv(os.path.join(args.output_dir, "tf_ops_avg.csv"),      data["avg_tf_ops"],  "op_name")
     _write_kernel_types_csv(os.path.join(args.output_dir, "kernel_types_avg.csv"), data["KERNEL_TYPES"], data["kt_avgs"])
-    if not is_tensorflow or data["avg_cncl"]:
-        write_avg_csv(os.path.join(args.output_dir, "cncl_ops_avg.csv"),    data["avg_cncl"],    "op_name")
 
 
 def write_comparison(data_a, data_b, args):
@@ -2507,9 +2474,6 @@ def write_comparison(data_a, data_b, args):
         _write_cmp_avg_csv(os.path.join(args.output_dir, "tf_ops_cmp.csv"),
                            data_a.get("avg_tf_ops", {}), data_b.get("avg_tf_ops", {}), "op_name")
     _write_kernel_types_cmp_csv(os.path.join(args.output_dir, "kernel_types_cmp.csv"), data_a, data_b)
-    if not has_tensorflow or data_a["avg_cncl"] or data_b["avg_cncl"]:
-        _write_cmp_avg_csv(os.path.join(args.output_dir, "cncl_ops_cmp.csv"),
-                           data_a["avg_cncl"], data_b["avg_cncl"], "op_name")
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

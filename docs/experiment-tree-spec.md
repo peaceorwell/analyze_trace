@@ -121,7 +121,6 @@ CREATE INDEX        IF NOT EXISTS idx_expedge_child   ON experiment_edges(child_
 |---|---|---|
 | `perfetto_context.json` | `["a"]["dur_ns"]` | profiled step 的端到端耗时（ns） |
 | `kernel_types_avg.csv` | `type`, `avg_dur_ms` | 各 kernel 类型平均耗时（ms/step） |
-| `cncl_ops_avg.csv` | `op_name`, `avg_dur_ms` | 通信算子耗时（ms/step） |
 
 > 这些文件只有在 job `status='done'` 后才齐全。缺文件要降级（见末尾）。
 
@@ -137,7 +136,6 @@ def _read_node_metrics(job_id: str) -> dict:
     return {
       "e2e_ms":     float|None,   # perfetto_context.json a.dur_ns / 1e6
       "compute_ms": float|None,   # sum(kernel_types_avg.avg_dur_ms)
-      "comm_ms":    float|None,   # sum(cncl_ops_avg.avg_dur_ms)
       "by_type":    {type: avg_dur_ms, ...},  # kernel_types_avg
     }"""
 

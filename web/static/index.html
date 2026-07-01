@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>torch profiler analyzer</title>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.4.22" />
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.4.24" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.css" />
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
@@ -12,7 +12,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js"></script>
-  <link rel="stylesheet" href="/static/style.css?v=0.4.22" />
+  <link rel="stylesheet" href="/static/style.css?v=0.4.24" />
   <script>
     // Apply saved theme or system preference before page paint to avoid flash
     (function() {
@@ -143,7 +143,7 @@
     <!-- ── Header ── -->
     <header v-if="authChecked && (!authRequired || currentUser)" class="header">
       <div class="header-brand" @click="$router.push('/')" style="cursor:pointer" title="返回上传页面">
-        <img class="header-logo" src="/static/favicon.svg?v=0.4.22" alt="" />
+        <img class="header-logo" src="/static/favicon.svg?v=0.4.24" alt="" />
         <span class="header-title">Torch Profiler Analyzer</span>
         <span class="header-version">v{{ appVersion }}</span>
       </div>
@@ -1452,7 +1452,7 @@
             <ul>
               <li><strong>性能总览</strong> 是默认页：先看总耗时、Top 回退/改善、占比和 Delta 图，通信类 kernel/op 默认不计入计算统计</li>
               <li><strong>AI 分析</strong> 适合快速得到 Markdown 报告；<strong>控制台</strong> 适合核对脚本原始摘要和生成文件</li>
-              <li><strong>Kernel 类型</strong>、<strong>所有 Kernel</strong>、<strong>Triton</strong>、<strong>ATen Ops</strong>、<strong>CNCL Ops</strong> 用于下钻；图表和类型行可点击跳到相关表格</li>
+              <li><strong>Kernel 类型</strong>、<strong>所有 Kernel</strong>、<strong>Triton</strong>、<strong>ATen Ops</strong> 用于下钻；图表和类型行可点击跳到相关表格</li>
               <li><strong>类型对比</strong> 会同时展示耗时 delta 和调用数 delta；未知 Triton family 统一显示为 <code>triton_other</code></li>
               <li>CSV 表格支持搜索、筛选、排序、列显隐、分页大小调整、显示全部和下载当前页</li>
               <li>列宽会按内容自适应，短数值列默认更紧凑；数字列按字段名和列内容识别，并与表头字段一起居中显示</li>
@@ -1533,6 +1533,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=0.4.22"></script>
+  <script src="/static/app.js?v=0.4.24"></script>
 </body>
 </html>

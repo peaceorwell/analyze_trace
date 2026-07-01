@@ -136,7 +136,7 @@ const chartPieRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.4.22");
+const appVersion = ref("0.4.24");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -627,6 +627,23 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.4.24",
+    date: "2026-07-01",
+    title: "修复 CSV 列宽随排序跳动",
+    items: [
+      "自动列宽改为按任务/页签/数据总量冻结快照，排序、筛选、翻页不再触发列宽重新计算和跳动。",
+    ],
+  },
+  {
+    version: "0.4.23",
+    date: "2026-07-01",
+    title: "移除 CNCL/NCCL 通信耗时统计",
+    items: [
+      "移除独立的 CNCL Ops 页签、CSV 输出和实验树 Comm 指标，修复通信耗时被重复计入的问题。",
+      "删除 trace 文件前会检查是否有对比任务依赖该文件，避免误删后对比任务失效。",
+    ],
+  },
   {
     version: "0.4.22",
     date: "2026-07-01",
@@ -1251,8 +1268,6 @@ const availableTabs = computed(() => {
     "aten_ops_cmp.csv":         "Aten 对比",
     "tf_ops_avg.csv":           "TF Ops",
     "tf_ops_cmp.csv":           "TF 对比",
-    "cncl_ops_avg.csv":         "CNCL Ops",
-    "cncl_ops_cmp.csv":         "CNCL 对比",
   };
   for (const [file, label] of Object.entries(csvMap)) {
     if (res[file]) tabs.push({ key: file, label });
@@ -1283,20 +1298,14 @@ const CHART_SOURCE_CONFIGS = [
   { file: "triton_kernels_cmp.csv", label: "Triton Delta", mode: "compare", nameField: "kernel_name", defaultMetric: "delta_dur_ms" },
   { file: "aten_ops_cmp.csv", label: "Aten Delta", mode: "compare", nameField: "op_name", defaultMetric: "delta_dur_ms" },
   { file: "tf_ops_cmp.csv", label: "TF Ops Delta", mode: "compare", nameField: "op_name", defaultMetric: "delta_dur_ms" },
-  { file: "cncl_ops_cmp.csv", label: "CNCL Delta", mode: "compare", nameField: "op_name", defaultMetric: "delta_dur_ms" },
   { file: "kernel_types_avg.csv", label: "Kernel 类型", mode: "single", nameField: "type", defaultMetric: "avg_dur_ms" },
   { file: "all_kernels_avg.csv", label: "所有 Kernel", mode: "single", nameField: "kernel_name", defaultMetric: "avg_dur_ms" },
   { file: "triton_kernels_avg.csv", label: "Triton Kernel", mode: "single", nameField: "kernel_name", defaultMetric: "avg_dur_ms" },
   { file: "non_triton_kernel_efficiency_avg.csv", label: "非 Triton 效率", mode: "single", nameField: "kernel_name", defaultMetric: "avg_dur_ms" },
   { file: "aten_ops_avg.csv", label: "Aten Ops", mode: "single", nameField: "op_name", defaultMetric: "avg_dur_ms" },
   { file: "tf_ops_avg.csv", label: "TF Ops", mode: "single", nameField: "op_name", defaultMetric: "avg_dur_ms" },
-  { file: "cncl_ops_avg.csv", label: "CNCL Ops", mode: "single", nameField: "op_name", defaultMetric: "avg_dur_ms" },
 ];
 
-const CHART_COMMUNICATION_SOURCE_FILES = new Set([
-  "cncl_ops_avg.csv",
-  "cncl_ops_cmp.csv",
-]);
 const CHART_COMMUNICATION_FAMILIES = new Set([
   "collective",
   "communication",
@@ -1329,11 +1338,7 @@ const CHART_METRIC_DEFS = [
 const chartSourceOptions = computed(() => {
   const res = selectedJob.value?.result_files || {};
   const mode = selectedJob.value?.mode === "compare" ? "compare" : "single";
-  return CHART_SOURCE_CONFIGS.filter(item =>
-    item.mode === mode
-      && res[item.file]
-      && !CHART_COMMUNICATION_SOURCE_FILES.has(item.file)
-  );
+  return CHART_SOURCE_CONFIGS.filter(item => item.mode === mode && res[item.file]);
 });
 
 const chartMetricOptions = computed(() => {
@@ -1686,17 +1691,28 @@ const measureColumnContentWidth = (field, rows) => {
   if (compactMax) width = Math.min(width, compactMax);
   return Math.max(TABLE_AUTO_MIN_WIDTH, Math.min(TABLE_COLUMN_SAFETY_MAX, width));
 };
-// Auto widths recompute only when the table data changes (not on filtering or
-// column toggles), so column widths stay stable while the user filters.
-const autoColWidths = computed(() => {
+// Auto widths are frozen per (job, tab, unfiltered row count) and only
+// recomputed when that combination changes — not on sort/filter/pagination,
+// which re-fetch a differently ordered/sliced page of the same dataset and
+// would otherwise make columns visibly resize on every click.
+const autoColWidthsSnapshot = ref({});
+const autoColWidthsKey = ref("");
+const autoColWidthsSourceKey = computed(() => {
+  const table = currentTable.value;
+  return `${selectedJobId.value || ""}::${resultTab.value || ""}::${table.total ?? ""}`;
+});
+const refreshAutoColWidthsIfNeeded = () => {
+  const key = autoColWidthsSourceKey.value;
+  if (key === autoColWidthsKey.value) return;
+  autoColWidthsKey.value = key;
   const table = currentTable.value;
   const fields = table.fields || [];
-  if (!fields.length) return {};
   const rows = table.rows || [];
   const widths = {};
   for (const field of fields) widths[field] = measureColumnContentWidth(field, rows);
-  return widths;
-});
+  autoColWidthsSnapshot.value = widths;
+};
+const autoColWidths = computed(() => autoColWidthsSnapshot.value);
 const tableColumnWidth = field => {
   if (colWidths.value[field] !== undefined) return clampTableColumnWidth(colWidths.value[field]);
   const auto = autoColWidths.value[field];
@@ -2044,7 +2060,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.4.22";
+  appVersion.value = cfg.version || "0.4.24";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -3432,7 +3448,7 @@ const deleteSelectedStorageFiles = async () => {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
-    body: JSON.stringify({ job_ids: ids }),
+    body: JSON.stringify({ job_ids: ids, force: true }),
   });
   if (!r.ok) {
     const err = await r.json().catch(() => ({}));
@@ -4717,7 +4733,6 @@ const normalizeChartRows = (rows, fields, sourceConfig, metricDef) => {
 
 const isCommunicationChartRow = (row, sourceConfig) => {
   if (!row) return false;
-  if (CHART_COMMUNICATION_SOURCE_FILES.has(sourceConfig?.file)) return true;
   const raw = row.raw || row;
   const family = String(raw.family ?? raw.type ?? "").trim().toLowerCase();
   if (CHART_COMMUNICATION_FAMILIES.has(family)) return true;
@@ -5307,7 +5322,7 @@ const deleteFile = async slot => {
     confirmText: "删除",
     tone: "danger",
   })) return;
-  const r = await fetch(`/api/jobs/${selectedJobId.value}/files/${slot}`, {
+  const r = await fetch(`/api/jobs/${selectedJobId.value}/files/${slot}?force=true`, {
     method: "DELETE", credentials: "include",
   });
   if (!r.ok) {
@@ -5670,7 +5685,7 @@ const bulkDeleteFiles = async () => {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
-    body: JSON.stringify({ job_ids: ids }),
+    body: JSON.stringify({ job_ids: ids, force: true }),
   });
   if (!r.ok) {
     const err = await r.json().catch(() => ({}));
@@ -8377,7 +8392,6 @@ const ExperimentTree = {
                         <th><button type="button" :class="{ active: nodeMetricSort.key === 'label' }" @click="setNodeMetricSort('label')">节点<span class="exp-sort-mark">{{ nodeMetricSortMark('label') || '↕' }}</span></button></th>
                         <th><button type="button" :class="{ active: nodeMetricSort.key === 'e2e_ms' }" @click="setNodeMetricSort('e2e_ms')">E2E<span class="exp-sort-mark">{{ nodeMetricSortMark('e2e_ms') || '↕' }}</span></button></th>
                         <th><button type="button" :class="{ active: nodeMetricSort.key === 'compute_ms' }" @click="setNodeMetricSort('compute_ms')">Compute<span class="exp-sort-mark">{{ nodeMetricSortMark('compute_ms') || '↕' }}</span></button></th>
-                        <th><button type="button" :class="{ active: nodeMetricSort.key === 'comm_ms' }" @click="setNodeMetricSort('comm_ms')">Comm<span class="exp-sort-mark">{{ nodeMetricSortMark('comm_ms') || '↕' }}</span></button></th>
                         <th><button type="button" :class="{ active: nodeMetricSort.key === 'kernel_count' }" @click="setNodeMetricSort('kernel_count')">Kernel<span class="exp-sort-mark">{{ nodeMetricSortMark('kernel_count') || '↕' }}</span></button></th>
                         <th>操作</th>
                       </tr>
@@ -8387,7 +8401,6 @@ const ExperimentTree = {
                         <td><strong>{{ nodeTitle(node) }}</strong><span>{{ statusText(node.status) }}</span></td>
                         <td>{{ formatMs(node.e2e_ms) }}</td>
                         <td>{{ formatMs(node.compute_ms) }}</td>
-                        <td>{{ formatMs(node.comm_ms) }}</td>
                         <td>{{ formatCount(node.kernel_count) }}</td>
                         <td><button class="btn btn-xs btn-outline" type="button" @click.stop="openJob(node)">详情</button></td>
                       </tr>
@@ -8754,7 +8767,6 @@ const ExperimentTree = {
     const LINEAGE_METRIC_DEFS = [
       { key: "compute_ms", label: "计算耗时", unit: "ms", beginAtZero: false },
       { key: "e2e_ms", label: "端到端耗时", unit: "ms", beginAtZero: false },
-      { key: "comm_ms", label: "通信耗时", unit: "ms", beginAtZero: false },
       { key: "kernel_count", label: "Kernel 数", unit: "count", beginAtZero: true },
       { key: "aten_ops_ms", label: "ATen 耗时", unit: "ms", beginAtZero: false },
       { key: "aten_ops_count", label: "ATen 操作数", unit: "count", beginAtZero: true },
@@ -8763,7 +8775,6 @@ const ExperimentTree = {
     const ROI_METRIC_DEFS = [
       { key: "e2e_ms", label: "端到端耗时" },
       { key: "compute_ms", label: "计算耗时" },
-      { key: "comm_ms", label: "通信耗时" },
     ];
     const roundLayout = value => Math.round(Number(value || 0) * 10) / 10;
     const hasLayoutNumber = value => value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value));
@@ -10883,7 +10894,6 @@ const ExperimentTree = {
       const defs = [
         ["e2e_ms", "端到端"],
         ["compute_ms", "计算"],
-        ["comm_ms", "通信"],
       ];
       return defs.map(([key, label]) => ({ key, label, ...(metrics[key] || {}) }));
     };
@@ -11635,6 +11645,8 @@ const App = {
       const valid = visibleColumns.value.filter(field => fields.includes(field));
       visibleColumns.value = valid.length ? valid : [...fields];
     });
+
+    watch(autoColWidthsSourceKey, refreshAutoColWidthsIfNeeded, { immediate: true });
 
     watch([showFeedbackComposer, selectedFeedbackPostId], () => {
       refreshFeedbackMarkdownEditors();

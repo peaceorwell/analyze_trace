@@ -102,7 +102,6 @@ class TestParseTrace:
 
         assert "step_to_kernels" in result
         assert "step_to_aten" in result
-        assert "step_to_cncl" in result
         assert "step_durations" in result
 
     def test_step_durations(self, sample_trace_file):
@@ -289,7 +288,6 @@ class TestComputeAvgs:
         empty_data = {
             "step_to_kernels": defaultdict(lambda: defaultdict(dict)),
             "step_to_aten": defaultdict(lambda: defaultdict(dict)),
-            "step_to_cncl": defaultdict(lambda: defaultdict(dict)),
             "step_durations": {},
             "step_to_triton": defaultdict(list),
         }
@@ -532,12 +530,10 @@ class TestComputeAvgs:
         }))
 
         avgs = compute_avgs(parse_trace(str(trace_path)))
-        _, kernel_count, compute_kernel_dur, _, _, _, _, _, _, collective_count, collective_dur = avgs["step_stats"][0]
+        _, kernel_count, compute_kernel_dur, _, _, _, _, _, _ = avgs["step_stats"][0]
 
         assert kernel_count == 2
         assert compute_kernel_dur == 30.0
-        assert collective_count == 1
-        assert collective_dur == 20.0
         assert "collective" not in avgs["KERNEL_TYPES"]
         assert avgs["kt_avgs"]["collective"] == (1.0, 20.0)
 
@@ -726,7 +722,6 @@ class TestEndToEnd:
             "avg_kernels": {},
             "avg_triton": {},
             "avg_aten": {},
-            "avg_cncl": {},
         }
         data_b = {
             "KERNEL_TYPES": ["gemm", "attention", "other"],
@@ -734,7 +729,6 @@ class TestEndToEnd:
             "avg_kernels": {},
             "avg_triton": {},
             "avg_aten": {},
-            "avg_cncl": {},
         }
         args = type("Args", (), {"output_dir": temp_output_dir})
 
@@ -764,7 +758,6 @@ class TestEndToEnd:
             "kernel_families": {"gemm_kernel_a": "gemm"},
             "avg_triton": {},
             "avg_aten": {},
-            "avg_cncl": {},
         }
         data_b = {
             "KERNEL_TYPES": ["gemm"],
@@ -773,7 +766,6 @@ class TestEndToEnd:
             "kernel_families": {"gemm_kernel_a": "gemm"},
             "avg_triton": {},
             "avg_aten": {},
-            "avg_cncl": {},
         }
         args = type("Args", (), {"output_dir": temp_output_dir})
 
@@ -803,7 +795,6 @@ class TestEndToEnd:
                 },
             },
             "avg_aten": {},
-            "avg_cncl": {},
         }
         data_b = {
             "KERNEL_TYPES": [],
@@ -821,7 +812,6 @@ class TestEndToEnd:
                 },
             },
             "avg_aten": {},
-            "avg_cncl": {},
         }
         args = type("Args", (), {"output_dir": temp_output_dir})
 
@@ -854,7 +844,6 @@ class TestEndToEnd:
                 },
             },
             "avg_aten": {},
-            "avg_cncl": {},
         }
         data_b = {
             "KERNEL_TYPES": [],
@@ -872,7 +861,6 @@ class TestEndToEnd:
                 },
             },
             "avg_aten": {},
-            "avg_cncl": {},
         }
         args = type("Args", (), {"output_dir": temp_output_dir})
 
@@ -1003,7 +991,6 @@ class TestEndToEnd:
             "avg_tf_ops": {
                 "dense/MatMul:MatMul": {"avg_count": 1, "avg_dur_ms": 6},
             },
-            "avg_cncl": {},
             "KERNEL_TYPES": ["gemm"],
             "kt_avgs": {"gemm": (10, 20), "other": (0, 0), "collective": (0, 0)},
         }
@@ -1022,7 +1009,6 @@ class TestEndToEnd:
             "aten_ops_avg.csv",
             "tf_ops_avg.csv",
             "kernel_types_avg.csv",
-            "cncl_ops_avg.csv",
         ]:
             with open(os.path.join(temp_output_dir, name)) as f:
                 fields = next(csv.reader(f))

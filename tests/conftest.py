@@ -50,13 +50,6 @@ def sample_trace_data():
                 "args": {},
             },
             {
-                "name": "cnclAllReduce",
-                "cat": "gpu_user_annotation",
-                "ts": 1004000,
-                "dur": 1000,
-                "args": {"Collective name": "allreduce"},
-            },
-            {
                 "name": "ProfilerStep#2",
                 "cat": "user_annotation",
                 "ts": 1200000,

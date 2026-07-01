@@ -70,7 +70,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.4.22",
+        "version": "0.4.24",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -185,7 +185,6 @@ def test_collect_results_hides_empty_pytorch_csvs_for_tensorflow_trace(isolated_
         "kernel_name,avg_count,avg_dur_ms,avg_io_gb,avg_io_efficiency_gbps\n"
     )
     (rdir / "aten_ops_avg.csv").write_text("op_name,avg_count,avg_dur_ms\n")
-    (rdir / "cncl_ops_avg.csv").write_text("op_name,avg_count,avg_dur_ms\n")
     (rdir / "non_triton_kernel_efficiency_avg.csv").write_text(
         "kernel_name,family,operator,input_dims,input_types,input_strides,concrete_inputs,"
         "avg_count,avg_dur_ms,avg_us_per_call,avg_compute_efficiency,"
@@ -199,7 +198,6 @@ def test_collect_results_hides_empty_pytorch_csvs_for_tensorflow_trace(isolated_
     assert "tf_ops_avg.csv" in results
     assert "triton_kernels_avg.csv" not in results
     assert "aten_ops_avg.csv" not in results
-    assert "cncl_ops_avg.csv" not in results
     assert "non_triton_kernel_efficiency_avg.csv" not in results
 
 
@@ -3799,13 +3797,13 @@ def test_done_job_without_perfetto_context_still_loads(client, sample_trace_file
 def _experiment_console_summary(*, step_dur_ms, kernels=1, compute_ms=0, aten_ops=0, aten_ms=0, steps=1):
     return textwrap.dedent(f"""
         === Per-Step Summary ({steps} steps) ===
-        step     step_dur(ms)   kernels    compute_kernel_dur(ms)   triton     triton_dur(ms)   aten_ops   aten_dur(ms)   tf_ops     tf_dur(ms)   cncl     cncl_dur(ms)
+        step     step_dur(ms)   kernels    compute_kernel_dur(ms)   triton     triton_dur(ms)   aten_ops   aten_dur(ms)   tf_ops     tf_dur(ms)
         -----------------------------------------------------------------------------------------------------------------------------------------------------------------
-        avg      {step_dur_ms}  {kernels}  {compute_ms}             0          0.000            {aten_ops}  {aten_ms}      0          0.000        0        0.000
+        avg      {step_dur_ms}  {kernels}  {compute_ms}             0          0.000            {aten_ops}  {aten_ms}      0          0.000
     """).strip()
 
 
-def _write_experiment_result(job_id, *, e2e_ms=None, kernel_rows=None, cncl_rows=None, aten_rows=None, all_kernel_rows=None):
+def _write_experiment_result(job_id, *, e2e_ms=None, kernel_rows=None, aten_rows=None, all_kernel_rows=None):
     result_dir = Path(web_server.result_dir(job_id))
     result_dir.mkdir(parents=True, exist_ok=True)
     if e2e_ms is not None:
@@ -3823,10 +3821,6 @@ def _write_experiment_result(job_id, *, e2e_ms=None, kernel_rows=None, cncl_rows
                 count = 1
             lines.append(f"{name},{count},{value}")
         (result_dir / "kernel_types_avg.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    if cncl_rows is not None:
-        lines = ["op_name,avg_dur_ms"]
-        lines.extend(f"{name},{value}" for name, value in cncl_rows)
-        (result_dir / "cncl_ops_avg.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
     if aten_rows is not None:
         lines = ["op_name,avg_count,avg_dur_ms"]
         for row in aten_rows:
@@ -3887,7 +3881,6 @@ def test_experiment_edge_lifecycle_and_cycle_detection(client):
         "exp-a",
         e2e_ms=120.4,
         kernel_rows=[("gemm", 20.6), ("attention", 8.26)],
-        cncl_rows=[("allreduce", 12.0)],
         aten_rows=[("aten::mm", 30, 4.2), ("aten::add", 12, 2.0)],
         all_kernel_rows=[
             ("gemm_kernel", "gemm", 1, 9.0),
@@ -3899,7 +3892,6 @@ def test_experiment_edge_lifecycle_and_cycle_detection(client):
         "exp-b",
         e2e_ms=100.1,
         kernel_rows=[("gemm", 14.1), ("attention", 8.1)],
-        cncl_rows=[("allreduce", 11.5)],
         aten_rows=[("aten::mm", 25, 3.2), ("aten::add", 12, 1.5)],
         all_kernel_rows=[
             ("gemm_kernel", "gemm", 1, 8.0),
@@ -4110,14 +4102,12 @@ def test_experiment_perf_warns_on_step_count_mismatch(client):
         "step-a",
         e2e_ms=24.0,
         kernel_rows=[("gemm", 3, 12.0)],
-        cncl_rows=[("allreduce", 1.0)],
         aten_rows=[("aten::mm", 10, 3.0)],
     )
     _write_experiment_result(
         "step-b",
         e2e_ms=22.0,
         kernel_rows=[("gemm", 3, 11.0)],
-        cncl_rows=[("allreduce", 1.0)],
         aten_rows=[("aten::mm", 9, 2.5)],
     )
 
@@ -4163,7 +4153,7 @@ def test_experiment_missing_results_layout_and_cleanup(client):
             await db.close()
 
     asyncio.run(insert_rows())
-    _write_experiment_result("layout-a", e2e_ms=10.0, kernel_rows=[("gemm", 2.0)], cncl_rows=[("allreduce", 1.0)])
+    _write_experiment_result("layout-a", e2e_ms=10.0, kernel_rows=[("gemm", 2.0)])
 
     create = client.post(
         "/api/projects/layout-project/experiments/edges",
@@ -4196,7 +4186,6 @@ def test_experiment_missing_results_layout_and_cleanup(client):
     refreshed = client.post(f"/api/experiments/edges/{edge_id}/refresh-perf")
     assert refreshed.status_code == 200
     assert refreshed.json()["perf"]["incomplete"] is False
-    assert refreshed.json()["perf"]["metrics"]["comm_ms"]["child"] is None
 
     moved = client.patch("/api/jobs/layout-b", json={"project_id": "target-project"})
     assert moved.status_code == 200
@@ -4226,7 +4215,10 @@ def test_experiment_missing_results_layout_and_cleanup(client):
     assert client.get("/api/projects/layout-project/experiments").json()["nodes"] == []
 
 
-def test_compare_job_exposes_source_summaries_and_delete_impact(client, sample_trace_file):
+def test_compare_job_exposes_source_summaries_and_delete_impact(client, sample_trace_file, tmp_path):
+    source_a_file = tmp_path / "source-a.json"
+    shutil.copyfile(sample_trace_file, source_a_file)
+
     async def insert_jobs():
         db = await web_db.get_db()
         try:
@@ -4239,7 +4231,7 @@ def test_compare_job_exposes_source_summaries_and_delete_impact(client, sample_t
                 ) VALUES(?,?,?,?,?,?,?,?,?)
                 """,
                 [
-                    ("source-a", "project-a", "base", "single", "done", "a.json", sample_trace_file, None, None),
+                    ("source-a", "project-a", "base", "single", "done", "a.json", str(source_a_file), None, None),
                     ("source-b", None, "target", "single", "done", "b.json", sample_trace_file, None, None),
                     ("compare-job", None, "cmp", "compare", "done", "a.json", None, "source-a", "source-b"),
                 ],
@@ -4260,6 +4252,47 @@ def test_compare_job_exposes_source_summaries_and_delete_impact(client, sample_t
     assert impact.status_code == 200
     assert impact.json()["count"] == 1
     assert impact.json()["dependent_compare_jobs"][0]["id"] == "compare-job"
+
+    blocked = client.delete("/api/jobs/source-a/files/a")
+    assert blocked.status_code == 409
+    assert source_a_file.exists()
+
+    forced = client.delete("/api/jobs/source-a/files/a?force=true")
+    assert forced.status_code == 204
+    assert not source_a_file.exists()
+
+
+def test_bulk_delete_files_blocks_when_compare_depends_unless_forced(client, sample_trace_file, tmp_path):
+    source_a_file = tmp_path / "source-a.json"
+    shutil.copyfile(sample_trace_file, source_a_file)
+
+    async def insert_jobs():
+        db = await web_db.get_db()
+        try:
+            await db.executemany(
+                """
+                INSERT INTO jobs(id, label, mode, status, file_a_name, file_a_path, source_job_a, source_job_b)
+                VALUES(?,?,?,?,?,?,?,?)
+                """,
+                [
+                    ("source-a", "base", "single", "done", "a.json", str(source_a_file), None, None),
+                    ("compare-job", "cmp", "compare", "done", "a.json", None, "source-a", None),
+                ],
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_jobs())
+
+    blocked = client.post("/api/jobs/bulk/delete-files", json={"job_ids": ["source-a"]})
+    assert blocked.status_code == 409
+    assert source_a_file.exists()
+
+    forced = client.post("/api/jobs/bulk/delete-files", json={"job_ids": ["source-a"], "force": True})
+    assert forced.status_code == 200
+    assert forced.json() == {"updated": 1, "files_deleted": 1}
+    assert not source_a_file.exists()
 
 
 def test_rerun_swapped_direct_compare_copies_reversed_files(

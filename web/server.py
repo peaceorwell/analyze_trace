@@ -59,14 +59,13 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.4.22"
+APP_VERSION = "0.4.24"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
 PROJECT_METRIC_TARGET_KEYS = {
     "compute_ms",
     "e2e_ms",
-    "comm_ms",
     "kernel_count",
     "aten_ops_ms",
     "aten_ops_count",
@@ -1541,8 +1540,6 @@ def _report_csv_sections(jid: str, mode: str) -> list[str]:
         "aten_ops_cmp.csv": "Aten Ops 对比",
         "tf_ops_avg.csv": "TensorFlow Ops",
         "tf_ops_cmp.csv": "TensorFlow Ops 对比",
-        "cncl_ops_avg.csv": "CNCL Ops",
-        "cncl_ops_cmp.csv": "CNCL Ops 对比",
     }
     preferred = (
         [
@@ -1551,7 +1548,6 @@ def _report_csv_sections(jid: str, mode: str) -> list[str]:
             "triton_kernels_cmp.csv",
             "aten_ops_cmp.csv",
             "tf_ops_cmp.csv",
-            "cncl_ops_cmp.csv",
         ]
         if mode == "compare"
         else [
@@ -1561,7 +1557,6 @@ def _report_csv_sections(jid: str, mode: str) -> list[str]:
             "non_triton_kernel_efficiency_avg.csv",
             "aten_ops_avg.csv",
             "tf_ops_avg.csv",
-            "cncl_ops_avg.csv",
         ]
     )
     sections = []
@@ -1611,8 +1606,6 @@ def _prune_empty_tensorflow_result_csvs(files: dict) -> dict:
         "non_triton_kernel_efficiency_avg.csv",
         "aten_ops_avg.csv",
         "aten_ops_cmp.csv",
-        "cncl_ops_avg.csv",
-        "cncl_ops_cmp.csv",
     ):
         if name in files and not files[name].get("rows"):
             files.pop(name, None)
@@ -1744,8 +1737,7 @@ def _ordered_result_csv_names(rdir: str) -> list[str]:
                  "non_triton_kernel_efficiency_avg.csv",
                  "aten_ops_avg.csv", "aten_ops_cmp.csv",
                  "tf_ops_avg.csv", "tf_ops_cmp.csv",
-                 "kernel_types_avg.csv", "kernel_types_cmp.csv",
-                 "cncl_ops_avg.csv", "cncl_ops_cmp.csv"]:
+                 "kernel_types_avg.csv", "kernel_types_cmp.csv"]:
         if os.path.exists(os.path.join(rdir, name)):
             names.append(name)
     if os.path.isdir(rdir):
@@ -3729,8 +3721,7 @@ def collect_results(jid: str) -> dict:
                  "non_triton_kernel_efficiency_avg.csv",
                  "aten_ops_avg.csv", "aten_ops_cmp.csv",
                  "tf_ops_avg.csv", "tf_ops_cmp.csv",
-                 "kernel_types_avg.csv", "kernel_types_cmp.csv",
-                 "cncl_ops_avg.csv", "cncl_ops_cmp.csv"]:
+                 "kernel_types_avg.csv", "kernel_types_cmp.csv"]:
         full = os.path.join(rdir, name)
         if os.path.exists(full):
             files[name] = csv_to_rows(full)
@@ -3922,7 +3913,6 @@ def _read_hot_kernel_metrics(job_id: str, limit: int = 5) -> tuple[list[dict], d
 
 def _read_node_metrics(job_id: str, console_out: str | None = None) -> dict:
     compute_ms, by_type, kernel_count = _read_avg_ms_csv(job_id, "kernel_types_avg.csv", "type")
-    comm_ms, _, _ = _read_avg_ms_csv(job_id, "cncl_ops_avg.csv", "op_name")
     aten_ops_ms, _, aten_ops_count = _read_avg_ms_csv(job_id, "aten_ops_avg.csv", "op_name")
     step_summary = _read_step_summary_from_console(console_out)
     top_kernels, kernel_durations = _read_hot_kernel_metrics(job_id)
@@ -3931,7 +3921,6 @@ def _read_node_metrics(job_id: str, console_out: str | None = None) -> dict:
         "step_dur_ms": step_summary.get("step_dur_ms"),
         "step_count": step_summary.get("step_count"),
         "compute_ms": compute_ms,
-        "comm_ms": comm_ms,
         "kernel_count": kernel_count,
         "aten_ops_count": step_summary.get("aten_ops_count", aten_ops_count),
         "aten_ops_ms": step_summary.get("aten_ops_ms", aten_ops_ms),
@@ -3973,7 +3962,7 @@ def compute_perf_delta(
 
     metrics = {}
     incomplete = False
-    for key in ("e2e_ms", "compute_ms", "comm_ms"):
+    for key in ("e2e_ms", "compute_ms"):
         parent_value = parent.get(key)
         child_value = child.get(key)
         if key in {"e2e_ms", "compute_ms"} and (parent_value is None or child_value is None):
@@ -7378,12 +7367,17 @@ async def bulk_delete_jobs(request: Request, body: dict):
 @app.post("/api/jobs/bulk/delete-files")
 async def bulk_delete_job_files(request: Request, body: dict):
     job_ids = _unique_job_ids(body)
+    force = bool(body.get("force"))
     db = await get_db()
     try:
         jobs = await _load_jobs_by_ids(db, job_ids, request)
         busy = [job["id"] for job in jobs if _job_files_locked(job)]
         if busy:
             raise HTTPException(409, f"任务仍在分析中，暂不能删除文件: {', '.join(busy[:5])}")
+        if not force:
+            blocked = [job["id"] for job in jobs if await _compare_dependents(db, request, job["id"])]
+            if blocked:
+                raise HTTPException(409, f"存在历史对比依赖以下任务的文件，如需继续删除请确认后重试: {', '.join(blocked[:5])}")
         files_deleted = 0
         for job in jobs:
             files_deleted += await _delete_trace_files(db, job)
@@ -7937,7 +7931,6 @@ async def get_project_experiments(request: Request, pid: str):
                 item["e2e_ms"] = metrics.get("e2e_ms")
                 item["step_dur_ms"] = metrics.get("step_dur_ms")
                 item["compute_ms"] = metrics.get("compute_ms")
-                item["comm_ms"] = metrics.get("comm_ms")
                 item["kernel_count"] = metrics.get("kernel_count")
                 item["aten_ops_count"] = metrics.get("aten_ops_count")
                 item["aten_ops_ms"] = metrics.get("aten_ops_ms")
@@ -8004,7 +7997,6 @@ async def get_project_experiments(request: Request, pid: str):
             item["e2e_ms"] = metrics.get("e2e_ms")
             item["step_dur_ms"] = metrics.get("step_dur_ms")
             item["compute_ms"] = metrics.get("compute_ms")
-            item["comm_ms"] = metrics.get("comm_ms")
             item["kernel_count"] = metrics.get("kernel_count")
             item["aten_ops_count"] = metrics.get("aten_ops_count")
             item["aten_ops_ms"] = metrics.get("aten_ops_ms")
@@ -10041,7 +10033,7 @@ async def get_job_file(request: Request, jid: str, slot: str, format: Optional[s
 
 
 @app.delete("/api/jobs/{jid}/files/{slot}", status_code=204)
-async def delete_job_file(request: Request, jid: str, slot: str):
+async def delete_job_file(request: Request, jid: str, slot: str, force: bool = False):
     """Delete the stored trace file (a or b) for a job."""
     db = await get_db()
     row = await load_owned_job(db, request, jid)
@@ -10055,6 +10047,11 @@ async def delete_job_file(request: Request, jid: str, slot: str):
     if _job_files_locked(row):
         await db.close()
         raise HTTPException(409, "任务仍在分析中，暂不能删除文件")
+    if slot == "a" and not force:
+        dependents = await _compare_dependents(db, request, jid)
+        if dependents:
+            await db.close()
+            raise HTTPException(409, f"存在 {len(dependents)} 个历史对比依赖该文件，如需继续删除请确认后重试")
 
     await _delete_trace_files(db, row, slots=(slot,))
     await _refresh_job_storage_cache(db, jid)

@@ -9,9 +9,9 @@
 ## A. 待修复项（P0/P1）
 
 ### A1 [性能 · P1] GET 每次重读大量结果文件
-- [ ] **问题**：`_read_node_metrics`（`web/server.py:3689`）对**每个入图节点 + 每个未连接 single job** 都读 ~4 个 CSV（`kernel_types_avg` / `cncl_ops_avg` / `aten_ops_avg` / 热点 kernel）+ 解析 `console_out`，且是**同步阻塞 IO 跑在 async 接口里**（`get_project_experiments`，调用点约 `:7485`、`:7551`）。`unconnected` 可能有几十个 job → 每次打开实验树都做几十×4 次磁盘读，既慢又阻塞事件循环。自愈逻辑（`:7437`）对 incomplete 边还会再各读两份，进一步放大。
+- [ ] **问题**：`_read_node_metrics`（`web/server.py:3689`）对**每个入图节点 + 每个未连接 single job** 都读 ~3 个 CSV（`kernel_types_avg` / `aten_ops_avg` / 热点 kernel）+ 解析 `console_out`，且是**同步阻塞 IO 跑在 async 接口里**（`get_project_experiments`，调用点约 `:7485`、`:7551`）。`unconnected` 可能有几十个 job → 每次打开实验树都做几十×3 次磁盘读，既慢又阻塞事件循环。自愈逻辑（`:7437`）对 incomplete 边还会再各读两份，进一步放大。
 - **修复方向（任选其一或组合）**：
-  - [ ] **节点卡只读 e2e**：GET 里节点/未连接只读 `perfetto_context.json`（单文件，e2e_ms）；`compute_ms/comm_ms/top_kernels/aten_*` 等改为**悬停时按需懒加载**（新增轻接口 `GET /api/jobs/{jid}/experiment-metrics` 或复用现有结果接口）。
+  - [ ] **节点卡只读 e2e**：GET 里节点/未连接只读 `perfetto_context.json`（单文件，e2e_ms）；`compute_ms/top_kernels/aten_*` 等改为**悬停时按需懒加载**（新增轻接口 `GET /api/jobs/{jid}/experiment-metrics` 或复用现有结果接口）。
   - [ ] **落库缓存**：job 分析完成（done）时算一次完整指标，存到 jobs 表新列或一张 `job_metrics` 缓存表；GET 直接读缓存，避免每次解析 CSV。
   - [ ] 若暂不改结构：至少把 `_read_node_metrics` 的同步文件读放进 `run_in_threadpool`（FastAPI/Starlette）避免阻塞事件循环。
 - **验收**：含 ~30 个 single job 的项目，GET `/api/projects/{pid}/experiments` P95 延迟显著下降；并发请求时不再卡其他接口。
