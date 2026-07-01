@@ -3791,6 +3791,23 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
   text-decoration: none;
 }
 .markdown-body a:hover { text-decoration: underline; }
+.markdown-body .md-image-link {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  margin: 12px 0;
+  line-height: 0;
+}
+.markdown-body .md-image-link:hover { text-decoration: none; }
+.markdown-body .md-image {
+  display: block;
+  max-width: min(100%, 760px);
+  max-height: 68vh;
+  object-fit: contain;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card2);
+}
 .markdown-body code {
   padding: 1px 5px;
   border-radius: 5px;
@@ -5507,6 +5524,8 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
 }
 .feedback-edit-actions {
   display: flex;
+  align-items: center;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
 }

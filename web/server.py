@@ -79,6 +79,7 @@ EXPERIMENT_NODE_ATTACHMENTS_META_FILE = "attachments.json"
 EXPERIMENT_NODE_ATTACHMENT_MAX_BYTES = int(os.environ.get("TRACE_EXPERIMENT_NODE_ATTACHMENT_MAX_BYTES", str(500 * 1024 * 1024)))
 FEEDBACK_MENTION_TOKEN_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,62}$")
 FEEDBACK_MENTION_RE = re.compile(r"(?<![A-Za-z0-9_.%-])@([A-Za-z][A-Za-z0-9_.-]{0,62})(?=$|[^A-Za-z0-9_.-])")
+FEEDBACK_IMAGE_REF_RE = re.compile(r"feedback-image:([A-Za-z0-9_-]{1,80})")
 FEEDBACK_REACTION_EMOJIS = {
     "👍", "👎", "😄", "🎉", "🚀", "❤️", "👀", "💡", "✅", "🙏",
     "🔥", "🤔", "😕", "👏", "🙌", "💯", "🧠", "🛠️", "📌", "❓",
@@ -5234,6 +5235,68 @@ async def _read_feedback_image(upload: UploadFile) -> tuple[bytes, str, str]:
     return data, content_type, ext
 
 
+def _feedback_uploads_from_form(form) -> list:
+    return [
+        upload
+        for upload in form.getlist("images")
+        if getattr(upload, "filename", None)
+    ]
+
+
+def _feedback_image_refs(values: Optional[list[str]], count: int) -> list[str]:
+    refs = []
+    for value in values or []:
+        ref = str(value or "").strip()
+        refs.append(ref if re.fullmatch(r"[A-Za-z0-9_-]{1,80}", ref) else "")
+    return (refs + [""] * count)[:count]
+
+
+def _replace_feedback_image_refs(text: str, image_urls_by_ref: dict[str, str]) -> str:
+    if not image_urls_by_ref:
+        return text
+    return FEEDBACK_IMAGE_REF_RE.sub(
+        lambda match: image_urls_by_ref.get(match.group(1), match.group(0)),
+        text,
+    )
+
+
+async def _store_feedback_images(
+    db,
+    message_id: str,
+    image_files: list,
+    saved_paths: list[str],
+    image_refs: Optional[list[str]] = None,
+) -> dict[str, str]:
+    target_dir = feedback_message_dir(message_id)
+    os.makedirs(target_dir, exist_ok=True)
+    refs = _feedback_image_refs(image_refs, len(image_files))
+    image_urls_by_ref: dict[str, str] = {}
+    for index, upload in enumerate(image_files):
+        data, content_type, ext = await _read_feedback_image(upload)
+        attachment_id = str(uuid.uuid4())
+        stored_path = os.path.join(target_dir, f"{attachment_id}{ext}")
+        async with aiofiles.open(stored_path, "wb") as f:
+            await f.write(data)
+        saved_paths.append(stored_path)
+        await db.execute(
+            """
+            INSERT INTO feedback_attachments(id, message_id, filename, stored_path, content_type, size_bytes)
+            VALUES(?,?,?,?,?,?)
+            """,
+            (
+                attachment_id,
+                message_id,
+                _safe_download_name(upload.filename, f"image{ext}")[:240],
+                stored_path,
+                content_type,
+                len(data),
+            ),
+        )
+        if refs[index]:
+            image_urls_by_ref[refs[index]] = f"/api/feedback/images/{attachment_id}"
+    return image_urls_by_ref
+
+
 def _feedback_attachment_response(row: dict) -> dict:
     return {
         "id": row["id"],
@@ -6262,6 +6325,7 @@ async def create_feedback(
     body: str = Form(""),
     parent_id: Optional[str] = Form(None),
     images: Optional[list[UploadFile]] = File(None),
+    image_refs: Optional[list[str]] = Form(None),
 ):
     if AUTH_ENABLED:
         current_user_token(request)
@@ -6307,28 +6371,12 @@ async def create_feedback(
             (message_id, root_parent_id, user_token, user_display, text),
         )
 
-        target_dir = feedback_message_dir(message_id)
-        os.makedirs(target_dir, exist_ok=True)
-        for upload in image_files:
-            data, content_type, ext = await _read_feedback_image(upload)
-            attachment_id = str(uuid.uuid4())
-            stored_path = os.path.join(target_dir, f"{attachment_id}{ext}")
-            async with aiofiles.open(stored_path, "wb") as f:
-                await f.write(data)
-            saved_paths.append(stored_path)
+        image_urls_by_ref = await _store_feedback_images(db, message_id, image_files, saved_paths, image_refs)
+        if image_urls_by_ref:
+            text = _replace_feedback_image_refs(text, image_urls_by_ref)
             await db.execute(
-                """
-                INSERT INTO feedback_attachments(id, message_id, filename, stored_path, content_type, size_bytes)
-                VALUES(?,?,?,?,?,?)
-                """,
-                (
-                    attachment_id,
-                    message_id,
-                    _safe_download_name(upload.filename, f"image{ext}")[:240],
-                    stored_path,
-                    content_type,
-                    len(data),
-                ),
+                "UPDATE feedback_messages SET body=? WHERE id=?",
+                (text, message_id),
             )
 
         if root_parent_id:
@@ -6407,15 +6455,28 @@ async def create_feedback(
 
 
 @app.patch("/api/feedback/{message_id}")
-async def update_feedback_message(request: Request, message_id: str, payload: Optional[dict] = None):
+async def update_feedback_message(request: Request, message_id: str):
     if AUTH_ENABLED:
         current_user_token(request)
     user_token, _ = _feedback_author(request)
-    text = str((payload or {}).get("body") or "").strip()
+    image_files: list = []
+    image_refs: list[str] = []
+    content_type = (request.headers.get("content-type") or "").lower()
+    if content_type.startswith("multipart/form-data") or content_type.startswith("application/x-www-form-urlencoded"):
+        form = await request.form()
+        text = str(form.get("body") or "").strip()
+        image_files = _feedback_uploads_from_form(form)
+        image_refs = [str(value or "") for value in form.getlist("image_refs")]
+    else:
+        payload = await request.json() if content_type.startswith("application/json") else {}
+        text = str((payload or {}).get("body") or "").strip()
     if len(text) > 2000:
         raise HTTPException(400, "留言内容不能超过 2000 字")
+    if len(image_files) > FEEDBACK_MAX_IMAGES:
+        raise HTTPException(400, f"最多上传 {FEEDBACK_MAX_IMAGES} 张图片")
 
     db = await get_db()
+    saved_paths: list[str] = []
     try:
         target = await row_to_dict(
             await (await db.execute(
@@ -6434,9 +6495,14 @@ async def update_feedback_message(request: Request, message_id: str, payload: Op
                 (message_id,),
             )
         ).fetchone()
-        if not text and int(attachment_count_row["count"] or 0) == 0:
+        attachment_count = int(attachment_count_row["count"] or 0)
+        if attachment_count + len(image_files) > FEEDBACK_MAX_IMAGES:
+            raise HTTPException(400, f"最多保留 {FEEDBACK_MAX_IMAGES} 张图片")
+        if not text and attachment_count + len(image_files) == 0:
             raise HTTPException(400, "留言内容不能为空")
 
+        image_urls_by_ref = await _store_feedback_images(db, message_id, image_files, saved_paths, image_refs)
+        text = _replace_feedback_image_refs(text, image_urls_by_ref)
         await db.execute(
             """
             UPDATE feedback_messages
@@ -6457,7 +6523,7 @@ async def update_feedback_message(request: Request, message_id: str, payload: Op
         await write_audit(
             db, request, "feedback.edit",
             resource_type="feedback", resource_id=message_id,
-            details={"parent_id": root_parent_id, "body_length": len(text)},
+            details={"parent_id": root_parent_id, "body_length": len(text), "image_count": len(image_files)},
         )
         await db.commit()
 
@@ -6470,9 +6536,15 @@ async def update_feedback_message(request: Request, message_id: str, payload: Op
         reactions_by_message = await _feedback_reactions_for(db, message_ids, user_token)
     except HTTPException:
         await db.rollback()
+        for path in saved_paths:
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(path)
         raise
     except Exception:
         await db.rollback()
+        for path in saved_paths:
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(path)
         raise
     finally:
         await db.close()

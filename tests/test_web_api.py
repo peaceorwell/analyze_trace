@@ -1506,6 +1506,24 @@ def test_feedback_board_supports_images_and_replies(client):
     assert detail_from_reply.json()["id"] == message["id"]
 
 
+def test_feedback_inline_image_refs_are_replaced_on_create(client):
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 24
+
+    created = client.post(
+        "/api/feedback",
+        data={"body": "hello\n\n![截图](feedback-image:ref1)", "image_refs": "ref1"},
+        files=[("images", ("inline.png", png_bytes, "image/png"))],
+        headers={"X-Remote-User": "alice"},
+    )
+
+    assert created.status_code == 201
+    message = created.json()
+    assert "feedback-image:ref1" not in message["body"]
+    assert "![截图](/api/feedback/images/" in message["body"]
+    assert len(message["attachments"]) == 1
+    assert message["attachments"][0]["url"] in message["body"]
+
+
 def test_feedback_email_recipients_include_admin_and_mentions(isolated_server, monkeypatch):
     monkeypatch.setattr(isolated_server, "FEEDBACK_NOTIFICATION_ADMIN_EMAILS", ["admin@cambricon.com"])
     monkeypatch.setattr(isolated_server, "FEEDBACK_MENTION_DOMAIN", "cambricon.com")
@@ -1835,6 +1853,37 @@ def test_feedback_author_can_edit_posts_and_replies(client):
     assert detail_payload["edit_count"] == 1
     assert detail_payload["replies"][0]["body"] == "编辑后的回复"
     assert detail_payload["replies"][0]["edit_count"] == 1
+
+
+def test_feedback_edit_can_append_images(client):
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 24
+    created = client.post(
+        "/api/feedback",
+        data={"body": "原始帖子"},
+        headers={"X-Remote-User": "alice"},
+    )
+    assert created.status_code == 201
+    post = created.json()
+
+    edited = client.patch(
+        f"/api/feedback/{post['id']}",
+        data={"body": "编辑后补图\n\n![补图](feedback-image:editref)", "image_refs": "editref"},
+        files=[("images", ("pasted.png", png_bytes, "image/png"))],
+        headers={"X-Remote-User": "alice"},
+    )
+    assert edited.status_code == 200
+    payload = edited.json()
+    assert "编辑后补图" in payload["body"]
+    assert "feedback-image:editref" not in payload["body"]
+    assert "![补图](/api/feedback/images/" in payload["body"]
+    assert payload["edit_count"] == 1
+    assert len(payload["attachments"]) == 1
+    assert payload["attachments"][0]["filename"] == "pasted.png"
+    assert payload["attachments"][0]["url"] in payload["body"]
+
+    image = client.get(payload["attachments"][0]["url"], headers={"X-Remote-User": "alice"})
+    assert image.status_code == 200
+    assert image.content == png_bytes
 
 
 def test_feedback_reactions_toggle_per_user(client):

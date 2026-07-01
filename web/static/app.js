@@ -493,10 +493,10 @@ const feedbackOffset = ref(0);
 const feedbackSort = ref("updated");
 const feedbackLoading = ref(false);
 const feedbackSubmitting = ref(false);
-const feedbackForm = ref({ body: "", files: [], previews: [] });
+const feedbackForm = ref({ body: "", files: [], imageRefs: [], previews: [] });
 const feedbackPostEditorMode = ref("write");
 const feedbackReplies = ref({});
-const feedbackEditing = ref({ id: "", body: "", saving: false });
+const feedbackEditing = ref({ id: "", body: "", files: [], imageRefs: [], previews: [], saving: false });
 const feedbackMarkdownEditorEnabled = ref(false);
 const FEEDBACK_MARKDOWN_EDITOR_CSS = "https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.css";
 const FEEDBACK_MARKDOWN_EDITOR_SCRIPTS = [
@@ -530,7 +530,9 @@ const feedbackMention = ref({
 let feedbackMentionTimer = null;
 let feedbackMentionSeq = 0;
 let feedbackMentionTextarea = null;
+let feedbackImageRefSeq = 0;
 const FEEDBACK_BODY_LIMIT = 2000;
+const FEEDBACK_MAX_IMAGES = 4;
 const feedbackMarkdownEditors = new Map();
 let feedbackMarkdownEditorLoadPromise = null;
 
@@ -2265,6 +2267,9 @@ const feedbackPostExcerpt = item => {
 const feedbackPostReplyCount = item => Number(item?.reply_count ?? item?.replies?.length ?? 0);
 const feedbackPostActivity = item => item?.last_activity_at || item?.updated_at || item?.created_at || "";
 const feedbackMentionTargetKey = target => String(target || "post");
+const emptyFeedbackForm = () => ({ body: "", files: [], imageRefs: [], previews: [] });
+const emptyFeedbackReplyForm = (open = false) => ({ open, body: "", files: [], imageRefs: [], previews: [], submitting: false, mode: "write" });
+const emptyFeedbackEditing = () => ({ id: "", body: "", files: [], imageRefs: [], previews: [], saving: false });
 const feedbackUserInitial = value => {
   const text = String(value || "用户").trim();
   const chars = Array.from(text);
@@ -2283,6 +2288,34 @@ const canEditFeedbackMessage = message => {
   if (!message?.id) return false;
   if (isAdmin.value) return true;
   return Boolean(message.user_token && message.user_token === currentFeedbackUserToken.value);
+};
+
+const feedbackMessageById = id => {
+  const messageId = String(id || "");
+  const post = selectedFeedbackPost.value;
+  if (!messageId || !post) return null;
+  if (post.id === messageId) return post;
+  return (post.replies || []).find(reply => reply.id === messageId) || null;
+};
+
+const feedbackExistingImageCount = target => {
+  const targetKey = feedbackMentionTargetKey(target);
+  if (!targetKey.startsWith("edit:")) return 0;
+  return (feedbackMessageById(targetKey.slice(5))?.attachments || []).length;
+};
+
+const feedbackReferencedAttachmentUrls = message => {
+  const body = String(message?.body || "");
+  const urls = new Set();
+  for (const match of body.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)) {
+    urls.add((match[1] || "").trim());
+  }
+  return urls;
+};
+
+const feedbackVisibleAttachments = message => {
+  const refs = feedbackReferencedAttachmentUrls(message);
+  return (message?.attachments || []).filter(item => !refs.has(item.url));
 };
 
 const feedbackEditedText = message => {
@@ -2503,6 +2536,15 @@ const initFeedbackMarkdownEditor = target => {
   });
   editor.codemirror.on("keydown", (_cm, event) => {
     handleFeedbackMentionKeydown(event, targetKey);
+  });
+  editor.codemirror.on("paste", (_cm, event) => {
+    handleFeedbackPaste(event, targetKey);
+  });
+  editor.codemirror.on("drop", (_cm, event) => {
+    handleFeedbackDrop(event, targetKey);
+  });
+  editor.codemirror.on("dragover", (_cm, event) => {
+    handleFeedbackDragOver(event);
   });
   editor.codemirror.on("cursorActivity", () => {
     handleFeedbackMarkdownMention(targetKey, editor);
@@ -2957,31 +2999,136 @@ const revokeFeedbackPreviews = previews => {
   }
 };
 
-const feedbackFilePreviews = files =>
-  files.map(file => ({
+const feedbackFilePreviews = (files, refs = []) =>
+  files.map((file, index) => ({
     name: file.name,
+    ref: refs[index] || "",
     url: URL.createObjectURL(file),
   }));
 
-const setFeedbackFiles = (event, parentId = null) => {
-  const selected = Array.from(event.target.files || []).filter(file => file.type.startsWith("image/"));
-  if (selected.length !== (event.target.files || []).length) {
+const nextFeedbackImageRef = () => {
+  feedbackImageRefSeq += 1;
+  return `img-${Date.now().toString(36)}-${feedbackImageRefSeq.toString(36)}`;
+};
+
+const feedbackImageFileExt = file => {
+  const type = String(file?.type || "").toLowerCase();
+  if (type.includes("jpeg") || type.includes("jpg")) return ".jpg";
+  if (type.includes("gif")) return ".gif";
+  if (type.includes("webp")) return ".webp";
+  return ".png";
+};
+
+const normalizeFeedbackImageFile = (file, index = 0) => {
+  if (!file || !file.type?.startsWith("image/")) return null;
+  if (file.name) return file;
+  const filename = `pasted-image-${Date.now()}-${index + 1}${feedbackImageFileExt(file)}`;
+  return new File([file], filename, { type: file.type || "image/png", lastModified: file.lastModified || Date.now() });
+};
+
+const patchFeedbackDraftFiles = (target, patch) => {
+  const targetKey = feedbackMentionTargetKey(target);
+  if (targetKey === "post") {
+    feedbackForm.value = { ...feedbackForm.value, ...patch };
+    return;
+  }
+  if (targetKey.startsWith("edit:")) {
+    feedbackEditing.value = { ...feedbackEditing.value, ...patch };
+    return;
+  }
+  const form = ensureFeedbackReplyForm(targetKey);
+  feedbackReplies.value = {
+    ...feedbackReplies.value,
+    [targetKey]: { ...form, ...patch },
+  };
+};
+
+const feedbackClipboardImageFiles = event => {
+  const items = Array.from(event?.clipboardData?.items || []);
+  const files = items
+    .filter(item => item.kind === "file" && item.type?.startsWith("image/"))
+    .map(item => item.getAsFile())
+    .filter(Boolean);
+  if (files.length) return files;
+  return Array.from(event?.clipboardData?.files || []).filter(file => file.type?.startsWith("image/"));
+};
+
+const feedbackDroppedImageFiles = event =>
+  Array.from(event?.dataTransfer?.files || []).filter(file => file.type?.startsWith("image/"));
+
+const feedbackImageMarkdown = (file, ref) => {
+  const alt = String(file?.name || "image").replace(/[\[\]\n\r]/g, " ").trim() || "image";
+  return `![${alt}](feedback-image:${ref})`;
+};
+
+const insertFeedbackImageMarkdown = (target, files, refs) => {
+  if (!files.length || !refs.length) return;
+  const { text, start, end } = feedbackDraftForTarget(target);
+  const before = text.slice(0, start);
+  const after = text.slice(end);
+  const leading = before && !before.endsWith("\n") ? "\n" : "";
+  const trailing = after && !after.startsWith("\n") ? "\n" : "";
+  const insertText = `${leading}${files.map((file, index) => feedbackImageMarkdown(file, refs[index])).join("\n")}${trailing}`;
+  replaceFeedbackSelection(target, insertText);
+};
+
+const appendFeedbackImageFiles = (target, rawFiles, { source = "paste" } = {}) => {
+  const targetKey = feedbackMentionTargetKey(target);
+  const form = feedbackTargetForm(targetKey);
+  const rawIncoming = Array.from(rawFiles || []);
+  const incoming = rawIncoming
+    .map((file, index) => normalizeFeedbackImageFile(file, index))
+    .filter(Boolean);
+  if (incoming.length !== rawIncoming.length) {
     showToast("仅支持图片文件", "error");
   }
-  const files = selected.slice(0, 4);
-  if (selected.length > 4) showToast("最多选择 4 张图片", "error");
-  if (parentId) {
-    const form = feedbackReplies.value[parentId] || { open: true, body: "", files: [], previews: [], submitting: false, mode: "write" };
-    revokeFeedbackPreviews(form.previews);
-    feedbackReplies.value = {
-      ...feedbackReplies.value,
-      [parentId]: { ...form, files, previews: feedbackFilePreviews(files) },
-    };
-  } else {
-    revokeFeedbackPreviews(feedbackForm.value.previews);
-    feedbackForm.value = { ...feedbackForm.value, files, previews: feedbackFilePreviews(files) };
+  if (!incoming.length) return 0;
+  const existingFiles = form?.files || [];
+  const remaining = FEEDBACK_MAX_IMAGES - feedbackExistingImageCount(targetKey) - existingFiles.length;
+  if (remaining <= 0) {
+    showToast(`最多保留 ${FEEDBACK_MAX_IMAGES} 张图片`, "error");
+    return 0;
   }
-  event.target.value = "";
+  const accepted = incoming.slice(0, remaining);
+  if (incoming.length > accepted.length) showToast(`最多保留 ${FEEDBACK_MAX_IMAGES} 张图片`, "error");
+  const acceptedRefs = accepted.map(() => nextFeedbackImageRef());
+  patchFeedbackDraftFiles(targetKey, {
+    files: [...existingFiles, ...accepted],
+    imageRefs: [...(form?.imageRefs || []), ...acceptedRefs],
+    previews: [...(form?.previews || []), ...feedbackFilePreviews(accepted, acceptedRefs)],
+  });
+  insertFeedbackImageMarkdown(targetKey, accepted, acceptedRefs);
+  const sourceText = source === "drop" ? "拖入" : source === "pick" ? "选择" : "粘贴";
+  showToast(`已添加 ${accepted.length} 张${sourceText}图片`, "success");
+  return accepted.length;
+};
+
+const setFeedbackFiles = (event, target = "post") => {
+  appendFeedbackImageFiles(target || "post", event?.target?.files || [], { source: "pick" });
+  if (event?.target) event.target.value = "";
+};
+
+const handleFeedbackPaste = (event, target = "post") => {
+  const files = feedbackClipboardImageFiles(event);
+  if (!files.length) return;
+  event.preventDefault();
+  appendFeedbackImageFiles(target, files, { source: "paste" });
+};
+
+const handleFeedbackDrop = (event, target = "post") => {
+  const files = feedbackDroppedImageFiles(event);
+  if (!files.length) return;
+  event.preventDefault();
+  appendFeedbackImageFiles(target, files, { source: "drop" });
+};
+
+const handleFeedbackDragOver = event => {
+  const hasImage = Array.from(event?.dataTransfer?.items || [])
+    .some(item => item.kind === "file" && item.type?.startsWith("image/"));
+  if (hasImage) {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  }
 };
 
 const clearFeedbackForm = (parentId = null) => {
@@ -2991,20 +3138,20 @@ const clearFeedbackForm = (parentId = null) => {
     revokeFeedbackPreviews(form?.previews || []);
     feedbackReplies.value = {
       ...feedbackReplies.value,
-      [parentId]: { open: false, body: "", files: [], previews: [], submitting: false, mode: "write" },
+      [parentId]: emptyFeedbackReplyForm(false),
     };
     nextTick(() => syncFeedbackMarkdownEditor(parentId, ""));
     return;
   }
   revokeFeedbackPreviews(feedbackForm.value.previews);
-  feedbackForm.value = { body: "", files: [], previews: [] };
+  feedbackForm.value = emptyFeedbackForm();
   feedbackPostEditorMode.value = "write";
   nextTick(() => syncFeedbackMarkdownEditor("post", ""));
 };
 
 const ensureFeedbackReplyForm = id => {
   if (feedbackReplies.value[id]) return feedbackReplies.value[id];
-  const form = { open: false, body: "", files: [], previews: [], submitting: false, mode: "write" };
+  const form = emptyFeedbackReplyForm(false);
   feedbackReplies.value = { ...feedbackReplies.value, [id]: form };
   return form;
 };
@@ -3260,7 +3407,11 @@ const submitFeedback = async (parentId = null) => {
   const fd = new FormData();
   fd.append("body", body);
   if (parentId) fd.append("parent_id", parentId);
-  for (const file of form.files || []) fd.append("images", file);
+  const imageRefs = form.imageRefs || [];
+  for (const [index, file] of (form.files || []).entries()) {
+    fd.append("images", file);
+    fd.append("image_refs", imageRefs[index] || "");
+  }
   try {
     const r = await fetch("/api/feedback", {
       method: "POST",
@@ -3298,6 +3449,9 @@ const startFeedbackEdit = message => {
   feedbackEditing.value = {
     id: message.id,
     body: message.body || "",
+    files: [],
+    imageRefs: [],
+    previews: [],
     saving: false,
   };
   nextTick(() => {
@@ -3309,24 +3463,32 @@ const startFeedbackEdit = message => {
 
 const cancelFeedbackEdit = () => {
   if (feedbackEditing.value.id) destroyFeedbackMarkdownEditor(`edit:${feedbackEditing.value.id}`);
+  revokeFeedbackPreviews(feedbackEditing.value.previews || []);
   closeFeedbackMention();
-  feedbackEditing.value = { id: "", body: "", saving: false };
+  feedbackEditing.value = emptyFeedbackEditing();
 };
 
 const saveFeedbackEdit = async message => {
   if (!message?.id || feedbackEditing.value.id !== message.id) return;
   const body = (feedbackEditing.value.body || "").trim();
-  if (!body && !(message.attachments || []).length) {
+  const files = feedbackEditing.value.files || [];
+  if (!body && !(message.attachments || []).length && !files.length) {
     showToast("留言内容不能为空", "error");
     return;
   }
   feedbackEditing.value = { ...feedbackEditing.value, saving: true };
+  const fd = new FormData();
+  fd.append("body", body);
+  const imageRefs = feedbackEditing.value.imageRefs || [];
+  for (const [index, file] of files.entries()) {
+    fd.append("images", file);
+    fd.append("image_refs", imageRefs[index] || "");
+  }
   try {
     const r = await fetch(`/api/feedback/${encodeURIComponent(message.id)}`, {
       method: "PATCH",
       credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ body }),
+      body: fd,
     });
     const payload = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(payload.detail || "编辑失败");
@@ -6065,6 +6227,15 @@ const safeMarkdownUrl = value => {
   return "";
 };
 
+const safeMarkdownImageUrl = value => {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (/^https?:/i.test(raw) || raw.startsWith("/api/feedback/images/")) {
+    return raw.replace(/"/g, "%22");
+  }
+  return "";
+};
+
 const renderInlineMarkdown = (text, options = {}) => {
   const tokens = [];
   const stash = html => {
@@ -6076,6 +6247,13 @@ const renderInlineMarkdown = (text, options = {}) => {
   value = value.replace(/`([^`]+)`/g, (_, code) => {
     const custom = options.codeRenderer?.(code, options.inlineContext || {});
     return stash(custom || `<code>${escapeHtml(code)}</code>`);
+  });
+  value = value.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, url) => {
+    const safeUrl = safeMarkdownImageUrl(url);
+    const safeAlt = escapeHtml(alt || "image");
+    return safeUrl
+      ? stash(`<a href="${escapeHtml(safeUrl)}" target="_blank" rel="noopener noreferrer" class="md-image-link"><img src="${escapeHtml(safeUrl)}" alt="${safeAlt}" class="md-image" loading="lazy"></a>`)
+      : safeAlt;
   });
   value = value.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => {
     const safeUrl = safeMarkdownUrl(url);
@@ -11685,8 +11863,9 @@ const App = {
       selectedFeedbackPostId, selectedFeedbackMessageId, selectedFeedbackPost, feedbackDetailLoading,
       feedbackPostTitle, feedbackPostExcerpt, feedbackPostReplyCount, feedbackPostActivity,
       feedbackEditedText, feedbackReactionSummary, feedbackReactionItem, canEditFeedbackMessage,
-      feedbackMessageHtml,
+      feedbackMessageHtml, feedbackVisibleAttachments,
       openFeedbackBoard, refreshFeedbackBoard, loadFeedback, setFeedbackSort, setFeedbackFiles, clearFeedbackForm,
+      handleFeedbackPaste, handleFeedbackDrop, handleFeedbackDragOver,
       toggleFeedbackReply, feedbackReplyEditorMode, setFeedbackPostEditorMode,
       setFeedbackReplyEditorMode, feedbackPostPreviewHtml, feedbackReplyPreviewHtml,
       selectFeedbackPost, closeFeedbackPost,

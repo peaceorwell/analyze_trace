@@ -792,6 +792,9 @@
                     maxlength="2000"
                     @input="handleFeedbackMentionInput($event, 'edit:' + selectedFeedbackPost.id)"
                     @keydown="handleFeedbackMentionKeydown($event, 'edit:' + selectedFeedbackPost.id)"
+                    @paste="handleFeedbackPaste($event, 'edit:' + selectedFeedbackPost.id)"
+                    @drop="handleFeedbackDrop($event, 'edit:' + selectedFeedbackPost.id)"
+                    @dragover="handleFeedbackDragOver($event)"
                     @focus="setFeedbackTextTarget($event, 'edit:' + selectedFeedbackPost.id)"
                     @click="setFeedbackTextTarget($event, 'edit:' + selectedFeedbackPost.id)"
                   ></textarea>
@@ -810,7 +813,17 @@
                     </button>
                   </div>
                 </div>
+                <div v-if="feedbackEditing.previews.length" class="feedback-preview-grid compact feedback-editor-previews">
+                  <div v-for="img in feedbackEditing.previews" :key="img.url" class="feedback-preview">
+                    <img :src="img.url" :alt="img.name" />
+                  </div>
+                </div>
                 <div class="feedback-edit-actions">
+                  <label class="btn btn-xs btn-outline feedback-inline-file-btn">
+                    添加图片
+                    <input class="hidden-file-input" type="file" accept="image/*" multiple @change="setFeedbackFiles($event, 'edit:' + selectedFeedbackPost.id)" />
+                  </label>
+                  <span class="feedback-upload-hint">可直接粘贴图片</span>
                   <button class="btn btn-xs btn-outline" :disabled="feedbackEditing.saving" @click="cancelFeedbackEdit()">取消</button>
                   <button class="btn btn-xs btn-primary" :disabled="feedbackEditing.saving" @click="saveFeedbackEdit(selectedFeedbackPost)">
                     {{ feedbackEditing.saving ? '保存中...' : '保存编辑' }}
@@ -823,8 +836,8 @@
                   <span v-if="feedbackEditedText(selectedFeedbackPost)" class="feedback-edited">{{ feedbackEditedText(selectedFeedbackPost) }} · {{ fmtDate(selectedFeedbackPost.edited_at) }}</span>
                 </div>
               </template>
-              <div v-if="selectedFeedbackPost.attachments.length" class="feedback-image-grid">
-                <a v-for="img in selectedFeedbackPost.attachments" :key="img.id" :href="img.url" target="_blank" rel="noopener" class="feedback-image">
+              <div v-if="feedbackVisibleAttachments(selectedFeedbackPost).length" class="feedback-image-grid">
+                <a v-for="img in feedbackVisibleAttachments(selectedFeedbackPost)" :key="img.id" :href="img.url" target="_blank" rel="noopener" class="feedback-image">
                   <img :src="img.url" :alt="img.filename || 'feedback image'" />
                 </a>
               </div>
@@ -880,6 +893,9 @@
                           maxlength="2000"
                           @input="handleFeedbackMentionInput($event, 'edit:' + reply.id)"
                           @keydown="handleFeedbackMentionKeydown($event, 'edit:' + reply.id)"
+                          @paste="handleFeedbackPaste($event, 'edit:' + reply.id)"
+                          @drop="handleFeedbackDrop($event, 'edit:' + reply.id)"
+                          @dragover="handleFeedbackDragOver($event)"
                           @focus="setFeedbackTextTarget($event, 'edit:' + reply.id)"
                           @click="setFeedbackTextTarget($event, 'edit:' + reply.id)"
                         ></textarea>
@@ -898,7 +914,17 @@
                           </button>
                         </div>
                       </div>
+                      <div v-if="feedbackEditing.previews.length" class="feedback-preview-grid compact feedback-editor-previews">
+                        <div v-for="img in feedbackEditing.previews" :key="img.url" class="feedback-preview">
+                          <img :src="img.url" :alt="img.name" />
+                        </div>
+                      </div>
                       <div class="feedback-edit-actions">
+                        <label class="btn btn-xs btn-outline feedback-inline-file-btn">
+                          添加图片
+                          <input class="hidden-file-input" type="file" accept="image/*" multiple @change="setFeedbackFiles($event, 'edit:' + reply.id)" />
+                        </label>
+                        <span class="feedback-upload-hint">可直接粘贴图片</span>
                         <button class="btn btn-xs btn-outline" :disabled="feedbackEditing.saving" @click="cancelFeedbackEdit()">取消</button>
                         <button class="btn btn-xs btn-primary" :disabled="feedbackEditing.saving" @click="saveFeedbackEdit(reply)">
                           {{ feedbackEditing.saving ? '保存中...' : '保存编辑' }}
@@ -908,8 +934,8 @@
                     <template v-else>
                       <div v-if="reply.body" class="feedback-body feedback-message-markdown markdown-body" v-html="feedbackMessageHtml(reply)"></div>
                     </template>
-                    <div v-if="reply.attachments.length" class="feedback-image-grid compact">
-                      <a v-for="img in reply.attachments" :key="img.id" :href="img.url" target="_blank" rel="noopener" class="feedback-image">
+                    <div v-if="feedbackVisibleAttachments(reply).length" class="feedback-image-grid compact">
+                      <a v-for="img in feedbackVisibleAttachments(reply)" :key="img.id" :href="img.url" target="_blank" rel="noopener" class="feedback-image">
                         <img :src="img.url" :alt="img.filename || 'feedback image'" />
                       </a>
                     </div>
@@ -982,6 +1008,9 @@
                     maxlength="2000"
                     @input="handleFeedbackMentionInput($event, selectedFeedbackPost.id)"
                     @keydown="handleFeedbackMentionKeydown($event, selectedFeedbackPost.id)"
+                    @paste="handleFeedbackPaste($event, selectedFeedbackPost.id)"
+                    @drop="handleFeedbackDrop($event, selectedFeedbackPost.id)"
+                    @dragover="handleFeedbackDragOver($event)"
                     @focus="setFeedbackTextTarget($event, selectedFeedbackPost.id)"
                     @click="setFeedbackTextTarget($event, selectedFeedbackPost.id)"
                   ></textarea>
@@ -1010,7 +1039,7 @@
                     添加图片
                     <input class="hidden-file-input" type="file" accept="image/*" multiple @change="setFeedbackFiles($event, selectedFeedbackPost.id)" />
                   </label>
-                  <span class="feedback-upload-hint">Paste, drop, or click to add images</span>
+                  <span class="feedback-upload-hint">可粘贴/拖入/点击添加图片</span>
                   <span class="flex-spacer"></span>
                   <button class="btn btn-xs btn-outline" @click="clearFeedbackForm(selectedFeedbackPost.id)" :disabled="feedbackReplies[selectedFeedbackPost.id].submitting">清空</button>
                   <button class="btn btn-xs btn-primary" @click="submitFeedback(selectedFeedbackPost.id)" :disabled="feedbackReplies[selectedFeedbackPost.id].submitting">
@@ -1083,6 +1112,9 @@
                 maxlength="2000"
                 @input="handleFeedbackMentionInput($event, 'post')"
                 @keydown="handleFeedbackMentionKeydown($event, 'post')"
+                @paste="handleFeedbackPaste($event, 'post')"
+                @drop="handleFeedbackDrop($event, 'post')"
+                @dragover="handleFeedbackDragOver($event)"
                 @focus="setFeedbackTextTarget($event, 'post')"
                 @click="setFeedbackTextTarget($event, 'post')"
               ></textarea>
@@ -1121,7 +1153,7 @@
               添加图片
               <input class="hidden-file-input" type="file" accept="image/*" multiple @change="setFeedbackFiles($event)" />
             </label>
-            <span class="feedback-hint">最多 4 张，每张 8MB</span>
+            <span class="feedback-hint">可粘贴/拖入/点击添加图片，最多 4 张，每张 8MB</span>
             <span class="flex-spacer"></span>
             <button class="btn btn-sm btn-outline" @click="clearFeedbackForm()" :disabled="feedbackSubmitting">清空</button>
             <button class="btn btn-sm btn-primary" @click="submitFeedback()" :disabled="feedbackSubmitting">
