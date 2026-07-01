@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>torch profiler analyzer</title>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.4.31" />
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.4.32" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.css" />
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
@@ -12,7 +12,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js"></script>
-  <link rel="stylesheet" href="/static/style.css?v=0.4.31" />
+  <link rel="stylesheet" href="/static/style.css?v=0.4.32" />
   <script>
     // Apply saved theme or system preference before page paint to avoid flash
     (function() {
@@ -143,7 +143,7 @@
     <!-- ── Header ── -->
     <header v-if="authChecked && (!authRequired || currentUser)" class="header">
       <div class="header-brand" @click="$router.push('/')" style="cursor:pointer" title="返回上传页面">
-        <img class="header-logo" src="/static/favicon.svg?v=0.4.31" alt="" />
+        <img class="header-logo" src="/static/favicon.svg?v=0.4.32" alt="" />
         <span class="header-title">Torch Profiler Analyzer</span>
         <span class="header-version">v{{ appVersion }}</span>
       </div>
@@ -1061,6 +1061,13 @@
       </main>
     </div>
 
+    <div v-if="feedbackImageViewer.open" class="feedback-image-viewer" @click.self="closeFeedbackImageViewer()">
+      <button type="button" class="feedback-image-viewer-close" aria-label="关闭图片预览" @click="closeFeedbackImageViewer()">×</button>
+      <button type="button" class="feedback-image-viewer-stage" title="点击关闭图片预览" @click="closeFeedbackImageViewer()">
+        <img :src="feedbackImageViewer.url" :alt="feedbackImageViewer.alt || '图片预览'" class="feedback-image-viewer-img" />
+      </button>
+    </div>
+
     <div v-if="showFeedbackComposer" class="modal-mask modal-mask-front" @click.self="closeFeedbackComposer()">
       <div class="modal feedback-compose-modal">
         <div class="modal-title feedback-title">
@@ -1565,6 +1572,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=0.4.31"></script>
+  <script src="/static/app.js?v=0.4.32"></script>
 </body>
 </html>

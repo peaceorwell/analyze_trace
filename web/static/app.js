@@ -131,7 +131,7 @@ const chartBarRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.4.31");
+const appVersion = ref("0.4.32");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -624,6 +624,14 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.4.32",
+    date: "2026-07-01",
+    title: "优化灵感社区图片预览",
+    items: [
+      "点击帖子图片时弹出当前页预览窗口，再次点击预览图或背景关闭。",
+    ],
+  },
   {
     version: "0.4.31",
     date: "2026-07-01",
@@ -2074,7 +2082,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.4.31";
+  appVersion.value = cfg.version || "0.4.32";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -3221,15 +3229,9 @@ const resizeFeedbackMarkdownImage = img => {
   }
   const available = feedbackImageAvailableWidth(img);
   if (!available) return;
-  const expanded = img.dataset.feedbackImageExpanded === "1"
-    || img.closest?.(".md-image-scroll")?.classList.contains("is-expanded");
-  const targetWidth = expanded
-    ? img.naturalWidth
-    : (
-      img.naturalWidth > available
-        ? available
-        : Math.max(1, Math.round(img.naturalWidth * FEEDBACK_INLINE_IMAGE_SCALE))
-    );
+  const targetWidth = img.naturalWidth > available
+    ? available
+    : Math.max(1, Math.round(img.naturalWidth * FEEDBACK_INLINE_IMAGE_SCALE));
   img.style.width = `${targetWidth}px`;
   img.style.height = "auto";
 };
@@ -3248,25 +3250,30 @@ function scheduleFeedbackMarkdownImageResize() {
   });
 }
 
+const feedbackImageViewer = ref({ open: false, url: "", alt: "" });
+
+const openFeedbackImageViewer = (url, alt = "") => {
+  const imageUrl = String(url || "").trim();
+  if (!imageUrl) return;
+  feedbackImageViewer.value = {
+    open: true,
+    url: imageUrl,
+    alt: String(alt || "图片预览"),
+  };
+};
+
+const closeFeedbackImageViewer = () => {
+  feedbackImageViewer.value = { open: false, url: "", alt: "" };
+};
+
 const toggleFeedbackMarkdownImage = event => {
   const trigger = event?.target?.closest?.(".md-image-toggle");
   if (!trigger) return false;
-  const imageWrap = trigger.closest(".md-image-scroll");
   const image = trigger.querySelector(".md-feedback-image");
-  if (!imageWrap || !image) return false;
+  if (!image) return false;
   event.preventDefault();
   event.stopPropagation();
-  const expanded = !imageWrap.classList.contains("is-expanded");
-  imageWrap.classList.toggle("is-expanded", expanded);
-  trigger.setAttribute("aria-pressed", String(expanded));
-  trigger.setAttribute("aria-label", expanded ? "点击还原图片" : "点击放大图片");
-  trigger.title = expanded ? "点击还原图片" : "点击放大图片";
-  if (expanded) {
-    image.dataset.feedbackImageExpanded = "1";
-  } else {
-    delete image.dataset.feedbackImageExpanded;
-  }
-  resizeFeedbackMarkdownImage(image);
+  openFeedbackImageViewer(trigger.dataset.imageUrl || image.currentSrc || image.src, trigger.dataset.imageAlt || image.alt);
   return true;
 };
 
@@ -6342,7 +6349,7 @@ const renderInlineMarkdown = (text, options = {}) => {
     if (!safeUrl) return safeAlt;
     const escapedUrl = escapeHtml(safeUrl);
     if (options.feedbackImages) {
-      return stash(`<span class="md-image-scroll"><button type="button" class="md-image-link md-image-toggle" aria-label="点击放大图片" aria-pressed="false" title="点击放大图片"><img src="${escapedUrl}" alt="${safeAlt}" class="md-image md-feedback-image" loading="lazy"></button></span>`);
+      return stash(`<span class="md-image-scroll"><button type="button" class="md-image-link md-image-toggle" data-image-url="${escapedUrl}" data-image-alt="${safeAlt}" aria-label="点击预览图片" title="点击预览图片"><img src="${escapedUrl}" alt="${safeAlt}" class="md-image md-feedback-image" loading="lazy"></button></span>`);
     }
     return stash(`<span class="md-image-scroll"><a href="${escapedUrl}" target="_blank" rel="noopener noreferrer" class="md-image-link"><img src="${escapedUrl}" alt="${safeAlt}" class="md-image" loading="lazy"></a></span>`);
   });
@@ -11985,7 +11992,7 @@ const App = {
       selectedFeedbackPostId, selectedFeedbackMessageId, selectedFeedbackPost, feedbackDetailLoading,
       feedbackPostTitle, feedbackPostExcerpt, feedbackPostReplyCount, feedbackPostActivity,
       feedbackEditedText, feedbackReactionSummary, feedbackReactionItem, canEditFeedbackMessage,
-      feedbackMessageHtml, feedbackVisibleAttachments,
+      feedbackMessageHtml, feedbackVisibleAttachments, feedbackImageViewer, closeFeedbackImageViewer,
       openFeedbackBoard, refreshFeedbackBoard, loadFeedback, setFeedbackSort, setFeedbackFiles, clearFeedbackForm,
       handleFeedbackPaste, handleFeedbackDrop, handleFeedbackDragOver,
       toggleFeedbackReply, feedbackReplyEditorMode, setFeedbackPostEditorMode,
