@@ -3810,9 +3810,28 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
   width: auto;
   max-width: 100%;
   margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: zoom-in;
   line-height: 0;
 }
 .markdown-body .md-image-link:hover { text-decoration: none; }
+.markdown-body .md-image-link:focus-visible {
+  outline: 2px solid var(--purple);
+  outline-offset: 3px;
+  border-radius: 8px;
+}
+.markdown-body .md-image-scroll.is-expanded .md-image-link {
+  max-width: none;
+  cursor: zoom-out;
+}
+.markdown-body .md-image-scroll.is-expanded .md-image {
+  max-width: none;
+}
 .markdown-body .md-image {
   display: block;
   width: auto;

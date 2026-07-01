@@ -131,7 +131,7 @@ const chartBarRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.4.30");
+const appVersion = ref("0.4.31");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -624,6 +624,14 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.4.31",
+    date: "2026-07-01",
+    title: "优化灵感社区图片交互",
+    items: [
+      "点击帖子图片时在当前页面切换放大/还原，不再打开独立图片页面。",
+    ],
+  },
   {
     version: "0.4.30",
     date: "2026-07-01",
@@ -2066,7 +2074,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.4.30";
+  appVersion.value = cfg.version || "0.4.31";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -3185,11 +3193,13 @@ const setFeedbackReplyEditorMode = (id, mode = "write") => {
   if (feedbackReplies.value[id]?.mode === "write") refreshFeedbackMarkdownEditors();
 };
 
-const feedbackPostPreviewHtml = computed(() => renderMarkdown(feedbackForm.value.body || ""));
+const FEEDBACK_MARKDOWN_OPTIONS = Object.freeze({ feedbackImages: true });
 
-const feedbackReplyPreviewHtml = id => renderMarkdown(feedbackReplies.value[id]?.body || "");
+const feedbackPostPreviewHtml = computed(() => renderMarkdown(feedbackForm.value.body || "", FEEDBACK_MARKDOWN_OPTIONS));
 
-const feedbackMessageHtml = message => renderMarkdown(message?.body || "");
+const feedbackReplyPreviewHtml = id => renderMarkdown(feedbackReplies.value[id]?.body || "", FEEDBACK_MARKDOWN_OPTIONS);
+
+const feedbackMessageHtml = message => renderMarkdown(message?.body || "", FEEDBACK_MARKDOWN_OPTIONS);
 
 const FEEDBACK_INLINE_IMAGE_SCALE = 0.5;
 let feedbackImageResizeRaf = 0;
@@ -3211,16 +3221,22 @@ const resizeFeedbackMarkdownImage = img => {
   }
   const available = feedbackImageAvailableWidth(img);
   if (!available) return;
-  const targetWidth = img.naturalWidth > available
-    ? available
-    : Math.max(1, Math.round(img.naturalWidth * FEEDBACK_INLINE_IMAGE_SCALE));
+  const expanded = img.dataset.feedbackImageExpanded === "1"
+    || img.closest?.(".md-image-scroll")?.classList.contains("is-expanded");
+  const targetWidth = expanded
+    ? img.naturalWidth
+    : (
+      img.naturalWidth > available
+        ? available
+        : Math.max(1, Math.round(img.naturalWidth * FEEDBACK_INLINE_IMAGE_SCALE))
+    );
   img.style.width = `${targetWidth}px`;
   img.style.height = "auto";
 };
 
 const resizeFeedbackMarkdownImages = () => {
   if (typeof document === "undefined") return;
-  document.querySelectorAll(".markdown-body .md-image").forEach(resizeFeedbackMarkdownImage);
+  document.querySelectorAll(".markdown-body .md-feedback-image").forEach(resizeFeedbackMarkdownImage);
 };
 
 function scheduleFeedbackMarkdownImageResize() {
@@ -3231,6 +3247,28 @@ function scheduleFeedbackMarkdownImageResize() {
     resizeFeedbackMarkdownImages();
   });
 }
+
+const toggleFeedbackMarkdownImage = event => {
+  const trigger = event?.target?.closest?.(".md-image-toggle");
+  if (!trigger) return false;
+  const imageWrap = trigger.closest(".md-image-scroll");
+  const image = trigger.querySelector(".md-feedback-image");
+  if (!imageWrap || !image) return false;
+  event.preventDefault();
+  event.stopPropagation();
+  const expanded = !imageWrap.classList.contains("is-expanded");
+  imageWrap.classList.toggle("is-expanded", expanded);
+  trigger.setAttribute("aria-pressed", String(expanded));
+  trigger.setAttribute("aria-label", expanded ? "点击还原图片" : "点击放大图片");
+  trigger.title = expanded ? "点击还原图片" : "点击放大图片";
+  if (expanded) {
+    image.dataset.feedbackImageExpanded = "1";
+  } else {
+    delete image.dataset.feedbackImageExpanded;
+  }
+  resizeFeedbackMarkdownImage(image);
+  return true;
+};
 
 const focusFeedbackMessage = id => {
   selectedFeedbackMessageId.value = id || "";
@@ -6301,9 +6339,12 @@ const renderInlineMarkdown = (text, options = {}) => {
   value = value.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, url) => {
     const safeUrl = safeMarkdownImageUrl(url);
     const safeAlt = escapeHtml(alt || "image");
-    return safeUrl
-      ? stash(`<span class="md-image-scroll"><a href="${escapeHtml(safeUrl)}" target="_blank" rel="noopener noreferrer" class="md-image-link"><img src="${escapeHtml(safeUrl)}" alt="${safeAlt}" class="md-image" loading="lazy"></a></span>`)
-      : safeAlt;
+    if (!safeUrl) return safeAlt;
+    const escapedUrl = escapeHtml(safeUrl);
+    if (options.feedbackImages) {
+      return stash(`<span class="md-image-scroll"><button type="button" class="md-image-link md-image-toggle" aria-label="点击放大图片" aria-pressed="false" title="点击放大图片"><img src="${escapedUrl}" alt="${safeAlt}" class="md-image md-feedback-image" loading="lazy"></button></span>`);
+    }
+    return stash(`<span class="md-image-scroll"><a href="${escapedUrl}" target="_blank" rel="noopener noreferrer" class="md-image-link"><img src="${escapedUrl}" alt="${safeAlt}" class="md-image" loading="lazy"></a></span>`);
   });
   value = value.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => {
     const safeUrl = safeMarkdownUrl(url);
@@ -11717,6 +11758,7 @@ const App = {
     const isFeedbackRoute = computed(() => router.currentRoute.value.name === "feedback");
     const showHeaderMotto = computed(() => router.currentRoute.value.path === "/");
     const handleFeedbackImageResize = () => scheduleFeedbackMarkdownImageResize();
+    const handleFeedbackImageToggle = event => toggleFeedbackMarkdownImage(event);
     const startFeedbackImageMutationObserver = () => {
       if (typeof MutationObserver === "undefined" || feedbackImageMutationObserver) return;
       const root = document.getElementById("app");
@@ -11738,6 +11780,7 @@ const App = {
       scheduleFeedbackMarkdownImageResize();
     });
     window.addEventListener("resize", handleFeedbackImageResize);
+    document.addEventListener("click", handleFeedbackImageToggle);
 
     // Watchers that need to live at the root level
     watch(resultTab, (v, previousTab) => {
@@ -11870,6 +11913,7 @@ const App = {
       clearTimeout(projectBulkSearchTimer);
       destroyFeedbackMarkdownEditors();
       window.removeEventListener("resize", handleFeedbackImageResize);
+      document.removeEventListener("click", handleFeedbackImageToggle);
       feedbackImageMutationObserver?.disconnect();
       if (feedbackImageResizeRaf) window.cancelAnimationFrame(feedbackImageResizeRaf);
     });
