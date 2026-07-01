@@ -131,7 +131,7 @@ const chartBarRows      = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.4.24");
+const appVersion = ref("0.4.30");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -624,6 +624,15 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.4.30",
+    date: "2026-07-01",
+    title: "优化灵感社区滚动与图片展示",
+    items: [
+      "图文混排图片超过评论区时缩放到评论区宽度，未超过时按原始尺寸的 50% 展示。",
+      "反馈页左右空白区域也支持滚轮上下滚动。",
+    ],
+  },
   {
     version: "0.4.24",
     date: "2026-07-01",
@@ -2057,7 +2066,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.4.24";
+  appVersion.value = cfg.version || "0.4.30";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -3181,6 +3190,47 @@ const feedbackPostPreviewHtml = computed(() => renderMarkdown(feedbackForm.value
 const feedbackReplyPreviewHtml = id => renderMarkdown(feedbackReplies.value[id]?.body || "");
 
 const feedbackMessageHtml = message => renderMarkdown(message?.body || "");
+
+const FEEDBACK_INLINE_IMAGE_SCALE = 0.5;
+let feedbackImageResizeRaf = 0;
+
+const feedbackImageAvailableWidth = img => {
+  const container = img?.closest?.(".md-image-scroll") || img?.closest?.(".markdown-body");
+  if (!container) return 0;
+  return Math.floor(container.clientWidth || container.getBoundingClientRect?.().width || 0);
+};
+
+const resizeFeedbackMarkdownImage = img => {
+  if (!img) return;
+  if (!img.complete || !img.naturalWidth) {
+    if (!img.dataset.feedbackImageSizeBound) {
+      img.dataset.feedbackImageSizeBound = "1";
+      img.addEventListener("load", scheduleFeedbackMarkdownImageResize, { once: true });
+    }
+    return;
+  }
+  const available = feedbackImageAvailableWidth(img);
+  if (!available) return;
+  const targetWidth = img.naturalWidth > available
+    ? available
+    : Math.max(1, Math.round(img.naturalWidth * FEEDBACK_INLINE_IMAGE_SCALE));
+  img.style.width = `${targetWidth}px`;
+  img.style.height = "auto";
+};
+
+const resizeFeedbackMarkdownImages = () => {
+  if (typeof document === "undefined") return;
+  document.querySelectorAll(".markdown-body .md-image").forEach(resizeFeedbackMarkdownImage);
+};
+
+function scheduleFeedbackMarkdownImageResize() {
+  if (typeof window === "undefined") return;
+  if (feedbackImageResizeRaf) window.cancelAnimationFrame(feedbackImageResizeRaf);
+  feedbackImageResizeRaf = window.requestAnimationFrame(() => {
+    feedbackImageResizeRaf = 0;
+    resizeFeedbackMarkdownImages();
+  });
+}
 
 const focusFeedbackMessage = id => {
   selectedFeedbackMessageId.value = id || "";
@@ -6252,7 +6302,7 @@ const renderInlineMarkdown = (text, options = {}) => {
     const safeUrl = safeMarkdownImageUrl(url);
     const safeAlt = escapeHtml(alt || "image");
     return safeUrl
-      ? stash(`<a href="${escapeHtml(safeUrl)}" target="_blank" rel="noopener noreferrer" class="md-image-link"><img src="${escapeHtml(safeUrl)}" alt="${safeAlt}" class="md-image" loading="lazy"></a>`)
+      ? stash(`<span class="md-image-scroll"><a href="${escapeHtml(safeUrl)}" target="_blank" rel="noopener noreferrer" class="md-image-link"><img src="${escapeHtml(safeUrl)}" alt="${safeAlt}" class="md-image" loading="lazy"></a></span>`)
       : safeAlt;
   });
   value = value.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => {
@@ -11663,8 +11713,31 @@ const App = {
     let compareSearchTimer = null;
     let projectBulkSearchTimer = null;
     let resultTableTimer = null;
+    let feedbackImageMutationObserver = null;
     const isFeedbackRoute = computed(() => router.currentRoute.value.name === "feedback");
     const showHeaderMotto = computed(() => router.currentRoute.value.path === "/");
+    const handleFeedbackImageResize = () => scheduleFeedbackMarkdownImageResize();
+    const startFeedbackImageMutationObserver = () => {
+      if (typeof MutationObserver === "undefined" || feedbackImageMutationObserver) return;
+      const root = document.getElementById("app");
+      if (!root) return;
+      const hasMarkdownImage = node => (
+        node?.nodeType === 1
+        && (node.matches?.(".md-image") || node.querySelector?.(".md-image"))
+      );
+      feedbackImageMutationObserver = new MutationObserver(mutations => {
+        if (mutations.some(mutation => Array.from(mutation.addedNodes || []).some(hasMarkdownImage))) {
+          scheduleFeedbackMarkdownImageResize();
+        }
+      });
+      feedbackImageMutationObserver.observe(root, { childList: true, subtree: true });
+    };
+
+    nextTick(() => {
+      startFeedbackImageMutationObserver();
+      scheduleFeedbackMarkdownImageResize();
+    });
+    window.addEventListener("resize", handleFeedbackImageResize);
 
     // Watchers that need to live at the root level
     watch(resultTab, (v, previousTab) => {
@@ -11787,13 +11860,18 @@ const App = {
 
     watch([showFeedbackComposer, selectedFeedbackPostId], () => {
       refreshFeedbackMarkdownEditors();
+      scheduleFeedbackMarkdownImageResize();
     });
     watch(() => feedbackEditing.value.id, () => {
       refreshFeedbackMarkdownEditors();
+      scheduleFeedbackMarkdownImageResize();
     });
     onBeforeUnmount(() => {
       clearTimeout(projectBulkSearchTimer);
       destroyFeedbackMarkdownEditors();
+      window.removeEventListener("resize", handleFeedbackImageResize);
+      feedbackImageMutationObserver?.disconnect();
+      if (feedbackImageResizeRaf) window.cancelAnimationFrame(feedbackImageResizeRaf);
     });
 
     // Return everything the root template (index.html) needs

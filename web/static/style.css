@@ -3791,20 +3791,34 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
   text-decoration: none;
 }
 .markdown-body a:hover { text-decoration: underline; }
-.markdown-body .md-image-link {
+.markdown-body p:has(.md-image-link) {
+  max-width: 100%;
+  overflow-x: auto;
+}
+.markdown-body .md-image-scroll {
   display: block;
-  width: fit-content;
+  width: 100%;
   max-width: 100%;
   margin: 12px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  line-height: 0;
+  overscroll-behavior-x: contain;
+}
+.markdown-body .md-image-link {
+  display: inline-block;
+  width: auto;
+  max-width: 100%;
+  margin: 0;
   line-height: 0;
 }
 .markdown-body .md-image-link:hover { text-decoration: none; }
 .markdown-body .md-image {
   display: block;
-  max-width: min(100%, 760px);
-  max-height: 68vh;
-  object-fit: contain;
-  border: 1px solid var(--border);
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  border: 0;
   border-radius: 8px;
   background: var(--card2);
 }
@@ -4718,13 +4732,14 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
   display: flex;
   align-items: stretch;
   justify-content: center;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 .feedback-page-main {
   flex: 1 1 auto;
   min-height: 0;
-  height: 100%;
-  overflow-y: auto;
+  height: auto;
+  overflow: visible;
   width: 100%;
   max-width: 1360px;
   margin: 0 auto;
