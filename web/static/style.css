@@ -4044,7 +4044,7 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
 .chart-delta-value { flex-shrink: 0; font-size: 11px; font-weight: 800; }
 .chart-main-grid {
   display: grid; gap: 10px;
-  grid-template-columns: minmax(0, 1.55fr) minmax(300px, .9fr);
+  grid-template-columns: minmax(0, 1fr);
   min-height: 0;
 }
 .chart-panel {
@@ -4057,8 +4057,6 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
 }
 .chart-bar-area { position: relative; height: 320px; }
 .chart-bar-area canvas { width: 100% !important; height: 100% !important; }
-.chart-pie-area { position: relative; height: 320px; }
-.chart-pie-area canvas { height: 100% !important; width: 100% !important; }
 
 @media (max-width: 1100px) {
   .chart-main-grid { grid-template-columns: 1fr; }

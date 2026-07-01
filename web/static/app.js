@@ -118,10 +118,6 @@ const showColumnMenu = ref(false);
 const openActionMenu = ref("");
 const ktChartInst     = ref(null);
 const ktChart         = ref(null);
-const ktPieChartInst  = ref(null);
-const ktPieChart      = ref(null);
-const ktPieChartInstB = ref(null);
-const ktPieChartB     = ref(null);
 const chartSource     = ref("");
 const chartMetric     = ref("");
 const chartTopN       = ref(10);
@@ -131,7 +127,6 @@ const chartSummaryCards = ref([]);
 const chartSlowdowns    = ref([]);
 const chartSpeedups     = ref([]);
 const chartBarRows      = ref([]);
-const chartPieRows      = ref([]);
 
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
@@ -3849,7 +3844,6 @@ const loadJob = async id => {
   chartSlowdowns.value = [];
   chartSpeedups.value = [];
   chartBarRows.value = [];
-  chartPieRows.value = [];
   aiAnalysisError.value = "";
   aiAnalysisContent.value = "";
   aiAnalysisArtifacts.value = [];
@@ -4660,6 +4654,9 @@ const trimNumber = value => {
   return value.toFixed(digits).replace(/\.?0+$/, "");
 };
 
+const fmtChartPercent = value =>
+  Number.isFinite(value) ? `${value.toFixed(1)}%` : "0.0%";
+
 const fmtChartValue = (value, metricDef = {}) => {
   const text = trimNumber(value);
   return metricDef.unit ? `${text} ${metricDef.unit}` : text;
@@ -4751,23 +4748,44 @@ const sortChartRows = (rows, metricDef) => {
     .sort((a, b) => metricValue(b) - metricValue(a));
 };
 
-const buildPieRows = (rows, metricDef, topN) => {
+const buildChartBarRows = (rows, metricDef, topN) => {
   const sorted = sortChartRows(rows, metricDef);
-  const top = sorted.slice(0, topN);
-  const rest = sorted.slice(topN);
-  const otherValue = rest.reduce((sum, row) => sum + row.displayValue, 0);
-  const pieRows = top.map(row => ({ ...row }));
-  if (otherValue > 0) {
-    pieRows.push({
-      label: "Other",
-      shortLabel: "Other",
-      value: otherValue,
-      displayValue: otherValue,
-      isOther: true,
-      metric: metricDef.key,
+  const total = sorted.reduce((sum, row) => sum + row.displayValue, 0);
+  return sorted.slice(0, topN).map(row => {
+    const sharePct = total ? row.displayValue / total * 100 : 0;
+    return { ...row, sharePct, shareLabel: fmtChartPercent(sharePct) };
+  });
+};
+
+const chartShareHeader = metricDef => metricDef.signed ? "绝对值占比" : "占比";
+
+const chartShareLabelsPlugin = {
+  id: "chartShareLabels",
+  afterDraw(chart, _args, options = {}) {
+    const rows = options.rows || [];
+    const meta = chart.getDatasetMeta(0);
+    const area = chart.chartArea;
+    if (!rows.length || !meta?.data?.length || !area) return;
+
+    const x = chart.width - 10;
+    const fontFamily = "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+    const ctx = chart.ctx;
+    ctx.save();
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = options.headerColor || options.color || "#475569";
+    ctx.font = `700 11px ${fontFamily}`;
+    if (options.header) {
+      ctx.fillText(options.header, x, Math.max(12, area.top - 12));
+    }
+    ctx.fillStyle = options.color || "#475569";
+    ctx.font = `700 11px ${fontFamily}`;
+    meta.data.forEach((element, index) => {
+      const row = rows[index];
+      if (row) ctx.fillText(row.shareLabel || fmtChartPercent(row.sharePct), x, element.y);
     });
-  }
-  return pieRows;
+    ctx.restore();
+  },
 };
 
 const buildChartSummary = (rows, table, sourceConfig) => {
@@ -4822,8 +4840,6 @@ const updateDeltaLists = rows => {
 
 const destroyChartInstances = () => {
   if (ktChartInst.value)     { ktChartInst.value.destroy();     ktChartInst.value = null; }
-  if (ktPieChartInst.value)  { ktPieChartInst.value.destroy();  ktPieChartInst.value = null; }
-  if (ktPieChartInstB.value) { ktPieChartInstB.value.destroy(); ktPieChartInstB.value = null; }
 };
 
 let chartBuildToken = 0;
@@ -4838,55 +4854,6 @@ const scheduleBuildChart = async () => {
   if (resultTab.value === "chart" && selectedJob.value?.status === "done") {
     await buildChart();
   }
-};
-
-const buildPie = (canvas, rows, title, metricDef) => {
-  const pairs = (rows || []).filter(row => row.displayValue > 0);
-  if (!pairs.length || !canvas) return null;
-  const total = pairs.reduce((sum, row) => sum + row.displayValue, 0);
-  const cc = chartColors();
-  const colors = getColors(pairs.length).map((color, index) =>
-    pairs[index].isOther ? 'rgba(148,163,184,.72)' : color
-  );
-  return new Chart(canvas, {
-    type: 'doughnut',
-    data: {
-      labels: pairs.map(row => row.shortLabel),
-      datasets: [{ data: pairs.map(row => row.displayValue),
-        backgroundColor: colors,
-        borderWidth: 2, borderColor: cc.border }],
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: {
-        title: { display: true, text: title, font: { size: 13 }, color: cc.title },
-        legend: {
-          position: 'bottom',
-          labels: { font: { size: 11 }, boxWidth: 12, padding: 8, color: cc.text,
-                    generateLabels: chart => {
-                      const ds = chart.data.datasets[0];
-                      return chart.data.labels.map((label, i) => ({
-                        text: `${label}  ${(ds.data[i] / total * 100).toFixed(1)}%`,
-                        fillStyle: ds.backgroundColor[i],
-                        strokeStyle: ds.backgroundColor[i],
-                        fontColor: cc.text,
-                        hidden: false, index: i,
-                      }));
-                    }},
-        },
-        tooltip: { callbacks: { label: ctx => {
-          const pct = total ? (ctx.parsed / total * 100).toFixed(1) : 0;
-          const row = pairs[ctx.dataIndex];
-          const value = row.isOther || metricDef.signed ? row.displayValue : row.value;
-          const prefix = metricDef.signed ? "绝对值" : metricDef.label;
-          return ` ${row.label}: ${prefix} ${fmtChartValue(value, metricDef)} (${pct}%)`;
-        }, title: items => {
-          const row = pairs[items[0]?.dataIndex];
-          return row?.label || "";
-        }}},
-      },
-    },
-  });
 };
 
 const drillDownChart = async row => {
@@ -4963,8 +4930,7 @@ const buildChart = async () => {
   chartSummaryCards.value = buildChartSummary(rows, table, sourceConfig);
   updateDeltaLists(rows);
   const topN = Math.max(1, Number(chartTopN.value) || 10);
-  chartBarRows.value = sortChartRows(rows, metricDef).slice(0, topN);
-  chartPieRows.value = buildPieRows(rows, metricDef, topN);
+  chartBarRows.value = buildChartBarRows(rows, metricDef, topN);
 
   if (!chartBarRows.value.length) {
     chartError.value = "当前指标没有可绘制的数据";
@@ -4981,6 +4947,7 @@ const buildChart = async () => {
     : getColors(chartBarRows.value.length);
   ktChartInst.value = new Chart(ktChart.value, {
     type: "bar",
+    plugins: [chartShareLabelsPlugin],
     data: {
       labels: chartBarRows.value.map(row => row.shortLabel),
       datasets: [{
@@ -4994,6 +4961,7 @@ const buildChart = async () => {
     options: {
       indexAxis: 'y',
       responsive: true, maintainAspectRatio: false,
+      layout: { padding: { right: metricDef.signed ? 92 : 68 } },
       onClick: (_, elements) => {
         const row = chartBarRows.value[elements?.[0]?.index];
         if (row) drillDownChart(row);
@@ -5004,17 +4972,27 @@ const buildChart = async () => {
       plugins: {
         legend: { display: false },
         title: { display: true, text: `${sourceConfig.label} · ${metricDef.label}`, font: { size: 13 }, color: cc.title },
+        chartShareLabels: {
+          rows: chartBarRows.value,
+          header: chartShareHeader(metricDef),
+          color: cc.text,
+          headerColor: cc.title,
+        },
         tooltip: { callbacks: {
           title: items => chartBarRows.value[items[0]?.dataIndex]?.label || "",
           label: ctx => ` ${metricDef.label}: ${fmtChartValue(ctx.parsed.x, metricDef)}`,
           afterLabel: ctx => {
             const row = chartBarRows.value[ctx.dataIndex];
-            if (!row || selectedJob.value?.mode !== "compare") return "";
-            return [
-              `A: ${fmtChartValue(row.aValue, { unit: "ms" })}`,
-              `B: ${fmtChartValue(row.bValue, { unit: "ms" })}`,
-              `count: ${trimNumber(row.countA)} -> ${trimNumber(row.countB)}`,
-            ];
+            if (!row) return "";
+            const lines = [`${chartShareHeader(metricDef)}: ${row.shareLabel}`];
+            if (selectedJob.value?.mode === "compare") {
+              lines.push(
+                `A: ${fmtChartValue(row.aValue, { unit: "ms" })}`,
+                `B: ${fmtChartValue(row.bValue, { unit: "ms" })}`,
+                `count: ${trimNumber(row.countA)} -> ${trimNumber(row.countB)}`
+              );
+            }
+            return lines;
           },
         }},
       },
@@ -5027,13 +5005,6 @@ const buildChart = async () => {
       },
     },
   });
-
-  ktPieChartInst.value = buildPie(
-    ktPieChart.value,
-    chartPieRows.value,
-    metricDef.signed ? "TopN Delta 绝对值占比" : "TopN 占比",
-    metricDef
-  );
   chartLoading.value = false;
 };
 
@@ -7583,12 +7554,6 @@ const JobDetail = {
                 <canvas ref="ktChart"></canvas>
               </div>
             </div>
-            <div class="chart-panel">
-              <div class="chart-panel-title">TopN + Other 占比</div>
-              <div class="chart-pie-area">
-                <canvas ref="ktPieChart"></canvas>
-              </div>
-            </div>
           </div>
         </div>
 
@@ -7925,13 +7890,9 @@ const JobDetail = {
   `,
   setup() {
     const ktChartRef = ref(null);
-    const ktPieChartRef = ref(null);
-    const ktPieChartBRef = ref(null);
 
     // Wire up template refs to module-level refs so buildChart() can use them
     watch(ktChartRef, (el) => { ktChart.value = el; });
-    watch(ktPieChartRef, (el) => { ktPieChart.value = el; });
-    watch(ktPieChartBRef, (el) => { ktPieChartB.value = el; });
 
     const switchTab = async (key) => {
       if (key === resultTab.value) {
@@ -7948,7 +7909,7 @@ const JobDetail = {
     };
 
     return {
-      ktChart: ktChartRef, ktPieChart: ktPieChartRef, ktPieChartB: ktPieChartBRef,
+      ktChart: ktChartRef,
       selectedJob, selectedJobId, selectedJobHandle, jobLoading, resultTab, availableTabs, currentTable,
       jobStepFilterLabel,
       isReadingMode, toggleReadingMode,
@@ -11341,8 +11302,6 @@ const router = createRouter({
 const resetJobRuntimeState = () => {
   isReadingMode.value = false;
   if (ktChartInst.value)     { ktChartInst.value.destroy();     ktChartInst.value = null; }
-  if (ktPieChartInst.value)  { ktPieChartInst.value.destroy();  ktPieChartInst.value = null; }
-  if (ktPieChartInstB.value) { ktPieChartInstB.value.destroy(); ktPieChartInstB.value = null; }
   stopAiAnalysisPolling();
   cancelResultTableRequest();
   clearAiDiagnostics();
