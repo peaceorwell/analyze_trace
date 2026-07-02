@@ -2814,7 +2814,7 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 }
 .empty-main-icon { font-size: 40px; margin-bottom: 4px; filter: grayscale(.4) opacity(.7); }
 .empty-main-title {
-  width: min(1120px, 100%);
+  width: min(760px, 100%);
   font-size: 13px; color: var(--text3); font-weight: 800;
   text-transform: uppercase; letter-spacing: .08em;
 }
@@ -2825,8 +2825,8 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 }
 .link-btn:hover { background: var(--purple-bg); color: var(--purple); }
 .empty-action-grid {
-  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px; width: min(1120px, 100%);
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px; width: min(760px, 100%);
 }
 .empty-action-card {
   min-width: 0; text-align: left; cursor: pointer;

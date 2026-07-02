@@ -5016,6 +5016,50 @@ const buildChartBarRows = (rows, metricDef, topN) => {
 
 const chartShareHeader = metricDef => metricDef.signed ? "绝对值占比" : "占比";
 
+const chartValueLabelsPlugin = {
+  id: "chartValueLabels",
+  afterDatasetsDraw(chart, _args, options = {}) {
+    const rows = options.rows || [];
+    const metricDef = options.metricDef || {};
+    const meta = chart.getDatasetMeta(0);
+    const area = chart.chartArea;
+    if (!rows.length || !meta?.data?.length || !area) return;
+
+    const fontFamily = "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+    const ctx = chart.ctx;
+    const shareColumnWidth = options.shareColumnWidth || 56;
+    const maxRight = chart.width - shareColumnWidth - 12;
+    ctx.save();
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = options.color || "#1e293b";
+    ctx.font = `700 11px ${fontFamily}`;
+    meta.data.forEach((element, index) => {
+      const row = rows[index];
+      if (!row) return;
+      const label = fmtChartValue(row.value, metricDef);
+      const width = ctx.measureText(label).width;
+      const isNegative = Number(row.value) < 0;
+      const y = element.y;
+      let x = isNegative ? element.x - 6 : element.x + 6;
+      let align = isNegative ? "right" : "left";
+
+      if (!isNegative && x + width > maxRight) {
+        x = Math.min(element.x - 6, maxRight);
+        align = "right";
+      } else if (isNegative && x - width < area.left) {
+        x = Math.max(element.x + 6, area.left + 2);
+        align = "left";
+      }
+
+      if (align === "left" && x + width > maxRight) x = maxRight - width;
+      if (align === "right" && x - width < area.left) x = area.left + width + 2;
+      ctx.textAlign = align;
+      ctx.fillText(label, x, y);
+    });
+    ctx.restore();
+  },
+};
+
 const chartShareLabelsPlugin = {
   id: "chartShareLabels",
   afterDraw(chart, _args, options = {}) {
@@ -5099,14 +5143,23 @@ const destroyChartInstances = () => {
   if (ktChartInst.value)     { ktChartInst.value.destroy();     ktChartInst.value = null; }
 };
 
+const waitChartFrame = () => new Promise(resolve => {
+  let settled = false;
+  const finish = () => {
+    if (settled) return;
+    settled = true;
+    resolve();
+  };
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(finish);
+  setTimeout(finish, 32);
+});
+
 let chartBuildToken = 0;
 const scheduleBuildChart = async () => {
   const token = ++chartBuildToken;
   await nextTick();
-  await new Promise(resolve => {
-    if (typeof requestAnimationFrame === "function") requestAnimationFrame(resolve);
-    else setTimeout(resolve, 0);
-  });
+  await waitChartFrame();
+  await waitChartFrame();
   if (token !== chartBuildToken) return;
   if (resultTab.value === "chart" && selectedJob.value?.status === "done") {
     await buildChart();
@@ -5158,111 +5211,140 @@ const buildChart = async () => {
   }
   chartLoading.value = true;
   chartError.value = "";
-  if (!chartTables.value[sourceConfig.file]) {
-    try {
-      chartTables.value = {
-        ...chartTables.value,
-        [sourceConfig.file]: await fetchResultTable(sourceConfig.file, {
-          jobId,
-          limit: CHART_FETCH_LIMIT,
-          offset: 0,
-          ignoreViewState: true,
-        }),
-      };
-      if (selectedJobId.value !== jobId) return;
-    } catch (e) {
-      chartError.value = normalizeApiError(e, "加载图表数据失败");
+  try {
+    if (!chartTables.value[sourceConfig.file]) {
+      try {
+        chartTables.value = {
+          ...chartTables.value,
+          [sourceConfig.file]: await fetchResultTable(sourceConfig.file, {
+            jobId,
+            limit: CHART_FETCH_LIMIT,
+            offset: 0,
+            ignoreViewState: true,
+          }),
+        };
+        if (selectedJobId.value !== jobId) {
+          chartLoading.value = false;
+          return;
+        }
+      } catch (e) {
+        chartError.value = normalizeApiError(e, "加载图表数据失败");
+        chartLoading.value = false;
+        return;
+      }
+    }
+    const table = chartTables.value[sourceConfig.file];
+    const fields = table?.fields || selectedJob.value.result_files[sourceConfig.file]?.fields || [];
+    const rows = filterChartCommunicationRows(
+      normalizeChartRows(table?.rows || [], fields, sourceConfig, metricDef),
+      sourceConfig
+    );
+    destroyChartInstances();
+
+    chartSummaryCards.value = buildChartSummary(rows, table, sourceConfig);
+    updateDeltaLists(rows);
+    const topN = Math.max(1, Number(chartTopN.value) || 10);
+    chartBarRows.value = buildChartBarRows(rows, metricDef, topN);
+
+    if (!chartBarRows.value.length) {
+      chartError.value = "当前指标没有可绘制的数据";
       chartLoading.value = false;
       return;
     }
-  }
-  const table = chartTables.value[sourceConfig.file];
-  const fields = table?.fields || selectedJob.value.result_files[sourceConfig.file]?.fields || [];
-  const rows = filterChartCommunicationRows(
-    normalizeChartRows(table?.rows || [], fields, sourceConfig, metricDef),
-    sourceConfig
-  );
-  destroyChartInstances();
 
-  chartSummaryCards.value = buildChartSummary(rows, table, sourceConfig);
-  updateDeltaLists(rows);
-  const topN = Math.max(1, Number(chartTopN.value) || 10);
-  chartBarRows.value = buildChartBarRows(rows, metricDef, topN);
+    ktChart.value.parentElement.style.height =
+      Math.max(280, Math.min(620, chartBarRows.value.length * 34 + 96)) + 'px';
+    await waitChartFrame();
+    if (selectedJobId.value !== jobId || resultTab.value !== "chart") {
+      chartLoading.value = false;
+      return;
+    }
+    const chartRect = ktChart.value.parentElement.getBoundingClientRect();
+    if (chartRect.width <= 0 || chartRect.height <= 0) {
+      setTimeout(() => {
+        if (selectedJobId.value === jobId && resultTab.value === "chart") scheduleBuildChart();
+      }, 50);
+      return;
+    }
 
-  if (!chartBarRows.value.length) {
-    chartError.value = "当前指标没有可绘制的数据";
-    chartLoading.value = false;
-    return;
-  }
-
-  ktChart.value.parentElement.style.height =
-    Math.max(280, Math.min(620, chartBarRows.value.length * 34 + 96)) + 'px';
-
-  const cc = chartColors();
-  const barColors = metricDef.signed
-    ? chartBarRows.value.map(row => row.value >= 0 ? "rgba(239,68,68,0.76)" : "rgba(34,197,94,0.76)")
-    : getColors(chartBarRows.value.length);
-  ktChartInst.value = new Chart(ktChart.value, {
-    type: "bar",
-    plugins: [chartShareLabelsPlugin],
-    data: {
-      labels: chartBarRows.value.map(row => row.shortLabel),
-      datasets: [{
-        label: metricDef.label,
-        data: chartBarRows.value.map(row => row.value),
-        backgroundColor: barColors,
-        borderRadius: 4,
-        barThickness: 18,
-      }],
-    },
-    options: {
-      indexAxis: 'y',
-      responsive: true, maintainAspectRatio: false,
-      layout: { padding: { right: metricDef.signed ? 92 : 68 } },
-      onClick: (_, elements) => {
-        const row = chartBarRows.value[elements?.[0]?.index];
-        if (row) drillDownChart(row);
+    const cc = chartColors();
+    const barColors = metricDef.signed
+      ? chartBarRows.value.map(row => row.value >= 0 ? "rgba(239,68,68,0.76)" : "rgba(34,197,94,0.76)")
+      : getColors(chartBarRows.value.length);
+    const chart = new Chart(ktChart.value, {
+      type: "bar",
+      plugins: [chartValueLabelsPlugin, chartShareLabelsPlugin],
+      data: {
+        labels: chartBarRows.value.map(row => row.shortLabel),
+        datasets: [{
+          label: metricDef.label,
+          data: chartBarRows.value.map(row => row.value),
+          backgroundColor: barColors,
+          borderRadius: 4,
+          barThickness: 18,
+        }],
       },
-      onHover: (event, elements) => {
-        if (event?.native?.target) event.native.target.style.cursor = elements.length ? "pointer" : "default";
-      },
-      plugins: {
-        legend: { display: false },
-        title: { display: true, text: `${sourceConfig.label} · ${metricDef.label}`, font: { size: 13 }, color: cc.title },
-        chartShareLabels: {
-          rows: chartBarRows.value,
-          header: chartShareHeader(metricDef),
-          color: cc.text,
-          headerColor: cc.title,
+      options: {
+        indexAxis: 'y',
+        responsive: true, maintainAspectRatio: false,
+        layout: { padding: { right: metricDef.signed ? 154 : 132 } },
+        onClick: (_, elements) => {
+          const row = chartBarRows.value[elements?.[0]?.index];
+          if (row) drillDownChart(row);
         },
-        tooltip: { callbacks: {
-          title: items => chartBarRows.value[items[0]?.dataIndex]?.label || "",
-          label: ctx => ` ${metricDef.label}: ${fmtChartValue(ctx.parsed.x, metricDef)}`,
-          afterLabel: ctx => {
-            const row = chartBarRows.value[ctx.dataIndex];
-            if (!row) return "";
-            const lines = [`${chartShareHeader(metricDef)}: ${row.shareLabel}`];
-            if (selectedJob.value?.mode === "compare") {
-              lines.push(
-                `A: ${fmtChartValue(row.aValue, { unit: "ms" })}`,
-                `B: ${fmtChartValue(row.bValue, { unit: "ms" })}`,
-                `count: ${trimNumber(row.countA)} -> ${trimNumber(row.countB)}`
-              );
-            }
-            return lines;
+        onHover: (event, elements) => {
+          if (event?.native?.target) event.native.target.style.cursor = elements.length ? "pointer" : "default";
+        },
+        plugins: {
+          legend: { display: false },
+          title: { display: true, text: `${sourceConfig.label} · ${metricDef.label}`, font: { size: 13 }, color: cc.title },
+          chartValueLabels: {
+            rows: chartBarRows.value,
+            metricDef,
+            color: cc.title,
+            shareColumnWidth: metricDef.signed ? 78 : 56,
           },
-        }},
+          chartShareLabels: {
+            rows: chartBarRows.value,
+            header: chartShareHeader(metricDef),
+            color: cc.text,
+            headerColor: cc.title,
+          },
+          tooltip: { callbacks: {
+            title: items => chartBarRows.value[items[0]?.dataIndex]?.label || "",
+            label: ctx => ` ${metricDef.label}: ${fmtChartValue(ctx.parsed.x, metricDef)}`,
+            afterLabel: ctx => {
+              const row = chartBarRows.value[ctx.dataIndex];
+              if (!row) return "";
+              const lines = [`${chartShareHeader(metricDef)}: ${row.shareLabel}`];
+              if (selectedJob.value?.mode === "compare") {
+                lines.push(
+                  `A: ${fmtChartValue(row.aValue, { unit: "ms" })}`,
+                  `B: ${fmtChartValue(row.bValue, { unit: "ms" })}`,
+                  `count: ${trimNumber(row.countA)} -> ${trimNumber(row.countB)}`
+                );
+              }
+              return lines;
+            },
+          }},
+        },
+        scales: {
+          x: { beginAtZero: true,
+            ticks: { font: { size: 11 }, color: cc.text },
+            grid:  { color: cc.grid } },
+          y: { ticks: { font: { size: 11 }, color: cc.text },
+            grid:  { color: cc.grid } },
+        },
       },
-      scales: {
-        x: { beginAtZero: true,
-          ticks: { font: { size: 11 }, color: cc.text },
-          grid:  { color: cc.grid } },
-        y: { ticks: { font: { size: 11 }, color: cc.text },
-          grid:  { color: cc.grid } },
-      },
-    },
-  });
-  chartLoading.value = false;
+    });
+    ktChartInst.value = chart;
+  } catch (e) {
+    chartError.value = normalizeApiError(e, "生成图表失败");
+  } finally {
+    if (selectedJobId.value === jobId && resultTab.value === "chart") {
+      chartLoading.value = false;
+    }
+  }
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -7525,22 +7607,6 @@ const Home = {
     <div v-if="!selectedJob" class="empty-main">
       <div class="empty-main-title">常用入口</div>
       <div class="empty-action-grid">
-        <button class="empty-action-card" type="button" @click="openSingleUploadPicker">
-          <strong>上传单个 trace</strong>
-          <span>快速分析一个 PyTorch 或 TensorFlow trace</span>
-        </button>
-        <button class="empty-action-card" type="button" @click="setQuickUploadMode('compare')">
-          <strong>上传两个 trace 对比</strong>
-          <span>直接生成 A/B 对比任务</span>
-        </button>
-        <button class="empty-action-card" type="button" @click="openMultiUploadPicker">
-          <strong>上传多个 trace</strong>
-          <span>多个文件会逐个分析，分别生成任务</span>
-        </button>
-        <button class="empty-action-card" type="button" @click="sidebarTab='jobs'">
-          <strong>{{ historyGroupsTotal ? '查看历史与共享项目' : '等待历史记录' }}</strong>
-          <span>{{ historyGroupsTotal ? '左侧可搜索、置顶和批量管理任务' : '提交成功后会在左侧出现' }}</span>
-        </button>
         <button class="empty-action-card" type="button" @click="showGuide=true">
           <strong>打开使用指南</strong>
           <span>查看上传、对比、AI 和社区说明</span>
@@ -7552,29 +7618,17 @@ const Home = {
       </div>
       <div class="empty-main-tips">
         <div class="empty-tip-item">支持 .json.gz、.gz、.json.zip、.zip、.json、.tar.gz、.tgz，默认下载为 .json.gz</div>
-        <div class="empty-tip-item">建议 trace 中开启 triton code 保存功能，后续可直接查看和运行 Triton kernel</div>
       </div>
     </div>
   `,
   setup() {
     const fileInputA = ref(null);
-    const openSingleUploadPicker = async () => {
-      setQuickUploadMode("single");
-      await nextTick();
-      fileInputA.value?.click();
-    };
-    const openMultiUploadPicker = async () => {
-      setQuickUploadMode("multi");
-      await nextTick();
-      fileInputA.value?.click();
-    };
     return {
       fileInputA, fileAName, fileA, quickUploadMode,
       quickFileA, quickFileB, quickFileAName, quickFileBName,
       uploadQueue, submitting, uploadProgress,
       form, projects, projectOptionLabel, selectedJob,
       historyGroupsTotal, sidebarTab, showGuide, uploadFileMeta,
-      openSingleUploadPicker, openMultiUploadPicker,
       setQuickUploadMode,
       onDrop, onFileChange, clearFile, submitJob,
       onQuickDrop, onQuickFileChange, clearQuickCompareFile, submitQuickCompare,
@@ -8168,7 +8222,12 @@ const JobDetail = {
     const ktChartRef = ref(null);
 
     // Wire up template refs to module-level refs so buildChart() can use them
-    watch(ktChartRef, (el) => { ktChart.value = el; });
+    watch(ktChartRef, (el) => {
+      ktChart.value = el;
+      if (el && resultTab.value === "chart" && selectedJob.value?.status === "done") {
+        scheduleBuildChart();
+      }
+    });
 
     const switchTab = async (key) => {
       if (key === resultTab.value) {
