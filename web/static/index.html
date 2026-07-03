@@ -218,7 +218,7 @@
               <div
                 v-for="project in recentViewedProjectItems"
                 :key="project.id"
-                :class="['recent-viewed-item', isSidebarProjectActive(project) ? 'active' : '']"
+                :class="['recent-viewed-item', isRecentProjectActive(project) ? 'active' : '']"
                 role="button"
                 tabindex="0"
                 :title="project.label"

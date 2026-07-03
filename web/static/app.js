@@ -1167,6 +1167,8 @@ const isSidebarProjectActive = projectOrGroup =>
     filterProject.value === projectOrGroup.id ||
     currentSidebarProjectId.value === projectOrGroup.id
   ));
+const isRecentProjectActive = project =>
+  Boolean(project?.id && project.id === (filterProject.value || currentSidebarProjectId.value));
 const projectViewStats = computed(() => {
   const allProjects = projects.value.filter(project => project.id);
   return {
@@ -3945,14 +3947,25 @@ const focusCurrentJobInSidebar = async job => {
 
   try {
     let needsReload = false;
-    if (historySearch.value.trim()) {
-      setSidebarFiltersSilently({ historySearch: "" });
+    const needsProjectFocus =
+      filterProject.value !== groupId ||
+      historyProjectView.value !== "all" ||
+      Boolean(historySearch.value.trim());
+    if (needsProjectFocus) {
+      setSidebarFiltersSilently({
+        historySearch: "",
+        historyProjectView: "all",
+        filterProject: groupId,
+      });
       needsReload = true;
     }
     if (!historyGroups.value.some(group => group.id === groupId)) {
       needsReload = true;
     }
-    if (needsReload) await loadHistoryGroups();
+    if (needsReload) {
+      if (needsProjectFocus) await refreshSidebarData();
+      else await loadHistoryGroups();
+    }
 
     if (!historyGroups.value.some(group => group.id === groupId)) {
       setSidebarFiltersSilently({
@@ -12000,7 +12013,7 @@ const App = {
       historyJobs, historyJobsTotal, historyJobsLimit, historyJobsOffset, historyJobsLoading,
       historyProjectGroups, historyAllJobCount, activeHistoryProject, historyListTitle, historyListSubtitle,
       projectQuickViews, activeProjectView, historyProjectView,
-      currentSidebarProjectId, isSidebarProjectActive,
+      currentSidebarProjectId, isSidebarProjectActive, isRecentProjectActive,
       recentViewedProjectItems, recentProjectSubtitle, clearRecentViewedProjects,
       openRecentProject, openRecentProjectTree,
       historySearch, filterProject, sidebarTab, selectedJobId, selectedJob,
