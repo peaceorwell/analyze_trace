@@ -627,6 +627,66 @@ class TestComputeAvgs:
         assert parsed["step_to_tf_ops"][0]["relu:Relu"]["count"] == 1
         assert parsed["step_to_kernels"][0]["void MLUReluKernel"]["count"] == 1
 
+    def test_tensorflow_trace_uses_tf_prefix_source_name(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TRACE_FAST_TRACE_JSON_BYTES", "0")
+        trace_path = tmp_path / "trace_a.json.gz"
+        with gzip.open(trace_path, "wt") as f:
+            json.dump({
+                "traceEvents": [
+                    {"name": "SessionRun", "ph": "X", "ts": 1000, "dur": 1000, "args": {"group_id": "0"}},
+                    {
+                        "name": "Relu",
+                        "ph": "X",
+                        "pid": 501,
+                        "tid": 7,
+                        "ts": 1100,
+                        "dur": 100,
+                        "args": {"group_id": "0", "long_name": "relu:Relu"},
+                    },
+                ],
+            }, f)
+
+        parsed = parse_trace(
+            str(trace_path),
+            source_name="tf_ ecom_fusion_model.step_29990.trace.json.gz",
+        )
+
+        assert parsed["framework"] == "tensorflow"
+        assert parsed["step_to_tf_ops"][0]["relu:Relu"]["count"] == 1
+
+    def test_tensorflow_trace_detects_late_session_run_marker(self, tmp_path):
+        trace_path = tmp_path / "trace.json"
+        trace_path.write_text(json.dumps({
+            "traceEvents": [
+                {
+                    "name": "cnInvokeKernel",
+                    "ph": "X",
+                    "pid": 501,
+                    "tid": 7,
+                    "ts": i,
+                    "dur": 1,
+                    "args": {"correlation_id": str(i), "device_id": "0"},
+                }
+                for i in range(6000)
+            ] + [
+                {"name": "SessionRun", "ph": "X", "ts": 10000, "dur": 1000, "args": {"group_id": "0"}},
+                {
+                    "name": "Relu",
+                    "ph": "X",
+                    "pid": 501,
+                    "tid": 7,
+                    "ts": 10100,
+                    "dur": 100,
+                    "args": {"group_id": "0", "long_name": "relu:Relu"},
+                },
+            ],
+        }))
+
+        parsed = parse_trace(str(trace_path))
+
+        assert parsed["framework"] == "tensorflow"
+        assert parsed["step_to_tf_ops"][0]["relu:Relu"]["count"] == 1
+
     def test_tensorflow_single_csv_outputs_skip_empty_pytorch_specific_tables(self, tmp_path):
         trace_path = tmp_path / "sample.tf.trace.json"
         trace_path.write_text(json.dumps({

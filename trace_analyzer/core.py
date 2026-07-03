@@ -744,11 +744,16 @@ def _iter_trace_events(trace_file):
         yield from ijson.items(f, "traceEvents.item", use_float=True)
 
 
-def _detect_trace_format(trace_file, sample_limit=5000, source_name=None):
+def _looks_like_tensorflow_trace_name(name):
+    base = os.path.basename(str(name or "")).lower()
+    return base.startswith("tf_") or ".tf.trace" in base or "tensorflow" in base
+
+
+def _detect_trace_format(trace_file, sample_limit=100000, source_name=None):
     """Sniff the trace format without mixing framework-specific parse rules."""
     trace_name = os.path.basename(str(trace_file)).lower()
     hint_name = os.path.basename(str(source_name or "")).lower()
-    if any(".tf.trace" in name or "tensorflow" in name for name in (trace_name, hint_name)):
+    if any(_looks_like_tensorflow_trace_name(name) for name in (trace_name, hint_name)):
         return "tensorflow"
 
     torch_score = 0
