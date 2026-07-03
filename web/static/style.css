@@ -4150,6 +4150,91 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
 }
 .chart-bar-area { position: relative; height: 320px; }
 .chart-bar-area canvas { width: 100% !important; height: 100% !important; }
+.chart-bar-area canvas.chart-canvas-pending {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+.chart-fallback-bars {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 8px 10px 8px 4px;
+  overflow: auto;
+}
+.chart-fallback-heading {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) 64px;
+  gap: 10px;
+  align-items: center;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 800;
+  text-align: center;
+}
+.chart-fallback-heading span {
+  color: var(--text3);
+  font-size: 11px;
+  text-align: right;
+}
+.chart-fallback-row {
+  display: grid;
+  grid-template-columns: minmax(90px, 180px) minmax(120px, 1fr) 58px;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  min-height: 24px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text2);
+  cursor: pointer;
+  text-align: left;
+}
+.chart-fallback-row:hover { background: var(--card2); }
+.chart-fallback-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text2);
+  font-size: 11px;
+  font-weight: 700;
+  text-align: right;
+}
+.chart-fallback-track {
+  position: relative;
+  height: 18px;
+  min-width: 0;
+  border-left: 1px solid var(--border2);
+  background: linear-gradient(to right, var(--border) 1px, transparent 1px) 0 0 / 25% 100%;
+}
+.chart-fallback-bar {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  border-radius: 4px;
+  background: rgba(99,102,241,.74);
+}
+.chart-fallback-bar.neg { background: rgba(239,68,68,.76); }
+.chart-fallback-bar.pos { background: rgba(34,197,94,.76); }
+.chart-fallback-value {
+  position: absolute;
+  left: min(calc(var(--bar-width) + 6px), calc(100% - 72px));
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.chart-fallback-share {
+  color: var(--text2);
+  font-size: 11px;
+  font-weight: 800;
+  text-align: right;
+}
 
 @media (max-width: 1100px) {
   .chart-main-grid { grid-template-columns: 1fr; }

@@ -127,11 +127,12 @@ const chartSummaryCards = ref([]);
 const chartSlowdowns    = ref([]);
 const chartSpeedups     = ref([]);
 const chartBarRows      = ref([]);
+const chartCanvasReady  = ref(false);
 
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.4.32");
+const appVersion = ref("0.4.33");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -624,6 +625,14 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.4.33",
+    date: "2026-07-03",
+    title: "修复性能总览空白兜底",
+    items: [
+      "性能总览图表未能及时创建时，会使用同一批排行数据渲染兜底条形图，避免出现空白面板。",
+    ],
+  },
   {
     version: "0.4.32",
     date: "2026-07-01",
@@ -1371,6 +1380,18 @@ const chartMetricOptions = computed(() => {
   const available = new Set(fields);
   return CHART_METRIC_DEFS.filter(item => available.has(item.key));
 });
+const activeChartSourceConfig = computed(() =>
+  chartSourceOptions.value.find(item => item.file === chartSource.value) || chartSourceOptions.value[0] || null
+);
+const activeChartMetricDef = computed(() => chartMetricDefFor(chartMetric.value));
+const activeChartTitle = computed(() => {
+  const source = activeChartSourceConfig.value;
+  const metric = activeChartMetricDef.value;
+  return source ? `${source.label} · ${metric.label}` : "";
+});
+const chartFallbackMaxValue = computed(() =>
+  Math.max(1, ...chartBarRows.value.map(row => Number(row.displayValue) || Math.abs(Number(row.value) || 0)))
+);
 
 const isTritonStepTab = computed(() => {
   return resultTab.value && resultTab.value.match(/^step_\d+_triton_kernels\.csv$/);
@@ -2084,7 +2105,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.4.32";
+  appVersion.value = cfg.version || "0.4.33";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -4114,6 +4135,7 @@ const loadJob = async id => {
   chartSlowdowns.value = [];
   chartSpeedups.value = [];
   chartBarRows.value = [];
+  chartCanvasReady.value = false;
   aiAnalysisError.value = "";
   aiAnalysisContent.value = "";
   aiAnalysisArtifacts.value = [];
@@ -5028,6 +5050,15 @@ const buildChartBarRows = (rows, metricDef, topN) => {
 };
 
 const chartShareHeader = metricDef => metricDef.signed ? "绝对值占比" : "占比";
+const chartFallbackBarWidth = row => {
+  const value = Number(row?.displayValue) || Math.abs(Number(row?.value) || 0);
+  return `${Math.max(2, Math.min(100, value / chartFallbackMaxValue.value * 100))}%`;
+};
+const chartFallbackBarTone = row =>
+  activeChartMetricDef.value.signed
+    ? (Number(row?.value) >= 0 ? "neg" : "pos")
+    : "";
+const chartFallbackValueLabel = row => fmtChartValue(Number(row?.value) || 0, activeChartMetricDef.value);
 
 const chartValueLabelsPlugin = {
   id: "chartValueLabels",
@@ -5153,6 +5184,7 @@ const updateDeltaLists = rows => {
 };
 
 const destroyChartInstances = () => {
+  chartCanvasReady.value = false;
   if (ktChartInst.value)     { ktChartInst.value.destroy();     ktChartInst.value = null; }
 };
 
@@ -5279,6 +5311,10 @@ const buildChart = async () => {
       }, 50);
       return;
     }
+    if (typeof Chart === "undefined") {
+      chartCanvasReady.value = false;
+      return;
+    }
 
     const cc = chartColors();
     const barColors = metricDef.signed
@@ -5351,7 +5387,9 @@ const buildChart = async () => {
       },
     });
     ktChartInst.value = chart;
+    chartCanvasReady.value = true;
   } catch (e) {
+    chartCanvasReady.value = false;
     chartError.value = normalizeApiError(e, "生成图表失败");
   } finally {
     if (selectedJobId.value === jobId && resultTab.value === "chart") {
@@ -7894,7 +7932,33 @@ const JobDetail = {
             <div class="chart-panel chart-panel-wide">
               <div class="chart-panel-title">排序排行（点击下钻）</div>
               <div class="chart-bar-area">
-                <canvas ref="ktChart"></canvas>
+                <div v-if="chartBarRows.length && !chartCanvasReady" class="chart-fallback-bars">
+                  <div class="chart-fallback-heading">
+                    <strong>{{ activeChartTitle }}</strong>
+                    <span>{{ chartShareHeader(activeChartMetricDef) }}</span>
+                  </div>
+                  <button
+                    v-for="row in chartBarRows"
+                    :key="'chart-fallback-'+row.source+'-'+row.label"
+                    class="chart-fallback-row"
+                    type="button"
+                    @click="drillDownChart(row)"
+                  >
+                    <span class="chart-fallback-name" :title="row.label">{{ row.shortLabel }}</span>
+                    <span class="chart-fallback-track" :style="{ '--bar-width': chartFallbackBarWidth(row) }">
+                      <span
+                        :class="['chart-fallback-bar', chartFallbackBarTone(row)]"
+                        :style="{ width: 'var(--bar-width)' }"
+                      ></span>
+                      <span class="chart-fallback-value">{{ chartFallbackValueLabel(row) }}</span>
+                    </span>
+                    <span class="chart-fallback-share">{{ row.shareLabel }}</span>
+                  </button>
+                </div>
+                <canvas
+                  ref="ktChart"
+                  :class="{ 'chart-canvas-pending': chartBarRows.length && !chartCanvasReady }"
+                ></canvas>
               </div>
             </div>
           </div>
@@ -8266,7 +8330,10 @@ const JobDetail = {
       consoleSearchMatchCount, scrollConsoleSection,
       chartSource, chartMetric, chartTopN, chartTopNOptions, chartSourceOptions,
       chartMetricOptions, chartLoading, chartError, chartSummaryCards,
-      chartSlowdowns, chartSpeedups, buildChart, drillDownChart, fmtDeltaMs,
+      chartSlowdowns, chartSpeedups, chartBarRows, chartCanvasReady,
+      activeChartMetricDef, activeChartTitle, chartShareHeader,
+      chartFallbackBarWidth, chartFallbackBarTone, chartFallbackValueLabel,
+      buildChart, drillDownChart, fmtDeltaMs,
       displayedFields, filteredRows, tableSearch, sortCol, sortAsc, colWidths, colFilters,
       colFilterOps, visibleColumns, showColumnMenu, hiddenColumnCount,
       tableLimit, tableOffset, tableTotalRows, tablePageStart, tablePageEnd,
