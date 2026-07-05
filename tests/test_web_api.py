@@ -2010,7 +2010,24 @@ def test_admin_usage_stats_tracks_daily_activity(client):
     assert today["ai_runs"] == 1
     assert today["feedback_messages"] == 1
     assert payload["seven_days"]["active_users"] == 2
+    assert payload["range"]["days"] == 7
+    assert payload["range"]["active_users"] == 2
+    assert payload["range"]["requests"] == 3
+    assert payload["range"]["upload_jobs"] == 1
+    assert payload["range"]["compare_jobs"] == 2
+    assert payload["range"]["ai_runs"] == 1
+    assert payload["range"]["feedback_messages"] == 1
     assert [item["user_token"] for item in payload["top_users_today"]] == ["alice", "bob"]
+    alice_usage = payload["top_users_today"][0]
+    assert alice_usage["upload_jobs"] == 1
+    assert alice_usage["compare_jobs"] == 2
+    assert alice_usage["ai_runs"] == 1
+    assert alice_usage["feedback_messages"] == 0
+    bob_usage = payload["top_users_today"][1]
+    assert bob_usage["upload_jobs"] == 0
+    assert bob_usage["compare_jobs"] == 0
+    assert bob_usage["ai_runs"] == 0
+    assert bob_usage["feedback_messages"] == 1
 
 
 def test_admin_usage_requires_admin_when_ldap_enabled(isolated_server, monkeypatch):

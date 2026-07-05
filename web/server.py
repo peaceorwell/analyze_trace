@@ -5119,7 +5119,8 @@ async def admin_usage_stats(request: Request, days: int = 14):
         top_users_today = await (
             await db.execute(
                 """
-                SELECT user_token, display_name, request_count, last_seen_at, last_path
+                SELECT user_token, display_name, request_count, last_seen_at,
+                       last_path, last_method, last_status
                 FROM usage_daily
                 WHERE day=?
                 ORDER BY request_count DESC, last_seen_at DESC
@@ -5128,6 +5129,33 @@ async def admin_usage_stats(request: Request, days: int = 14):
                 (today,),
             )
         ).fetchall()
+        today_user_actions = await (
+            await db.execute(
+                f"""
+                SELECT user AS user_token,
+                       SUM(CASE WHEN action='job.create' THEN 1 ELSE 0 END) AS upload_jobs,
+                       SUM(CASE WHEN action IN ('job.compare_create','job.batch_compare_create') THEN 1 ELSE 0 END) AS compare_jobs,
+                       SUM(CASE WHEN action='job.ai_analysis_start' THEN 1 ELSE 0 END) AS ai_runs,
+                       SUM(CASE WHEN action='feedback.create' THEN 1 ELSE 0 END) AS feedback_messages
+                FROM audit_logs
+                WHERE {audit_day_expr}=?
+                  AND action IN ({','.join('?' for _ in business_actions)})
+                GROUP BY user
+                """,
+                (today, *business_actions),
+            )
+        ).fetchall()
+        range_usage = await (
+            await db.execute(
+                """
+                SELECT COUNT(DISTINCT user_token) AS active_users,
+                       COALESCE(SUM(request_count), 0) AS requests
+                FROM usage_daily
+                WHERE day >= ? AND day <= ?
+                """,
+                (start_day, today),
+            )
+        ).fetchone()
         seven_usage = await (
             await db.execute(
                 """
@@ -5181,6 +5209,27 @@ async def admin_usage_stats(request: Request, days: int = 14):
                 "ai_runs": int(row["ai_runs"] or 0),
                 "feedback_messages": int(row["feedback_messages"] or 0),
             })
+    today_user_actions_by_user = {
+        row["user_token"]: dict(row)
+        for row in today_user_actions
+    }
+    top_users_today_payload = []
+    for row in top_users_today:
+        item = dict(row)
+        actions = today_user_actions_by_user.get(item["user_token"], {})
+        for key in ("upload_jobs", "compare_jobs", "ai_runs", "feedback_messages"):
+            item[key] = int(actions.get(key, 0) or 0)
+        top_users_today_payload.append(item)
+    range_rows = list(by_day.values())
+    range_summary = {
+        "days": days,
+        "active_users": int(range_usage["active_users"] or 0) if range_usage else 0,
+        "requests": int(range_usage["requests"] or 0) if range_usage else 0,
+        "upload_jobs": sum(item["upload_jobs"] for item in range_rows),
+        "compare_jobs": sum(item["compare_jobs"] for item in range_rows),
+        "ai_runs": sum(item["ai_runs"] for item in range_rows),
+        "feedback_messages": sum(item["feedback_messages"] for item in range_rows),
+    }
     seven_rows = [item for item in by_day.values() if item["day"] >= seven_start_day]
     seven_summary = {
         "active_users": int(seven_usage["active_users"] or 0) if seven_usage else 0,
@@ -5200,7 +5249,8 @@ async def admin_usage_stats(request: Request, days: int = 14):
             "requests": int(total_usage["requests"] or 0) if total_usage else 0,
         },
         "daily": list(reversed(list(by_day.values()))),
-        "top_users_today": [dict(row) for row in top_users_today],
+        "range": range_summary,
+        "top_users_today": top_users_today_payload,
     }
 
 

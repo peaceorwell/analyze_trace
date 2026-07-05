@@ -555,9 +555,11 @@ const adminUsage = ref({
   today: {},
   seven_days: {},
   all_time: {},
+  range: {},
   daily: [],
   top_users_today: [],
 });
+const adminUsageTrendMetric = ref("requests");
 
 const loadDeletedProjects = async () => {
   const r = await fetch("/api/deleted-projects", { credentials: "include" });
@@ -991,9 +993,9 @@ const releaseNotes = Object.freeze([
   {
     version: "0.3.19",
     date: "2026-06-27",
-    title: "项目操作菜单",
+    title: "项目管理菜单",
     items: [
-      "侧边栏项目管理收敛到项目行右侧三点菜单，减少独立操作条占位。",
+      "侧边栏项目管理收敛到项目行右侧项目管理菜单，减少独立操作条占位。",
       "项目菜单支持只看、收藏、重命名、转共享、转个人和删除等常用操作。",
     ],
   },
@@ -1508,20 +1510,106 @@ const storageJobsWithTrace = computed(() =>
   storageSummary.value.jobs.filter(job => job.has_original_trace)
 );
 
+const adminUsageRange = computed(() => adminUsage.value.range || {});
+
 const adminUsageCards = computed(() => {
   const today = adminUsage.value.today || {};
-  const seven = adminUsage.value.seven_days || {};
+  const range = adminUsageRange.value;
+  const rangeDays = range.days || adminUsage.value.days || adminUsageDays.value;
+  const rangeLabel = `近 ${rangeDays} 天`;
   return [
-    { label: "今日日活", value: today.dau || 0, hint: today.day || "今天" },
-    { label: "今日请求", value: today.requests || 0, hint: `时区 ${adminUsage.value.timezone || "-"}` },
-    { label: "近 7 日活跃", value: seven.active_users || 0, hint: `${fmtCount(seven.requests || 0)} 次请求` },
+    { label: "范围活跃", value: range.active_users || 0, hint: `${rangeLabel} · 今日 ${fmtCount(today.dau || 0)}` },
+    { label: "范围请求", value: range.requests || 0, hint: `今日 ${fmtCount(today.requests || 0)} · ${adminUsage.value.timezone || "-"}` },
     {
-      label: "近 7 日任务",
-      value: (seven.upload_jobs || 0) + (seven.compare_jobs || 0),
-      hint: `AI ${fmtCount(seven.ai_runs || 0)} · 留言 ${fmtCount(seven.feedback_messages || 0)}`,
+      label: "范围任务",
+      value: (range.upload_jobs || 0) + (range.compare_jobs || 0),
+      hint: `上传 ${fmtCount(range.upload_jobs || 0)} · 对比 ${fmtCount(range.compare_jobs || 0)}`,
+    },
+    {
+      label: "AI / 留言",
+      value: (range.ai_runs || 0) + (range.feedback_messages || 0),
+      hint: `AI ${fmtCount(range.ai_runs || 0)} · 留言 ${fmtCount(range.feedback_messages || 0)}`,
     },
   ];
 });
+
+const adminUsageMetricOptions = [
+  { key: "dau", label: "日活" },
+  { key: "requests", label: "请求" },
+  { key: "tasks", label: "任务" },
+  { key: "ai_runs", label: "AI" },
+];
+
+const adminUsageTrendOption = computed(() =>
+  adminUsageMetricOptions.find(item => item.key === adminUsageTrendMetric.value)
+  || adminUsageMetricOptions[1]
+);
+
+const adminUsageTrendRows = computed(() => [...(adminUsage.value.daily || [])].reverse());
+
+const adminUsageTrendValue = row => {
+  if (adminUsageTrendMetric.value === "tasks") {
+    return Number(row?.upload_jobs || 0) + Number(row?.compare_jobs || 0);
+  }
+  return Number(row?.[adminUsageTrendMetric.value] || 0);
+};
+
+const fmtUsageDay = day => String(day || "").slice(5).replace("-", "/");
+
+const adminUsageTrendValues = computed(() =>
+  adminUsageTrendRows.value.map(row => adminUsageTrendValue(row))
+);
+
+const adminUsageTrendMaxValue = computed(() =>
+  Math.max(0, ...adminUsageTrendValues.value)
+);
+
+const adminUsageTrendPoints = computed(() => {
+  const rows = adminUsageTrendRows.value;
+  const values = adminUsageTrendValues.value;
+  if (!rows.length) return [];
+  const chartWidth = 100;
+  const chartHeight = 42;
+  const paddingY = 4;
+  const scaleMax = Math.max(1, adminUsageTrendMaxValue.value);
+  const usableHeight = chartHeight - paddingY * 2;
+  return rows.map((row, index) => {
+    const value = values[index] || 0;
+    const x = rows.length === 1 ? chartWidth / 2 : (index / (rows.length - 1)) * chartWidth;
+    const y = chartHeight - paddingY - (value / scaleMax) * usableHeight;
+    return {
+      x: Number(x.toFixed(2)),
+      y: Number(y.toFixed(2)),
+      value,
+      label: row.day || "",
+    };
+  });
+});
+
+const adminUsageTrendPolyline = computed(() =>
+  adminUsageTrendPoints.value.map(point => `${point.x},${point.y}`).join(" ")
+);
+
+const adminUsageTrendArea = computed(() => {
+  const points = adminUsageTrendPoints.value;
+  if (!points.length) return "";
+  const line = points.map(point => `L ${point.x} ${point.y}`).join(" ");
+  return `M ${points[0].x} 42 ${line} L ${points[points.length - 1].x} 42 Z`;
+});
+
+const adminUsageTrendFirstDay = computed(() =>
+  fmtUsageDay(adminUsageTrendRows.value[0]?.day)
+);
+
+const adminUsageTrendLastDay = computed(() =>
+  fmtUsageDay(adminUsageTrendRows.value[adminUsageTrendRows.value.length - 1]?.day)
+);
+
+const adminUsageUserLastPath = user => {
+  if (!user?.last_path) return "";
+  const status = user.last_status ? `${user.last_status}` : "";
+  return [user.last_method, status, user.last_path].filter(Boolean).join(" ");
+};
 
 const hasColFilters = computed(() =>
   Object.values(colFilters.value).some(v => v)
@@ -7717,9 +7805,9 @@ const JobDetail = {
           <span v-if="jobStepFilterLabel" class="job-step-badge">{{ jobStepFilterLabel }}</span>
         </div>
         <div class="result-actions action-menu-wrap" @click.stop>
-          <button class="action-icon-btn" type="button" title="更多任务操作"
-                  aria-label="更多任务操作"
-                  @click="toggleActionMenu('job')">...</button>
+          <button class="action-icon-btn action-text-btn" type="button" title="任务管理"
+                  aria-label="任务管理"
+                  @click="toggleActionMenu('job')">任务管理</button>
           <div v-if="openActionMenu==='job'" class="action-menu">
             <button type="button" @click="shareJob(); closeActionMenu()">复制分享链接</button>
             <button type="button" @click="downloadReport(); closeActionMenu()">导出报告</button>
@@ -7746,9 +7834,9 @@ const JobDetail = {
                     @click="openInPerfetto('a')">{{ perfettoButtonLabel('a') }}</button>
             <div v-if="allowFileDownload || selectedJob.is_owner !== false"
                  class="action-menu-wrap trace-action-menu" @click.stop>
-              <button class="action-icon-btn action-icon-btn-xs" type="button"
-                      title="更多文件操作" aria-label="更多文件操作"
-                      @click="toggleActionMenu('file-a')">...</button>
+              <button class="action-icon-btn action-icon-btn-xs action-text-btn" type="button"
+                      title="A 文件管理" aria-label="A 文件管理"
+                      @click="toggleActionMenu('file-a')">文件管理</button>
               <div v-if="openActionMenu==='file-a'" class="action-menu action-menu-sm">
                 <button v-if="allowFileDownload" type="button"
                         @click="downloadTraceFile('a'); closeActionMenu()">下载</button>
@@ -7768,9 +7856,9 @@ const JobDetail = {
                     @click="openInPerfetto('b')">{{ perfettoButtonLabel('b') }}</button>
             <div v-if="allowFileDownload || selectedJob.is_owner !== false"
                  class="action-menu-wrap trace-action-menu" @click.stop>
-              <button class="action-icon-btn action-icon-btn-xs" type="button"
-                      title="更多文件操作" aria-label="更多文件操作"
-                      @click="toggleActionMenu('file-b')">...</button>
+              <button class="action-icon-btn action-icon-btn-xs action-text-btn" type="button"
+                      title="B 文件管理" aria-label="B 文件管理"
+                      @click="toggleActionMenu('file-b')">文件管理</button>
               <div v-if="openActionMenu==='file-b'" class="action-menu action-menu-sm">
                 <button v-if="allowFileDownload" type="button"
                         @click="downloadTraceFile('b'); closeActionMenu()">下载</button>
@@ -8149,9 +8237,9 @@ const JobDetail = {
                 </div>
               </div>
               <div class="action-menu-wrap table-more-menu" @click.stop>
-                <button class="action-icon-btn" type="button" title="更多表格操作"
-                        aria-label="更多表格操作"
-                        @click="toggleActionMenu('table')">...</button>
+                <button class="action-icon-btn action-text-btn" type="button" title="表格管理"
+                        aria-label="表格管理"
+                        @click="toggleActionMenu('table')">表格管理</button>
                 <div v-if="openActionMenu==='table'" class="action-menu">
                   <button type="button" @click="downloadCsv(resultTab); closeActionMenu()">下载当前页 CSV</button>
                   <button v-if="isTritonStepTab && allowCodeExecution" type="button"
@@ -12145,7 +12233,11 @@ const App = {
       openStorageManager, toggleStorageSelection, toggleAllStorageSelection,
       deleteSelectedStorageFiles, fmtBytes,
       showAdminUsage, adminUsageLoading, adminUsageError, adminUsageDays,
-      adminUsage, adminUsageCards, openAdminUsage, loadAdminUsage,
+      adminUsage, adminUsageCards, adminUsageMetricOptions, adminUsageTrendMetric,
+      adminUsageTrendOption, adminUsageTrendPoints, adminUsageTrendPolyline,
+      adminUsageTrendArea, adminUsageTrendMaxValue, adminUsageTrendFirstDay,
+      adminUsageTrendLastDay, adminUsageUserLastPath,
+      openAdminUsage, loadAdminUsage,
       showTritonCode, tritonCodeContent, tritonCodeFilename,
       tritonCodeEditing, tritonCodeEditContent,
       runCustomTriton, editTritonCode, cancelEditTritonCode,

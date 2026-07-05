@@ -158,9 +158,9 @@
         <button class="btn btn-sm btn-primary" @click="showNewProject=true">+ 新建项目</button>
         <button class="btn btn-sm btn-outline" @click="$router.push('/feedback')">灵感社区</button>
         <div class="action-menu-wrap header-more-menu" @click.stop>
-          <button class="action-icon-btn" type="button" title="更多入口"
+          <button class="action-icon-btn action-text-btn" type="button" title="更多入口"
                   aria-label="更多入口"
-                  @click="toggleActionMenu('header')">...</button>
+                  @click="toggleActionMenu('header')">更多</button>
           <div v-if="openActionMenu==='header'" class="action-menu">
             <button v-if="isAdmin || !authRequired" type="button" @click="openAdminUsage(); closeActionMenu()">使用统计</button>
             <button type="button" @click="openStorageManager(); closeActionMenu()">存储</button>
@@ -294,10 +294,10 @@
                   <button
                     :class="['project-more-btn', openActionMenu === projectMenuKey(group.id) ? 'active' : '']"
                     type="button"
-                    title="项目操作"
-                    aria-label="项目操作"
+                    title="项目管理"
+                    aria-label="项目管理"
                     @click="toggleProjectMenu(group.id)"
-                  >...</button>
+                  >项目管理</button>
                   <div v-if="openActionMenu === projectMenuKey(group.id)" class="action-menu action-menu-sm project-action-menu">
                     <button type="button" @click="$router.push('/project/'+group.id+'/tree'); closeActionMenu()">实验树</button>
                     <button type="button" @click="openProjectCompareModal(group); closeActionMenu()">新建对比</button>
@@ -1200,10 +1200,42 @@
             </div>
           </div>
 
+          <section class="admin-usage-panel admin-usage-trend-panel">
+            <div class="admin-usage-panel-head admin-usage-trend-head">
+              <div class="admin-usage-trend-title">
+                <strong>逐日趋势</strong>
+                <span>{{ adminUsageTrendOption.label }} · 峰值 {{ fmtCount(adminUsageTrendMaxValue) }}</span>
+              </div>
+              <div class="admin-usage-segmented">
+                <button v-for="option in adminUsageMetricOptions"
+                        :key="option.key"
+                        type="button"
+                        :class="['admin-usage-segmented-btn', adminUsageTrendMetric===option.key ? 'active' : '']"
+                        @click="adminUsageTrendMetric=option.key">{{ option.label }}</button>
+              </div>
+            </div>
+            <div class="admin-usage-chart">
+              <svg v-if="adminUsageTrendPoints.length" viewBox="0 0 100 42" preserveAspectRatio="none" aria-hidden="true">
+                <path class="admin-usage-chart-area" :d="adminUsageTrendArea"></path>
+                <polyline class="admin-usage-chart-line" :points="adminUsageTrendPolyline"></polyline>
+                <circle v-for="point in adminUsageTrendPoints" :key="point.label"
+                        class="admin-usage-chart-point"
+                        :cx="point.x" :cy="point.y" r="1.35">
+                  <title>{{ point.label }} · {{ fmtCount(point.value) }}</title>
+                </circle>
+              </svg>
+              <div v-else class="empty-tip">暂无趋势数据</div>
+              <div class="admin-usage-chart-axis">
+                <span>{{ adminUsageTrendFirstDay }}</span>
+                <span>{{ adminUsageTrendLastDay }}</span>
+              </div>
+            </div>
+          </section>
+
           <div class="admin-usage-columns">
             <section class="admin-usage-panel admin-usage-daily-panel">
               <div class="admin-usage-panel-head">
-                <strong>逐日趋势</strong>
+                <strong>逐日明细</strong>
                 <span>数据从启用统计后开始累计</span>
               </div>
               <div class="admin-usage-table-wrap">
@@ -1248,6 +1280,15 @@
                   <div>
                     <strong>{{ user.display_name || user.user_token }}</strong>
                     <span>{{ user.user_token }}</span>
+                    <span v-if="adminUsageUserLastPath(user)" class="admin-usage-user-path" :title="adminUsageUserLastPath(user)">
+                      {{ adminUsageUserLastPath(user) }}
+                    </span>
+                    <div class="admin-usage-user-actions">
+                      <span>上传 {{ fmtCount(user.upload_jobs) }}</span>
+                      <span>对比 {{ fmtCount(user.compare_jobs) }}</span>
+                      <span>AI {{ fmtCount(user.ai_runs) }}</span>
+                      <span>留言 {{ fmtCount(user.feedback_messages) }}</span>
+                    </div>
                   </div>
                   <div class="admin-usage-user-meta">
                     <b>{{ fmtCount(user.request_count) }}</b>
@@ -1483,7 +1524,7 @@
             <ul>
               <li>首页提供 <strong>单个</strong>、<strong>两个</strong>、<strong>多个</strong> 三种上传模式；常用格式包括 <code>.json</code>、<code>.json.gz</code>、<code>.gz</code>、<code>.json.zip</code>、<code>.zip</code>、<code>.tar.gz</code>、<code>.tgz</code></li>
               <li>上传时选择项目和别名即可；如果只想看指定 step，先完成原始分析，再用任务右上角 <strong>指定 Step 重分析</strong> 生成新条目</li>
-              <li><strong>两个</strong> 模式会直接生成 A/B 对比任务；<strong>多个</strong> 模式会逐个分析每个 trace；已有历史任务可在项目右侧 <strong>...</strong> 中选择 <strong>新建对比</strong></li>
+              <li><strong>两个</strong> 模式会直接生成 A/B 对比任务；<strong>多个</strong> 模式会逐个分析每个 trace；已有历史任务可在项目右侧 <strong>项目管理</strong> 菜单中选择 <strong>新建对比</strong></li>
             </ul>
           </section>
           <section class="guide-section">

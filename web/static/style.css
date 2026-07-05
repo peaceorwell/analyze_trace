@@ -314,6 +314,7 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 .header-actions { display: flex; gap: 6px; align-items: center; position: relative; z-index: 2; }
 .header-actions .btn { letter-spacing: .04em; font-weight: 600; font-size: 12px; padding: 6px 12px; border-radius: 8px; white-space: nowrap; }
 .header-actions .action-icon-btn { border-radius: 8px; }
+.header-actions .action-text-btn { padding: 0 10px; }
 .header-user { letter-spacing: .04em; }
 .header-more-menu .action-menu { min-width: 142px; }
 
@@ -909,8 +910,9 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 .group-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project-more-menu { justify-self: end; }
 .project-more-btn {
-  width: 26px;
+  min-width: 58px;
   height: 26px;
+  padding: 0 7px;
   border-radius: 8px;
   border: 1px solid transparent;
   display: inline-flex;
@@ -918,11 +920,11 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   justify-content: center;
   background: transparent;
   color: var(--text3);
-  font-size: 16px;
-  font-weight: 900;
+  font-size: 10px;
+  font-weight: 800;
   line-height: 1;
   cursor: pointer;
-  letter-spacing: 1px;
+  letter-spacing: 0;
   transition: background-color .15s, border-color .15s, color .15s;
 }
 .project-tree-head:hover .project-more-btn,
@@ -3228,11 +3230,18 @@ select.input { appearance: none; cursor: pointer; }
   background: var(--surface); color: var(--text2);
   font-size: 14px; font-weight: 800; line-height: 1; cursor: pointer;
 }
+.action-text-btn {
+  width: auto; min-width: 30px; padding: 0 8px;
+  font-size: 11px; letter-spacing: 0; white-space: nowrap;
+}
 .action-icon-btn:hover {
   border-color: var(--purple-l); color: var(--purple-l); background: var(--purple-bg);
 }
 .action-icon-btn-xs {
   width: 24px; height: 24px; font-size: 12px; border-radius: 5px; background: var(--card);
+}
+.action-icon-btn-xs.action-text-btn {
+  width: auto; min-width: 58px; padding: 0 6px; font-size: 10px;
 }
 .action-menu {
   position: absolute; top: calc(100% + 6px); right: 0; z-index: 90;
@@ -6303,7 +6312,11 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
   color: var(--yellow); font-size: 10px; white-space: nowrap;
 }
 
-.admin-usage-modal { max-width: min(1120px, calc(100vw - 36px)); }
+.admin-usage-modal {
+  max-width: min(1120px, calc(100vw - 36px));
+  max-height: calc(100vh - 44px);
+  overflow: auto;
+}
 .admin-usage-title {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
 }
@@ -6329,6 +6342,49 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
 .admin-usage-card small {
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   color: var(--text3); font-size: 11px;
+}
+.admin-usage-trend-panel { margin-bottom: 10px; }
+.admin-usage-trend-head { align-items: flex-start; }
+.admin-usage-trend-title {
+  min-width: 0; display: flex; flex-direction: column; gap: 2px;
+}
+.admin-usage-segmented {
+  flex: 0 0 auto; display: inline-flex; align-items: center; padding: 3px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--card);
+}
+.admin-usage-segmented-btn {
+  min-height: 26px; padding: 3px 9px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--text3); cursor: pointer;
+  font-family: var(--sans); font-size: 11px; font-weight: 800;
+}
+.admin-usage-segmented-btn:hover {
+  color: var(--text); background: rgba(148,163,184,.12);
+}
+.admin-usage-segmented-btn.active {
+  color: var(--purple-l); background: var(--purple-bg);
+  box-shadow: inset 0 0 0 1px rgba(99,102,241,.24);
+}
+.admin-usage-chart {
+  padding: 11px 12px 8px;
+}
+.admin-usage-chart svg {
+  display: block; width: 100%; height: 118px;
+}
+.admin-usage-chart-area {
+  fill: rgba(99,102,241,.13);
+}
+.admin-usage-chart-line {
+  fill: none; stroke: var(--purple-l); stroke-width: 1.6;
+  vector-effect: non-scaling-stroke;
+}
+.admin-usage-chart-point {
+  fill: var(--purple-l); stroke: var(--bg); stroke-width: .8;
+  vector-effect: non-scaling-stroke;
+}
+.admin-usage-chart-axis {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin-top: 6px; color: var(--text3);
+  font-family: var(--mono); font-size: 10px;
 }
 .admin-usage-columns {
   display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(280px, .9fr);
@@ -6377,6 +6433,18 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
 }
 .admin-usage-user span {
   color: var(--text3); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.admin-usage-user-path {
+  max-width: 100%;
+  font-family: var(--mono);
+}
+.admin-usage-user-actions {
+  display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px;
+}
+.admin-usage-user-actions span {
+  flex: 0 0 auto; padding: 2px 5px; border-radius: 6px;
+  background: var(--bg); border: 1px solid var(--border);
+  color: var(--text3); font-size: 10px; font-weight: 700;
 }
 .admin-usage-user-meta {
   flex: 0 0 auto; display: flex; flex-direction: column; align-items: flex-end; gap: 2px;
