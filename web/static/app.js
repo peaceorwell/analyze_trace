@@ -1,4 +1,4 @@
-const { createApp, ref, computed, watch, nextTick, onBeforeUnmount } = Vue;
+const { createApp, ref, reactive, computed, watch, nextTick, onBeforeUnmount } = Vue;
 const { createRouter, createWebHashHistory } = VueRouter;
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -27,22 +27,65 @@ const readStoredNumber = (key, fallback) => {
   return Number.isFinite(raw) && raw > 0 ? raw : fallback;
 };
 
-// ── Theme ──────────────────────────────────────────────────────────────
-const getInitialTheme = () => {
-  const saved = localStorage.getItem('tpa-theme');
-  if (saved) return saved === 'dark';
-  return window.matchMedia('(prefers-color-scheme: dark)').matches;
+const SETTINGS_KEY = "tpa-settings";
+const AVATAR_COLORS = ["slate", "blue", "indigo", "violet", "rose", "amber", "emerald", "teal"];
+const DEFAULT_USER_PREFS = {
+  tableDensity: "default",
+  defaultLanding: "upload",
+  sidebarDefaultCollapsed: false,
 };
-const isDark = ref(getInitialTheme());
-const toggleTheme = () => {
-  isDark.value = !isDark.value;
-  const t = isDark.value ? 'dark' : 'light';
-  document.documentElement.setAttribute('data-theme', t);
-  localStorage.setItem('tpa-theme', t);
+const sanitizeUserPrefs = prefs => ({
+  tableDensity: prefs?.tableDensity === "compact" ? "compact" : "default",
+  defaultLanding: prefs?.defaultLanding === "history" ? "history" : "upload",
+  sidebarDefaultCollapsed: Boolean(prefs?.sidebarDefaultCollapsed),
+});
+const userPrefs = reactive({
+  ...DEFAULT_USER_PREFS,
+  ...sanitizeUserPrefs(readStoredJson(SETTINGS_KEY, DEFAULT_USER_PREFS)),
+});
+const applyUserPrefs = () => {
+  document.documentElement.setAttribute("data-density", userPrefs.tableDensity);
+};
+const saveUserPrefs = () => {
+  Object.assign(userPrefs, sanitizeUserPrefs(userPrefs));
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+    tableDensity: userPrefs.tableDensity,
+    defaultLanding: userPrefs.defaultLanding,
+    sidebarDefaultCollapsed: userPrefs.sidebarDefaultCollapsed,
+  }));
+  applyUserPrefs();
+};
+applyUserPrefs();
+
+// ── Theme ──────────────────────────────────────────────────────────────
+const THEME_STORAGE_KEY = "tpa-theme";
+const systemPrefersDark = () =>
+  window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
+const storedThemePreference = () => {
+  const saved = localStorage.getItem(THEME_STORAGE_KEY);
+  return ["light", "dark", "system"].includes(saved) ? saved : "system";
+};
+const resolveTheme = preference =>
+  preference === "system" ? (systemPrefersDark() ? "dark" : "light") : preference;
+const themePreference = ref(storedThemePreference());
+const isDark = ref(resolveTheme(themePreference.value) === "dark");
+const applyThemePreference = (preference = themePreference.value, persist = true) => {
+  themePreference.value = ["light", "dark", "system"].includes(preference) ? preference : "system";
+  const t = resolveTheme(themePreference.value);
+  isDark.value = t === "dark";
+  document.documentElement.setAttribute("data-theme", t);
+  if (persist) localStorage.setItem(THEME_STORAGE_KEY, themePreference.value);
   if (resultTab.value === 'chart' && selectedJob.value?.status === 'done') {
     scheduleBuildChart();
   }
 };
+const setThemePreference = preference => applyThemePreference(preference);
+const toggleTheme = () => {
+  setThemePreference(isDark.value ? "light" : "dark");
+};
+window.matchMedia?.("(prefers-color-scheme: dark)")?.addEventListener?.("change", () => {
+  if (themePreference.value === "system") applyThemePreference("system", false);
+});
 
 // ── Data ────────────────────────────────────────────────────────────────
 const projects      = ref([]);
@@ -132,7 +175,7 @@ const chartCanvasReady  = ref(false);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.4.33");
+const appVersion = ref("0.5.0");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -389,7 +432,7 @@ const sidebarWidth     = ref(readStoredNumber("tpa-sidebar-width", 240));
 const sidebarCollapsed = ref(
   isCompactSidebarViewport()
     ? true
-    : readStoredBool("tpa-sidebar-collapsed", false)
+    : readStoredBool("tpa-sidebar-collapsed", userPrefs.sidebarDefaultCollapsed)
 );
 let sidebarWasCompact = isCompactSidebarViewport();
 window.addEventListener("resize", () => {
@@ -625,8 +668,32 @@ const currentTritonCodePath = ref("");
 
 // ── Guide ───────────────────────────────────────────────────────────────
 const showGuide = ref(false);
+const showSettings = ref(false);
+const profileForm = reactive({
+  username: "",
+  email: "",
+  source: "",
+  display_name_ldap: "",
+  display_name: "",
+  display_name_effective: "",
+  avatar_color: null,
+  avatar_color_effective: "",
+  avatar_colors: [...AVATAR_COLORS],
+  loading: false,
+  saving: false,
+  error: "",
+});
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.0",
+    date: "2026-07-05",
+    title: "新增用户设置",
+    items: [
+      "更多菜单新增用户设置，可调整主题、表格密度、默认落地页和侧栏默认状态。",
+      "账号资料支持自定义昵称和头像色板，顶栏改为头像展示，灵感社区会保存发帖时头像色快照。",
+    ],
+  },
   {
     version: "0.4.33",
     date: "2026-07-03",
@@ -2170,6 +2237,122 @@ const fetchJson = async (url, options = {}, fallback = "请求失败") => {
   return payload;
 };
 
+const defaultAvatarColor = identity => {
+  const key = String(identity || "local");
+  let total = 0;
+  for (const ch of Array.from(key)) {
+    total += ch.codePointAt(0) || 0;
+  }
+  return AVATAR_COLORS[total % AVATAR_COLORS.length];
+};
+
+const avatarColorFor = (identity, color) =>
+  AVATAR_COLORS.includes(color) ? color : defaultAvatarColor(identity);
+
+const currentUserAvatarColor = computed(() =>
+  avatarColorFor(
+    currentUser.value?.display_name_ldap || currentUser.value?.display_name || currentUser.value?.username || "local",
+    currentUser.value?.avatar_color,
+  )
+);
+
+const profileAvatarColor = computed(() =>
+  avatarColorFor(
+    profileForm.display_name_ldap || profileForm.display_name_effective || profileForm.username || "local",
+    profileForm.avatar_color || profileForm.avatar_color_effective,
+  )
+);
+
+const profileSourceLabel = computed(() => profileForm.source === "ldap" ? "LDAP" : "本地模式");
+
+const applyProfileForm = profile => {
+  profileForm.username = profile.username || "";
+  profileForm.email = profile.email || "";
+  profileForm.source = profile.source || "";
+  profileForm.display_name_ldap = profile.display_name_ldap || "";
+  profileForm.display_name = profile.display_name_override || "";
+  profileForm.display_name_effective = profile.display_name_effective || profile.display_name_ldap || profile.username || "";
+  profileForm.avatar_color = profile.avatar_color || null;
+  profileForm.avatar_color_effective = profile.avatar_color_effective || avatarColorFor(profile.display_name_ldap || profile.username || "local", profile.avatar_color);
+  profileForm.avatar_colors = (profile.avatar_colors || AVATAR_COLORS).filter(color => AVATAR_COLORS.includes(color));
+  if (!profileForm.avatar_colors.length) profileForm.avatar_colors = [...AVATAR_COLORS];
+};
+
+const loadUserProfile = async () => {
+  profileForm.loading = true;
+  profileForm.error = "";
+  try {
+    const profile = await fetchJson("/api/user/profile", { credentials: "include" }, "加载用户设置失败");
+    applyProfileForm(profile);
+    if (profile.username) {
+      currentUser.value = {
+        ...(currentUser.value || {}),
+        username: profile.username,
+        display_name: profile.display_name_effective,
+        display_name_ldap: profile.display_name_ldap,
+        email: profile.email || "",
+        avatar_color: profile.avatar_color_effective,
+      };
+    }
+  } catch (e) {
+    profileForm.error = normalizeApiError(e, "加载用户设置失败");
+  } finally {
+    profileForm.loading = false;
+  }
+};
+
+const openSettings = async () => {
+  showSettings.value = true;
+  closeActionMenu();
+  await loadUserProfile();
+};
+
+const closeSettings = () => {
+  showSettings.value = false;
+  profileForm.error = "";
+};
+
+const saveProfile = async () => {
+  profileForm.saving = true;
+  profileForm.error = "";
+  try {
+    const profile = await fetchJson("/api/user/profile", {
+      method: "PUT",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        display_name: profileForm.display_name,
+        avatar_color: profileForm.avatar_color || null,
+      }),
+    }, "保存用户设置失败");
+    applyProfileForm(profile);
+    currentUser.value = {
+      ...(currentUser.value || {}),
+      username: profile.username,
+      display_name: profile.display_name_effective,
+      display_name_ldap: profile.display_name_ldap,
+      email: profile.email || "",
+      avatar_color: profile.avatar_color_effective,
+    };
+    closeSettings();
+    showToast("用户设置已保存", "success");
+  } catch (e) {
+    profileForm.error = normalizeApiError(e, "保存用户设置失败");
+  } finally {
+    profileForm.saving = false;
+  }
+};
+
+const saveUserPrefsFromSettings = () => {
+  saveUserPrefs();
+};
+
+const applySidebarDefaultFromSettings = () => {
+  sidebarCollapsed.value = Boolean(userPrefs.sidebarDefaultCollapsed);
+  localStorage.setItem("tpa-sidebar-collapsed", String(sidebarCollapsed.value));
+  saveUserPrefs();
+};
+
 const handleAuthExpired = () => {
   if (!authRequired.value) return;
   currentUser.value = null;
@@ -2193,7 +2376,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.4.33";
+  appVersion.value = cfg.version || "0.5.0";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -11897,6 +12080,13 @@ const resumeCurrentRouteAfterLogin = async () => {
   if (route.params?.id) {
     const result = await loadJobRoute(route);
     if (result && result !== true) await router.replace(result);
+    return;
+  }
+  if (route.path === "/") {
+    if (userPrefs.defaultLanding === "history") {
+      sidebarTab.value = "jobs";
+    }
+    await router.replace({ path: "/" }).catch(() => {});
   }
 };
 
@@ -12155,7 +12345,10 @@ const App = {
     // Return everything the root template (index.html) needs
     return {
       // Layout/theme
-      isDark, toggleTheme, sidebarWidth, sidebarCollapsed, appVersion, isFeedbackRoute, showHeaderMotto,
+      isDark, themePreference, setThemePreference, toggleTheme,
+      userPrefs, saveUserPrefsFromSettings, applySidebarDefaultFromSettings,
+      sidebarWidth, sidebarCollapsed, appVersion, isFeedbackRoute, showHeaderMotto,
+      currentUserAvatarColor, profileAvatarColor, profileSourceLabel, avatarColorFor,
       toggleSidebar, startSidebarResize,
       authRequired, authChecked, authInitError, currentUser, isAdmin, loginForm, loginRememberUsername, loginLoading, loginError,
       loginCaptchaRequired, loginCaptchaImage,
@@ -12246,7 +12439,8 @@ const App = {
       aiCodeViewerPath, aiCodeViewerFilename, aiCodeViewerContent,
       aiCodeViewerSize, aiCodeViewerTruncated,
       closeAiCodeViewer, copyAiCodeViewer, downloadAiCodeViewer,
-      showGuide, showReleaseNotes, releaseNotes, openReleaseNotes,
+      showGuide, showSettings, profileForm, openSettings, closeSettings, saveProfile,
+      showReleaseNotes, releaseNotes, openReleaseNotes,
       showErrorModal, errorModalMsg, errorModalTitle,
       copyTritonCode, copyErrorModal,
       showAiPromptModal, aiAnalysisPrompt, aiPromptForce,

@@ -51,6 +51,8 @@ async def init_db():
         await db.executescript("""
             CREATE TABLE IF NOT EXISTS users (
                 user_token  TEXT PRIMARY KEY,
+                display_name_override TEXT DEFAULT NULL,
+                avatar_color TEXT DEFAULT NULL,
                 created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -204,6 +206,7 @@ async def init_db():
                 parent_id    TEXT REFERENCES feedback_messages(id) ON DELETE CASCADE,
                 user_token   TEXT DEFAULT '',
                 user_display TEXT DEFAULT '',
+                avatar_color TEXT DEFAULT '',
                 body         TEXT DEFAULT '',
                 created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -237,6 +240,8 @@ async def init_db():
 
         # Column migrations for databases created by earlier versions.
         await add_column_if_missing(db, "users", "created_at", "DATETIME")
+        await add_column_if_missing(db, "users", "display_name_override", "TEXT DEFAULT NULL")
+        await add_column_if_missing(db, "users", "avatar_color", "TEXT DEFAULT NULL")
         await add_column_if_missing(db, "projects", "user_token", "TEXT")
         await add_column_if_missing(db, "projects", "password_hash", "TEXT DEFAULT NULL")
         await add_column_if_missing(db, "projects", "is_public", "INTEGER DEFAULT 0")
@@ -257,6 +262,7 @@ async def init_db():
         await add_column_if_missing(db, "folders", "password_hash", "TEXT DEFAULT NULL")
         await add_column_if_missing(db, "feedback_messages", "edited_at", "DATETIME DEFAULT NULL")
         await add_column_if_missing(db, "feedback_messages", "edit_count", "INTEGER DEFAULT 0")
+        await add_column_if_missing(db, "feedback_messages", "avatar_color", "TEXT DEFAULT ''")
         await add_column_if_missing(db, "experiment_edges", "variables", "TEXT DEFAULT '[]'")
         await add_column_if_missing(db, "experiment_edges", "label_x", "REAL")
         await add_column_if_missing(db, "experiment_edges", "label_y", "REAL")

@@ -59,7 +59,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.4.33"
+APP_VERSION = "0.5.0"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -84,6 +84,8 @@ FEEDBACK_REACTION_EMOJIS = {
     "👍", "👎", "😄", "🎉", "🚀", "❤️", "👀", "💡", "✅", "🙏",
     "🔥", "🤔", "😕", "👏", "🙌", "💯", "🧠", "🛠️", "📌", "❓",
 }
+AVATAR_COLORS = ("slate", "blue", "indigo", "violet", "rose", "amber", "emerald", "teal")
+DISPLAY_NAME_MAX = 20
 AI_ANALYSIS_DIRNAME = "ai_analysis"
 AI_ANALYSIS_STATUS_FILE = "ai_analysis_status.json"
 AI_ANALYSIS_REPORT_FILE = "ai_analysis.md"
@@ -516,6 +518,17 @@ def current_user_token(request: Request) -> Optional[str]:
     return username
 
 
+def _default_avatar_color(identity: str) -> str:
+    key = identity or "local"
+    total = sum(ord(c) for c in key)
+    return AVATAR_COLORS[total % len(AVATAR_COLORS)]
+
+
+def _profile_identity(request: Request) -> str:
+    user = current_user(request)
+    return user.get("username") or ("anonymous" if AUTH_ENABLED else "local")
+
+
 def is_admin_user(user_token: str) -> bool:
     return (user_token or "").strip().lower() in ADMIN_USERS
 
@@ -721,6 +734,63 @@ async def ensure_user_row(db, request: Request) -> Optional[str]:
     if token:
         await db.execute("INSERT OR IGNORE INTO users(user_token) VALUES(?)", (token,))
     return token
+
+
+async def _ensure_profile_user_row(db, identity: str) -> str:
+    token = identity or "local"
+    await db.execute("INSERT OR IGNORE INTO users(user_token) VALUES(?)", (token,))
+    return token
+
+
+async def _load_user_overrides(db, identity: str) -> dict:
+    row = await (
+        await db.execute(
+            "SELECT display_name_override, avatar_color FROM users WHERE user_token=?",
+            (identity,),
+        )
+    ).fetchone()
+    if not row:
+        return {"display_name_override": None, "avatar_color": None}
+    avatar_color = row["avatar_color"] if row["avatar_color"] in AVATAR_COLORS else None
+    return {"display_name_override": row["display_name_override"], "avatar_color": avatar_color}
+
+
+def _user_profile_payload(request: Request, identity: str, overrides: dict) -> dict:
+    user = current_user(request)
+    username = user.get("username") or identity
+    display_name_ldap = (
+        user.get("display_name_ldap")
+        or user.get("display_name")
+        or username
+    )
+    display_name_override = overrides.get("display_name_override")
+    avatar_color = overrides.get("avatar_color")
+    effective_display = display_name_override or display_name_ldap or username
+    effective_avatar = avatar_color or _default_avatar_color(display_name_ldap or username)
+    return {
+        "username": username,
+        "email": user.get("email") or "",
+        "source": "ldap" if AUTH_ENABLED else "local",
+        "display_name_ldap": display_name_ldap,
+        "display_name_override": display_name_override,
+        "display_name_effective": effective_display,
+        "avatar_color": avatar_color,
+        "avatar_color_effective": effective_avatar,
+        "avatar_colors": list(AVATAR_COLORS),
+    }
+
+
+def _sync_session_profile(request: Request, profile: dict) -> None:
+    user = dict(request.session.get("user") or {})
+    user.update({
+        "username": profile["username"],
+        "display_name": profile["display_name_effective"],
+        "display_name_ldap": profile["display_name_ldap"],
+        "email": profile.get("email") or "",
+        "avatar_color": profile["avatar_color_effective"],
+    })
+    request.session["user"] = user
+    request.state.user = user
 
 
 async def resolve_job_pk(db, handle: str) -> Optional[str]:
@@ -4918,6 +4988,67 @@ async def get_me(request: Request):
     }
 
 
+@app.get("/api/user/profile")
+async def get_user_profile(request: Request):
+    if AUTH_ENABLED:
+        current_user_token(request)
+    identity = _profile_identity(request)
+    db = await get_db()
+    try:
+        await _ensure_profile_user_row(db, identity)
+        overrides = await _load_user_overrides(db, identity)
+        await db.commit()
+    finally:
+        await db.close()
+    profile = _user_profile_payload(request, identity, overrides)
+    _sync_session_profile(request, profile)
+    return profile
+
+
+@app.put("/api/user/profile")
+async def update_user_profile(request: Request, body: dict):
+    if AUTH_ENABLED:
+        current_user_token(request)
+    identity = _profile_identity(request)
+    raw_display = body.get("display_name")
+    display_name = None if raw_display is None else str(raw_display).strip()
+    if display_name == "":
+        display_name = None
+    if display_name and len(display_name) > DISPLAY_NAME_MAX:
+        raise HTTPException(422, f"昵称不能超过 {DISPLAY_NAME_MAX} 个字符")
+
+    raw_color = body.get("avatar_color")
+    avatar_color = None if raw_color in (None, "") else str(raw_color).strip().lower()
+    if avatar_color is not None and avatar_color not in AVATAR_COLORS:
+        raise HTTPException(422, "不支持的头像颜色")
+
+    db = await get_db()
+    try:
+        await _ensure_profile_user_row(db, identity)
+        await db.execute(
+            "UPDATE users SET display_name_override=?, avatar_color=? WHERE user_token=?",
+            (display_name, avatar_color, identity),
+        )
+        overrides = await _load_user_overrides(db, identity)
+        profile = _user_profile_payload(request, identity, overrides)
+        _sync_session_profile(request, profile)
+        await write_audit(
+            db, request, "user.profile.update",
+            resource_type="user", resource_id=identity,
+            details={"display_name_override": display_name, "avatar_color": avatar_color},
+        )
+        await db.commit()
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception:
+        await db.rollback()
+        raise
+    finally:
+        await db.close()
+    return profile
+
+
 @app.get("/api/login-captcha")
 async def get_login_captcha(request: Request, username: str = ""):
     if not AUTH_ENABLED or not _captcha_required_for(request, username):
@@ -4966,15 +5097,19 @@ async def login(request: Request, body: dict):
         return _login_error_response(request, username, str(e), status_code=401, include_captcha=captcha_required)
     _clear_login_failure(failure_key)
     _clear_login_captcha(request)
-    request.session["user"] = {
-        "username": user["username"],
-        "display_name": user.get("display_name") or user["username"],
-        "email": user.get("email") or "",
-    }
-    request.state.user = request.session["user"]
     db = await get_db()
     try:
-        await ensure_user_row(db, request)
+        await _ensure_profile_user_row(db, user["username"])
+        overrides = await _load_user_overrides(db, user["username"])
+        ldap_name = user.get("display_name") or user["username"]
+        request.session["user"] = {
+            "username": user["username"],
+            "display_name": overrides["display_name_override"] or ldap_name,
+            "display_name_ldap": ldap_name,
+            "email": user.get("email") or "",
+            "avatar_color": overrides["avatar_color"] or _default_avatar_color(ldap_name),
+        }
+        request.state.user = request.session["user"]
         await write_audit(
             db, request, "auth.login",
             resource_type="user", resource_id=user["username"],
@@ -5256,11 +5391,12 @@ async def admin_usage_stats(request: Request, days: int = 14):
 
 # ── Routes: feedback board ───────────────────────────────────────────────────
 
-def _feedback_author(request: Request) -> tuple[str, str]:
+def _feedback_author(request: Request) -> tuple[str, str, str]:
     user = current_user(request)
     token = user.get("username") or request_user(request)
     display = user.get("display_name") or token
-    return token, display
+    color = user.get("avatar_color") or _default_avatar_color(user.get("display_name_ldap") or display or token)
+    return token, display, color
 
 
 def _detect_image_type(data: bytes, content_type: str = "") -> tuple[str, str]:
@@ -5459,6 +5595,7 @@ def _feedback_message_response(
         "parent_id": row.get("parent_id"),
         "user_token": row.get("user_token") or "",
         "user_display": row.get("user_display") or row.get("user_token") or "local",
+        "avatar_color": row.get("avatar_color") or "",
         "body": row.get("body") or "",
         "created_at": row.get("created_at") or "",
         "updated_at": row.get("updated_at") or "",
@@ -6210,7 +6347,7 @@ async def mention_candidates(request: Request, q: str = "", limit: int = 8):
 async def list_feedback(request: Request, limit: int = 30, offset: int = 0, sort: str = "updated"):
     if AUTH_ENABLED:
         current_user_token(request)
-    viewer_token, _ = _feedback_author(request)
+    viewer_token, _, _ = _feedback_author(request)
     limit = max(1, min(limit, 100))
     offset = max(0, offset)
     sort_key = (sort or "updated").strip().lower()
@@ -6305,7 +6442,7 @@ async def list_feedback(request: Request, limit: int = 30, offset: int = 0, sort
 async def get_feedback_post(request: Request, post_id: str):
     if AUTH_ENABLED:
         current_user_token(request)
-    viewer_token, _ = _feedback_author(request)
+    viewer_token, _, _ = _feedback_author(request)
     db = await get_db()
     try:
         found = await row_to_dict(
@@ -6412,13 +6549,13 @@ async def create_feedback(
                 )).fetchone()
             )
 
-        user_token, user_display = _feedback_author(request)
+        user_token, user_display, avatar_color = _feedback_author(request)
         await db.execute(
             """
-            INSERT INTO feedback_messages(id, parent_id, user_token, user_display, body)
-            VALUES(?,?,?,?,?)
+            INSERT INTO feedback_messages(id, parent_id, user_token, user_display, avatar_color, body)
+            VALUES(?,?,?,?,?,?)
             """,
-            (message_id, root_parent_id, user_token, user_display, text),
+            (message_id, root_parent_id, user_token, user_display, avatar_color, text),
         )
 
         image_urls_by_ref = await _store_feedback_images(db, message_id, image_files, saved_paths, image_refs)
@@ -6508,7 +6645,7 @@ async def create_feedback(
 async def update_feedback_message(request: Request, message_id: str):
     if AUTH_ENABLED:
         current_user_token(request)
-    user_token, _ = _feedback_author(request)
+    user_token, _, _ = _feedback_author(request)
     image_files: list = []
     image_refs: list[str] = []
     content_type = (request.headers.get("content-type") or "").lower()
@@ -6608,7 +6745,7 @@ async def update_feedback_message(request: Request, message_id: str):
 async def toggle_feedback_reaction(request: Request, message_id: str, payload: Optional[dict] = None):
     if AUTH_ENABLED:
         current_user_token(request)
-    user_token, _ = _feedback_author(request)
+    user_token, _, _ = _feedback_author(request)
     emoji = str((payload or {}).get("emoji") or "").strip()
     if emoji not in FEEDBACK_REACTION_EMOJIS:
         raise HTTPException(400, "不支持该表情")

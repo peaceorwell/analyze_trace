@@ -70,7 +70,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.4.33",
+        "version": "0.5.0",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -1683,6 +1683,41 @@ def test_email_diagnostics_reports_smtp_dns_failure(client, isolated_server, mon
     assert "SMTP 主机无法解析" in dns_checks[0]["detail"]
 
 
+def test_user_profile_local_mode_validation_and_feedback_avatar_snapshot(client):
+    too_long = client.put("/api/user/profile", json={"display_name": "x" * 21, "avatar_color": "blue"})
+    assert too_long.status_code == 422
+
+    invalid_color = client.put("/api/user/profile", json={"display_name": "Trace Fan", "avatar_color": "cyan"})
+    assert invalid_color.status_code == 422
+
+    saved = client.put("/api/user/profile", json={"display_name": "Trace Fan", "avatar_color": "rose"})
+    assert saved.status_code == 200
+    saved_payload = saved.json()
+    assert saved_payload["username"] == "local"
+    assert saved_payload["display_name_override"] == "Trace Fan"
+    assert saved_payload["display_name_effective"] == "Trace Fan"
+    assert saved_payload["avatar_color"] == "rose"
+    assert saved_payload["avatar_color_effective"] == "rose"
+
+    loaded = client.get("/api/user/profile")
+    assert loaded.status_code == 200
+    assert loaded.json()["display_name_override"] == "Trace Fan"
+    assert loaded.json()["avatar_color"] == "rose"
+
+    created = client.post("/api/feedback", data={"body": "头像色快照"})
+    assert created.status_code == 201
+    post = created.json()
+    assert post["user_display"] == "Trace Fan"
+    assert post["avatar_color"] == "rose"
+
+    changed = client.put("/api/user/profile", json={"display_name": "Trace Fan", "avatar_color": "blue"})
+    assert changed.status_code == 200
+
+    detail = client.get(f"/api/feedback/{post['id']}")
+    assert detail.status_code == 200
+    assert detail.json()["avatar_color"] == "rose"
+
+
 def test_mention_candidates_use_local_feedback_authors(client):
     async def insert_feedback_authors():
         db = await web_db.get_db()
@@ -2234,6 +2269,54 @@ def test_ldap_me_reports_admin_for_configured_identity(isolated_server, monkeypa
         assert me.status_code == 200
         assert me.json()["authenticated"] is True
         assert me.json()["is_admin"] is expected
+
+
+def test_ldap_profile_uses_ldap_name_for_default_avatar_and_merges_overrides(isolated_server, monkeypatch):
+    def fake_authenticate(username, password):
+        return {
+            "username": username,
+            "display_name": "Alice LDAP",
+            "email": f"{username}@example.com",
+            "dn": f"CN={username},DC=example,DC=com",
+        }
+
+    monkeypatch.setattr(web_server, "AUTH_MODE", "ldap")
+    monkeypatch.setattr(web_server, "AUTH_ENABLED", True)
+    monkeypatch.setattr(web_server.ldap_auth, "authenticate", fake_authenticate)
+
+    expected_default_color = web_server._default_avatar_color("Alice LDAP")
+
+    with TestClient(isolated_server.app) as test_client:
+        login = test_client.post("/api/login", json={"username": "alice", "password": "ok"})
+        assert login.status_code == 200
+        user = login.json()["user"]
+        assert user["display_name"] == "Alice LDAP"
+        assert user["display_name_ldap"] == "Alice LDAP"
+        assert user["avatar_color"] == expected_default_color
+
+        profile = test_client.get("/api/user/profile")
+        assert profile.status_code == 200
+        profile_payload = profile.json()
+        assert profile_payload["display_name_ldap"] == "Alice LDAP"
+        assert profile_payload["avatar_color"] is None
+        assert profile_payload["avatar_color_effective"] == expected_default_color
+
+        created = test_client.post("/api/feedback", data={"body": "默认头像色"})
+        assert created.status_code == 201
+        assert created.json()["avatar_color"] == expected_default_color
+
+        updated = test_client.put("/api/user/profile", json={"display_name": "Alicia", "avatar_color": "teal"})
+        assert updated.status_code == 200
+        assert updated.json()["display_name_effective"] == "Alicia"
+        assert updated.json()["avatar_color_effective"] == "teal"
+
+        assert test_client.post("/api/logout").status_code == 200
+        relogin = test_client.post("/api/login", json={"username": "alice", "password": "ok"})
+        assert relogin.status_code == 200
+        relogin_user = relogin.json()["user"]
+        assert relogin_user["display_name"] == "Alicia"
+        assert relogin_user["display_name_ldap"] == "Alice LDAP"
+        assert relogin_user["avatar_color"] == "teal"
 
 
 def test_ldap_login_requires_captcha_after_repeated_failures(isolated_server, monkeypatch):

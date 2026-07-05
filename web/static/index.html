@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>torch profiler analyzer</title>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.4.33" />
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.5.0" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.css" />
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
@@ -12,17 +12,25 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js"></script>
-  <link rel="stylesheet" href="/static/style.css?v=0.4.33" />
+  <link rel="stylesheet" href="/static/style.css?v=0.5.0" />
   <script>
     // Apply saved theme or system preference before page paint to avoid flash
     (function() {
       var saved = localStorage.getItem('tpa-theme');
+      if (saved !== 'light' && saved !== 'dark' && saved !== 'system') saved = '';
       if (saved) {
         var t = saved;
       } else {
         var t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
       }
+      if (t === 'system') t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
       document.documentElement.setAttribute('data-theme', t);
+      try {
+        var settings = JSON.parse(localStorage.getItem('tpa-settings') || '{}');
+        document.documentElement.setAttribute('data-density', settings.tableDensity === 'compact' ? 'compact' : 'default');
+      } catch (e) {
+        document.documentElement.setAttribute('data-density', 'default');
+      }
     })();
   </script>
 </head>
@@ -143,7 +151,7 @@
     <!-- ── Header ── -->
     <header v-if="authChecked && (!authRequired || currentUser)" class="header">
       <div class="header-brand" @click="$router.push('/')" style="cursor:pointer" title="返回上传页面">
-        <img class="header-logo" src="/static/favicon.svg?v=0.4.33" alt="" />
+        <img class="header-logo" src="/static/favicon.svg?v=0.5.0" alt="" />
         <span class="header-title">Torch Profiler Analyzer</span>
         <span class="header-version">v{{ appVersion }}</span>
       </div>
@@ -153,7 +161,11 @@
         <span class="motto-phrase">让<i class="motto-key motto-key-cool">细节</i>说话</span>
       </div>
       <div class="header-actions">
-        <span v-if="authRequired && currentUser" class="header-user">{{ currentUser.display_name || currentUser.username }}</span>
+        <span v-if="authRequired && currentUser"
+              class="header-user-wrap"
+              :title="currentUser.display_name || currentUser.username">
+          <span class="avatar header-avatar" :data-color="currentUserAvatarColor">{{ feedbackUserInitial(currentUser.display_name || currentUser.username) }}</span>
+        </span>
         <button class="btn btn-sm header-upload-btn" @click="$router.push('/')" title="进入上传 Trace 页面">上传 Trace</button>
         <button class="btn btn-sm btn-primary" @click="showNewProject=true">+ 新建项目</button>
         <button class="btn btn-sm btn-outline" @click="$router.push('/feedback')">灵感社区</button>
@@ -164,6 +176,7 @@
           <div v-if="openActionMenu==='header'" class="action-menu">
             <button v-if="isAdmin || !authRequired" type="button" @click="openAdminUsage(); closeActionMenu()">使用统计</button>
             <button type="button" @click="openStorageManager(); closeActionMenu()">存储</button>
+            <button type="button" @click="openSettings">用户设置</button>
             <button type="button" @click="showGuide=true; closeActionMenu()">使用指南</button>
             <button type="button" @click.stop="openReleaseNotes">版本更新</button>
             <button type="button" @click="showDeletedProjects=true; loadDeletedProjects(); closeActionMenu()">找回项目</button>
@@ -742,7 +755,7 @@
                   </div>
                   <div class="feedback-post-excerpt">{{ feedbackPostExcerpt(item) }}</div>
                   <div class="feedback-post-meta">
-                    <span class="feedback-avatar feedback-avatar-sm">{{ feedbackUserInitial(item.user_display) }}</span>
+                    <span class="feedback-avatar feedback-avatar-sm" :data-color="avatarColorFor(item.user_display || item.user_token, item.avatar_color)">{{ feedbackUserInitial(item.user_display) }}</span>
                     <span>{{ item.user_display }}</span>
                     <span>发布于 {{ fmtDate(item.created_at) }}</span>
                     <span>最近更新 {{ fmtDate(feedbackPostActivity(item)) }}</span>
@@ -762,7 +775,7 @@
         <section v-else class="feedback-thread-detail feedback-thread-detail-full">
           <div class="feedback-detail-head">
             <div class="feedback-detail-title">
-              <span class="feedback-avatar">{{ feedbackUserInitial(selectedFeedbackPost.user_display) }}</span>
+              <span class="feedback-avatar" :data-color="avatarColorFor(selectedFeedbackPost.user_display || selectedFeedbackPost.user_token, selectedFeedbackPost.avatar_color)">{{ feedbackUserInitial(selectedFeedbackPost.user_display) }}</span>
               <div>
                 <h3>{{ feedbackPostTitle(selectedFeedbackPost) }}</h3>
                 <div class="feedback-post-meta">
@@ -869,7 +882,7 @@
                 :id="'feedback-message-' + reply.id"
                 :class="['feedback-reply feedback-github-message', selectedFeedbackMessageId===reply.id ? 'feedback-message-target' : '']"
               >
-                <span class="feedback-avatar feedback-comment-avatar feedback-message-avatar">{{ feedbackUserInitial(reply.user_display) }}</span>
+                <span class="feedback-avatar feedback-comment-avatar feedback-message-avatar" :data-color="avatarColorFor(reply.user_display || reply.user_token, reply.avatar_color)">{{ feedbackUserInitial(reply.user_display) }}</span>
                 <article class="feedback-message-card">
                   <div class="feedback-message-card-head">
                     <div class="feedback-message-author-line">
@@ -959,7 +972,7 @@
               v-if="feedbackReplies[selectedFeedbackPost.id]"
               class="feedback-reply-form feedback-thread-reply-form feedback-github-comment"
             >
-              <span class="feedback-avatar feedback-comment-avatar">{{ feedbackUserInitial(currentUser?.display_name || currentUser?.username || '用户') }}</span>
+              <span class="feedback-avatar feedback-comment-avatar" :data-color="currentUserAvatarColor">{{ feedbackUserInitial(currentUser?.display_name || currentUser?.username || '用户') }}</span>
               <div class="feedback-github-editor">
                 <div v-if="!feedbackMarkdownEditorEnabled" class="feedback-editor-header">
                   <div class="feedback-editor-tabs">
@@ -1514,6 +1527,113 @@
       </div>
     </div>
 
+    <!-- ── 用户设置 modal ── -->
+    <div v-if="showSettings" class="modal-mask" @click.self="closeSettings">
+      <div class="modal settings-modal">
+        <div class="modal-title settings-title">
+          <span>用户设置</span>
+          <button class="action-icon-btn" type="button" title="关闭" aria-label="关闭" @click="closeSettings">×</button>
+        </div>
+        <div class="settings-content">
+          <section class="settings-section">
+            <h3>显示偏好</h3>
+            <div class="settings-field">
+              <span class="settings-label">主题</span>
+              <div class="settings-segment">
+                <label :class="['settings-choice', themePreference==='light' ? 'active' : '']">
+                  <input type="radio" value="light" v-model="themePreference" @change="setThemePreference(themePreference)" />
+                  浅色
+                </label>
+                <label :class="['settings-choice', themePreference==='dark' ? 'active' : '']">
+                  <input type="radio" value="dark" v-model="themePreference" @change="setThemePreference(themePreference)" />
+                  深色
+                </label>
+                <label :class="['settings-choice', themePreference==='system' ? 'active' : '']">
+                  <input type="radio" value="system" v-model="themePreference" @change="setThemePreference(themePreference)" />
+                  跟随系统
+                </label>
+              </div>
+            </div>
+            <div class="settings-field">
+              <span class="settings-label">表格密度</span>
+              <div class="settings-segment">
+                <label :class="['settings-choice', userPrefs.tableDensity==='default' ? 'active' : '']">
+                  <input type="radio" value="default" v-model="userPrefs.tableDensity" @change="saveUserPrefsFromSettings" />
+                  默认
+                </label>
+                <label :class="['settings-choice', userPrefs.tableDensity==='compact' ? 'active' : '']">
+                  <input type="radio" value="compact" v-model="userPrefs.tableDensity" @change="saveUserPrefsFromSettings" />
+                  紧凑
+                </label>
+              </div>
+            </div>
+            <div class="settings-field">
+              <span class="settings-label">默认落地页</span>
+              <select class="input" v-model="userPrefs.defaultLanding" @change="saveUserPrefsFromSettings">
+                <option value="upload">上传页</option>
+                <option value="history">历史任务</option>
+              </select>
+            </div>
+            <label class="settings-check">
+              <input type="checkbox" v-model="userPrefs.sidebarDefaultCollapsed" @change="applySidebarDefaultFromSettings" />
+              <span>侧栏默认收起</span>
+            </label>
+          </section>
+
+          <section class="settings-section">
+            <h3>账号资料</h3>
+            <div v-if="profileForm.loading" class="empty-tip">加载中...</div>
+            <template v-else>
+              <div v-if="profileForm.error" class="settings-error">{{ profileForm.error }}</div>
+              <div class="settings-profile-head">
+                <span class="avatar settings-avatar-preview" :data-color="profileAvatarColor">
+                  {{ feedbackUserInitial(profileForm.display_name || profileForm.display_name_effective || profileForm.username || '用户') }}
+                </span>
+                <div>
+                  <strong>{{ profileForm.display_name || profileForm.display_name_effective || profileForm.username || '用户' }}</strong>
+                  <span>{{ profileSourceLabel }}</span>
+                </div>
+              </div>
+              <label class="settings-field settings-field-stack">
+                <span class="settings-label">自定义昵称</span>
+                <input class="input"
+                       v-model="profileForm.display_name"
+                       :placeholder="profileForm.display_name_ldap || profileForm.username || 'LDAP 名称'"
+                       maxlength="20" />
+              </label>
+              <div class="settings-field settings-field-stack">
+                <span class="settings-label">头像颜色</span>
+                <div class="settings-swatch-row">
+                  <button type="button"
+                          :class="['settings-swatch settings-swatch-default', !profileForm.avatar_color ? 'active' : '']"
+                          title="默认颜色"
+                          @click="profileForm.avatar_color=null">默认</button>
+                  <button v-for="color in profileForm.avatar_colors"
+                          :key="color"
+                          type="button"
+                          :class="['settings-swatch avatar', profileForm.avatar_color===color ? 'active' : '']"
+                          :data-color="color"
+                          :title="color"
+                          @click="profileForm.avatar_color=color"></button>
+                </div>
+              </div>
+              <div class="settings-readonly-grid">
+                <span>用户名</span><strong>{{ profileForm.username || 'local' }}</strong>
+                <span>邮箱</span><strong>{{ profileForm.email || '未提供' }}</strong>
+                <span>来源</span><strong>{{ profileSourceLabel }}</strong>
+              </div>
+            </template>
+          </section>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-outline" @click="closeSettings" :disabled="profileForm.saving">关闭</button>
+          <button class="btn btn-primary" @click="saveProfile" :disabled="profileForm.loading || profileForm.saving">
+            {{ profileForm.saving ? '保存中...' : '保存资料' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- ── 使用指南 modal ── -->
     <div v-if="showGuide" class="modal-mask" @click.self="showGuide=false">
       <div class="modal modal-wide">
@@ -1613,6 +1733,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=0.4.33"></script>
+  <script src="/static/app.js?v=0.5.0"></script>
 </body>
 </html>
