@@ -31,12 +31,10 @@ const SETTINGS_KEY = "tpa-settings";
 const AVATAR_COLORS = ["slate", "blue", "indigo", "violet", "rose", "amber", "emerald", "teal"];
 const DEFAULT_USER_PREFS = {
   tableDensity: "default",
-  defaultLanding: "upload",
   sidebarDefaultCollapsed: false,
 };
 const sanitizeUserPrefs = prefs => ({
   tableDensity: prefs?.tableDensity === "compact" ? "compact" : "default",
-  defaultLanding: prefs?.defaultLanding === "history" ? "history" : "upload",
   sidebarDefaultCollapsed: Boolean(prefs?.sidebarDefaultCollapsed),
 });
 const userPrefs = reactive({
@@ -50,7 +48,6 @@ const saveUserPrefs = () => {
   Object.assign(userPrefs, sanitizeUserPrefs(userPrefs));
   localStorage.setItem(SETTINGS_KEY, JSON.stringify({
     tableDensity: userPrefs.tableDensity,
-    defaultLanding: userPrefs.defaultLanding,
     sidebarDefaultCollapsed: userPrefs.sidebarDefaultCollapsed,
   }));
   applyUserPrefs();
@@ -12083,9 +12080,6 @@ const resumeCurrentRouteAfterLogin = async () => {
     return;
   }
   if (route.path === "/") {
-    if (userPrefs.defaultLanding === "history") {
-      sidebarTab.value = "jobs";
-    }
     await router.replace({ path: "/" }).catch(() => {});
   }
 };

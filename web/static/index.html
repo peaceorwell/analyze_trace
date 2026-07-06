@@ -1567,13 +1567,6 @@
                 </label>
               </div>
             </div>
-            <div class="settings-field">
-              <span class="settings-label">默认落地页</span>
-              <select class="input" v-model="userPrefs.defaultLanding" @change="saveUserPrefsFromSettings">
-                <option value="upload">上传页</option>
-                <option value="history">历史任务</option>
-              </select>
-            </div>
             <label class="settings-check">
               <input type="checkbox" v-model="userPrefs.sidebarDefaultCollapsed" @change="applySidebarDefaultFromSettings" />
               <span>侧栏默认收起</span>
