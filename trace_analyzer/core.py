@@ -69,6 +69,7 @@ _STRIP_LEADING_RE  = re.compile(r'^(void\s+|at::native::|\w+::)+', re.IGNORECASE
 _STEP_NAME_PATTERNS = [
     re.compile(r"^ProfilerStep#\s*(\d+)$", re.IGNORECASE),
     re.compile(r"^ProfilerStep\s*#?\s*(\d+)$", re.IGNORECASE),
+    re.compile(r"^profile[_\s-]*step[_\s#:-]*(\d+)$", re.IGNORECASE),
     re.compile(r"^step[_\s#:-]*(\d+)$", re.IGNORECASE),
 ]
 
@@ -1622,7 +1623,7 @@ def parse_step_filter(value):
                     steps.append(step)
             continue
 
-        single_match = re.fullmatch(r"(?:ProfilerStep#?|step_?)?(\d+)", token, re.IGNORECASE)
+        single_match = re.fullmatch(r"(?:(?:ProfilerStep#?|profile_step_|step_?))?(\d+)", token, re.IGNORECASE)
         if single_match:
             step = int(single_match.group(1))
             if step not in steps:

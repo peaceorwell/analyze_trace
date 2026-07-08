@@ -221,6 +221,30 @@ class TestParseTrace:
         assert result["step_to_kernels"][1]["gemm_cuda_kernel"]["count"] == 1
         assert result["step_to_aten"][0]["aten::linear"]["count"] == 1
 
+    def test_profile_step_markers(self, tmp_path):
+        trace_path = tmp_path / "profile_step.json"
+        trace_path.write_text(json.dumps({
+            "traceEvents": [
+                {"name": "profile_step_0", "cat": "user_annotation", "ts": 1000, "dur": 1000},
+                {"name": "profile_step_0", "cat": "gpu_user_annotation", "ts": 1100, "dur": 1100},
+                {"name": "profile_step_1", "cat": "user_annotation", "ts": 3000, "dur": 1000},
+                {"name": "profile_step_1", "cat": "gpu_user_annotation", "ts": 3100, "dur": 1100},
+                {"name": "triton_poi_fused_add", "cat": "kernel", "ts": 1200, "dur": 100, "args": {}},
+                {"name": "gemm_cuda_kernel", "cat": "kernel", "ts": 3200, "dur": 200, "args": {}},
+                {"name": "aten::linear", "cat": "cpu_op", "ts": 3300, "dur": 50, "args": {}},
+            ],
+        }))
+
+        result = parse_trace(str(trace_path))
+
+        assert result["step_ranges"][0] == (1000, 2200)
+        assert result["step_ranges"][1] == (3000, 4200)
+        assert result["step_durations"][0] == 1.2
+        assert result["step_durations"][1] == 1.2
+        assert result["step_to_kernels"][0]["triton_poi_fused_add"]["count"] == 1
+        assert result["step_to_kernels"][1]["gemm_cuda_kernel"]["count"] == 1
+        assert result["step_to_aten"][1]["aten::linear"]["count"] == 1
+
     def test_run_step_fallback_without_profiler_markers(self, tmp_path):
         trace_path = tmp_path / "run_step_fallback.json"
         trace_path.write_text(json.dumps({
@@ -258,7 +282,7 @@ class TestParseTrace:
 
 class TestComputeAvgs:
     def test_parse_step_filter(self):
-        assert parse_step_filter("0, 2-4，ProfilerStep#6;step_8") == (0, 2, 3, 4, 6, 8)
+        assert parse_step_filter("0, 2-4，ProfilerStep#6;step_8;profile_step_9") == (0, 2, 3, 4, 6, 8, 9)
 
     def test_filter_parsed_steps_limits_averages(self, sample_trace_file):
         parsed = parse_trace(sample_trace_file)
