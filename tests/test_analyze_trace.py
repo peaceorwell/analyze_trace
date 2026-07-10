@@ -799,6 +799,51 @@ class TestEndToEnd:
         assert avgs is not None
         assert len(avgs["KERNEL_TYPES"]) > 0
 
+    def test_per_step_triton_csv_includes_launch_dims(self, tmp_path):
+        trace_path = tmp_path / "trace.json"
+        trace_path.write_text(json.dumps({
+            "traceEvents": [
+                {"name": "ProfilerStep#0", "cat": "user_annotation", "ts": 1000, "dur": 1000},
+                {
+                    "name": "triton_poi_fused_add",
+                    "cat": "kernel",
+                    "ts": 1100,
+                    "dur": 100,
+                    "args": {
+                        "extra": {"dimx": 4, "dimy": 2, "dimz": 1, "kernel_type": "BLOCK"},
+                        "triton output code": "def kernel():\n    return\n",
+                    },
+                },
+                {
+                    "name": "triton_per_fused_sum",
+                    "cat": "kernel",
+                    "ts": 1200,
+                    "dur": 50,
+                    "args": {"triton output code": "def kernel():\n    return\n"},
+                },
+            ],
+        }))
+        output_dir = tmp_path / "out"
+        args = type("Args", (), {
+            "output_dir": str(output_dir),
+            "save_triton_csv": True,
+            "save_triton_code": False,
+        })
+
+        parsed = parse_trace(str(trace_path), keep_triton_code=True)
+        write_single(compute_avgs(parsed), args)
+
+        with open(output_dir / "step_0_triton_kernels.csv") as f:
+            reader = csv.DictReader(f)
+            rows = list(reader)
+
+        assert reader.fieldnames == [
+            "kernel_name", "dur(ms)", "total io(GB)", "IO efficiency(GB/s)",
+            "tiling config", "launch_dims", "triton_code_file",
+        ]
+        assert rows[0]["launch_dims"] == "dimx=4,dimy=2,dimz=1"
+        assert rows[1]["launch_dims"] == ""
+
     def test_comparison_writes_kernel_type_cmp_without_delta_tab_csv(self, temp_output_dir):
         data_a = {
             "KERNEL_TYPES": ["gemm", "attention", "other"],

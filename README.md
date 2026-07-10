@@ -2,7 +2,7 @@
 
 Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/内网性能分析工具，并兼容 TensorFlow Chrome Trace。它可以解析 `.json`、`.json.gz`、`.gz`、`.json.zip`、`.zip`、`.tar.gz` 和 `.tgz` trace 文件，统计 GPU kernel、Triton kernel、ATen Ops、TensorFlow Ops，并提供单 trace 分析、双 trace 对比、历史管理、AI 分析和 Web 可视化界面。
 
-当前版本：`0.4.24`
+当前版本：`0.5.1`
 
 ## 主要功能
 
@@ -495,7 +495,7 @@ analyze-trace baseline.json.gz optimized.json.gz -o ./output
 | `non_triton_kernel_efficiency_avg.csv` | 非 Triton kernel 的 Compute/IO/OP efficiency 汇总，如 CNNL、GEMM、matmul 等；同名 kernel 会按 operator shape 拆分 |
 | `aten_ops_avg.csv` | ATen Ops 的平均耗时和调用次数 |
 | `kernel_types_avg.csv` | Kernel family 聚合结果 |
-| `step_N_triton_kernels.csv` | 开启 `-s` 后输出的逐 step Triton 明细 |
+| `step_N_triton_kernels.csv` | 开启 `-s` 后输出的逐 step Triton 明细，`launch_dims` 汇总 trace 中的 `dimx/dimy/dimz` |
 | `step_N_triton_codes/` | 开启 `-c` 后保存的 Triton 代码 |
 
 双文件对比会额外输出：

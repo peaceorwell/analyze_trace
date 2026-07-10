@@ -172,7 +172,7 @@ const chartCanvasReady  = ref(false);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.5.0");
+const appVersion = ref("0.5.1");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -682,6 +682,14 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.1",
+    date: "2026-07-10",
+    title: "补充 Triton 启动维度",
+    items: [
+      "逐 step Triton CSV 新增 launch_dims 列，汇总 kernel trace 中的 dimx、dimy 和 dimz。",
+    ],
+  },
   {
     version: "0.5.0",
     date: "2026-07-05",
@@ -2373,7 +2381,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.5.0";
+  appVersion.value = cfg.version || "0.5.1";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;

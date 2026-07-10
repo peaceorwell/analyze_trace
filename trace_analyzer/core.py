@@ -312,6 +312,18 @@ def _compact_detail_value(value):
     return str(value)
 
 
+def _triton_launch_dims(args):
+    """Combine args.extra dimx/dimy/dimz into one CSV-friendly value."""
+    extra = args.get("extra") if isinstance(args, dict) else None
+    if not isinstance(extra, dict):
+        return ""
+    return ",".join(
+        f"{name}={_compact_detail_value(extra[name])}"
+        for name in ("dimx", "dimy", "dimz")
+        if name in extra and extra[name] is not None
+    )
+
+
 def _first_arg_value(args, *keys):
     if not isinstance(args, dict):
         return None
@@ -886,6 +898,7 @@ def _parse_tensorflow_trace(trace_file, *, keep_triton_code=False, progress_call
         dur_ms = max(interval[1] - interval[0], 0.0) / 1000 if e.get("dur") is not None else 0.0
         if _is_tensorflow_device_kernel_event(e, name, cat, args):
             triton_output_code = args.get("triton output code")
+            is_triton_kernel = _is_triton_kernel_event(name, args)
             triton_code_hash = _stable_text_hash(triton_output_code) if triton_output_code else ""
             triton_code_signature_hash = (
                 _stable_triton_code_signature_hash(triton_output_code) if triton_output_code else ""
@@ -899,6 +912,7 @@ def _parse_tensorflow_trace(trace_file, *, keep_triton_code=False, progress_call
                 safe_float(args.get("kernel num(GB)")),
                 safe_float(args.get("IO efficiency(GB/s)")),
                 args.get("kernel kwargs"),
+                _triton_launch_dims(args) if is_triton_kernel else "",
                 triton_code_hash,
                 triton_code_signature_hash,
                 triton_output_code if keep_triton_code else None,
@@ -907,7 +921,7 @@ def _parse_tensorflow_trace(trace_file, *, keep_triton_code=False, progress_call
                 _op_efficiency_from_args(args),
                 e.get("tid"),
                 _compact_detail_value(args.get("tf_op")),
-                _is_triton_kernel_event(name, args),
+                is_triton_kernel,
             )
         if _is_tensorflow_op_event(e, name, cat, args):
             return ("tf_op", _tensorflow_op_name(name, args), ts, dur_ms)
@@ -926,6 +940,7 @@ def _parse_tensorflow_trace(trace_file, *, keep_triton_code=False, progress_call
                 total_io_gb,
                 io_efficiency,
                 tiling_config,
+                launch_dims,
                 triton_code_hash,
                 triton_code_signature_hash,
                 triton_output_code,
@@ -955,6 +970,7 @@ def _parse_tensorflow_trace(trace_file, *, keep_triton_code=False, progress_call
                     "total io(GB)": total_io_gb,
                     "IO efficiency(GB/s)": io_efficiency,
                     "tiling config": tiling_config,
+                    "launch_dims": launch_dims,
                     "triton_code_hash": triton_code_hash,
                     "triton_code_signature_hash": triton_code_signature_hash,
                     "triton_output_code": triton_output_code,
@@ -1158,7 +1174,8 @@ def _parse_pytorch_trace(trace_file, *, keep_triton_code=False, progress_callbac
 
     Returns:
         step_to_triton:       step -> [{kernel_name, dur(ms), total io(GB), IO efficiency(GB/s),
-                                        tiling config, triton hashes, optional triton_output_code}]
+                                        tiling config, launch_dims, triton hashes,
+                                        optional triton_output_code}]
         step_to_kernels:      step -> {kernel_name -> {"count": int, "dur_ms": float}}
         step_to_aten:         step -> {op_name -> {"count": int, "dur_ms": float}}
         step_durations:       step -> wall-clock duration in ms (from ProfilerStep#/step_N event)
@@ -1278,6 +1295,7 @@ def _parse_pytorch_trace(trace_file, *, keep_triton_code=False, progress_callbac
                 safe_float(args.get("kernel num(GB)")),
                 safe_float(args.get("IO efficiency(GB/s)")),
                 args.get("kernel kwargs"),
+                _triton_launch_dims(args) if is_triton_kernel else "",
                 triton_code_hash,
                 triton_code_signature_hash,
                 triton_output_code if keep_triton_code else None,
@@ -1306,6 +1324,7 @@ def _parse_pytorch_trace(trace_file, *, keep_triton_code=False, progress_callbac
                 total_io_gb,
                 io_efficiency,
                 tiling_config,
+                launch_dims,
                 triton_code_hash,
                 triton_code_signature_hash,
                 triton_output_code,
@@ -1337,6 +1356,7 @@ def _parse_pytorch_trace(trace_file, *, keep_triton_code=False, progress_callbac
                     "total io(GB)":        total_io_gb,
                     "IO efficiency(GB/s)": io_efficiency,
                     "tiling config":       tiling_config,
+                    "launch_dims":         launch_dims,
                     "triton_code_hash":    triton_code_hash,
                     "triton_code_signature_hash": triton_code_signature_hash,
                     "triton_output_code":  triton_output_code,
@@ -2411,7 +2431,10 @@ def write_single(data, args):
 
     # Per-step triton CSVs + source files
     if args.save_triton_csv or args.save_triton_code:
-        triton_fields = ["kernel_name", "dur(ms)", "total io(GB)", "IO efficiency(GB/s)", "tiling config", "triton_code_file"]
+        triton_fields = [
+            "kernel_name", "dur(ms)", "total io(GB)", "IO efficiency(GB/s)",
+            "tiling config", "launch_dims", "triton_code_file",
+        ]
         for step in data["all_steps"]:
             kernels = [k for k in data["step_to_triton"][step] if k.get("triton_output_code") is not None]
             if not kernels:
@@ -2432,6 +2455,7 @@ def write_single(data, args):
                             "total io(GB)":        fmt3(kernel["total io(GB)"]),
                             "IO efficiency(GB/s)": fmt3(kernel["IO efficiency(GB/s)"]),
                             "tiling config":       (kernel["tiling config"] or "").replace("\n", "\\n").replace("\r", ""),
+                            "launch_dims":         kernel.get("launch_dims", ""),
                             "triton_code_file":    "",
                         }
                         if args.save_triton_code:
