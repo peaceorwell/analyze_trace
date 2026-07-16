@@ -294,7 +294,7 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   display: flex; align-items: center; gap: 10px; position: relative; z-index: 2;
   padding: 3px 8px 3px 3px;
   border-radius: 12px;
-  background: transparent;
+  border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer;
 }
 .header-logo {
   width: 28px; height: 28px; flex-shrink: 0;
@@ -1098,6 +1098,10 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   border-left: 2px solid transparent;
 }
 .job-item:hover { background: var(--card2); border-left-color: var(--border2); }
+.job-item:focus-visible {
+  outline: 2px solid var(--purple); outline-offset: -2px;
+  background: var(--card2); border-left-color: var(--purple);
+}
 .job-item.selected {
   background: linear-gradient(90deg, rgba(99,102,241,.16), var(--card2) 78%);
   border-left-color: var(--purple);
@@ -3158,7 +3162,11 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   min-height: 48px; position: relative; cursor: pointer; transition: all .2s;
 }
 .upload-box-sm:hover { border-color: var(--purple); }
-.upload-inner { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; min-width: 0; padding: 8px; }
+.upload-inner {
+  width: 100%; border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; min-width: 0; padding: 8px;
+}
+.upload-inner:focus-visible { outline: 2px solid var(--purple); outline-offset: -2px; border-radius: 6px; }
 .upload-box-sm .upload-inner { padding: 6px; }
 .upload-icon { font-size: 18px; margin-bottom: 2px; }
 .upload-box-sm .upload-icon { font-size: 16px; margin-bottom: 0; }
@@ -4620,6 +4628,7 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
 .th-sort-icon { margin-left: 2px; flex-shrink: 0; color: var(--purple-l); }
 .th-sortable { cursor: pointer; user-select: none; }
 .th-sortable:hover { background: var(--purple-bg); color: var(--text2); }
+.th-sortable:focus-visible { outline: 2px solid var(--purple); outline-offset: -2px; z-index: 6; }
 
 .data-table td {
   padding: 5px 9px; border-bottom: 1px solid var(--border);
@@ -5124,6 +5133,10 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
 .compare-picker-job:hover {
   border-color: rgba(99,102,241,.30);
   background: rgba(99,102,241,.06);
+}
+.compare-picker-job:focus-visible {
+  outline: 2px solid var(--purple); outline-offset: -2px;
+  border-color: var(--purple);
 }
 .compare-picker-job.compare-selected,
 .compare-picker-job.compare-baseline {
@@ -7496,3 +7509,25 @@ textarea.code-editor:focus { border-color: var(--purple); box-shadow: 0 0 0 3px 
 [data-theme="dark"]  .hljs { background: transparent !important; }
 [data-theme="light"] .hljs { background: transparent !important; }
 [data-theme="light"] pre.code-viewer code { color: #334155; }
+
+/* Keyboard focus and reduced-motion preferences */
+button:focus-visible,
+a[href]:focus-visible,
+[role="button"]:focus-visible,
+[role="checkbox"]:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--purple);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html:focus-within { scroll-behavior: auto; }
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

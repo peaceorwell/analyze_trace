@@ -104,3 +104,17 @@ def test_home_page_prioritizes_active_recent_and_project_work():
     assert "homeRecentProjects" in home
     assert "继续你的性能分析" in home
     assert 'statuses: "done"' in APP_JS
+
+
+def test_primary_web_interactions_are_keyboard_and_screen_reader_accessible():
+    assert '<button class="header-brand"' in INDEX_HTML
+    assert ':tabindex="historyBulkMode ? -1 : 0"' in INDEX_HTML
+    assert '@keydown.space.prevent="handleHistoryJobClick(job)"' in INDEX_HTML
+    assert ':aria-pressed="String(batchCompareMode)"' in INDEX_HTML
+    assert 'role="checkbox"' in INDEX_HTML
+    assert "const handleGlobalFocusTrap = event =>" in APP_JS
+    assert '@keydown.space.prevent="setSort(f, $event)"' in APP_JS
+    assert ':aria-sort="sortCol===f' in APP_JS
+    assert 'aria-label="选择 A Trace 文件"' in APP_JS
+    assert "fmtDate, fmtDateTime, fmtCount, statusIcon, statusText, toggleGroup" in APP_JS
+    assert "@media (prefers-reduced-motion: reduce)" in STYLE_CSS

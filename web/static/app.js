@@ -179,7 +179,7 @@ const chartCanvasReady  = ref(false);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.5.11");
+const appVersion = ref("0.5.12");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -703,6 +703,16 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.12",
+    date: "2026-07-16",
+    title: "完善键盘与无障碍体验",
+    items: [
+      "上传、侧边栏任务、对比选择和表格排序均可使用键盘完成，并补齐屏幕阅读器所需的名称与状态。",
+      "弹窗增加 Tab 焦点约束和关闭后的焦点恢复，动态通知使用可感知的状态语义。",
+      "系统开启减少动态效果时，会自动关闭非必要动画和过渡。",
+    ],
+  },
   {
     version: "0.5.11",
     date: "2026-07-16",
@@ -2551,7 +2561,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.5.11";
+  appVersion.value = cfg.version || "0.5.12";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -4409,13 +4419,25 @@ const loadTaskCenter = async ({ silent = false } = {}) => {
   }
 };
 
+let taskCenterReturnFocus = null;
 const closeTaskCenter = () => {
+  const panel = document.getElementById("task-center-panel");
+  const shouldRestoreFocus = Boolean(panel?.contains(document.activeElement));
   showTaskCenter.value = false;
+  if (shouldRestoreFocus) {
+    nextTick(() => taskCenterReturnFocus?.focus?.({ preventScroll: true }));
+  }
 };
-const toggleTaskCenter = () => {
+const toggleTaskCenter = event => {
+  if (!showTaskCenter.value) taskCenterReturnFocus = document.activeElement;
   showTaskCenter.value = !showTaskCenter.value;
   closeActionMenu();
-  if (showTaskCenter.value) loadTaskCenter();
+  if (showTaskCenter.value) {
+    loadTaskCenter();
+    if (!event?.currentTarget?.classList?.contains("task-center-trigger")) {
+      nextTick(() => document.querySelector("#task-center-panel button:not([disabled])")?.focus?.({ preventScroll: true }));
+    }
+  }
 };
 const openTaskCenterJob = job => {
   closeTaskCenter();
@@ -8288,12 +8310,18 @@ const Home = {
         <div class="card-title">提交分析</div>
         <div class="upload-mode-toggle">
           <button :class="['mode-toggle-btn', quickUploadMode==='single'?'active':'']"
+                  type="button"
+                  :aria-pressed="String(quickUploadMode==='single')"
                   :disabled="submitting"
                   @click="setQuickUploadMode('single')">单个</button>
           <button :class="['mode-toggle-btn', quickUploadMode==='compare'?'active':'']"
+                  type="button"
+                  :aria-pressed="String(quickUploadMode==='compare')"
                   :disabled="submitting"
                   @click="setQuickUploadMode('compare')">两个</button>
           <button :class="['mode-toggle-btn', quickUploadMode==='multi'?'active':'']"
+                  type="button"
+                  :aria-pressed="String(quickUploadMode==='multi')"
                   :disabled="submitting"
                   @click="setQuickUploadMode('multi')">多个</button>
         </div>
@@ -8302,14 +8330,15 @@ const Home = {
       <div v-if="quickUploadMode==='single' || quickUploadMode==='multi'" class="submit-cols">
         <div class="upload-box upload-box-sm" @dragover.prevent @drop.prevent="onDrop">
           <input type="file" ref="fileInputA" accept=".json,.json.gz,.gz,.zip,.tar.gz,.tgz" :multiple="quickUploadMode==='multi'" @change="onFileChange" hidden />
-          <div @click="$refs.fileInputA.click()" class="upload-inner">
+          <button type="button" @click="$refs.fileInputA.click()" class="upload-inner"
+                  :aria-label="quickUploadMode==='multi' ? '选择多个 Trace 文件' : '选择单个 Trace 文件'">
             <div class="upload-icon">📂</div>
             <div class="upload-label">
               <span>{{ fileAName || (quickUploadMode==='multi' ? '选择多个文件' : '选择单个文件') }}</span>
               <small v-if="uploadQueue.length===1">{{ uploadQueue[0].meta }}</small>
               <small v-else-if="quickUploadMode==='multi' && uploadQueue.length">将逐个生成分析任务</small>
             </div>
-          </div>
+          </button>
           <button v-if="fileAName" class="upload-clear" @click.stop="clearFile">✕</button>
         </div>
         <div class="form-row">
@@ -8332,24 +8361,24 @@ const Home = {
         <div class="quick-upload-pair">
           <div class="upload-box upload-box-sm quick-upload-box" @dragover.prevent @drop.prevent="onQuickDrop('a', $event)">
             <input type="file" ref="quickFileInputA" accept=".json,.json.gz,.gz,.zip,.tar.gz,.tgz" @change="onQuickFileChange('a', $event)" hidden />
-            <div @click="$refs.quickFileInputA.click()" class="upload-inner">
+            <button type="button" @click="$refs.quickFileInputA.click()" class="upload-inner" aria-label="选择 A Trace 文件">
               <span class="trace-slot">A</span>
               <div class="upload-label">
                 <span>{{ quickFileAName || '选择 A trace' }}</span>
                 <small v-if="quickFileA">{{ uploadFileMeta(quickFileA) }}</small>
               </div>
-            </div>
+            </button>
             <button v-if="quickFileAName" class="upload-clear" @click.stop="clearQuickCompareFile('a')">✕</button>
           </div>
           <div class="upload-box upload-box-sm quick-upload-box" @dragover.prevent @drop.prevent="onQuickDrop('b', $event)">
             <input type="file" ref="quickFileInputB" accept=".json,.json.gz,.gz,.zip,.tar.gz,.tgz" @change="onQuickFileChange('b', $event)" hidden />
-            <div @click="$refs.quickFileInputB.click()" class="upload-inner">
+            <button type="button" @click="$refs.quickFileInputB.click()" class="upload-inner" aria-label="选择 B Trace 文件">
               <span class="trace-slot">B</span>
               <div class="upload-label">
                 <span>{{ quickFileBName || '选择 B trace' }}</span>
                 <small v-if="quickFileB">{{ uploadFileMeta(quickFileB) }}</small>
               </div>
-            </div>
+            </button>
             <button v-if="quickFileBName" class="upload-clear" @click.stop="clearQuickCompareFile('b')">✕</button>
           </div>
         </div>
@@ -8955,7 +8984,7 @@ const JobDetail = {
         <div v-if="resultTab!=='console' && resultTab!=='chart' && resultTab!=='ai'" class="table-wrap">
           <div class="table-toolbar">
             <div class="table-toolbar-main">
-              <input v-model="tableSearch" class="input input-sm table-search-input" placeholder="全局搜索..." />
+              <input v-model="tableSearch" class="input input-sm table-search-input" placeholder="全局搜索..." aria-label="搜索当前结果表格" />
               <span v-if="hasColFilters" class="filter-active-tip">
                 列筛选已启用
                 <button class="btn-clear-filter" @click="clearColFilters()">✕ 清除</button>
@@ -8970,7 +8999,9 @@ const JobDetail = {
                 @click="applyEfficiencyColumnPreset"
               >效率视图</button>
               <div class="column-menu-wrap" @click.stop>
-                <button class="btn btn-sm btn-outline" @click="showColumnMenu=!showColumnMenu">
+                <button class="btn btn-sm btn-outline" type="button"
+                        :aria-expanded="String(showColumnMenu)" aria-haspopup="menu"
+                        @click="showColumnMenu=!showColumnMenu">
                   列{{ hiddenColumnCount ? ' (' + hiddenColumnCount + ' 已隐藏)' : '' }}
                 </button>
                 <div v-if="showColumnMenu" class="column-menu">
@@ -9009,7 +9040,7 @@ const JobDetail = {
               <span class="spinner-small"></span> 加载表格...
             </div>
             <div class="csv-table-wrap">
-            <table class="data-table" :style="tableStyle">
+            <table class="data-table" :style="tableStyle" aria-label="性能分析结果表格">
               <colgroup>
                 <col v-for="f in displayedFields" :key="f"
                      :style="tableColumnStyle(f)" />
@@ -9018,12 +9049,18 @@ const JobDetail = {
                 <tr>
                   <th v-for="f in displayedFields" :key="f"
                       @click="setSort(f, $event)"
+                      @keydown.enter.prevent="setSort(f, $event)"
+                      @keydown.space.prevent="setSort(f, $event)"
                       :class="['th-sortable', tableHeaderClass(f)]"
+                      tabindex="0"
+                      :aria-sort="sortCol===f ? (sortAsc ? 'ascending' : 'descending') : 'none'"
+                      :aria-label="tableFieldLabel(f) + '，点击排序'"
                       :title="tableFieldTitle(f)"
                       :style="tableColumnStyle(f)">
                     <span class="th-label">{{ tableFieldLabel(f) }}</span>
                     <span v-if="sortCol===f" class="th-sort-icon">{{ sortAsc?'↑':'↓' }}</span>
                     <div class="col-resize-handle"
+                         aria-hidden="true"
                          @mousedown.stop.prevent="startResize(f, $event)"
                          @click.stop.prevent></div>
                   </th>
@@ -9035,6 +9072,7 @@ const JobDetail = {
                     <div class="col-filter-wrap">
                       <select v-model="colFilterOps[f]" class="col-filter-op"
                               :class="{ 'op-active': colFilterOps[f] && colFilterOps[f] !== '~' }"
+                              :aria-label="tableFieldLabel(f) + ' 筛选条件'"
                               @click.stop>
                         <option value="~">包含</option>
                         <option value="!~">不包含</option>
@@ -9050,6 +9088,7 @@ const JobDetail = {
                         class="col-filter-input"
                         :class="{ active: colFilters[f] }"
                         :type="(!colFilterOps[f] || ['~', '!~', '=='].includes(colFilterOps[f])) ? 'text' : 'number'"
+                        :aria-label="'筛选 ' + tableFieldLabel(f)"
                         placeholder="筛选..."
                         @click.stop />
                     </div>
@@ -12556,6 +12595,42 @@ const ExperimentTree = {
 // Router definition
 // ══════════════════════════════════════════════════════════════════════════════
 
+const topVisibleModalMask = () => {
+  const masks = [...document.querySelectorAll(".modal-mask")]
+    .filter(mask => window.getComputedStyle(mask).display !== "none");
+  return masks.reduce((top, mask) => {
+    if (!top) return mask;
+    const topZ = Number.parseInt(window.getComputedStyle(top).zIndex, 10) || 0;
+    const maskZ = Number.parseInt(window.getComputedStyle(mask).zIndex, 10) || 0;
+    return maskZ >= topZ ? mask : top;
+  }, null);
+};
+
+const handleGlobalFocusTrap = event => {
+  if (event.key !== "Tab") return;
+  const topMask = topVisibleModalMask();
+  if (!topMask) return;
+  const focusable = [...topMask.querySelectorAll(
+    "button:not([disabled]), input:not([disabled]):not([type='hidden']), textarea:not([disabled]), select:not([disabled]), a[href], [tabindex]:not([tabindex='-1'])"
+  )].filter(element => element.getClientRects().length && element.getAttribute("aria-hidden") !== "true");
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const active = document.activeElement;
+  if (!topMask.contains(active)) {
+    event.preventDefault();
+    first.focus();
+    return;
+  }
+  if (event.shiftKey && active === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && active === last) {
+    event.preventDefault();
+    first.focus();
+  }
+};
+
 const handleGlobalEscape = event => {
   if (event.key !== "Escape") return;
   let handled = true;
@@ -12592,6 +12667,7 @@ const handleGlobalEscape = event => {
   }
 };
 window.addEventListener("keydown", handleGlobalEscape);
+window.addEventListener("keydown", handleGlobalFocusTrap);
 
 const router = createRouter({
   history: createWebHashHistory(),
@@ -12855,13 +12931,7 @@ const App = {
           modalReturnFocus = null;
           return;
         }
-        const masks = [...document.querySelectorAll(".modal-mask")];
-        const topMask = masks.reduce((top, mask) => {
-          if (!top) return mask;
-          const topZ = Number.parseInt(window.getComputedStyle(top).zIndex, 10) || 0;
-          const maskZ = Number.parseInt(window.getComputedStyle(mask).zIndex, 10) || 0;
-          return maskZ >= topZ ? mask : top;
-        }, null);
+        const topMask = topVisibleModalMask();
         const focusTarget = topMask?.querySelector(
           "[data-modal-autofocus], input:not([disabled]), textarea:not([disabled]), select:not([disabled]), button:not([disabled])"
         );
@@ -13125,7 +13195,7 @@ const App = {
       openActionMenu, toggleActionMenu, closeActionMenu,
 
       // Misc
-      fmtDate, fmtDateTime, fmtCount, statusIcon, toggleGroup,
+      fmtDate, fmtDateTime, fmtCount, statusIcon, statusText, toggleGroup,
       startProjectDrag, dragProjectOver, dropProject, endProjectDrag,
       createProject,
     };
