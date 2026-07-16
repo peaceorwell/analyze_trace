@@ -172,7 +172,7 @@ const chartCanvasReady  = ref(false);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.5.4");
+const appVersion = ref("0.5.6");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -409,10 +409,6 @@ const exitReadingMode = () => {
   nextTick(refreshReadingLayout);
 };
 
-window.addEventListener("keydown", event => {
-  if (event.key === "Escape" && isReadingMode.value) exitReadingMode();
-});
-
 // ── Triton ──────────────────────────────────────────────────────────────
 const tritonStatus = ref({});
 
@@ -457,6 +453,7 @@ const confirmModal = ref({
 });
 let confirmResolver = null;
 const askConfirm = (message, options = {}) => new Promise(resolve => {
+  if (confirmResolver) confirmResolver(false);
   confirmModal.value = {
     title: options.title || "确认操作",
     message,
@@ -699,6 +696,25 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.6",
+    date: "2026-07-16",
+    title: "优化页面刷新体验",
+    items: [
+      "快速刷新时不再闪现整屏品牌初始化页，只有加载较慢时才显示轻量提示。",
+      "增加 Vue 首屏挂载保护，避免原始模板在脚本初始化前短暂露出。",
+    ],
+  },
+  {
+    version: "0.5.5",
+    date: "2026-07-16",
+    title: "修复 Web 交互稳定性",
+    items: [
+      "分享任务前会明确提示整个项目的公开范围，删除操作不再因页面切换误作用到其他任务。",
+      "社区发帖草稿关闭前会确认，叠加弹窗中的确认框也能正常显示。",
+      "项目管理与弹窗补齐键盘访问、Esc 关闭、回车提交和焦点恢复。",
+    ],
+  },
   {
     version: "0.5.4",
     date: "2026-07-16",
@@ -2417,7 +2433,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.5.4";
+  appVersion.value = cfg.version || "0.5.6";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -3673,15 +3689,30 @@ const openFeedbackComposer = () => {
   refreshFeedbackMarkdownEditors();
 };
 
-const closeFeedbackComposer = () => {
+const feedbackComposerHasDraft = () => Boolean(
+  String(feedbackForm.value.body || "").trim()
+  || (feedbackForm.value.files || []).length
+);
+
+const closeFeedbackComposer = async ({ force = false } = {}) => {
+  if (feedbackSubmitting.value) return false;
+  if (!force && feedbackComposerHasDraft()) {
+    const discard = await askConfirm("当前帖子还没有发布，关闭后草稿将被清空。确定放弃草稿？", {
+      title: "放弃发帖草稿",
+      confirmText: "放弃草稿",
+      tone: "danger",
+    });
+    if (!discard) return false;
+  }
   destroyFeedbackMarkdownEditor("post");
   clearFeedbackForm();
   closeFeedbackMention();
   showFeedbackComposer.value = false;
+  return true;
 };
 
-const closeFeedbackBoard = () => {
-  closeFeedbackComposer();
+const closeFeedbackBoard = async () => {
+  if (!await closeFeedbackComposer()) return;
   cancelFeedbackEdit();
   closeFeedbackMention();
   selectedFeedbackPostId.value = "";
@@ -5949,17 +5980,19 @@ const submitQuickCompare = () => new Promise(resolve => {
 // ══════════════════════════════════════════════════════════════════════════════
 
 const deleteJob = async () => {
-  if (!selectedJobId.value) {
+  const jobId = selectedJobId.value;
+  const jobLabel = selectedJob.value?.label || selectedJob.value?.file_a_name || jobId;
+  if (!jobId) {
     showToast("未选中任务，无法删除", "error");
     return;
   }
-  if (!await askConfirm("确定删除该任务及所有关联文件？", {
+  if (!await askConfirm(`确定删除任务「${jobLabel}」及所有关联文件？`, {
     title: "删除任务",
     confirmText: "删除",
     tone: "danger",
   })) return;
   try {
-    const response = await fetch(`/api/jobs/${selectedJobId.value}`, {
+    const response = await fetch(`/api/jobs/${jobId}`, {
       method: "DELETE", credentials: "include",
     });
     if (!response.ok) {
@@ -5967,7 +6000,7 @@ const deleteJob = async () => {
       showToast("删除失败: " + (errorData.detail || errorData.message || "未知错误"), "error");
       return;
     }
-    router.push({ path: "/" });
+    if (selectedJobId.value === jobId) router.push({ path: "/" });
     await refreshSidebarData();
     showToast("任务已删除", "success");
   } catch (error) {
@@ -5976,9 +6009,15 @@ const deleteJob = async () => {
 };
 
 const deleteFile = async slot => {
+  const jobId = selectedJobId.value;
+  const jobLabel = selectedJob.value?.label || selectedJob.value?.file_a_name || jobId;
+  if (!jobId) {
+    showToast("未选中任务，无法删除文件", "error");
+    return;
+  }
   let impact = { count: 0, dependent_compare_jobs: [] };
   try {
-    const impactResp = await fetch(`/api/jobs/${selectedJobId.value}/files/${slot}/delete-impact`, {
+    const impactResp = await fetch(`/api/jobs/${jobId}/files/${slot}/delete-impact`, {
       credentials: "include",
     });
     if (impactResp.ok) impact = await impactResp.json();
@@ -5990,12 +6029,12 @@ const deleteFile = async slot => {
   const impactMessage = impact.count
     ? ` 当前有 ${impact.count} 个历史对比依赖它${examples ? `，例如：${examples}` : ""}。`
     : "";
-  if (!await askConfirm(`确定删除原始 trace 文件？删除后该文件无法参与历史对比。${impactMessage}`, {
+  if (!await askConfirm(`确定删除任务「${jobLabel}」的 ${slot.toUpperCase()} 原始 trace 文件？删除后该文件无法参与历史对比。${impactMessage}`, {
     title: "删除文件",
     confirmText: "删除",
     tone: "danger",
   })) return;
-  const r = await fetch(`/api/jobs/${selectedJobId.value}/files/${slot}?force=true`, {
+  const r = await fetch(`/api/jobs/${jobId}/files/${slot}?force=true`, {
     method: "DELETE", credentials: "include",
   });
   if (!r.ok) {
@@ -6003,7 +6042,7 @@ const deleteFile = async slot => {
     showToast("删除文件失败: " + (err.detail || err.message || "未知错误"), "error");
     return;
   }
-  await loadJob(selectedJobId.value);
+  if (selectedJobId.value === jobId) await loadJob(jobId);
   await refreshSidebarData();
   showToast("文件已删除", "success");
 };
@@ -6102,6 +6141,7 @@ const resetProjectBulkSelection = () => {
 };
 
 const closeProjectBulkModal = () => {
+  if (projectBulkActionLoading.value) return;
   showProjectBulkModal.value = false;
   projectBulkSearch.value = "";
   projectBulkJobs.value = [];
@@ -6761,8 +6801,25 @@ const downloadReport = () => {
 };
 
 const shareJob = async () => {
-  if (!selectedJobId.value) return;
-  const r = await fetch(`/api/jobs/${selectedJobId.value}/share`, {
+  const jobId = selectedJobId.value;
+  if (!jobId) return;
+  if (authRequired.value) {
+    const projectId = selectedJob.value?.project_id || "";
+    const project = projects.value.find(item => item.id === projectId);
+    if (!projectId) {
+      if (!await askConfirm("当前任务未分组。复制分享链接会自动创建共享项目并将该任务移入，其他用户将可访问该任务。是否继续？", {
+        title: "确认共享任务",
+        confirmText: "创建共享项目并复制",
+      })) return;
+    } else if (!project?.is_public) {
+      const projectName = project?.name || selectedJob.value?.project_name || "当前项目";
+      if (!await askConfirm(`复制分享链接会将私有项目「${projectName}」转为共享项目，项目内所有任务都将对其他用户可见。是否继续？`, {
+        title: "确认公开整个项目",
+        confirmText: "转为共享并复制",
+      })) return;
+    }
+  }
+  const r = await fetch(`/api/jobs/${jobId}/share`, {
     method: "POST",
     credentials: "include",
   });
@@ -6777,7 +6834,7 @@ const shareJob = async () => {
   if (data.changed) {
     await loadProjects();
     await refreshSidebarData();
-    await loadJob(selectedJobId.value);
+    if (selectedJobId.value === jobId) await loadJob(jobId);
   }
   showToast(data.changed ? "已转为共享并复制链接" : "已复制分享链接", "success");
 };
@@ -7456,6 +7513,7 @@ const openProjectCompareModal = projectOrGroup => {
 };
 
 const closeCompareModal = () => {
+  if (compareSubmitLoading.value || batchCompareLoading.value) return;
   showCompareModal.value = false;
 };
 
@@ -9378,8 +9436,8 @@ const ExperimentTree = {
         </aside>
       </div>
 
-      <div v-if="showAddEdge" class="modal-mask modal-mask-front" @click.self="closeAddEdge">
-        <div class="modal exp-edge-modal">
+      <div v-if="showAddEdge" class="modal-mask modal-mask-front" @click.self="closeAddEdge" @keydown.esc.prevent.stop="closeAddEdge">
+        <div class="modal exp-edge-modal" role="dialog" aria-modal="true" aria-label="标记优化关系">
           <div class="modal-title">
             <span>标记优化关系</span>
             <button class="btn btn-sm btn-outline" type="button" @click="closeAddEdge">关闭</button>
@@ -11201,8 +11259,10 @@ const ExperimentTree = {
       };
       showAddEdge.value = true;
       loadCandidates();
+      nextTick(() => document.querySelector(".exp-edge-modal select")?.focus());
     };
     const closeAddEdge = () => {
+      if (saving.value) return;
       showAddEdge.value = false;
     };
     const submitAddEdge = async () => {
@@ -12079,6 +12139,42 @@ const ExperimentTree = {
 // Router definition
 // ══════════════════════════════════════════════════════════════════════════════
 
+const handleGlobalEscape = event => {
+  if (event.key !== "Escape") return;
+  let handled = true;
+  if (showConfirmModal.value) resolveConfirm(false);
+  else if (showAiCodeViewer.value) closeAiCodeViewer();
+  else if (showErrorModal.value) showErrorModal.value = false;
+  else if (showAiPromptModal.value) closeAiPromptModal();
+  else if (showStepReanalysisModal.value) closeStepReanalysisModal();
+  else if (showBulkMoveProject.value) showBulkMoveProject.value = false;
+  else if (showProjectBulkModal.value) closeProjectBulkModal();
+  else if (showCompareModal.value) closeCompareModal();
+  else if (showFeedbackComposer.value) closeFeedbackComposer();
+  else if (showRenameProject.value) {
+    if (!renameProjectLoading.value) showRenameProject.value = false;
+  }
+  else if (showNewProject.value) {
+    if (!newProjectLoading.value) showNewProject.value = false;
+  }
+  else if (showRenameJob.value) showRenameJob.value = false;
+  else if (showMoveProject.value) showMoveProject.value = false;
+  else if (showDeletedProjects.value) showDeletedProjects.value = false;
+  else if (showSettings.value) closeSettings();
+  else if (showStorageManager.value) showStorageManager.value = false;
+  else if (showAdminUsage.value) showAdminUsage.value = false;
+  else if (showTritonCode.value) showTritonCode.value = false;
+  else if (showGuide.value) showGuide.value = false;
+  else if (showReleaseNotes.value) showReleaseNotes.value = false;
+  else if (isReadingMode.value) exitReadingMode();
+  else handled = false;
+  if (handled) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+};
+window.addEventListener("keydown", handleGlobalEscape);
+
 const router = createRouter({
   history: createWebHashHistory(),
   routes: [
@@ -12216,6 +12312,9 @@ router.beforeEach(async (to, from) => {
 
   if (authRequired.value && !currentUser.value) return;
 
+  if (showConfirmModal.value) resolveConfirm(false);
+  if (showFeedbackComposer.value && !await closeFeedbackComposer()) return false;
+
   if (to.name === "feedback") {
     await openFeedbackRoute(to);
     return;
@@ -12307,6 +12406,38 @@ const App = {
     });
     window.addEventListener("resize", handleFeedbackImageResize);
     document.addEventListener("click", handleFeedbackImageToggle);
+
+    let modalReturnFocus = null;
+    const modalVisibilitySources = [
+      showCompareModal, showProjectBulkModal, showMoveProject, showBulkMoveProject,
+      showRenameJob, showNewProject, showRenameProject, showDeletedProjects,
+      showFeedbackComposer, showAdminUsage, showStorageManager, showTritonCode,
+      showAiCodeViewer, showErrorModal, showAiPromptModal, showStepReanalysisModal,
+      showConfirmModal, showSettings, showGuide, showReleaseNotes,
+    ];
+    watch(modalVisibilitySources, (values, previousValues) => {
+      const hasOpenModal = values.some(Boolean);
+      const hadOpenModal = previousValues.some(Boolean);
+      if (hasOpenModal && !hadOpenModal) modalReturnFocus = document.activeElement;
+      nextTick(() => {
+        if (!hasOpenModal) {
+          modalReturnFocus?.focus?.({ preventScroll: true });
+          modalReturnFocus = null;
+          return;
+        }
+        const masks = [...document.querySelectorAll(".modal-mask")];
+        const topMask = masks.reduce((top, mask) => {
+          if (!top) return mask;
+          const topZ = Number.parseInt(window.getComputedStyle(top).zIndex, 10) || 0;
+          const maskZ = Number.parseInt(window.getComputedStyle(mask).zIndex, 10) || 0;
+          return maskZ >= topZ ? mask : top;
+        }, null);
+        const focusTarget = topMask?.querySelector(
+          "[data-modal-autofocus], input:not([disabled]), textarea:not([disabled]), select:not([disabled]), button:not([disabled])"
+        );
+        focusTarget?.focus?.({ preventScroll: true });
+      });
+    });
 
     // Watchers that need to live at the root level
     watch(resultTab, (v, previousTab) => {

@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>torch profiler analyzer</title>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.5.4" />
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.5.6" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.css" />
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
@@ -12,7 +12,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js"></script>
-  <link rel="stylesheet" href="/static/style.css?v=0.5.4" />
+  <link rel="stylesheet" href="/static/style.css?v=0.5.6" />
   <script>
     // Apply saved theme or system preference before page paint to avoid flash
     (function() {
@@ -35,7 +35,7 @@
   </script>
 </head>
 <body>
-  <div id="app">
+  <div id="app" v-cloak>
     <div v-if="authInitError" class="auth-page">
       <section class="auth-brand-panel">
         <div class="auth-chip-board" aria-hidden="true">
@@ -63,29 +63,11 @@
       </section>
     </div>
 
-    <div v-else-if="!authChecked" class="auth-page">
-      <section class="auth-brand-panel">
-        <div class="auth-chip-board" aria-hidden="true">
-          <div class="auth-chip-core">MLU</div>
-          <span class="trace-pin pin-a"></span>
-          <span class="trace-pin pin-b"></span>
-          <span class="trace-pin pin-c"></span>
-          <span class="trace-pin pin-d"></span>
-        </div>
-        <div class="auth-brand-mark">
-          <div class="auth-cambricon-logo">Cambricon</div>
-          <div class="auth-cambricon-cn">寒　武　纪</div>
-        </div>
-      </section>
-      <section class="auth-form-panel">
-        <div class="auth-form-card">
-          <div class="auth-product-lockup">
-            <span class="auth-product-eyebrow">Performance Workbench</span>
-            <div class="auth-product-name">Torch Profiler Analyzer</div>
-          </div>
-          <div class="auth-subtitle">正在初始化...</div>
-        </div>
-      </section>
+    <div v-else-if="!authChecked" class="app-bootstrap" aria-busy="true">
+      <div class="app-bootstrap-status" role="status">
+        <span class="app-bootstrap-dot" aria-hidden="true"></span>
+        <span>正在载入工作台</span>
+      </div>
     </div>
 
     <div v-else-if="authRequired && !currentUser" class="auth-page">
@@ -151,7 +133,7 @@
     <!-- ── Header ── -->
     <header v-if="authChecked && (!authRequired || currentUser)" class="header">
       <div class="header-brand" @click="$router.push('/')" style="cursor:pointer" title="返回上传页面">
-        <img class="header-logo" src="/static/favicon.svg?v=0.5.4" alt="" />
+        <img class="header-logo" src="/static/favicon.svg?v=0.5.6" alt="" />
         <span class="header-title">Torch Profiler Analyzer</span>
         <span class="header-version">v{{ appVersion }}</span>
       </div>
@@ -281,20 +263,23 @@
             <div v-for="group in historyProjectGroups" :key="group.id" class="project-tree-node">
               <div
                 :class="['project-tree-head', isSidebarProjectActive(group) ? 'active' : '', currentSidebarProjectId===group.id ? 'current' : '']"
-                role="button"
-                tabindex="0"
-                @click="toggleGroup(group.id)"
-                @keydown.enter.prevent="toggleGroup(group.id)"
               >
-                <span class="group-caret">{{ collapsedGroups[group.id] ? '▾' : '▸' }}</span>
-                <span :class="['project-tree-icon', group.is_public ? 'shared' : '', group.id === '__none__' ? 'ungrouped' : '']">
-                  {{ group.id === '__none__' ? '未' : (group.is_public ? '共' : '项') }}
-                </span>
-                <span class="project-tree-main">
-                  <strong>{{ group.label }}</strong>
-                  <small v-if="group.id !== '__none__'">{{ group.is_public ? (group.is_owner ? '我创建 · 已共享' : '共享给我') : '我创建' }}</small>
-                  <small v-else>未归类任务</small>
-                </span>
+                <button
+                  class="project-tree-toggle"
+                  type="button"
+                  :aria-expanded="String(Boolean(collapsedGroups[group.id]))"
+                  @click="toggleGroup(group.id)"
+                >
+                  <span class="group-caret">{{ collapsedGroups[group.id] ? '▾' : '▸' }}</span>
+                  <span :class="['project-tree-icon', group.is_public ? 'shared' : '', group.id === '__none__' ? 'ungrouped' : '']">
+                    {{ group.id === '__none__' ? '未' : (group.is_public ? '共' : '项') }}
+                  </span>
+                  <span class="project-tree-main">
+                    <strong>{{ group.label }}</strong>
+                    <small v-if="group.id !== '__none__'">{{ group.is_public ? (group.is_owner ? '我创建 · 已共享' : '共享给我') : '我创建' }}</small>
+                    <small v-else>未归类任务</small>
+                  </span>
+                </button>
                 <button
                   v-if="group.has_experiment_tree"
                   class="project-tree-badge-btn"
@@ -383,7 +368,7 @@
 
     <!-- ── Compare picker modal ── -->
     <div v-if="showCompareModal" class="modal-mask modal-mask-front" @click.self="closeCompareModal">
-      <div class="modal modal-wide compare-picker-modal">
+      <div class="modal modal-wide compare-picker-modal" role="dialog" aria-modal="true" aria-label="新建对比">
         <div class="modal-title compare-picker-title">
           <div>
             <strong>新建对比</strong>
@@ -494,7 +479,7 @@
 
     <!-- ── Project bulk picker modal ── -->
     <div v-if="showProjectBulkModal" class="modal-mask modal-mask-front" @click.self="closeProjectBulkModal">
-      <div class="modal modal-wide compare-picker-modal bulk-picker-modal">
+      <div class="modal modal-wide compare-picker-modal bulk-picker-modal" role="dialog" aria-modal="true" aria-label="批量管理任务">
         <div class="modal-title compare-picker-title">
           <div>
             <strong>批量管理任务</strong>
@@ -570,7 +555,7 @@
 
     <!-- ── Move project modal ── -->
     <div v-if="showMoveProject" class="modal-mask" @click.self="showMoveProject=false">
-      <div class="modal">
+      <div class="modal" role="dialog" aria-modal="true" aria-label="移动到项目">
         <div class="modal-title">移动到项目</div>
         <select v-model="moveProjectTarget" class="input w-full">
           <option value="">未分组</option>
@@ -585,7 +570,7 @@
 
     <!-- ── Bulk move project modal ── -->
     <div v-if="showBulkMoveProject" class="modal-mask modal-mask-front" @click.self="showBulkMoveProject=false">
-      <div class="modal">
+      <div class="modal" role="dialog" aria-modal="true" aria-label="批量移动到项目">
         <div class="modal-title">批量移动到项目</div>
         <select v-model="bulkMoveProjectTarget" class="input w-full">
           <option value="">未分组</option>
@@ -600,7 +585,7 @@
 
     <!-- ── Rename job modal ── -->
     <div v-if="showRenameJob" class="modal-mask" @click.self="showRenameJob=false">
-      <div class="modal">
+      <div class="modal" role="dialog" aria-modal="true" aria-label="重命名任务">
         <div class="modal-title">重命名任务</div>
         <input v-model="renameJobName" class="input w-full" placeholder="任务别名" @keyup.enter="confirmRenameJob" />
         <div class="modal-actions">
@@ -611,29 +596,29 @@
     </div>
 
     <!-- ── New project modal ── -->
-    <div v-if="showNewProject" class="modal-mask" @click.self="showNewProject=false">
-      <div class="modal">
+    <div v-if="showNewProject" class="modal-mask" @click.self="!newProjectLoading && (showNewProject=false)">
+      <form class="modal" role="dialog" aria-modal="true" aria-label="新建项目" @submit.prevent="createProject">
         <div class="modal-title">新建项目</div>
-        <input v-model="newProjectName" class="input w-full" placeholder="项目名称" />
+        <input v-model="newProjectName" class="input w-full" placeholder="项目名称" data-modal-autofocus />
         <input v-model="newProjectDesc" class="input w-full mt-2" placeholder="描述（可选）" />
         <label class="check-row mt-2">
           <input type="checkbox" v-model="newProjectShared" />
           <span>共享项目</span>
         </label>
         <div class="modal-actions">
-          <button class="btn btn-outline" @click="showNewProject=false">取消</button>
-          <button class="btn btn-primary" @click="createProject" :disabled="newProjectLoading || !newProjectName.trim()">{{ newProjectLoading ? '创建中...' : '创建' }}</button>
+          <button class="btn btn-outline" type="button" @click="showNewProject=false" :disabled="newProjectLoading">取消</button>
+          <button class="btn btn-primary" type="submit" :disabled="newProjectLoading || !newProjectName.trim()">{{ newProjectLoading ? '创建中...' : '创建' }}</button>
         </div>
-      </div>
+      </form>
     </div>
 
     <!-- ── Rename project modal ── -->
-    <div v-if="showRenameProject" class="modal-mask" @click.self="showRenameProject=false">
-      <div class="modal">
+    <div v-if="showRenameProject" class="modal-mask" @click.self="!renameProjectLoading && (showRenameProject=false)">
+      <div class="modal" role="dialog" aria-modal="true" aria-label="重命名项目">
         <div class="modal-title">重命名项目</div>
         <input v-model="renameProjectName" class="input w-full" placeholder="项目名称" @keyup.enter="confirmRenameProject" />
         <div class="modal-actions">
-          <button class="btn btn-outline" @click="showRenameProject=false">取消</button>
+          <button class="btn btn-outline" @click="showRenameProject=false" :disabled="renameProjectLoading">取消</button>
           <button class="btn btn-primary" @click="confirmRenameProject" :disabled="renameProjectLoading || !(renameProjectName || '').trim()">{{ renameProjectLoading ? '保存中...' : '保存' }}</button>
         </div>
       </div>
@@ -641,7 +626,7 @@
 
     <!-- ── Deleted projects recovery modal ── -->
     <div v-if="showDeletedProjects" class="modal-mask" @click.self="showDeletedProjects=false">
-      <div class="modal">
+      <div class="modal" role="dialog" aria-modal="true" aria-label="找回项目">
         <div class="modal-title">找回项目 <span class="text-xs text-gray">（近10天内可恢复）</span></div>
         <div v-if="deletedProjects.length===0" class="empty-tip mt-4">暂无已删除的项目</div>
         <div v-else class="deleted-projects-list">
@@ -1082,10 +1067,10 @@
     </div>
 
     <div v-if="showFeedbackComposer" class="modal-mask modal-mask-front" @click.self="closeFeedbackComposer()">
-      <div class="modal feedback-compose-modal">
+      <div class="modal feedback-compose-modal" role="dialog" aria-modal="true" aria-label="发布新帖">
         <div class="modal-title feedback-title">
           <span>发布新帖</span>
-          <button class="btn btn-xs btn-outline" @click="closeFeedbackComposer()">关闭</button>
+          <button class="btn btn-xs btn-outline" @click="closeFeedbackComposer()" :disabled="feedbackSubmitting">关闭</button>
         </div>
         <div class="feedback-composer feedback-composer-dialog">
           <div class="feedback-github-editor feedback-post-editor">
@@ -1186,7 +1171,7 @@
 
     <!-- ── Admin usage modal ── -->
     <div v-if="showAdminUsage" class="modal-mask" @click.self="showAdminUsage=false">
-      <div class="modal modal-wide admin-usage-modal">
+      <div class="modal modal-wide admin-usage-modal" role="dialog" aria-modal="true" aria-label="使用统计">
         <div class="modal-title admin-usage-title">
           <span>使用统计</span>
           <div class="admin-usage-actions">
@@ -1322,7 +1307,7 @@
 
     <!-- ── Storage manager modal ── -->
     <div v-if="showStorageManager" class="modal-mask" @click.self="showStorageManager=false">
-      <div class="modal modal-wide">
+      <div class="modal modal-wide" role="dialog" aria-modal="true" aria-label="存储管理">
         <div class="modal-title">存储管理</div>
         <div class="storage-total-grid">
           <div class="storage-stat">
@@ -1374,7 +1359,7 @@
 
     <!-- ── Triton code viewer modal ── -->
     <div v-if="showTritonCode" class="modal-mask" @click.self="showTritonCode=false">
-      <div class="modal modal-wide">
+      <div class="modal modal-wide" role="dialog" aria-modal="true" aria-label="Triton 代码">
         <div class="modal-title">
           <span v-if="!tritonCodeEditing">{{ tritonCodeFilename }} - 代码查看</span>
           <span v-else>{{ tritonCodeFilename }} - 代码编辑</span>
@@ -1398,7 +1383,7 @@
 
     <!-- ── AI analysis code artifact viewer modal ── -->
     <div v-if="showAiCodeViewer" class="modal-mask" @click.self="closeAiCodeViewer">
-      <div class="modal modal-wide ai-code-modal">
+      <div class="modal modal-wide ai-code-modal" role="dialog" aria-modal="true" aria-label="AI 分析代码">
         <div class="modal-title ai-code-modal-title">
           <div class="ai-code-title-main">
             <span>{{ aiCodeViewerFilename || '代码文件' }} - Python 代码查看</span>
@@ -1432,7 +1417,7 @@
 
     <!-- ── Error modal (selectable text) ── -->
     <div v-if="showErrorModal" class="modal-mask" @click.self="showErrorModal=false">
-      <div class="modal">
+      <div class="modal" role="dialog" aria-modal="true" :aria-label="errorModalTitle">
         <div class="modal-title">
           {{ errorModalTitle }}
           <button class="btn btn-xs btn-outline ml-2" @click="copyErrorModal">复制</button>
@@ -1446,7 +1431,7 @@
 
     <!-- ── AI prompt modal ── -->
     <div v-if="showAiPromptModal" class="modal-mask" @click.self="closeAiPromptModal">
-      <div class="modal ai-prompt-modal">
+      <div class="modal ai-prompt-modal" role="dialog" aria-modal="true" :aria-label="aiPromptForce ? '重新 AI 分析' : '开始 AI 分析'">
         <div class="modal-title">{{ aiPromptForce ? '重新 AI 分析' : '开始 AI 分析' }}</div>
         <div class="ai-prompt-modal-desc">
           可补充希望 Claude Code 重点关注的方向，也可以留空直接开始。
@@ -1476,7 +1461,7 @@
 
     <!-- ── Step reanalysis modal ── -->
     <div v-if="showStepReanalysisModal" class="modal-mask" @click.self="closeStepReanalysisModal">
-      <div class="modal step-reanalysis-modal">
+      <div class="modal step-reanalysis-modal" role="dialog" aria-modal="true" aria-label="指定 Step 重分析">
         <div class="modal-title">指定 Step 重分析</div>
         <div class="step-reanalysis-desc">
           会基于当前任务创建一个新的历史条目；原任务保持不变。支持单个 step、逗号分隔或范围，例如 0、0,2,5、1-4。
@@ -1515,8 +1500,8 @@
     </div>
 
     <!-- ── Generic confirm modal ── -->
-    <div v-if="showConfirmModal" class="modal-mask" @click.self="resolveConfirm(false)">
-      <div class="modal">
+    <div v-if="showConfirmModal" class="modal-mask modal-mask-confirm" @click.self="resolveConfirm(false)">
+      <div class="modal" role="alertdialog" aria-modal="true" :aria-label="confirmModal.title">
         <div class="modal-title">{{ confirmModal.title }}</div>
         <div class="confirm-message">{{ confirmModal.message }}</div>
         <div class="modal-actions">
@@ -1529,7 +1514,7 @@
 
     <!-- ── 用户设置 modal ── -->
     <div v-if="showSettings" class="modal-mask" @click.self="closeSettings">
-      <div class="modal settings-modal">
+      <div class="modal settings-modal" role="dialog" aria-modal="true" aria-label="用户设置">
         <div class="modal-title settings-title">
           <span>用户设置</span>
           <button class="action-icon-btn" type="button" title="关闭" aria-label="关闭" @click="closeSettings">×</button>
@@ -1629,7 +1614,7 @@
 
     <!-- ── 使用指南 modal ── -->
     <div v-if="showGuide" class="modal-mask" @click.self="showGuide=false">
-      <div class="modal modal-wide">
+      <div class="modal modal-wide" role="dialog" aria-modal="true" aria-label="使用指南">
         <div class="modal-title">使用指南</div>
         <div class="guide-content">
           <section class="guide-section">
@@ -1698,7 +1683,7 @@
 
     <!-- ── 版本更新 modal ── -->
     <div v-if="showReleaseNotes" class="modal-mask" @click.self="showReleaseNotes=false">
-      <div class="modal modal-wide release-modal">
+      <div class="modal modal-wide release-modal" role="dialog" aria-modal="true" aria-label="版本更新">
         <div class="modal-title">版本更新</div>
         <div class="release-content">
           <section v-for="release in releaseNotes" :key="release.version" class="release-section">
@@ -1726,6 +1711,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=0.5.4"></script>
+  <script src="/static/app.js?v=0.5.6"></script>
 </body>
 </html>

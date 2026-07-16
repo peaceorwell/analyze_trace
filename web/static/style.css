@@ -213,6 +213,41 @@ body {
   letter-spacing: .02em;
 }
 
+[v-cloak] { display: none !important; }
+
+.app-bootstrap {
+  height: 100vh;
+  display: grid;
+  place-items: center;
+  background: var(--main-bg);
+}
+.app-bootstrap-status {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--text3);
+  font-size: 12px;
+  opacity: 0;
+  animation: app-bootstrap-reveal .16s ease .35s forwards;
+}
+.app-bootstrap-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--purple);
+  box-shadow: 0 0 0 4px var(--purple-bg);
+  animation: app-bootstrap-pulse 1s ease-in-out infinite;
+}
+@keyframes app-bootstrap-reveal { to { opacity: 1; } }
+@keyframes app-bootstrap-pulse {
+  50% { transform: scale(.72); opacity: .55; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-bootstrap-status { animation-duration: .01s; }
+  .app-bootstrap-dot { animation: none; }
+}
+
 /* Keep raw code / console output untracked for legibility */
 pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: normal; }
 
@@ -782,7 +817,7 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   width: 100%;
   min-width: 0;
   display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 6px;
   padding: 7px 8px;
@@ -791,10 +826,24 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   border-left: 3px solid var(--purple);
   background: var(--sidebar-card);
   color: var(--text2);
-  cursor: pointer;
+  cursor: default;
   text-align: left;
   font-family: var(--sans);
   transition: background-color .15s, border-color .15s, box-shadow .15s, transform .15s;
+}
+.project-tree-toggle {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
 }
 .project-tree-head:hover {
   background: var(--sidebar-card-hover);
@@ -4588,6 +4637,7 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
   backdrop-filter: blur(2px);
 }
 .modal-mask-front { z-index: 140; }
+.modal-mask-confirm { z-index: 180; }
 .modal {
   background-color: var(--card); border: 1px solid var(--border2);
   border-radius: 12px; padding: 22px; min-width: 320px;
