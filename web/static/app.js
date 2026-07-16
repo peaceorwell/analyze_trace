@@ -176,7 +176,7 @@ const chartCanvasReady  = ref(false);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.5.9");
+const appVersion = ref("0.5.10");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -700,6 +700,16 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.10",
+    date: "2026-07-16",
+    title: "提升大表格体验",
+    items: [
+      "常用字段增加中文名称、单位和解释，横向滚动时固定首列，定位 Kernel 更轻松。",
+      "页面一次最多渲染 2,000 行，避免超大 CSV 卡住浏览器；全部筛选结果可直接导出。",
+      "表格加载失败时可原地重试，分页与“全部”按钮会明确提示安全展示上限。",
+    ],
+  },
   {
     version: "0.5.9",
     date: "2026-07-16",
@@ -1624,6 +1634,43 @@ const TABLE_AUTO_MEASURE_SAMPLE = 400; // rows sampled when measuring width
 const TABLE_HEADER_FONT = "600 10.5px 'JetBrains Mono', monospace";
 const TABLE_MONO_VALUE_FONT = "11px 'JetBrains Mono', monospace";
 const TABLE_TEXT_VALUE_FONT = "11px 'Inter', -apple-system, BlinkMacSystemFont, sans-serif";
+const TABLE_MAX_RENDER_ROWS = 2000;
+const TABLE_FIELD_META = Object.freeze({
+  kernel_name: { label: "Kernel 名称", hint: "设备 Kernel 的完整名称" },
+  op_name: { label: "算子名称", hint: "框架算子名称" },
+  operator: { label: "算子 / 实现", hint: "识别到的算子或实现类型" },
+  type: { label: "Kernel 类型", hint: "按执行特征归类的 Kernel 类型" },
+  family: { label: "Kernel 家族", hint: "Kernel 所属计算或通信家族" },
+  match_method: { label: "匹配方式", hint: "对比任务中 A/B 行的匹配依据" },
+  avg_count: { label: "平均调用数", hint: "所选 step 中的平均调用次数" },
+  delta_count: { label: "调用数差值 (B-A)", hint: "B 相对 A 的平均调用次数变化" },
+  avg_dur_ms: { label: "平均耗时 (ms)", hint: "所选 step 中累计设备耗时的平均值" },
+  delta_dur_ms: { label: "耗时差值 (B-A, ms)", hint: "B 相对 A 的设备耗时变化，正值表示变慢" },
+  delta_abs_ms: { label: "耗时差值绝对值 (ms)", hint: "A/B 设备耗时差值的绝对值" },
+  avg_us_per_call: { label: "平均单次耗时 (μs)", hint: "每次调用的平均设备执行时间" },
+  avg_io_gb: { label: "平均 IO 量 (GB)", hint: "估算的平均读写数据量" },
+  avg_compute_efficiency: { label: "计算效率 (%)", hint: "相对理论计算峰值的利用率" },
+  avg_io_efficiency: { label: "IO 效率", hint: "相对理论 IO 峰值的利用率" },
+  avg_op_efficiency: { label: "综合效率 (%)", hint: "计算与 IO 瓶颈下的综合效率" },
+  triton_code_file: { label: "Triton 代码", hint: "生成的 Triton 源码文件" },
+});
+
+const tableFieldMeta = field => {
+  const raw = String(field || "");
+  const key = raw.toLowerCase();
+  if (TABLE_FIELD_META[key]) return TABLE_FIELD_META[key];
+  const sideMatch = key.match(/^(.*)_([ab])$/);
+  if (sideMatch && TABLE_FIELD_META[sideMatch[1]]) {
+    const base = TABLE_FIELD_META[sideMatch[1]];
+    return { label: `${base.label} ${sideMatch[2].toUpperCase()}`, hint: `${sideMatch[2].toUpperCase()} 侧：${base.hint}` };
+  }
+  return { label: raw, hint: "" };
+};
+const tableFieldLabel = field => tableFieldMeta(field).label;
+const tableFieldTitle = field => {
+  const meta = tableFieldMeta(field);
+  return [meta.hint, `原字段：${field}`].filter(Boolean).join("\n");
+};
 
 const isEfficiencyTable = computed(() =>
   EFFICIENCY_TABLE_FILES.has(resultTab.value)
@@ -1634,6 +1681,12 @@ const isEfficiencyTable = computed(() =>
 
 const tableTotalRows = computed(() =>
   currentTable.value.filtered_total ?? currentTable.value.total ?? currentTable.value.rows?.length ?? 0
+);
+
+const tableAllRowLimit = computed(() => Math.min(Number(tableTotalRows.value) || 0, TABLE_MAX_RENDER_ROWS));
+const tableAllRowsCapped = computed(() => Number(tableTotalRows.value) > TABLE_MAX_RENDER_ROWS);
+const tableAllRowsLabel = computed(() =>
+  tableAllRowsCapped.value ? `前 ${fmtCount(TABLE_MAX_RENDER_ROWS)}` : "全部"
 );
 
 const tablePageStart = computed(() =>
@@ -1962,7 +2015,7 @@ const measureColumnContentWidth = (field, rows) => {
   const numeric = isNumericTableColumn(field, rows);
   const valueFont = numeric ? TABLE_MONO_VALUE_FONT : TABLE_TEXT_VALUE_FONT;
   // Header reserves room for the sort icon (~16px).
-  let max = measureTextWidth(field, TABLE_HEADER_FONT) + 16;
+  let max = measureTextWidth(tableFieldLabel(field), TABLE_HEADER_FONT) + 16;
   // Badge/chip cells carry extra horizontal padding around the value.
   const badgeExtra = isEfficiencyField(field) || normalizedTableField(field) === "family" ? 16 : 0;
   const sample = rows.length > TABLE_AUTO_MEASURE_SAMPLE ? rows.slice(0, TABLE_AUTO_MEASURE_SAMPLE) : rows;
@@ -2463,7 +2516,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.5.9";
+  appVersion.value = cfg.version || "0.5.10";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -5175,7 +5228,10 @@ const buildResultTableParams = (overrides = {}) => {
   const sortSource = state ? state.sortCol || "" : sortCol.value;
   const sortAscSource = state ? state.sortAsc ?? true : sortAsc.value;
   const search = overrides.q ?? (useViewState ? String(searchSource).trim() : "");
-  const limit = overrides.limit ?? state?.tableLimit ?? tableLimit.value;
+  const requestedLimit = overrides.limit ?? state?.tableLimit ?? tableLimit.value;
+  const limit = overrides.limit === undefined
+    ? Math.min(Math.max(1, Number(requestedLimit) || 100), TABLE_MAX_RENDER_ROWS)
+    : requestedLimit;
   const offset = overrides.offset ?? state?.tableOffset ?? tableOffset.value;
   params.set("limit", String(limit));
   params.set("offset", String(Math.max(0, offset)));
@@ -5360,7 +5416,7 @@ const nextTablePage = () => {
 const changeTableLimit = value => {
   const next = Number(value);
   if (!Number.isFinite(next) || next <= 0 || next === tableLimit.value) return;
-  tableLimit.value = Math.floor(next);
+  tableLimit.value = Math.min(Math.floor(next), TABLE_MAX_RENDER_ROWS);
   tableOffset.value = 0;
   loadResultTable();
 };
@@ -5368,7 +5424,10 @@ const changeTableLimit = value => {
 const showAllTableRows = () => {
   const total = Number(tableTotalRows.value);
   if (!Number.isFinite(total) || total <= 0) return;
-  changeTableLimit(total);
+  if (total > TABLE_MAX_RENDER_ROWS) {
+    showToast(`为保证页面流畅，最多展示前 ${fmtCount(TABLE_MAX_RENDER_ROWS)} 行；可导出全部筛选结果`, "info", 4200);
+  }
+  changeTableLimit(Math.min(total, TABLE_MAX_RENDER_ROWS));
 };
 
 const startPoll = () => {
@@ -6805,6 +6864,22 @@ const downloadCsv = filename => {
   a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
+};
+
+const downloadFilteredCsv = filename => {
+  const jobId = selectedJobId.value;
+  if (!jobId || !filename?.endsWith(".csv")) return;
+  const params = buildResultTableParams({ limit: 1, offset: 0 });
+  params.delete("limit");
+  params.delete("offset");
+  params.set("download", "true");
+  const a = document.createElement("a");
+  a.href = `/api/jobs/${encodeURIComponent(jobId)}/results/${encodeURIComponent(filename)}?${params}`;
+  a.download = filename.replace(/\.csv$/i, "_filtered.csv");
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  showToast(`已开始导出 ${fmtCount(tableTotalRows.value)} 行筛选结果`, "success");
 };
 
 const runSingleTriton = async (codePath) => {
@@ -8723,7 +8798,10 @@ const JobDetail = {
                   </div>
                   <label v-for="f in currentTable.fields" :key="f" class="column-menu-item">
                     <input type="checkbox" :checked="isColumnVisible(f)" @change="toggleColumnVisibility(f)" />
-                    <span>{{ f }}</span>
+                    <span class="column-menu-label">
+                      <strong>{{ tableFieldLabel(f) }}</strong>
+                      <small>{{ f }}</small>
+                    </span>
                   </label>
                 </div>
               </div>
@@ -8732,6 +8810,7 @@ const JobDetail = {
                         aria-label="表格管理"
                         @click="toggleActionMenu('table')">表格管理</button>
                 <div v-if="openActionMenu==='table'" class="action-menu">
+                  <button type="button" @click="downloadFilteredCsv(resultTab); closeActionMenu()">导出全部筛选结果</button>
                   <button type="button" @click="downloadCsv(resultTab); closeActionMenu()">下载当前页 CSV</button>
                   <button v-if="isTritonStepTab && allowCodeExecution" type="button"
                           @click="clearInductorCache(); closeActionMenu()">清除 Cache</button>
@@ -8739,7 +8818,10 @@ const JobDetail = {
               </div>
             </div>
           </div>
-          <div v-if="resultTableError" class="error-box mb-2">{{ resultTableError }}</div>
+          <div v-if="resultTableError" class="error-box table-error-box mb-2">
+            <span>{{ resultTableError }}</span>
+            <button class="btn btn-xs btn-outline" type="button" @click="loadResultTable()">重试</button>
+          </div>
           <div class="table-scroll">
             <div v-if="resultTableLoading" class="table-loading">
               <span class="spinner-small"></span> 加载表格...
@@ -8755,8 +8837,9 @@ const JobDetail = {
                   <th v-for="f in displayedFields" :key="f"
                       @click="setSort(f, $event)"
                       :class="['th-sortable', tableHeaderClass(f)]"
+                      :title="tableFieldTitle(f)"
                       :style="tableColumnStyle(f)">
-                    <span class="th-label">{{ f }}</span>
+                    <span class="th-label">{{ tableFieldLabel(f) }}</span>
                     <span v-if="sortCol===f" class="th-sort-icon">{{ sortAsc?'↑':'↓' }}</span>
                     <div class="col-resize-handle"
                          @mousedown.stop.prevent="startResize(f, $event)"
@@ -8853,7 +8936,12 @@ const JobDetail = {
             </div>
           </div>
           <div class="table-footer table-footer-paged">
-            <span>第 {{ tablePageStart }}-{{ tablePageEnd }} 行 / 共 {{ tableTotalRows }} 行</span>
+            <div class="table-footer-summary">
+              <span>第 {{ tablePageStart }}-{{ tablePageEnd }} 行 / 共 {{ tableTotalRows }} 行</span>
+              <span v-if="tableAllRowsCapped && tableLimit >= tableAllRowLimit" class="table-render-cap">
+                页面最多展示 {{ fmtCount(tableAllRowLimit) }} 行，完整数据请导出
+              </span>
+            </div>
             <div class="table-pagination">
               <span class="page-size-control">
                 每页
@@ -8862,10 +8950,10 @@ const JobDetail = {
                         :disabled="resultTableLoading"
                         @change="changeTableLimit($event.target.value)">
                   <option v-for="n in tablePageSizeOptions" :key="n" :value="n">{{ n }}</option>
-                  <option v-if="customTableLimit" :value="customTableLimit">全部 {{ customTableLimit }}</option>
+                  <option v-if="customTableLimit" :value="customTableLimit">{{ customTableLimit >= tableTotalRows ? '全部' : '每页' }} {{ customTableLimit }}</option>
                 </select>
               </span>
-              <button class="btn btn-xs btn-outline" @click="showAllTableRows" :disabled="!tableTotalRows || resultTableLoading || tableLimit >= tableTotalRows">全部</button>
+              <button class="btn btn-xs btn-outline" @click="showAllTableRows" :disabled="!tableTotalRows || resultTableLoading || tableLimit >= tableAllRowLimit">{{ tableAllRowsLabel }}</button>
               <button class="btn btn-xs btn-outline" @click="prevTablePage" :disabled="tableOffset===0 || resultTableLoading">上一页</button>
               <button class="btn btn-xs btn-outline" @click="nextTablePage" :disabled="tableOffset + tableLimit >= tableTotalRows || resultTableLoading">下一页</button>
             </div>
@@ -8917,11 +9005,13 @@ const JobDetail = {
       colFilterOps, visibleColumns, showColumnMenu, hiddenColumnCount,
       tableLimit, tableOffset, tableTotalRows, tablePageStart, tablePageEnd,
       tablePageSizeOptions, customTableLimit, changeTableLimit, showAllTableRows,
-      resultTableLoading, resultTableError, preparingResultTab, prevTablePage, nextTablePage,
+      tableAllRowLimit, tableAllRowsCapped, tableAllRowsLabel,
+      resultTableLoading, resultTableError, preparingResultTab, prevTablePage, nextTablePage, loadResultTable,
       hasColFilters, colSums, isKernelTypeTab, canDrillKernelTypeRow,
       isKernelTypeDrillCell, drillDownKernelType,
       isEfficiencyTable, isEfficiencyField, applyEfficiencyColumnPreset,
       tableStyle, tableColumnStyle, tableHeaderClass, tableCellClass, tableRowClass, familyChipClass, efficiencyTone,
+      tableFieldLabel, tableFieldTitle,
       isTritonStepTab, tritonStatus, allowFileDownload, allowCodeExecution,
       claudeAnalysisEnabled, aiAnalysisMeta, aiAnalysisLoading, aiAnalysisStarting,
       aiAnalysisError, aiAnalysisContent, aiAnalysisArtifacts, aiAnalysisVisibleArtifacts,
@@ -8942,7 +9032,7 @@ const JobDetail = {
       shareJob, togglePinJob, editLabel, moveProject, deleteJob, deleteFile,
       openCompareSource, rerunCompareSwapped, singleTraceAnalyzeLoadingSlot, analyzeCompareTraceSlot,
       downloadTraceFile, downloadReport, openInPerfetto, perfettoOpening, perfettoButtonLabel,
-      setSort, startResize, downloadCsv,
+      setSort, startResize, downloadCsv, downloadFilteredCsv,
       viewTritonCode, runSingleTriton, clearInductorCache,
       fmtDate, fmtDateTime, fmtSum, fmtBytes, deltaCellClass, clearColFilters,
       isColumnVisible, resetVisibleColumns, applyCoreColumnPreset, toggleColumnVisibility,

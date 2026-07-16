@@ -59,7 +59,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.5.9"
+APP_VERSION = "0.5.10"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -3782,6 +3782,67 @@ def read_csv_page(
         "limit": limit,
         "offset": offset,
     }
+
+
+def stream_filtered_csv(
+    path: str,
+    *,
+    q: Optional[str] = None,
+    filters: Optional[dict] = None,
+    filter_ops: Optional[dict] = None,
+    sort_col: Optional[str] = None,
+    sort_dir: str = "asc",
+):
+    """Yield a filtered result CSV without forcing the browser to render every row."""
+    filters = filters or {}
+    filter_ops = filter_ops or {}
+    with open(path, newline="") as source:
+        filename = os.path.basename(path)
+        reader = csv.DictReader(source)
+        fields = _result_csv_fields(filename, reader.fieldnames or [])
+        filters = {key: value for key, value in filters.items() if key in fields}
+        filter_ops = {key: value for key, value in filter_ops.items() if key in fields}
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=fields, extrasaction="ignore", lineterminator="\n")
+
+        def emit(row: Optional[dict] = None, *, header: bool = False) -> str:
+            output.seek(0)
+            output.truncate(0)
+            if header:
+                writer.writeheader()
+            else:
+                writer.writerow(row or {})
+            return output.getvalue()
+
+        yield "\ufeff" + emit(header=True)
+
+        if _is_kernel_type_result_csv(filename):
+            rows = _aggregate_kernel_type_rows(
+                filename,
+                fields,
+                [_result_csv_row(filename, row) for row in reader],
+            )
+            rows = [row for row in rows if _csv_filter_match(row, q, filters, filter_ops)]
+        elif sort_col and sort_col in fields:
+            rows = []
+            for row in reader:
+                normalized = _result_csv_row(filename, row)
+                if _csv_filter_match(normalized, q, filters, filter_ops):
+                    rows.append(normalized)
+        else:
+            for row in reader:
+                normalized = _result_csv_row(filename, row)
+                if _csv_filter_match(normalized, q, filters, filter_ops):
+                    yield emit(normalized)
+            return
+
+        if sort_col and sort_col in fields:
+            rows.sort(
+                key=lambda item: _sort_value(item.get(sort_col)),
+                reverse=(sort_dir == "desc"),
+            )
+        for row in rows:
+            yield emit(row)
 
 
 def collect_results(jid: str) -> dict:
@@ -9862,6 +9923,7 @@ async def get_job_result_table(
     offset: int = 0,
     filters: Optional[str] = None,
     filter_ops: Optional[str] = None,
+    download: bool = False,
 ):
     db = await get_db()
     try:
@@ -9883,6 +9945,20 @@ async def get_job_result_table(
         raise HTTPException(400, "Invalid table filters")
 
     path = _safe_result_csv_path(jid, filename)
+    if download:
+        download_name = f"{os.path.splitext(os.path.basename(filename))[0]}_filtered.csv"
+        return StreamingResponse(
+            stream_filtered_csv(
+                path,
+                q=q,
+                filters=parsed_filters,
+                filter_ops=parsed_ops,
+                sort_col=sort_col,
+                sort_dir="desc" if sort_dir == "desc" else "asc",
+            ),
+            media_type="text/csv",
+            headers={"Content-Disposition": _content_disposition(download_name)},
+        )
     return read_csv_page(
         path,
         q=q,

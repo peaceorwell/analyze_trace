@@ -83,3 +83,13 @@ def test_header_task_center_tracks_active_and_failed_jobs_globally():
     assert "taskCenterPollTimer = setInterval(refreshTaskCenterWhenVisible, 5000)" in APP_JS
     assert "taskCenterActiveJobs" in APP_JS
     assert "copyTaskCenterError" in APP_JS
+
+
+def test_large_csv_tables_have_safe_rendering_and_full_filtered_export():
+    assert "const TABLE_MAX_RENDER_ROWS = 2000" in APP_JS
+    assert "导出全部筛选结果" in APP_JS
+    assert 'params.set("download", "true")' in APP_JS
+    assert "tableFieldLabel(f)" in APP_JS
+    assert "loadResultTable()\">重试" in APP_JS
+    assert ".data-table thead th:first-child" in STYLE_CSS
+    assert "position: sticky; left: 0" in STYLE_CSS

@@ -1,5 +1,7 @@
 import asyncio
+import csv
 import gzip
+import io
 import json
 import logging
 import os
@@ -70,7 +72,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.5.9",
+        "version": "0.5.10",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -3901,6 +3903,23 @@ def test_done_job_lists_result_files_and_paginates_tables(client):
     )
     assert old_percent_filter.status_code == 200
     assert old_percent_filter.json()["filtered_total"] == 3
+
+    exported = client.get(
+        "/api/jobs/table-job/results/all_kernels_avg.csv",
+        params={
+            "filters": json.dumps({"family": "gemm"}),
+            "filter_ops": json.dumps({"family": "=="}),
+            "sort_col": "avg_dur_ms",
+            "sort_dir": "asc",
+            "download": "true",
+        },
+    )
+    assert exported.status_code == 200
+    assert exported.headers["content-type"].startswith("text/csv")
+    assert "all_kernels_avg_filtered.csv" in exported.headers["content-disposition"]
+    exported_rows = list(csv.DictReader(io.StringIO(exported.content.decode("utf-8-sig"))))
+    assert [row["kernel_name"] for row in exported_rows] == ["medium_kernel", "slow_kernel"]
+    assert "dur_pct" not in exported_rows[0]
 
 
 def test_job_report_download_includes_markdown_summary(client):
