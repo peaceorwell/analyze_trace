@@ -93,3 +93,14 @@ def test_large_csv_tables_have_safe_rendering_and_full_filtered_export():
     assert "loadResultTable()\">重试" in APP_JS
     assert ".data-table thead th:first-child" in STYLE_CSS
     assert "position: sticky; left: 0" in STYLE_CSS
+
+
+def test_home_page_prioritizes_active_recent_and_project_work():
+    home = _section(APP_JS, "const Home = {", "const JobDetail = {")
+
+    assert 'class="home-workbench"' in home
+    assert "taskCenterActiveJobs" in home
+    assert "homeRecentJobs" in home
+    assert "homeRecentProjects" in home
+    assert "继续你的性能分析" in home
+    assert 'statuses: "done"' in APP_JS

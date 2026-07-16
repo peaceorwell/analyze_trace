@@ -101,6 +101,9 @@ const showTaskCenter = ref(false);
 const taskCenterJobs = ref([]);
 const taskCenterLoading = ref(false);
 const taskCenterError = ref("");
+const homeRecentJobs = ref([]);
+const homeDashboardLoading = ref(false);
+const homeDashboardError = ref("");
 const historySearch = ref("");
 const filterProject = ref(localStorage.getItem("tpa-filter-project") || "");
 const historyProjectView = ref(localStorage.getItem("tpa-history-project-view") || "all");
@@ -176,7 +179,7 @@ const chartCanvasReady  = ref(false);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.5.10");
+const appVersion = ref("0.5.11");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -700,6 +703,15 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.11",
+    date: "2026-07-16",
+    title: "首页升级为工作台",
+    items: [
+      "首页优先展示进行中的任务、最近完成结果和最近项目，回访时可直接继续工作。",
+      "新用户保留清晰的首个 Trace 引导，使用指南和灵感社区收敛为辅助入口。",
+    ],
+  },
   {
     version: "0.5.10",
     date: "2026-07-16",
@@ -2218,6 +2230,29 @@ const recentViewedProjectItems = computed(() =>
     .slice(0, RECENT_VIEWED_PROJECT_LIMIT)
 );
 
+const homeRecentProjects = computed(() => {
+  if (recentViewedProjectItems.value.length) return recentViewedProjectItems.value.slice(0, 4);
+  return [...projects.value]
+    .sort((a, b) => Number(Boolean(b.is_favorite)) - Number(Boolean(a.is_favorite)))
+    .slice(0, 4)
+    .map(project => ({
+      id: project.id,
+      label: project.name || project.label || `项目 ${String(project.id).slice(0, 8)}`,
+      is_public: project.is_public ? 1 : 0,
+      is_owner: project.is_owner !== false,
+      is_favorite: project.is_favorite ? 1 : 0,
+      has_experiment_tree: project.has_experiment_tree ? 1 : 0,
+      viewed_at: project.updated_at || project.created_at || "",
+    }));
+});
+const homeHasActivity = computed(() =>
+  Boolean(
+    taskCenterJobs.value.some(job => job.status === "pending" || job.status === "running")
+    || homeRecentJobs.value.length
+    || homeRecentProjects.value.length
+  )
+);
+
 const recentProjectSubtitle = project => {
   const visibility = project.is_public
     ? (project.is_owner ? "我创建 · 已共享" : "共享给我")
@@ -2516,7 +2551,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.5.10";
+  appVersion.value = cfg.version || "0.5.11";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -2601,7 +2636,10 @@ const submitLogin = async () => {
     appInitialized = true;
     await loadProjects();
     await refreshSidebarData();
-    await loadTaskCenter({ silent: true });
+    await Promise.all([
+      loadTaskCenter({ silent: true }),
+      loadHomeDashboard({ silent: true }),
+    ]);
     await resumeCurrentRouteAfterLogin();
   } catch (e) {
     loginError.value = e.message || "登录失败";
@@ -2619,6 +2657,10 @@ const logout = async () => {
   historyGroups.value = [];
   historyJobs.value = [];
   taskCenterJobs.value = [];
+  homeRecentJobs.value = [];
+  homeDashboardError.value = "";
+  homeDashboardController?.abort();
+  homeDashboardController = null;
   taskCenterInitialized = false;
   closeTaskCenter();
   recentViewedProjects.value = [];
@@ -4171,6 +4213,7 @@ let historyJobsController = null;
 let taskCenterController = null;
 let taskCenterPollTimer = null;
 let taskCenterInitialized = false;
+let homeDashboardController = null;
 let compareJobsController = null;
 let projectBulkJobsController = null;
 let resultTableController = null;
@@ -4347,7 +4390,10 @@ const loadTaskCenter = async ({ silent = false } = {}) => {
           // The task may have been deleted while the center was refreshing.
         }
       }
-      if (shouldRefreshSidebar) refreshSidebarData();
+      if (shouldRefreshSidebar) {
+        refreshSidebarData();
+        loadHomeDashboard({ silent: true });
+      }
     }
     taskCenterInitialized = true;
   } catch (e) {
@@ -4379,6 +4425,43 @@ const copyTaskCenterError = async job => {
   const message = String(job?.error_msg || "").trim();
   if (!message) return showToast("该任务没有可复制的错误详情", "info");
   await copyTextToClipboard(message);
+};
+
+const loadHomeDashboard = async ({ silent = false } = {}) => {
+  if (homeDashboardController) {
+    if (silent) return;
+    homeDashboardController.abort();
+  }
+  const controller = new AbortController();
+  homeDashboardController = controller;
+  if (!silent) homeDashboardLoading.value = true;
+  try {
+    const params = new URLSearchParams({ statuses: "done", limit: "6", offset: "0" });
+    const r = await fetch(`/api/jobs?${params}`, {
+      credentials: "include",
+      signal: controller.signal,
+    });
+    const data = await readJsonResponse(r, {});
+    if (!r.ok) {
+      throw new ApiRequestError(apiErrorMessage(r, data, "加载首页任务失败"), {
+        status: r.status,
+        authExpired: r.status === 401,
+      });
+    }
+    if (homeDashboardController !== controller) return;
+    homeRecentJobs.value = data.data || [];
+    homeDashboardError.value = "";
+  } catch (e) {
+    if (e.name !== "AbortError") {
+      homeDashboardError.value = normalizeApiError(e, "加载首页任务失败");
+      if (!silent && !e?.authExpired) showToast(homeDashboardError.value, "error");
+    }
+  } finally {
+    if (homeDashboardController === controller) {
+      homeDashboardController = null;
+      homeDashboardLoading.value = false;
+    }
+  }
 };
 
 const updateHistoryGroup = (groupId, patch) => {
@@ -4626,7 +4709,10 @@ const initializeAppData = async () => {
     }
     await loadProjects();
     await refreshSidebarData();
-    await loadTaskCenter({ silent: true });
+    await Promise.all([
+      loadTaskCenter({ silent: true }),
+      loadHomeDashboard({ silent: true }),
+    ]);
     appInitialized = true;
     return true;
   } catch (e) {
@@ -8184,6 +8270,12 @@ const navigateToJob = jobOrId => {
   if (path) router.push({ path });
 };
 
+const openHomeProject = project => {
+  if (!project?.id) return;
+  openRecentProject(project);
+  sidebarCollapsed.value = false;
+};
+
 // ══════════════════════════════════════════════════════════════════════════════
 // Route components
 // ══════════════════════════════════════════════════════════════════════════════
@@ -8303,23 +8395,110 @@ const Home = {
       </div>
     </section>
 
-    <!-- Empty state -->
-    <div v-if="!selectedJob" class="empty-main">
-      <div class="empty-main-title">常用入口</div>
-      <div class="empty-action-grid">
-        <button class="empty-action-card" type="button" @click="showGuide=true">
-          <strong>打开使用指南</strong>
-          <span>查看上传、对比、AI 和社区说明</span>
+    <!-- Returning-user workbench -->
+    <section v-if="!selectedJob" class="home-workbench">
+      <header class="home-workbench-head">
+        <div>
+          <span class="home-eyebrow">Performance Workbench</span>
+          <h2>继续你的性能分析</h2>
+          <p>跟进进行中的任务，或回到最近的结果和项目。</p>
+        </div>
+        <div class="home-stat-row">
+          <span><strong>{{ taskCenterActiveJobs.length }}</strong> 进行中</span>
+          <span><strong>{{ homeRecentJobs.length }}</strong> 最近结果</span>
+          <span><strong>{{ projects.length }}</strong> 项目</span>
+        </div>
+      </header>
+
+      <section v-if="taskCenterActiveJobs.length" class="home-active-panel">
+        <div class="home-panel-head">
+          <div>
+            <strong>正在分析</strong>
+            <small>任务完成后会自动更新并提醒你</small>
+          </div>
+          <button class="link-btn" type="button" @click.stop="toggleTaskCenter">查看任务中心</button>
+        </div>
+        <div class="home-active-grid">
+          <button v-for="job in taskCenterActiveJobs" :key="job.id" class="home-active-job" type="button" @click="navigateToJob(job)">
+            <span :class="['home-job-status', 'status-'+job.status]">{{ statusIcon(job.status) }}</span>
+            <span class="home-job-main">
+              <strong>{{ taskCenterJobLabel(job) }}</strong>
+              <small>{{ taskCenterJobMeta(job) }}</small>
+            </span>
+            <span>{{ statusText(job.status) }}</span>
+          </button>
+        </div>
+      </section>
+
+      <div v-if="homeHasActivity" class="home-dashboard-grid">
+        <section class="home-dashboard-panel">
+          <div class="home-panel-head">
+            <div>
+              <strong>最近完成</strong>
+              <small>快速回到最近的分析结果</small>
+            </div>
+            <button class="link-btn" type="button" :disabled="homeDashboardLoading" @click="loadHomeDashboard()">
+              {{ homeDashboardLoading ? '刷新中' : '刷新' }}
+            </button>
+          </div>
+          <div v-if="homeDashboardError" class="home-panel-error">
+            <span>{{ homeDashboardError }}</span>
+            <button type="button" @click="loadHomeDashboard()">重试</button>
+          </div>
+          <div v-if="homeRecentJobs.length" class="home-list">
+            <button v-for="job in homeRecentJobs" :key="job.id" class="home-list-row" type="button" @click="navigateToJob(job)">
+              <span class="home-job-status status-done">{{ statusIcon(job.status) }}</span>
+              <span class="home-job-main">
+                <strong>{{ taskCenterJobLabel(job) }}</strong>
+                <small>{{ taskCenterJobMeta(job) }}</small>
+              </span>
+              <span :class="['job-mode-badge', 'mode-'+job.mode]">{{ job.mode==='compare' ? '对比' : '单文件' }}</span>
+            </button>
+          </div>
+          <div v-else-if="!homeDashboardLoading" class="home-panel-empty">尚无已完成任务，提交首个 trace 后会显示在这里。</div>
+        </section>
+
+        <section class="home-dashboard-panel">
+          <div class="home-panel-head">
+            <div>
+              <strong>最近项目</strong>
+              <small>继续项目内的实验和对比</small>
+            </div>
+            <span class="home-panel-count">{{ homeRecentProjects.length }}</span>
+          </div>
+          <div v-if="homeRecentProjects.length" class="home-project-list">
+            <div v-for="project in homeRecentProjects" :key="project.id" class="home-project-row">
+              <button class="home-project-main" type="button" @click="openHomeProject(project)">
+                <span :class="['home-project-icon', project.is_public ? 'shared' : '']">{{ project.is_public ? '共' : '项' }}</span>
+                <span>
+                  <strong>{{ project.label }}</strong>
+                  <small>{{ recentProjectSubtitle(project) }}</small>
+                </span>
+              </button>
+              <button v-if="project.has_experiment_tree" class="home-project-tree" type="button" @click="openRecentProjectTree(project)">实验树</button>
+            </div>
+          </div>
+          <div v-else class="home-panel-empty">创建项目后，可在这里快速返回项目任务。</div>
+        </section>
+      </div>
+
+      <section v-else class="home-welcome-panel">
+        <strong>从第一个 Trace 开始</strong>
+        <span>上传单个 trace 查看热点，或上传两个 trace 直接比较性能变化。</span>
+      </section>
+
+      <div class="home-shortcuts">
+        <button class="home-shortcut" type="button" @click="showGuide=true">
+          <strong>使用指南</strong>
+          <span>了解上传、对比、AI 分析和结果解读</span>
         </button>
-        <button class="empty-action-card" type="button" @click="$router.push('/feedback')">
-          <strong>进入灵感社区</strong>
-          <span>提建议、看讨论、@ 同事一起完善工具</span>
+        <button class="home-shortcut" type="button" @click="$router.push('/feedback')">
+          <strong>灵感社区</strong>
+          <span>提建议、看讨论，与同事一起完善分析方法</span>
         </button>
       </div>
-      <div class="empty-main-tips">
-        <div class="empty-tip-item">支持 .json.gz、.gz、.json.zip、.zip、.json、.tar.gz、.tgz，默认下载为 .json.gz</div>
-      </div>
-    </div>
+      <div class="home-format-tip">支持 .json.gz、.gz、.json.zip、.zip、.json、.tar.gz、.tgz</div>
+    </section>
   `,
   setup() {
     const fileInputA = ref(null);
@@ -8329,6 +8508,9 @@ const Home = {
       uploadQueue, submitting, uploadProgress,
       form, projects, projectOptionLabel, selectedJob,
       historyGroupsTotal, sidebarTab, showGuide, uploadFileMeta,
+      taskCenterActiveJobs, taskCenterJobLabel, taskCenterJobMeta, toggleTaskCenter,
+      homeRecentJobs, homeRecentProjects, homeHasActivity, homeDashboardLoading, homeDashboardError,
+      loadHomeDashboard, navigateToJob, openHomeProject, openRecentProjectTree, recentProjectSubtitle,
       setQuickUploadMode,
       onDrop, onFileChange, clearFile, submitJob,
       onQuickDrop, onQuickFileChange, clearQuickCompareFile, submitQuickCompare,
@@ -12573,6 +12755,9 @@ router.beforeEach(async (to, from) => {
   if (!newJobHandle) {
     // Navigated to home -- clean up
     clearSelectedJobRoute();
+    if (from.params?.id || from.path.startsWith("/project/") || from.name === "feedback") {
+      loadHomeDashboard({ silent: true });
+    }
     return;
   }
 
@@ -12821,6 +13006,7 @@ const App = {
       clearInterval(taskCenterPollTimer);
       taskCenterPollTimer = null;
       taskCenterController?.abort();
+      homeDashboardController?.abort();
       feedbackImageMutationObserver?.disconnect();
       if (feedbackImageResizeRaf) window.cancelAnimationFrame(feedbackImageResizeRaf);
     });

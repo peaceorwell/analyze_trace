@@ -72,7 +72,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.5.10",
+        "version": "0.5.11",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -2942,6 +2942,8 @@ def test_jobs_can_filter_task_center_statuses(client):
     payload = response.json()
     assert payload["total"] == 3
     assert [item["status"] for item in payload["data"]] == ["running", "pending", "error"]
+    recent_done = client.get("/api/jobs?statuses=done&limit=6")
+    assert [item["id"] for item in recent_done.json()["data"]] == ["job-done"]
     assert client.get("/api/jobs?statuses=unknown").status_code == 400
 
 
