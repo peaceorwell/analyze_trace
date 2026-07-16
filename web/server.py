@@ -59,7 +59,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.5.1"
+APP_VERSION = "0.5.2"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -9200,7 +9200,7 @@ async def reanalyze_job_steps(request: Request, jid: str, body: dict):
                 name_b, new_b_path, new_b_gzip_path,
                 source_a, source_b,
                 step_filter_a, step_filter_b,
-                int(job.get("save_triton_csv", 0) or 0),
+                1,
                 int(job.get("save_triton_code", 0) or 0),
             ),
         )

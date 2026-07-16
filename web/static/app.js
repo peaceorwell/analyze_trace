@@ -172,7 +172,7 @@ const chartCanvasReady  = ref(false);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.5.1");
+const appVersion = ref("0.5.2");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -682,6 +682,14 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.2",
+    date: "2026-07-16",
+    title: "保留 Step 重分析效率 CSV",
+    items: [
+      "指定 step 重分析会保留逐 step Triton kernel 效率 CSV，以及 Triton 与非 Triton 效率汇总 CSV。",
+    ],
+  },
   {
     version: "0.5.1",
     date: "2026-07-10",
@@ -2381,7 +2389,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.5.1";
+  appVersion.value = cfg.version || "0.5.2";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;

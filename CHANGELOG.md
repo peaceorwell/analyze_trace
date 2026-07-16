@@ -2,6 +2,10 @@
 
 本文件记录 Torch Profiler Analyzer 的主要版本更新。
 
+## [0.5.2] - 2026-07-16
+
+- 修复指定 step 重分析未保留逐 step Triton kernel 效率 CSV 的问题，同时保留 Triton 与非 Triton 效率汇总 CSV。
+
 ## [0.5.1] - 2026-07-10
 
 - 逐 step Triton CSV 新增 `launch_dims` 列，汇总 kernel trace 中的 `dimx/dimy/dimz` 启动维度。

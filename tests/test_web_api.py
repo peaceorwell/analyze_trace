@@ -70,7 +70,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.5.1",
+        "version": "0.5.2",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -4566,7 +4566,7 @@ def test_step_reanalysis_creates_single_job(
                     save_triton_csv, save_triton_code
                 ) VALUES(?,?,?,?,?,?,?,?)
                 """,
-                ("single-source", "single", "single", "done", "trace.json", sample_trace_file, 1, 1),
+                ("single-source", "single", "single", "done", "trace.json", sample_trace_file, 0, 1),
             )
             await db.commit()
         finally:
@@ -4589,6 +4589,51 @@ def test_step_reanalysis_creates_single_job(
     assert job["save_triton_code"] == 1
     assert Path(job["file_a_path"]).exists()
     assert enqueued == [job["id"]]
+
+
+def test_step_reanalysis_keeps_efficiency_csvs_when_source_disabled_triton_csv(
+    client,
+    sample_trace_file,
+    monkeypatch,
+):
+    async def fake_enqueue(_job_id):
+        return None
+
+    monkeypatch.setattr(web_server, "enqueue_analysis_job", fake_enqueue)
+
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO jobs(
+                    id, label, mode, status, file_a_name, file_a_path,
+                    save_triton_csv, save_triton_code
+                ) VALUES(?,?,?,?,?,?,?,?)
+                """,
+                ("single-source-no-csv", "single", "single", "done", "trace.json", sample_trace_file, 0, 0),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+
+    response = client.post(
+        "/api/jobs/single-source-no-csv/reanalyze-steps",
+        json={"step_filter_a": "0"},
+    )
+
+    assert response.status_code == 201
+    job = response.json()
+    assert job["save_triton_csv"] == 1
+
+    asyncio.run(web_server.run_analysis(job["id"]))
+
+    result_files = {path.name for path in Path(web_server.result_dir(job["id"])).glob("*.csv")}
+    assert "step_0_triton_kernels.csv" in result_files
+    assert "triton_kernels_avg.csv" in result_files
+    assert "non_triton_kernel_efficiency_avg.csv" in result_files
 
 
 def test_compare_trace_slot_analysis_creates_single_job(
