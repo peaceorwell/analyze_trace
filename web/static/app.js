@@ -172,7 +172,7 @@ const chartCanvasReady  = ref(false);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.5.3");
+const appVersion = ref("0.5.4");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -700,7 +700,7 @@ const profileForm = reactive({
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
   {
-    version: "0.5.3",
+    version: "0.5.4",
     date: "2026-07-16",
     title: "修复项目管理操作",
     items: [
@@ -2417,7 +2417,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.5.3";
+  appVersion.value = cfg.version || "0.5.4";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;

@@ -1,6 +1,6 @@
 ---
 name: e2e-profiling-comparator
-description: Use when comparing E2E profiling captures from different versions, devices, or configurations to find where the current run is worse than a chosen baseline, using per-file breakdown tables from selected cnperf DB time ranges.
+description: Compare baseline and current cnperf SQLite databases or PyTorch profiler Chrome traces across versions, devices, or configurations. Use when locating E2E regressions, extra work, host/device gaps, communication exposure, memcpy changes, torch.compile graph/fusion changes, Triton efficiency changes, or rank skew in aligned time ranges.
 ---
 
 # E2E Profiling Comparator
@@ -43,11 +43,11 @@ The final `report.md` must use this exact high-level structure:
    - If current-side table collection reports `custom_op_simple_aten.must_report=true`, or `Custom Op Simple Aten Nesting Delta` has a current row with `report_priority_B=high`, one finding must cover that custom-op/simple-aten issue. Use 4 findings if needed instead of dropping it.
    - Do not output sibling bullets like `- 结论` / `- 证据` / `- 建议`; that renders as a flat wall in the Web UI.
 3. `## 对比口径`
-   - Baseline/current files, selected windows, devices, and `Delta = B - A`.
+   - Baseline/current files, selected windows, devices, workload-equivalence checks, warm-state checks, profiler parity, and `Delta = B - A`.
 4. `## 关键 Delta`
    - Compact Markdown table with metric, A, B, delta, interpretation, and source.
 5. `## 优先行动`
-   - Prioritized actions with expected benefit, implementation cost, risk, and validation method.
+   - Prioritized actions with expected benefit, mechanism, implementation cost, risk, correctness guardrail, and validation method.
 6. `## 不确定性与下一步`
    - Missing evidence and the next check that would reduce uncertainty.
 7. `## 产物`
@@ -68,6 +68,20 @@ promoting them to top findings or primary actions.
 - `scripts/torch_trace_to_cnperf_db.py`: convert PyTorch profiler Chrome trace JSON/JSON.GZ to a cnperf-compatible SQLite DB before table collection.
 - `references/db_schema.md`: load when writing direct DB queries or interpreting table fields.
 - `references/profiling_concepts.md`: load before turning observed differences into causal hypotheses.
+- `references/pytorch_performance_playbook.md`: workload-equivalence, warm-state, profiler-overhead, evidence, PyTorch/Inductor, and validation rules. Always load before choosing comparison windows.
+
+## Comparison Validity Gate
+
+Apply the gate in `references/pytorch_performance_playbook.md` before computing deltas. Record each item as pass, partial, fail, or unknown:
+
+1. The two windows contain the same semantic work: training/inference mode, forward/backward/optimizer scope, and equivalent step/request boundaries.
+2. Batch, sequence/tokens, shapes, dtype/precision, grad mode, model mode, rank role, world size, and parallelism layout match or are normalized to an equivalent unit.
+3. Both sides represent the same warm state. Keep compilation, autotuning, initialization, and cache population out of steady-state comparisons.
+4. Profiler activities and expensive options such as stack, shape, memory, or Python tracing are equivalent.
+5. The windows contain enough repeated stable work to avoid treating one maximum event as a regression.
+6. External correctness and executed-work parity are available or explicitly marked unverified.
+
+If semantic work or warm state fails, do not state a confirmed performance regression. Continue with a diagnostic comparison, label it `confounded`, and put the exact mismatch and required recapture under `## 不确定性与下一步`. If raw work differs but a valid unit is known, compare normalized time and report raw totals separately.
 
 ## Workflow
 
@@ -81,6 +95,7 @@ promoting them to top findings or primary actions.
    - Version regression: baseline = known-good run; current = run under investigation.
    - Device comparison: baseline = expected-aligned or faster device; current = device under analysis.
    - Configuration experiment: baseline = control configuration; current = experiment configuration.
+   - Record the Comparison Validity Gate result before selecting windows; use aligned stable windows whenever possible.
 3. Prepare each capture upstream.
    - Resolve `SKILL_DIR` to this skill directory's absolute path before running any command. Derive it from the path this skill was loaded from (`<SKILL_DIR>/SKILL.md`); if unavailable, locate it once with `SKILL_DIR=$(dirname "$(find "$HOME/.claude" "$PWD" -type f -path '*/e2e-profiling-comparator/SKILL.md' 2>/dev/null | head -n1)")` and verify `SKILL_DIR/scripts/collect_profile_tables.py` exists.
    - Convert JSON/JSON.GZ traces to cnperf-compatible DB in the temporary analysis directory when needed.
@@ -150,9 +165,9 @@ Useful converter options:
 The converter requires Python module `simdjson` from package `pysimdjson`. If the active Python cannot import it, create a local venv and install there:
 
 ```bash
-python3 -m venv .venv-trace-convert
-.venv-trace-convert/bin/python -m pip install pysimdjson
-.venv-trace-convert/bin/python "$SKILL_DIR/scripts/torch_trace_to_cnperf_db.py" \
+python3 -m venv "$ANALYSIS_DIR/.venv-trace-convert"
+"$ANALYSIS_DIR/.venv-trace-convert/bin/python" -m pip install pysimdjson
+"$ANALYSIS_DIR/.venv-trace-convert/bin/python" "$SKILL_DIR/scripts/torch_trace_to_cnperf_db.py" \
   capture.pt.trace.json.gz \
   --out "$ANALYSIS_DIR/baseline.db" \
   --report "$ANALYSIS_DIR/baseline.convert_report.json" \
@@ -264,6 +279,11 @@ Emitted only when the DB carries compiled-region annotations or `triton_*` kerne
 ## Analysis Guidance
 
 - Treat the chosen baseline/current meaning as part of the analysis contract before comparing tables.
+- Report the Comparison Validity Gate in `## 对比口径`; unresolved workload, warm-state, profiler, or correctness mismatches cap the conclusion at a supported hypothesis.
+- Separate more work from slower execution: compare kernel/operator count and shape mix before attributing a larger total to lower kernel efficiency.
+- Treat a lower total with missing kernel/operator work as a possible semantic mismatch, not an improvement.
+- Prefer aggregate contribution plus average/p90 behavior. A maximum-only delta is an outlier signal until repeated steps or another capture corroborates it.
+- Keep compile/autotune/cache-population deltas separate from steady-state execution deltas.
 - Prioritize current regressions: larger total time, higher count, worse avg/p90/max, higher uncovered time, lower bandwidth, or higher gap/idle share.
 - Write the final deliverable using the exact concise `Final Report Contract` structure.
 - Include an `## 产物` section with the temporary analysis directory, report path, converted DB paths, table collection outputs, and delta comparison outputs used as evidence.
@@ -284,3 +304,4 @@ Emitted only when the DB carries compiled-region annotations or `triton_*` kerne
 - For other activity differences, inspect notifier, atomic operation, memset, or related device task tables.
 - When both captures are single-card, treat communication-kernel deltas with caution: single-card communication exposure is dominated by waiting for absent peers, so a comm delta reflects timing/exposure noise more than real communication cost. Do not draw cross-rank communication conclusions from single-card captures unless multi-rank captures are provided.
 - End with suggested follow-up branches, not a forced root cause.
+- For every priority action, include the causal mechanism, one controlled A/B experiment, warm-up and repeat policy, end-to-end success metric, correctness guardrail, and rollback condition.

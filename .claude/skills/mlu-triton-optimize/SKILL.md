@@ -1,8 +1,6 @@
 ---
 name: mlu-triton-optimize
 description: Analyze generated Triton output_code for Cambricon MLU optimization opportunities. Use when a trace report needs Triton-kernel code-level optimization candidates, especially for torch.compile/Inductor generated kernels.
-disable-model-invocation: false
-user-invocable: true
 ---
 
 # MLU Triton Code Optimization Analyzer
@@ -44,6 +42,20 @@ Use a source-informed, validation-first flow. The goal is not to prove that a re
 4. **Inspect compute shape**: look for libdevice-eligible math, division lowering opportunities, dtype conversion chains, reductions, and expensive scalarized index arithmetic.
 5. **Inspect mapping/tuning shape**: look for multi-dimensional `program_id`, `tl.num_programs`, `num_warps`, `num_stages`, missing autotune/config signals, and tile/block sizes that should be swept. Treat tiling as a config space, not a single `BLOCK_*` knob.
 6. **Report as validation targets**: recommendations should say what to benchmark or trace next, not claim guaranteed speedup.
+
+## Benchmark And Correctness Gate
+
+Static source inspection cannot prove a speedup. Attach this gate to every reported candidate:
+
+1. Preserve output, loss, gradient, dtype, NaN/Inf, aliasing, and boundary-mask behavior across representative shapes, strides, and edge sizes.
+2. Separate compile/autotune/cache warm-up from steady-state execution. Benchmark after warm-up and report cold-start cost separately when relevant.
+3. Use synchronized accelerator measurements or trace kernel timestamps; do not use unsynchronized Python enqueue time.
+4. Measure repeated runs and report a typical statistic plus a tail statistic. Treat a one-off maximum as noise until reproduced.
+5. Test the production shape distribution, not only the shape that generated one `output_code` file.
+6. Keep one controlled change per experiment and compare end-to-end latency/throughput first, then kernel time, bandwidth, launch count, and memory/resource pressure.
+7. Roll back when correctness changes, tail latency or memory regresses, or the gain is below run-to-run noise.
+
+Prioritize candidates by measured critical-path contribution. Fusion or larger tiles can reduce DRAM traffic and launches but can also increase NRAM/register pressure, live ranges, padding, or recomputation; always re-profile the result.
 
 Focus on optimization opportunities visible from generated Triton code:
 
@@ -92,7 +104,14 @@ These heuristics are intentionally lightweight and stable enough for Web-side au
 - Triton `tl.load` supports cache and eviction hints; only suggest them for reused true-gather/table operands after ruling out regular bulk IO.
 - Roofline-style reasoning separates memory-shaped and compute-shaped kernels using arithmetic intensity. Use it to choose which optimization family to validate first.
 - Vendor Triton optimization guides generally start with profiling context, then inspect IR/source, tune meta-parameters, and only then check lower-level generated code. Keep the final report aligned with that order.
-- Recent auto-tuning/agentic Triton work uses static rules plus profiling feedback loops; therefore every recommendation should include a concrete benchmark or re-trace validation method.
+- Triton autotuning evaluates several `triton.Config` choices and can rerun the kernel for every configuration; preserve/reset mutated outputs and keep autotune cost out of steady-state timing.
+
+## Primary Sources
+
+- Triton fused softmax: fusion, DRAM-traffic accounting, padding, occupancy, and benchmark structure: https://triton-lang.org/main/getting-started/tutorials/02-fused-softmax.html
+- Triton autotune and mutation/reset behavior: https://triton-lang.org/main/python-api/generated/triton.autotune.html
+- Triton configuration parameters: https://triton-lang.org/main/python-api/generated/triton.Config.html
+- PyTorch benchmark warm-up, synchronization, and replicates: https://docs.pytorch.org/docs/stable/benchmark_utils.html
 
 ## Output Expectations
 
@@ -100,12 +119,14 @@ The JSON output must be machine-readable and include:
 
 - `has_findings`: whether actionable candidates were found.
 - `summary`: scanned file count, finding count, and top strategy names.
+- `validation_protocol`: correctness, measurement, success-metric, and rollback checks that must accompany every candidate.
 - `final_report_guidance`: concise Chinese guidance for the parent E2E report, including whether the candidates must be surfaced, whether they should be promoted to a top finding/action, suggested placement, top strategies, candidate summaries, and `required_table_md`, a compact Markdown table with all detected Triton code candidates that can be copied into the final report.
 - `kernels`: sorted by priority, each containing `kernel_name`, `file`, optional IO-efficiency metrics, `estimated_profile`, `priority`, `priority_score`, and `findings`.
 
 The Markdown output should be short enough to read in the final AI report:
 
 - A compact summary.
+- A validation protocol that keeps correctness, warm state, repeated synchronized measurements, end-to-end benefit, and rollback criteria explicit.
 - A top-candidate table with observed BW utilization, estimated compute rate, and merged optimization direction/recommendation. Do not recompute or restate IO throughput in the table when BW utilization is already available. Do not use a separate evidence column in the final table.
 - When Cambricon Triton 101 or Helion-inspired heuristics are triggered, surface them explicitly in the merged recommendation as bullets prefixed with `Triton 101：` or `Helion：`; do not hide them behind generic strategy names such as `retiling` or `canonicalize`.
 - Per-kernel findings with evidence lines and recommendations.
@@ -118,6 +139,7 @@ When this skill is used by `e2e-profiling-analyzer`, its output should augment t
 - Always make `has_findings=true` visible in the final E2E report: copy or faithfully summarize `final_report_guidance.required_table_md` as an independent top-level `## Triton Kernel 代码优化` section, preserving all candidate rows. Place it after `## 优先行动` and before `## 不确定性与下一步`.
 - Promote high-priority Triton-code findings to the final report when their kernel time, low bandwidth utilization, or repeated pattern is material.
 - Avoid claiming a transformation is definitely profitable. Phrase recommendations as validation targets unless runtime evidence confirms the gain.
+- Carry `validation_protocol` into the priority action or `## 不确定性与下一步`; static findings alone must never be labeled confirmed.
 
 ## Guardrails
 

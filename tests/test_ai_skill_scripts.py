@@ -15,6 +15,10 @@ COMPILE_SEGMENTATION_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scri
 COLLECT_SCRIPT = ROOT / ".claude/skills/e2e-profiling-comparator/scripts/collect_profile_tables.py"
 COMPARE_SCRIPT = ROOT / ".claude/skills/e2e-profiling-comparator/scripts/compare_profile_tables.py"
 E2E_ANALYZER_SKILL = ROOT / ".claude/skills/e2e-profiling-analyzer/SKILL.md"
+E2E_COMPARATOR_SKILL = ROOT / ".claude/skills/e2e-profiling-comparator/SKILL.md"
+ANALYZER_BRANCH_WORKFLOWS = ROOT / ".claude/skills/e2e-profiling-analyzer/references/branch_workflows.md"
+ANALYZER_PERFORMANCE_PLAYBOOK = ROOT / ".claude/skills/e2e-profiling-analyzer/references/pytorch_performance_playbook.md"
+COMPARATOR_PERFORMANCE_PLAYBOOK = ROOT / ".claude/skills/e2e-profiling-comparator/references/pytorch_performance_playbook.md"
 
 
 def load_module(name, path):
@@ -408,6 +412,12 @@ def triton_poi_fused_second(in_ptr0, out_ptr, N:tl.constexpr = 256, BLOCK:tl.con
     markdown = module.render_markdown(payload)
 
     assert payload["has_findings"] is True
+    assert payload["validation_protocol"]["correctness"]
+    assert payload["validation_protocol"]["measurement"]
+    assert payload["validation_protocol"]["success_metrics"]
+    assert payload["validation_protocol"]["rollback"]
+    assert "## Validation Protocol" in markdown
+    assert "end-to-end latency or throughput improvement" in markdown
     assert guidance["must_surface"] is True
     assert guidance["promote_to_finding"] is True
     assert "Triton output_code" in guidance["summary_cn"]
@@ -712,3 +722,18 @@ def test_e2e_analyzer_skill_keeps_one_final_report_contract():
     assert text.count("Output contract:\n\n- `结论概览`") == 0
     assert "Report Readability Gate" in text
     assert "Follow only the `Final Report Contract` above" in text
+
+
+def test_profiling_skills_keep_progressive_disclosure_and_validity_gates():
+    analyzer = E2E_ANALYZER_SKILL.read_text(encoding="utf-8")
+    comparator = E2E_COMPARATOR_SKILL.read_text(encoding="utf-8")
+
+    assert len(analyzer.splitlines()) < 500
+    assert len(comparator.splitlines()) < 500
+    assert "references/branch_workflows.md" in analyzer
+    assert "references/pytorch_performance_playbook.md" in analyzer
+    assert "Comparison Validity Gate" in comparator
+    assert "references/pytorch_performance_playbook.md" in comparator
+    assert ANALYZER_BRANCH_WORKFLOWS.is_file()
+    assert ANALYZER_PERFORMANCE_PLAYBOOK.is_file()
+    assert COMPARATOR_PERFORMANCE_PLAYBOOK.is_file()

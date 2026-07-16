@@ -79,6 +79,25 @@ DTYPE_BYTES = {
     "bool": 1,
 }
 
+VALIDATION_PROTOCOL = {
+    "correctness": [
+        "Compare outputs, loss, and gradients where applicable across representative shapes, dtypes, strides, and boundary sizes.",
+        "Define numerical tolerances and preserve NaN/Inf, masking, aliasing, and dtype semantics.",
+    ],
+    "measurement": [
+        "Separate compile/autotune/cache warm-up from steady state and benchmark only after warm-up.",
+        "Use synchronized accelerator timing or device trace timestamps and collect repeated measurements with typical and tail statistics.",
+        "Test the production shape distribution with one controlled code/configuration change per experiment.",
+    ],
+    "success_metrics": [
+        "Require end-to-end latency or throughput improvement before accepting a kernel-only win.",
+        "Use kernel time, bandwidth utilization, launch count, and memory/resource pressure as supporting metrics.",
+    ],
+    "rollback": [
+        "Reject the change on correctness failure, tail-latency or memory regression, or benefit below run-to-run noise.",
+    ],
+}
+
 
 def _read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
@@ -1332,6 +1351,7 @@ def analyze(input_dir: str | None, efficiency_json: str | None, top: int = 0) ->
             "finding_count": sum(len(item["findings"]) for item in kernels),
             "top_strategies": [{"strategy": name, "count": count} for name, count in top_strategies[:8]],
         },
+        "validation_protocol": VALIDATION_PROTOCOL,
         "final_report_guidance": _final_report_guidance(kernels, len(files)),
         "kernels": kernels,
     }
@@ -1367,6 +1387,12 @@ def render_markdown(payload: dict[str, Any]) -> str:
     if summary["top_strategies"]:
         joined = ", ".join(f"{item['strategy']} x{item['count']}" for item in summary["top_strategies"])
         lines.append(f"- Top strategies: {joined}")
+    protocol = payload.get("validation_protocol") or {}
+    if protocol:
+        lines.extend(["", "## Validation Protocol", ""])
+        for group in ("correctness", "measurement", "success_metrics", "rollback"):
+            for item in protocol.get(group, []):
+                lines.append(f"- **{group}**: {item}")
     guidance = payload.get("final_report_guidance") or {}
     if guidance:
         lines.append(f"- Final report placement: {guidance.get('suggested_placement', '-')}")
