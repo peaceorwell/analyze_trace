@@ -179,7 +179,7 @@ const chartCanvasReady  = ref(false);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.5.12");
+const appVersion = ref("0.5.13");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -703,6 +703,16 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.13",
+    date: "2026-07-16",
+    title: "项目选择更快更清晰",
+    items: [
+      "上传 Trace 时可直接搜索项目，项目较多时无需在超长列表中逐项查找。",
+      "项目列表限制显示高度，并将收藏、我的项目和共享项目分组展示。",
+      "项目选择支持方向键、Enter 和 Esc 操作，长名称可悬浮查看完整内容。",
+    ],
+  },
   {
     version: "0.5.12",
     date: "2026-07-16",
@@ -2561,7 +2571,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.5.12";
+  appVersion.value = cfg.version || "0.5.13";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -8302,7 +8312,173 @@ const openHomeProject = project => {
 // Route components
 // ══════════════════════════════════════════════════════════════════════════════
 
+let projectPickerSequence = 0;
+const ProjectPicker = {
+  props: {
+    modelValue: { type: String, default: "" },
+    projects: { type: Array, default: () => [] },
+  },
+  emits: ["update:modelValue"],
+  template: `
+    <div class="project-picker" @focusout="onFocusOut" @keydown.esc.stop="closePicker">
+      <button
+        class="project-picker-trigger input"
+        type="button"
+        role="combobox"
+        :aria-expanded="String(open)"
+        :aria-controls="listboxId"
+        :title="selectedProject?.name || '未分组'"
+        @click="togglePicker"
+        @keydown.down.prevent="openAndMove(1)"
+        @keydown.up.prevent="openAndMove(-1)"
+      >
+        <span :class="['project-picker-mark', selectedProject?.is_public ? 'shared' : '']" aria-hidden="true">
+          {{ selectedProject ? (selectedProject.is_public ? '共' : '项') : '—' }}
+        </span>
+        <span class="project-picker-value">{{ selectedProject?.name || '未分组' }}</span>
+        <span v-if="selectedProject?.is_favorite" class="project-picker-favorite" aria-label="已收藏">★</span>
+        <span class="project-picker-chevron" aria-hidden="true">⌄</span>
+      </button>
+
+      <div v-if="open" class="project-picker-popover">
+        <div class="project-picker-search-wrap">
+          <span aria-hidden="true">⌕</span>
+          <input
+            ref="searchInput"
+            v-model="query"
+            class="project-picker-search"
+            placeholder="快速搜索项目..."
+            aria-label="快速搜索项目"
+            @keydown.down.prevent="moveActive(1)"
+            @keydown.up.prevent="moveActive(-1)"
+            @keydown.enter.prevent="selectActive"
+          />
+          <span class="project-picker-count">{{ filteredProjects.length }}</span>
+        </div>
+        <div :id="listboxId" class="project-picker-list" role="listbox" aria-label="项目">
+          <template v-for="group in groupedProjects" :key="group.key">
+            <div v-if="group.label" class="project-picker-group">{{ group.label }}</div>
+            <button
+              v-for="project in group.items"
+              :key="project.id || '__none__'"
+              :class="['project-picker-option', optionIndex(project) === activeIndex ? 'active' : '', project.id === modelValue ? 'selected' : '']"
+              type="button"
+              role="option"
+              :aria-selected="String(project.id === modelValue)"
+              :title="project.name"
+              @mouseenter="activeIndex = optionIndex(project)"
+              @mousedown.prevent="choose(project.id)"
+            >
+              <span :class="['project-picker-mark', project.is_public ? 'shared' : '']" aria-hidden="true">
+                {{ project.id ? (project.is_public ? '共' : '项') : '—' }}
+              </span>
+              <span class="project-picker-option-main">
+                <strong>{{ project.name }}</strong>
+                <small>{{ projectMeta(project) }}</small>
+              </span>
+              <span v-if="project.is_favorite" class="project-picker-favorite" aria-label="已收藏">★</span>
+              <span v-if="project.id === modelValue" class="project-picker-check" aria-hidden="true">✓</span>
+            </button>
+          </template>
+          <div v-if="!flatProjects.length" class="project-picker-empty">
+            没有匹配“{{ query.trim() }}”的项目
+          </div>
+        </div>
+        <div class="project-picker-hint">↑↓ 选择 · Enter 确认 · Esc 关闭</div>
+      </div>
+    </div>
+  `,
+  setup(props, { emit }) {
+    const open = ref(false);
+    const query = ref("");
+    const activeIndex = ref(0);
+    const searchInput = ref(null);
+    const listboxId = `project-picker-${++projectPickerSequence}`;
+    const ungroupedProject = Object.freeze({ id: "", name: "未分组", is_public: false, is_favorite: false });
+    const selectedProject = computed(() =>
+      props.projects.find(project => project.id === props.modelValue) || null
+    );
+    const filteredProjects = computed(() => {
+      const keyword = query.value.trim().toLocaleLowerCase();
+      if (!keyword) return props.projects;
+      return props.projects.filter(project =>
+        String(project.name || "").toLocaleLowerCase().includes(keyword)
+      );
+    });
+    const groupedProjects = computed(() => {
+      const matches = filteredProjects.value;
+      if (query.value.trim()) {
+        return [{ key: "results", label: "搜索结果", items: matches }];
+      }
+      const favoriteIds = new Set(matches.filter(project => project.is_favorite).map(project => project.id));
+      return [
+        { key: "default", label: "", items: [ungroupedProject] },
+        { key: "favorites", label: "收藏", items: matches.filter(project => project.is_favorite) },
+        {
+          key: "mine",
+          label: "我的项目",
+          items: matches.filter(project => !favoriteIds.has(project.id) && !(project.is_public && project.is_owner === false)),
+        },
+        {
+          key: "shared",
+          label: "共享给我",
+          items: matches.filter(project => !favoriteIds.has(project.id) && project.is_public && project.is_owner === false),
+        },
+      ].filter(group => group.items.length);
+    });
+    const flatProjects = computed(() => groupedProjects.value.flatMap(group => group.items));
+    const projectMeta = project => {
+      if (!project.id) return "不归入任何项目";
+      if (!project.is_public) return "个人项目";
+      return project.is_owner === false ? "共享给我" : "我创建 · 已共享";
+    };
+    const optionIndex = project => flatProjects.value.findIndex(item => item.id === project.id);
+    const focusSelected = () => {
+      const selectedIndex = flatProjects.value.findIndex(project => project.id === props.modelValue);
+      activeIndex.value = selectedIndex >= 0 ? selectedIndex : 0;
+    };
+    const openPicker = () => {
+      open.value = true;
+      query.value = "";
+      focusSelected();
+      nextTick(() => searchInput.value?.focus());
+    };
+    const closePicker = () => {
+      open.value = false;
+      query.value = "";
+    };
+    const togglePicker = () => open.value ? closePicker() : openPicker();
+    const choose = projectId => {
+      emit("update:modelValue", projectId);
+      closePicker();
+    };
+    const moveActive = direction => {
+      if (!flatProjects.value.length) return;
+      activeIndex.value = (activeIndex.value + direction + flatProjects.value.length) % flatProjects.value.length;
+    };
+    const openAndMove = direction => {
+      if (!open.value) openPicker();
+      nextTick(() => moveActive(direction));
+    };
+    const selectActive = () => {
+      const project = flatProjects.value[activeIndex.value];
+      if (project) choose(project.id);
+    };
+    const onFocusOut = event => {
+      if (!event.currentTarget.contains(event.relatedTarget)) closePicker();
+    };
+    watch(query, () => { activeIndex.value = 0; });
+    return {
+      open, query, activeIndex, searchInput, listboxId,
+      selectedProject, filteredProjects, groupedProjects, flatProjects,
+      projectMeta, optionIndex, togglePicker, closePicker, choose,
+      moveActive, openAndMove, selectActive, onFocusOut,
+    };
+  },
+};
+
 const Home = {
+  components: { ProjectPicker },
   template: `
     <!-- Submit form -->
     <section class="card submit-card">
@@ -8343,10 +8519,7 @@ const Home = {
         </div>
         <div class="form-row">
           <label>项目</label>
-          <select v-model="form.projectId" class="input">
-            <option value="">未分组</option>
-            <option v-for="p in projects" :key="p.id" :value="p.id">{{ projectOptionLabel(p) }}</option>
-          </select>
+          <project-picker v-model="form.projectId" :projects="projects"></project-picker>
         </div>
         <div class="form-row">
           <label>别名</label>
@@ -8384,10 +8557,7 @@ const Home = {
         </div>
         <div class="form-row">
           <label>项目</label>
-          <select v-model="form.projectId" class="input">
-            <option value="">未分组</option>
-            <option v-for="p in projects" :key="p.id" :value="p.id">{{ projectOptionLabel(p) }}</option>
-          </select>
+          <project-picker v-model="form.projectId" :projects="projects"></project-picker>
         </div>
         <div class="form-row">
           <label>别名</label>

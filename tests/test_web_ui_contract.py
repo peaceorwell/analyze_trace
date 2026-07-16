@@ -106,6 +106,19 @@ def test_home_page_prioritizes_active_recent_and_project_work():
     assert 'statuses: "done"' in APP_JS
 
 
+def test_upload_project_picker_is_searchable_grouped_and_keyboard_accessible():
+    home = _section(APP_JS, "const Home = {", "const JobDetail = {")
+    picker = _section(APP_JS, "const ProjectPicker = {", "const Home = {")
+
+    assert home.count('<project-picker v-model="form.projectId"') == 2
+    assert 'placeholder="快速搜索项目..."' in picker
+    assert 'label: "收藏"' in picker
+    assert 'label: "我的项目"' in picker
+    assert 'label: "共享给我"' in picker
+    assert '@keydown.down.prevent="moveActive(1)"' in picker
+    assert '@keydown.enter.prevent="selectActive"' in picker
+
+
 def test_primary_web_interactions_are_keyboard_and_screen_reader_accessible():
     assert '<button class="header-brand"' in INDEX_HTML
     assert ':tabindex="historyBulkMode ? -1 : 0"' in INDEX_HTML
