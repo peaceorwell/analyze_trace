@@ -67,3 +67,11 @@ def test_refresh_bootstrap_does_not_flash_the_branded_auth_page():
 
 def test_csv_filter_defaults_to_text_for_the_implicit_contains_operator():
     assert ":type=\"(!colFilterOps[f] || ['~', '!~', '=='].includes(colFilterOps[f])) ? 'text' : 'number'\"" in APP_JS
+
+
+def test_performance_overview_explains_compute_time_scope():
+    assert "设备计算耗时" in APP_JS
+    assert "A 计算耗时" in APP_JS
+    assert "计算 Delta" in APP_JS
+    assert "不等同于模型端到端耗时" in APP_JS
+    assert "avg_count 合计" not in APP_JS

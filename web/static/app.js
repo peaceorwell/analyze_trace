@@ -172,7 +172,7 @@ const chartCanvasReady  = ref(false);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.5.7");
+const appVersion = ref("0.5.8");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -696,6 +696,15 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.8",
+    date: "2026-07-16",
+    title: "明确性能统计口径",
+    items: [
+      "性能总览明确标注设备计算耗时的统计范围，并提示该指标不等同于端到端耗时。",
+      "对比视图中的耗时和 Delta 统一标记为计算口径，调用数说明不再暴露内部字段名。",
+    ],
+  },
   {
     version: "0.5.7",
     date: "2026-07-16",
@@ -2441,7 +2450,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.5.7";
+  appVersion.value = cfg.version || "0.5.8";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -5496,9 +5505,9 @@ const buildChartSummary = (rows, table, sourceConfig) => {
     const slowest = rows.filter(row => row.delta > 0).sort((a, b) => b.delta - a.delta)[0] || null;
     const fastest = rows.filter(row => row.delta < 0).sort((a, b) => a.delta - b.delta)[0] || null;
     return [
-      makeCard("A 总耗时", fmtChartValue(totalA, { unit: "ms" }), totalLabel),
-      makeCard("B 总耗时", fmtChartValue(totalB, { unit: "ms" }), sourceConfig.label),
-      makeCard("总 Delta", fmtChartValue(totalDelta, { unit: "ms" }), "B - A", totalDelta > 0 ? "neg" : totalDelta < 0 ? "pos" : ""),
+      makeCard("A 计算耗时", fmtChartValue(totalA, { unit: "ms" }), `已排除通信 · ${totalLabel}`),
+      makeCard("B 计算耗时", fmtChartValue(totalB, { unit: "ms" }), `已排除通信 · ${sourceConfig.label} · ${totalLabel}`),
+      makeCard("计算 Delta", fmtChartValue(totalDelta, { unit: "ms" }), "B - A", totalDelta > 0 ? "neg" : totalDelta < 0 ? "pos" : ""),
       makeCard("最大回退", slowest ? fmtChartValue(slowest.delta, { unit: "ms" }) : "0", slowest ? shortChartLabel(slowest.label, 28) : "无", "neg", slowest),
       makeCard("最大改善", fastest ? fmtChartValue(fastest.delta, { unit: "ms" }) : "0", fastest ? shortChartLabel(fastest.label, 28) : "无", "pos", fastest),
     ];
@@ -5511,10 +5520,10 @@ const buildChartSummary = (rows, table, sourceConfig) => {
     .sort((a, b) => b.hotValue - a.hotValue)[0] || null;
   const topPct = totalDur && hotspot ? hotspot.hotValue / totalDur * 100 : 0;
   return [
-    makeCard("总耗时", fmtChartValue(totalDur, { unit: "ms" }), totalLabel),
+    makeCard("设备计算耗时", fmtChartValue(totalDur, { unit: "ms" }), `已排除通信 · ${totalLabel}`),
     makeCard("最大热点", hotspot ? fmtChartValue(hotspot.hotValue, { unit: "ms" }) : "0", hotspot ? shortChartLabel(hotspot.label, 28) : "无", "", hotspot),
-    makeCard("总调用数", fmtChartValue(totalCount), "avg_count 合计"),
-    makeCard("Top 占比", `${trimNumber(topPct)}%`, hotspot ? shortChartLabel(hotspot.label, 28) : "无"),
+    makeCard("Kernel 调用数", fmtChartValue(totalCount), "当前已载入数据合计"),
+    makeCard("最大热点占比", `${trimNumber(topPct)}%`, hotspot ? `占设备计算耗时 · ${shortChartLabel(hotspot.label, 28)}` : "无"),
   ];
 };
 
@@ -8337,6 +8346,11 @@ const JobDetail = {
               </label>
             </div>
             <span v-if="chartLoading" class="chart-loading"><span class="spinner-small"></span> 生成图表...</span>
+          </div>
+
+          <div class="chart-scope-note">
+            <span class="chart-scope-badge">统计口径</span>
+            汇总当前数据源已载入的设备计算时间，默认剔除通信类 Kernel/Op；不等同于模型端到端耗时。
           </div>
 
           <div v-if="chartError" class="error-box mb-2">{{ chartError }}</div>
