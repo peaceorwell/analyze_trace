@@ -172,7 +172,7 @@ const chartCanvasReady  = ref(false);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.5.6");
+const appVersion = ref("0.5.7");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -696,6 +696,14 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.7",
+    date: "2026-07-16",
+    title: "修复 CSV 文本筛选",
+    items: [
+      "CSV 表格首次使用列筛选时，会按默认的“包含”操作显示文本输入框，kernel 名称等文本列可直接输入关键词。",
+    ],
+  },
   {
     version: "0.5.6",
     date: "2026-07-16",
@@ -2433,7 +2441,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.5.6";
+  appVersion.value = cfg.version || "0.5.7";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -8639,7 +8647,7 @@ const JobDetail = {
                         v-model="colFilters[f]"
                         class="col-filter-input"
                         :class="{ active: colFilters[f] }"
-                        :type="(colFilterOps[f] && ['~', '!~', '=='].includes(colFilterOps[f])) ? 'text' : 'number'"
+                        :type="(!colFilterOps[f] || ['~', '!~', '=='].includes(colFilterOps[f])) ? 'text' : 'number'"
                         placeholder="筛选..."
                         @click.stop />
                     </div>

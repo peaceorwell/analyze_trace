@@ -63,3 +63,7 @@ def test_refresh_bootstrap_does_not_flash_the_branded_auth_page():
     assert "Torch Profiler Analyzer" not in bootstrap
     assert "正在初始化" not in bootstrap
     assert "animation: app-bootstrap-reveal .16s ease .35s forwards" in STYLE_CSS
+
+
+def test_csv_filter_defaults_to_text_for_the_implicit_contains_operator():
+    assert ":type=\"(!colFilterOps[f] || ['~', '!~', '=='].includes(colFilterOps[f])) ? 'text' : 'number'\"" in APP_JS
