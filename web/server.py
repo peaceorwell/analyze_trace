@@ -59,7 +59,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.5.2"
+APP_VERSION = "0.5.3"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -7112,33 +7112,54 @@ async def delete_project(request: Request, pid: str):
         await db.close()
         raise HTTPException(404)
 
+    cursor = await db.execute("SELECT * FROM jobs WHERE project_id=?", (pid,))
+    jobs_data = await cursor.fetchall()
+    busy = [job["id"] for job in jobs_data if _job_files_locked(dict(job))]
+    if busy:
+        await db.close()
+        raise HTTPException(409, f"项目中仍有任务正在分析，暂不能删除: {', '.join(busy[:5])}")
+
+    experiment_edges = [
+        dict(item)
+        for item in await (
+            await db.execute("SELECT * FROM experiment_edges WHERE project_id=?", (pid,))
+        ).fetchall()
+    ]
+    experiment_node_layout = [
+        dict(item)
+        for item in await (
+            await db.execute("SELECT * FROM experiment_node_layout WHERE project_id=?", (pid,))
+        ).fetchall()
+    ]
+
     # Move project info to deleted_projects table for recovery
     await db.execute("""
         INSERT INTO deleted_projects(
             id, user_token, folder_id, name, description, password_hash,
-            is_public, compute_target_ms, metric_targets_json, created_at, deleted_at
+            is_public, compute_target_ms, metric_targets_json, created_at, deleted_at,
+            experiment_edges_json, experiment_node_layout_json
         )
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?)
     """, (row["id"], row["user_token"], row.get("folder_id"), row["name"],
           row.get("description", ""), row.get("password_hash"), row.get("is_public", 0),
           row.get("compute_target_ms"), row.get("metric_targets_json") or "{}",
-          row.get("created_at")))
+          row.get("created_at"),
+          json.dumps(experiment_edges, ensure_ascii=False),
+          json.dumps(experiment_node_layout, ensure_ascii=False)))
 
     # Move all jobs to deleted_jobs table (keep files for recovery)
-    cursor = await db.execute("SELECT * FROM jobs WHERE project_id=?", (pid,))
-    jobs_data = await cursor.fetchall()
     for job in jobs_data:
         job_dict = dict(job)
         await db.execute("""
-            INSERT INTO deleted_jobs(id, project_id, user_token, created_at, label, mode,
+            INSERT INTO deleted_jobs(id, seq, project_id, user_token, created_at, label, mode,
                 is_pinned,
                 file_a_name, file_a_path, file_a_gzip_path, file_a_exists,
                 file_b_name, file_b_path, file_b_gzip_path, file_b_exists,
                 source_job_a, source_job_b, step_filter_a, step_filter_b,
                 save_triton_csv, save_triton_code,
                 status, console_out, error_msg, result_dir, deleted_at)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        """, (job_dict["id"], job_dict.get("project_id"), job_dict.get("user_token"),
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """, (job_dict["id"], job_dict.get("seq"), job_dict.get("project_id"), job_dict.get("user_token"),
               job_dict.get("created_at"), job_dict.get("label", ""), job_dict.get("mode"),
               job_dict.get("is_pinned", 0),
               job_dict.get("file_a_name"), job_dict.get("file_a_path"), job_dict.get("file_a_gzip_path"), job_dict.get("file_a_exists", 1),
@@ -7162,7 +7183,12 @@ async def delete_project(request: Request, pid: str):
     await write_audit(
         db, request, "project.delete",
         resource_type="project", resource_id=pid,
-        details={"name": row.get("name"), "jobs": len(jobs_data)},
+        details={
+            "name": row.get("name"),
+            "jobs": len(jobs_data),
+            "experiment_edges": len(experiment_edges),
+            "experiment_nodes": len(experiment_node_layout),
+        },
     )
     await db.commit()
     await db.close()
@@ -7172,14 +7198,13 @@ async def delete_project(request: Request, pid: str):
 
 @app.get("/api/deleted-projects")
 async def list_deleted_projects(request: Request):
-    """List recoverable projects deleted within the last 10 days."""
+    """List deleted projects, including expired entries that can be permanently removed."""
     db = await get_db()
     owner_sql, owner_params = _owner_clause(request)
     owner_filter = f"AND {owner_sql}" if owner_sql else ""
     rows = await (await db.execute(f"""
         SELECT * FROM deleted_projects
-        WHERE deleted_at >= datetime('now', '-10 days')
-          {owner_filter}
+        WHERE 1=1 {owner_filter}
         ORDER BY deleted_at DESC
     """, owner_params)).fetchall()
     await db.close()
@@ -7202,6 +7227,15 @@ async def restore_project(request: Request, pid: str):
         ).fetchone()
     )
     if not row:
+        await db.close()
+        raise HTTPException(404, "Deleted project not found or expired")
+    recoverable = await (
+        await db.execute(
+            "SELECT 1 FROM deleted_projects WHERE id=? AND deleted_at >= datetime('now', '-10 days')",
+            (pid,),
+        )
+    ).fetchone()
+    if not recoverable:
         await db.close()
         raise HTTPException(404, "Deleted project not found or expired")
 
@@ -7238,30 +7272,81 @@ async def restore_project(request: Request, pid: str):
         await db.close()
         raise HTTPException(500, f"数据库错误: {e}")
 
-    # Restore jobs from deleted_jobs table
+    try:
+        experiment_edges = json.loads(row.get("experiment_edges_json") or "[]")
+    except (TypeError, json.JSONDecodeError):
+        experiment_edges = []
+    try:
+        experiment_node_layout = json.loads(row.get("experiment_node_layout_json") or "[]")
+    except (TypeError, json.JSONDecodeError):
+        experiment_node_layout = []
+
+    # Restore jobs from deleted_jobs table.  Source links are applied after all
+    # jobs exist so compare jobs do not depend on SQLite row ordering.
     cursor = await db.execute("SELECT * FROM deleted_jobs WHERE project_id=?", (pid,))
     deleted_jobs = await cursor.fetchall()
 
+    restored_source_links = []
     for job in deleted_jobs:
         job_dict = dict(job)
         await db.execute("""
-            INSERT INTO jobs(id, project_id, user_token, created_at, label, mode,
+            INSERT INTO jobs(id, seq, project_id, user_token, created_at, label, mode,
                 is_pinned,
                 file_a_name, file_a_path, file_a_gzip_path, file_a_exists,
                 file_b_name, file_b_path, file_b_gzip_path, file_b_exists,
                 source_job_a, source_job_b, step_filter_a, step_filter_b,
                 save_triton_csv, save_triton_code,
                 status, console_out, error_msg, result_dir)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (job_dict["id"], pid, job_dict.get("user_token"),
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (job_dict["id"], job_dict.get("seq"), pid, job_dict.get("user_token"),
               job_dict.get("created_at"), job_dict.get("label", ""), job_dict.get("mode"),
               job_dict.get("is_pinned", 0),
               job_dict.get("file_a_name"), job_dict.get("file_a_path"), job_dict.get("file_a_gzip_path"), job_dict.get("file_a_exists", 1),
               job_dict.get("file_b_name"), job_dict.get("file_b_path"), job_dict.get("file_b_gzip_path"), job_dict.get("file_b_exists", 1),
-              job_dict.get("source_job_a"), job_dict.get("source_job_b"),
               job_dict.get("step_filter_a", ""), job_dict.get("step_filter_b", ""),
               job_dict.get("save_triton_csv", 0), job_dict.get("save_triton_code", 0),
               job_dict.get("status", "pending"), job_dict.get("console_out", ""), job_dict.get("error_msg", ""), job_dict.get("result_dir", "")))
+        restored_source_links.append(
+            (job_dict.get("source_job_a"), job_dict.get("source_job_b"), job_dict["id"])
+        )
+
+    await db.executemany(
+        "UPDATE jobs SET source_job_a=?, source_job_b=? WHERE id=?",
+        restored_source_links,
+    )
+
+    for edge in experiment_edges:
+        await db.execute(
+            """
+            INSERT INTO experiment_edges(
+                id, project_id, user_token, parent_job_id, child_job_id,
+                title, description, perf_summary, perf_summary_edited, variables,
+                label_x, label_y, label_width, label_height, compare_job_id, created_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                edge.get("id"), pid, edge.get("user_token"), edge.get("parent_job_id"),
+                edge.get("child_job_id"), edge.get("title", ""), edge.get("description", ""),
+                edge.get("perf_summary", ""), edge.get("perf_summary_edited", 0),
+                edge.get("variables", "[]"), edge.get("label_x"), edge.get("label_y"),
+                edge.get("label_width"), edge.get("label_height"), edge.get("compare_job_id"),
+                edge.get("created_at"),
+            ),
+        )
+
+    for layout in experiment_node_layout:
+        await db.execute(
+            """
+            INSERT INTO experiment_node_layout(
+                project_id, job_id, x, y, scale, width, height, pinned, updated_at
+            ) VALUES(?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                pid, layout.get("job_id"), layout.get("x"), layout.get("y"),
+                layout.get("scale", 1.0), layout.get("width"), layout.get("height"),
+                layout.get("pinned", 1), layout.get("updated_at"),
+            ),
+        )
 
     # Remove restored jobs from deleted_jobs
     await db.execute("DELETE FROM deleted_jobs WHERE project_id=?", (pid,))
@@ -7271,7 +7356,12 @@ async def restore_project(request: Request, pid: str):
     await write_audit(
         db, request, "project.restore",
         resource_type="project", resource_id=pid,
-        details={"name": row.get("name"), "jobs": len(deleted_jobs)},
+        details={
+            "name": row.get("name"),
+            "jobs": len(deleted_jobs),
+            "experiment_edges": len(experiment_edges),
+            "experiment_nodes": len(experiment_node_layout),
+        },
     )
 
     await db.commit()

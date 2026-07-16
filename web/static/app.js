@@ -172,7 +172,7 @@ const chartCanvasReady  = ref(false);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.5.2");
+const appVersion = ref("0.5.3");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -497,10 +497,13 @@ const showNewProject  = ref(false);
 const newProjectName  = ref("");
 const newProjectDesc  = ref("");
 const newProjectShared = ref(false);
+const newProjectLoading = ref(false);
 
 const showRenameProject = ref(false);
 const renameProjectId = ref("");
 const renameProjectName = ref("");
+const renameProjectLoading = ref(false);
+const projectMutationLoading = ref("");
 
 const showMoveProject = ref(false);
 const moveProjectTarget = ref("");
@@ -517,6 +520,7 @@ const projectBulkJobsTotal = ref(0);
 const projectBulkJobsOffset = ref(0);
 const projectBulkJobsLimit = ref(100);
 const projectBulkJobsLoading = ref(false);
+const projectBulkActionLoading = ref("");
 const projectBulkSearch = ref("");
 const projectBulkSelectionDetails = ref({});
 
@@ -525,6 +529,7 @@ const renameJobName = ref("");
 
 const showDeletedProjects = ref(false);
 const deletedProjects = ref([]);
+const deletedProjectActionLoading = ref("");
 const showFeedbackBoard = ref(false);
 const showFeedbackComposer = ref(false);
 const feedbackItems = ref([]);
@@ -615,7 +620,9 @@ const isDeletedOver10Days = (deletedAt) => {
 };
 
 const restoreProject = async (projectId) => {
+  if (deletedProjectActionLoading.value) return;
   if (!await askConfirm("确定恢复该项目？", { confirmText: "恢复" })) return;
+  deletedProjectActionLoading.value = `restore:${projectId}`;
   try {
     const r = await fetch(`/api/deleted-projects/${projectId}/restore`, {
       method: "POST",
@@ -632,26 +639,36 @@ const restoreProject = async (projectId) => {
     showToast("项目已恢复", "success");
   } catch (e) {
     showToast("恢复出错: " + e.message, "error");
+  } finally {
+    deletedProjectActionLoading.value = "";
   }
 };
 
 const permanentlyDeleteProject = async (projectId) => {
+  if (deletedProjectActionLoading.value) return;
   if (!await askConfirm("确定永久删除？此操作不可恢复。", {
     title: "永久删除项目",
     confirmText: "永久删除",
     tone: "danger",
   })) return;
-  const r = await fetch(`/api/deleted-projects/${projectId}`, {
-    method: "DELETE",
-    credentials: "include",
-  });
-  if (!r.ok) {
-    const err = await r.json().catch(() => ({}));
-    showToast("永久删除失败: " + (err.detail || err.message || "未知错误"), "error");
-    return;
+  deletedProjectActionLoading.value = `delete:${projectId}`;
+  try {
+    const r = await fetch(`/api/deleted-projects/${projectId}`, {
+      method: "DELETE",
+      credentials: "include",
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      showToast("永久删除失败: " + (err.detail || err.message || "未知错误"), "error");
+      return;
+    }
+    await loadDeletedProjects();
+    showToast("项目已永久删除", "success");
+  } catch (e) {
+    showToast("永久删除出错: " + e.message, "error");
+  } finally {
+    deletedProjectActionLoading.value = "";
   }
-  await loadDeletedProjects();
-  showToast("项目已永久删除", "success");
 };
 
 // ── Triton code viewer ──────────────────────────────────────────────────
@@ -682,6 +699,16 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.3",
+    date: "2026-07-16",
+    title: "修复项目管理操作",
+    items: [
+      "项目重命名会正确回显名称，各项变更操作增加提交中状态，避免连续点击重复执行。",
+      "删除和恢复项目会保留实验树、节点布局与任务数字短链，并阻止删除仍有活动任务的项目。",
+      "找回项目弹窗支持清理超过 10 天的过期项目。",
+    ],
+  },
   {
     version: "0.5.2",
     date: "2026-07-16",
@@ -1227,6 +1254,7 @@ const batchCandidateIds = ref([]);
 const batchSelectionDetails = ref({});
 const batchCompareLabelPrefix = ref("");
 const batchCompareLoading = ref(false);
+const compareSubmitLoading = ref(false);
 const compareJobs       = ref([]);
 const compareJobsTotal  = ref(0);
 const compareJobsLimit  = ref(50);
@@ -2389,7 +2417,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.5.2";
+  appVersion.value = cfg.version || "0.5.3";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -6150,8 +6178,9 @@ const toggleProjectFavorite = async (projectOrGroup, event) => {
   event?.preventDefault?.();
   event?.stopPropagation?.();
   const project = resolveProjectMeta(projectOrGroup);
-  if (!project?.id || project.id === "__none__") return;
+  if (!project?.id || project.id === "__none__" || projectMutationLoading.value) return;
   const nextFavorite = project.is_favorite ? 0 : 1;
+  projectMutationLoading.value = `favorite:${project.id}`;
   try {
     const r = await fetch(`/api/projects/${encodeURIComponent(project.id)}/favorite`, {
       method: "PUT",
@@ -6170,6 +6199,8 @@ const toggleProjectFavorite = async (projectOrGroup, event) => {
     }
   } catch (e) {
     showToast("更新收藏失败: " + (e.message || "未知错误"), "error");
+  } finally {
+    projectMutationLoading.value = "";
   }
 };
 
@@ -6261,101 +6292,123 @@ const openBulkMoveProject = () => {
 };
 
 const confirmBulkMoveProject = async () => {
-  if (!historySelection.value.length) return;
-  const r = await fetch("/api/jobs/bulk/project", {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({
-      job_ids: historySelection.value,
-      project_id: bulkMoveProjectTarget.value || null,
-    }),
-  });
-  if (!r.ok) {
-    const err = await r.json().catch(() => ({}));
-    showToast("批量移动失败: " + (err.detail || err.message || "未知错误"), "error");
-    return;
+  if (!historySelection.value.length || projectBulkActionLoading.value) return;
+  projectBulkActionLoading.value = "move";
+  try {
+    const r = await fetch("/api/jobs/bulk/project", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({
+        job_ids: historySelection.value,
+        project_id: bulkMoveProjectTarget.value || null,
+      }),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      showToast("批量移动失败: " + (err.detail || err.message || "未知错误"), "error");
+      return;
+    }
+    showBulkMoveProject.value = false;
+    const ids = [...historySelection.value];
+    const moved = ids.length;
+    historySelection.value = [];
+    projectBulkSelectionDetails.value = {};
+    await refreshSidebarData();
+    if (selectedJobId.value && ids.includes(selectedJobId.value)) await loadJob(selectedJobId.value);
+    showToast(`已移动 ${moved} 个任务`, "success");
+  } catch (e) {
+    showToast("批量移动失败: " + (e.message || "网络错误"), "error");
+  } finally {
+    projectBulkActionLoading.value = "";
   }
-  showBulkMoveProject.value = false;
-  const ids = [...historySelection.value];
-  const moved = ids.length;
-  historySelection.value = [];
-  projectBulkSelectionDetails.value = {};
-  await refreshSidebarData();
-  if (selectedJobId.value && ids.includes(selectedJobId.value)) await loadJob(selectedJobId.value);
-  showToast(`已移动 ${moved} 个任务`, "success");
 };
 
 const bulkDeleteJobs = async () => {
-  if (!historySelection.value.length) return;
-  if (!await askConfirm(`确定删除选中的 ${historySelection.value.length} 个任务及其关联文件？`, {
-    title: "批量删除任务",
-    confirmText: "删除",
-    tone: "danger",
-  })) return;
-  const ids = [...historySelection.value];
-  const r = await fetch("/api/jobs/bulk/delete", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ job_ids: ids }),
-  });
-  if (!r.ok) {
-    const err = await r.json().catch(() => ({}));
-    showToast("批量删除失败: " + (err.detail || err.message || "未知错误"), "error");
-    return;
+  if (!historySelection.value.length || projectBulkActionLoading.value) return;
+  projectBulkActionLoading.value = "delete-jobs";
+  try {
+    if (!await askConfirm(`确定删除选中的 ${historySelection.value.length} 个任务及其关联文件？`, {
+      title: "批量删除任务",
+      confirmText: "删除",
+      tone: "danger",
+    })) return;
+    const ids = [...historySelection.value];
+    const r = await fetch("/api/jobs/bulk/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ job_ids: ids }),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      showToast("批量删除失败: " + (err.detail || err.message || "未知错误"), "error");
+      return;
+    }
+    if (selectedJobId.value && ids.includes(selectedJobId.value)) router.push({ path: "/" });
+    historySelection.value = [];
+    projectBulkSelectionDetails.value = {};
+    await refreshSidebarData();
+    showToast(`已删除 ${ids.length} 个任务`, "success");
+  } catch (e) {
+    showToast("批量删除失败: " + (e.message || "网络错误"), "error");
+  } finally {
+    projectBulkActionLoading.value = "";
   }
-  if (selectedJobId.value && ids.includes(selectedJobId.value)) router.push({ path: "/" });
-  historySelection.value = [];
-  projectBulkSelectionDetails.value = {};
-  await refreshSidebarData();
-  showToast(`已删除 ${ids.length} 个任务`, "success");
 };
 
 const bulkDeleteFiles = async () => {
-  if (!historySelection.value.length) return;
-  await loadStorageSummary();
-  const selected = storageSummary.value.jobs.filter(job => historySelection.value.includes(job.id));
-  const affectedCompareCount = selected.reduce((sum, job) => sum + (job.used_by_compare_count || 0), 0);
-  const impactMessage = affectedCompareCount
-    ? ` 其中 ${affectedCompareCount} 个历史对比依赖这些源文件。`
-    : "";
-  if (!await askConfirm(`确定删除选中的 ${historySelection.value.length} 个任务的原始 trace 文件？${impactMessage}`, {
-    title: "批量删除文件",
-    confirmText: "删除",
-    tone: "danger",
-  })) return;
-  const ids = [...historySelection.value];
-  const r = await fetch("/api/jobs/bulk/delete-files", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ job_ids: ids, force: true }),
-  });
-  if (!r.ok) {
-    const err = await r.json().catch(() => ({}));
-    showToast("批量删除文件失败: " + (err.detail || err.message || "未知错误"), "error");
-    return;
+  if (!historySelection.value.length || projectBulkActionLoading.value) return;
+  projectBulkActionLoading.value = "delete-files";
+  try {
+    await loadStorageSummary();
+    const selected = storageSummary.value.jobs.filter(job => historySelection.value.includes(job.id));
+    const affectedCompareCount = selected.reduce((sum, job) => sum + (job.used_by_compare_count || 0), 0);
+    const impactMessage = affectedCompareCount
+      ? ` 其中 ${affectedCompareCount} 个历史对比依赖这些源文件。`
+      : "";
+    if (!await askConfirm(`确定删除选中的 ${historySelection.value.length} 个任务的原始 trace 文件？${impactMessage}`, {
+      title: "批量删除文件",
+      confirmText: "删除",
+      tone: "danger",
+    })) return;
+    const ids = [...historySelection.value];
+    const r = await fetch("/api/jobs/bulk/delete-files", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ job_ids: ids, force: true }),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      showToast("批量删除文件失败: " + (err.detail || err.message || "未知错误"), "error");
+      return;
+    }
+    await refreshSidebarData();
+    if (selectedJobId.value && ids.includes(selectedJobId.value)) await loadJob(selectedJobId.value);
+    showToast(`已处理 ${ids.length} 个任务`, "success");
+  } catch (e) {
+    showToast("批量删除文件失败: " + (e.message || "网络错误"), "error");
+  } finally {
+    projectBulkActionLoading.value = "";
   }
-  await refreshSidebarData();
-  if (selectedJobId.value && ids.includes(selectedJobId.value)) await loadJob(selectedJobId.value);
-  showToast(`已处理 ${ids.length} 个任务`, "success");
 };
 
-const openRenameModal = (project) => {
+const openRenameModal = (projectOrGroup) => {
+  const project = resolveProjectMeta(projectOrGroup);
   if (!project?.id) return;
   renameProjectId.value = project.id;
-  renameProjectName.value = project.name;
+  renameProjectName.value = project.name || project.label || "";
   showRenameProject.value = true;
 };
 
 const confirmRenameProject = async () => {
-  const newName = renameProjectName.value.trim();
+  if (renameProjectLoading.value) return;
+  const newName = String(renameProjectName.value || "").trim();
   if (!newName) return;
   const pid = renameProjectId.value;
   if (!pid) { showToast("项目ID无效", "error"); return; }
-  const proj = projects.value.find(p => p.id === pid);
-  if (proj) proj.name = newName;
+  renameProjectLoading.value = true;
   try {
     const r = await fetch(`/api/projects/${pid}`, {
       method: "PUT",
@@ -6367,81 +6420,103 @@ const confirmRenameProject = async () => {
       const err = await r.json().catch(() => ({}));
       throw new Error(err.detail || "更新失败");
     }
+    showRenameProject.value = false;
+    await loadProjects();
+    await refreshSidebarData();
+    showToast("项目已重命名", "success");
   } catch (e) {
-    if (proj) await loadProjects();
-    showToast("重命名失败: " + e.message, "error");
-    return;
+    showToast("重命名失败: " + (e.message || "网络错误"), "error");
+  } finally {
+    renameProjectLoading.value = false;
   }
-  showRenameProject.value = false;
-  await loadProjects();
-  await refreshSidebarData();
-  showToast("项目已重命名", "success");
 };
 
 const deleteProject = async (projectId) => {
+  if (projectMutationLoading.value) return;
   if (!await askConfirm("确定删除该项目？项目内的任务将同时被删除。删除后10天内可以找回。", {
     title: "删除项目",
     confirmText: "删除",
     tone: "danger",
   })) return;
-  const r = await fetch(`/api/projects/${projectId}`, {
-    method: "DELETE",
-    credentials: "include",
-  });
-  if (!r.ok) {
-    const err = await r.json().catch(() => ({}));
-    showToast("删除失败: " + (err.detail || err.message || `HTTP ${r.status}`), "error");
-    return;
+  projectMutationLoading.value = `delete:${projectId}`;
+  try {
+    const r = await fetch(`/api/projects/${projectId}`, {
+      method: "DELETE",
+      credentials: "include",
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      showToast("删除失败: " + (err.detail || err.message || `HTTP ${r.status}`), "error");
+      return;
+    }
+    filterProject.value = "";
+    router.push({ path: "/" });
+    await loadProjects();
+    await refreshSidebarData();
+    showToast("项目已删除，可在 10 天内找回", "success");
+  } catch (e) {
+    showToast("删除失败: " + (e.message || "网络错误"), "error");
+  } finally {
+    projectMutationLoading.value = "";
   }
-  filterProject.value = "";
-  router.push({ path: "/" });
-  await loadProjects();
-  await refreshSidebarData();
-  showToast("项目已删除，可在 10 天内找回", "success");
 };
 
 const shareProject = async (project) => {
-  if (!project?.id || project.is_public) return;
+  if (!project?.id || project.is_public || projectMutationLoading.value) return;
   if (!await askConfirm("确定将该项目转为共享项目？", {
     title: "转为共享项目",
     confirmText: "转为共享",
   })) return;
-  const r = await fetch(`/api/projects/${project.id}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ is_public: true }),
-  });
-  if (!r.ok) {
-    const err = await r.json().catch(() => ({}));
-    showToast("转为共享失败: " + (err.detail || err.message || `HTTP ${r.status}`), "error");
-    return;
+  projectMutationLoading.value = `share:${project.id}`;
+  try {
+    const r = await fetch(`/api/projects/${project.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ is_public: true }),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      showToast("转为共享失败: " + (err.detail || err.message || `HTTP ${r.status}`), "error");
+      return;
+    }
+    await loadProjects();
+    await refreshSidebarData();
+    showToast("项目已转为共享", "success");
+  } catch (e) {
+    showToast("转为共享失败: " + (e.message || "网络错误"), "error");
+  } finally {
+    projectMutationLoading.value = "";
   }
-  await loadProjects();
-  await refreshSidebarData();
-  showToast("项目已转为共享", "success");
 };
 
 const unshareProject = async (project) => {
-  if (!project?.id || !project.is_public) return;
+  if (!project?.id || !project.is_public || projectMutationLoading.value) return;
   if (!await askConfirm("确定将该共享项目转为个人项目？其他用户将不再看到该项目。", {
     title: "转为个人项目",
     confirmText: "转为个人",
   })) return;
-  const r = await fetch(`/api/projects/${project.id}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ is_public: false }),
-  });
-  if (!r.ok) {
-    const err = await r.json().catch(() => ({}));
-    showToast("转为个人失败: " + (err.detail || err.message || `HTTP ${r.status}`), "error");
-    return;
+  projectMutationLoading.value = `unshare:${project.id}`;
+  try {
+    const r = await fetch(`/api/projects/${project.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ is_public: false }),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      showToast("转为个人失败: " + (err.detail || err.message || `HTTP ${r.status}`), "error");
+      return;
+    }
+    await loadProjects();
+    await refreshSidebarData();
+    showToast("项目已转为个人", "success");
+  } catch (e) {
+    showToast("转为个人失败: " + (e.message || "网络错误"), "error");
+  } finally {
+    projectMutationLoading.value = "";
   }
-  await loadProjects();
-  await refreshSidebarData();
-  showToast("项目已转为个人", "success");
 };
 
 let tableResizeSortGuard = null;
@@ -7451,6 +7526,7 @@ const removeBatchCandidate = id => {
 };
 
 const submitCompare = async () => {
+  if (compareSubmitLoading.value) return;
   if (!compareProjectId.value) {
     showToast("请先选择项目", "error");
     return;
@@ -7460,28 +7536,35 @@ const submitCompare = async () => {
     return;
   }
   const [a, b] = compareSelection.value;
-  const r = await fetch("/api/jobs/compare", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({
-      job_id_a: a, job_id_b: b,
-      label: compareLabel.value,
-      project_id: compareProjectForSubmit(),
-    }),
-  });
-  const job = await r.json();
-  if (!r.ok) {
-    showToast("对比失败: " + (job.detail || "服务器错误"), "error");
-    return;
+  compareSubmitLoading.value = true;
+  try {
+    const r = await fetch("/api/jobs/compare", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({
+        job_id_a: a, job_id_b: b,
+        label: compareLabel.value,
+        project_id: compareProjectForSubmit(),
+      }),
+    });
+    const job = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      showToast("对比失败: " + (job.detail || "服务器错误"), "error");
+      return;
+    }
+    compareSelection.value = [];
+    compareSelectionDetails.value = {};
+    compareLabel.value = "";
+    showCompareModal.value = false;
+    sidebarTab.value = "jobs";
+    await refreshSidebarData();
+    router.push({ path: jobRoutePath(job) });
+  } catch (e) {
+    showToast("对比失败: " + (e.message || "网络错误"), "error");
+  } finally {
+    compareSubmitLoading.value = false;
   }
-  compareSelection.value = [];
-  compareSelectionDetails.value = {};
-  compareLabel.value = "";
-  showCompareModal.value = false;
-  sidebarTab.value = "jobs";
-  await refreshSidebarData();
-  router.push({ path: jobRoutePath(job) });
 };
 
 const submitBatchCompare = async () => {
@@ -7652,29 +7735,38 @@ const confirmStepReanalysis = async () => {
 // ══════════════════════════════════════════════════════════════════════════════
 
 const createProject = async () => {
-  if (!newProjectName.value.trim()) return;
-  const r = await fetch("/api/projects", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({
-      name: newProjectName.value,
-      description: newProjectDesc.value,
-      is_public: newProjectShared.value,
-    }),
-  });
-  if (!r.ok) {
-    const err = await r.json().catch(() => ({}));
-    showToast("创建项目失败: " + (err.detail || err.message || "未知错误"), "error");
-    return;
+  if (newProjectLoading.value) return;
+  const name = String(newProjectName.value || "").trim();
+  if (!name) return;
+  newProjectLoading.value = true;
+  try {
+    const r = await fetch("/api/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({
+        name,
+        description: newProjectDesc.value,
+        is_public: newProjectShared.value,
+      }),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      showToast("创建项目失败: " + (err.detail || err.message || "未知错误"), "error");
+      return;
+    }
+    showNewProject.value = false;
+    newProjectName.value = "";
+    newProjectDesc.value = "";
+    newProjectShared.value = false;
+    await loadProjects();
+    await refreshSidebarData();
+    showToast("项目已创建", "success");
+  } catch (e) {
+    showToast("创建项目失败: " + (e.message || "网络错误"), "error");
+  } finally {
+    newProjectLoading.value = false;
   }
-  showNewProject.value = false;
-  newProjectName.value = "";
-  newProjectDesc.value = "";
-  newProjectShared.value = false;
-  await loadProjects();
-  await refreshSidebarData();
-  showToast("项目已创建", "success");
 };
 
 const prevPage = () => {
@@ -12389,7 +12481,7 @@ const App = {
       compareSelection, selectedCompareJobs, compareLabel, compareProjectId, compareProjectLabel,
       showCompareModal, openCompareModal, openProjectCompareModal, closeCompareModal,
       batchCompareMode, batchBaselineId, selectedBatchBaseline, selectedBatchCandidates,
-      batchCandidateIds, batchCompareLabelPrefix, batchCompareLoading,
+      batchCandidateIds, batchCompareLabelPrefix, batchCompareLoading, compareSubmitLoading,
       compareJobs, compareJobsTotal, compareJobsLimit, compareJobsOffset, compareJobsLoading, compareSearch,
       setBatchCompareMode, isCompareJobSelected, compareJobRoleLabel,
       toggleCompareSelect, removeCompareSelection, removeBatchBaseline, removeBatchCandidate,
@@ -12397,18 +12489,18 @@ const App = {
       prevComparePage, nextComparePage,
 
       // Modals
-      showNewProject, newProjectName, newProjectDesc, newProjectShared,
-      showRenameProject, renameProjectName, openRenameModal,
+      showNewProject, newProjectName, newProjectDesc, newProjectShared, newProjectLoading,
+      showRenameProject, renameProjectName, renameProjectLoading, projectMutationLoading, openRenameModal,
       confirmRenameProject, deleteProject, shareProject, unshareProject,
       showMoveProject, moveProjectTarget, confirmMoveProject,
       showBulkMoveProject, bulkMoveProjectTarget, confirmBulkMoveProject,
       showProjectBulkModal, projectBulkName, projectBulkJobs, projectBulkJobsTotal,
-      projectBulkJobsOffset, projectBulkJobsLoading, projectBulkSearch,
+      projectBulkJobsOffset, projectBulkJobsLoading, projectBulkActionLoading, projectBulkSearch,
       projectBulkSelectedJobs, projectBulkLoadedAllSelected,
       closeProjectBulkModal, loadProjectBulkJobs, toggleProjectBulkSelection,
       toggleLoadedProjectBulkJobs, clearProjectBulkSelection,
       showRenameJob, renameJobName, confirmRenameJob,
-      showDeletedProjects, deletedProjects, loadDeletedProjects,
+      showDeletedProjects, deletedProjects, deletedProjectActionLoading, loadDeletedProjects,
       isDeletedOver10Days, restoreProject, permanentlyDeleteProject,
       showFeedbackBoard, showFeedbackComposer, feedbackItems, feedbackTotal, feedbackLoading,
       feedbackSort, feedbackSortOptions,

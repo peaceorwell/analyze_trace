@@ -70,7 +70,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.5.2",
+        "version": "0.5.3",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -2577,6 +2577,128 @@ def test_project_restore_preserves_pinned_jobs(client):
     response = client.get("/api/job-groups/project-restore/jobs")
     assert response.status_code == 200
     assert response.json()["data"][0]["is_pinned"] == 1
+
+
+@pytest.mark.parametrize("status", ["pending", "running"])
+def test_project_delete_rejects_active_jobs(client, status):
+    async def insert_rows():
+        db = await web_db.get_db()
+        try:
+            await db.execute("INSERT INTO projects(id, name) VALUES(?,?)", ("project-active", "Active"))
+            await db.execute(
+                "INSERT INTO jobs(id, project_id, label, mode, status) VALUES(?,?,?,?,?)",
+                ("active-job", "project-active", "active", "single", status),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_rows())
+
+    response = client.delete("/api/projects/project-active")
+
+    assert response.status_code == 409
+    assert client.get("/api/projects").json()[0]["id"] == "project-active"
+    assert client.get("/api/jobs/active-job").json()["status"] == status
+
+
+def test_project_restore_preserves_experiment_tree_and_job_sequences(client):
+    async def insert_rows():
+        db = await web_db.get_db()
+        try:
+            await db.execute("INSERT INTO projects(id, name) VALUES(?,?)", ("project-tree", "Tree"))
+            await db.executemany(
+                "INSERT INTO jobs(id, project_id, label, mode, status) VALUES(?,?,?,?,?)",
+                [
+                    ("tree-parent", "project-tree", "parent", "single", "done"),
+                    ("tree-child", "project-tree", "child", "single", "done"),
+                ],
+            )
+            await db.execute(
+                """
+                INSERT INTO experiment_edges(
+                    id, project_id, parent_job_id, child_job_id, title, description,
+                    variables, label_x, label_y, label_width, label_height
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    "tree-edge", "project-tree", "tree-parent", "tree-child", "optimization", "details",
+                    '[{"name":"BLOCK","before":"32","after":"64"}]', 10, 20, 120, 48,
+                ),
+            )
+            await db.execute(
+                """
+                INSERT INTO experiment_node_layout(project_id, job_id, x, y, scale, width, height, pinned)
+                VALUES(?,?,?,?,?,?,?,?)
+                """,
+                ("project-tree", "tree-parent", 11, 22, 1.25, 180, 90, 1),
+            )
+            rows = await (await db.execute(
+                "SELECT id, seq FROM jobs WHERE project_id=? ORDER BY id",
+                ("project-tree",),
+            )).fetchall()
+            await db.commit()
+            return {row["id"]: row["seq"] for row in rows}
+        finally:
+            await db.close()
+
+    original_sequences = asyncio.run(insert_rows())
+
+    assert client.delete("/api/projects/project-tree").status_code == 204
+    assert client.post("/api/deleted-projects/project-tree/restore").status_code == 200
+
+    async def restored_rows():
+        db = await web_db.get_db()
+        try:
+            jobs = await (await db.execute(
+                "SELECT id, seq FROM jobs WHERE project_id=? ORDER BY id",
+                ("project-tree",),
+            )).fetchall()
+            edge = await (await db.execute(
+                "SELECT * FROM experiment_edges WHERE id=?",
+                ("tree-edge",),
+            )).fetchone()
+            layout = await (await db.execute(
+                "SELECT * FROM experiment_node_layout WHERE project_id=? AND job_id=?",
+                ("project-tree", "tree-parent"),
+            )).fetchone()
+            return {row["id"]: row["seq"] for row in jobs}, dict(edge), dict(layout)
+        finally:
+            await db.close()
+
+    sequences, edge, layout = asyncio.run(restored_rows())
+    assert sequences == original_sequences
+    assert edge["title"] == "optimization"
+    assert edge["variables"] == '[{"name":"BLOCK","before":"32","after":"64"}]'
+    assert edge["label_width"] == 120
+    assert layout["x"] == 11
+    assert layout["scale"] == 1.25
+    assert layout["width"] == 180
+
+
+def test_expired_deleted_project_can_only_be_permanently_deleted(client):
+    async def insert_rows():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO deleted_projects(id, name, deleted_at)
+                VALUES(?, ?, datetime('now', '-11 days'))
+                """,
+                ("project-expired", "Expired"),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_rows())
+
+    deleted = client.get("/api/deleted-projects")
+    assert deleted.status_code == 200
+    assert [project["id"] for project in deleted.json()] == ["project-expired"]
+    assert client.post("/api/deleted-projects/project-expired/restore").status_code == 404
+    assert client.delete("/api/deleted-projects/project-expired").status_code == 204
+    assert client.get("/api/deleted-projects").json() == []
 
 
 def test_job_groups_paginate_by_visible_groups(client):

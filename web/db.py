@@ -174,7 +174,9 @@ async def init_db():
                 compute_target_ms REAL,
                 metric_targets_json TEXT DEFAULT '{}',
                 created_at   DATETIME,
-                deleted_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+                deleted_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+                experiment_edges_json TEXT DEFAULT '[]',
+                experiment_node_layout_json TEXT DEFAULT '[]'
             );
 
             CREATE TABLE IF NOT EXISTS audit_logs (
@@ -301,6 +303,7 @@ async def init_db():
         await db.executescript("""
             CREATE TABLE IF NOT EXISTS deleted_jobs (
                 id               TEXT PRIMARY KEY,
+                seq              INTEGER,
                 project_id       TEXT,
                 user_token       TEXT,
                 created_at       DATETIME,
@@ -369,8 +372,11 @@ async def init_db():
             END;
         """)
         await add_column_if_missing(db, "deleted_jobs", "is_pinned", "INTEGER DEFAULT 0")
+        await add_column_if_missing(db, "deleted_jobs", "seq", "INTEGER")
         await add_column_if_missing(db, "deleted_jobs", "step_filter_a", "TEXT DEFAULT ''")
         await add_column_if_missing(db, "deleted_jobs", "step_filter_b", "TEXT DEFAULT ''")
+        await add_column_if_missing(db, "deleted_projects", "experiment_edges_json", "TEXT DEFAULT '[]'")
+        await add_column_if_missing(db, "deleted_projects", "experiment_node_layout_json", "TEXT DEFAULT '[]'")
         await db.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(1)")
 
         await db.commit()

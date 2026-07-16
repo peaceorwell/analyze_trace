@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>torch profiler analyzer</title>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.5.2" />
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.5.3" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.css" />
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
@@ -12,7 +12,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js"></script>
-  <link rel="stylesheet" href="/static/style.css?v=0.5.2" />
+  <link rel="stylesheet" href="/static/style.css?v=0.5.3" />
   <script>
     // Apply saved theme or system preference before page paint to avoid flash
     (function() {
@@ -151,7 +151,7 @@
     <!-- ── Header ── -->
     <header v-if="authChecked && (!authRequired || currentUser)" class="header">
       <div class="header-brand" @click="$router.push('/')" style="cursor:pointer" title="返回上传页面">
-        <img class="header-logo" src="/static/favicon.svg?v=0.5.2" alt="" />
+        <img class="header-logo" src="/static/favicon.svg?v=0.5.3" alt="" />
         <span class="header-title">Torch Profiler Analyzer</span>
         <span class="header-version">v{{ appVersion }}</span>
       </div>
@@ -315,14 +315,14 @@
                     <button type="button" @click="$router.push('/project/'+group.id+'/tree'); closeActionMenu()">实验树</button>
                     <button type="button" @click="openProjectCompareModal(group); closeActionMenu()">新建对比</button>
                     <button type="button" @click="openProjectBulkModal(group); closeActionMenu()">多选任务</button>
-                    <button type="button" @click="toggleProjectFavorite(group); closeActionMenu()">
+                    <button type="button" :disabled="Boolean(projectMutationLoading)" @click="toggleProjectFavorite(group); closeActionMenu()">
                       {{ group.is_favorite ? '取消收藏' : '收藏项目' }}
                     </button>
                     <template v-if="group.is_owner">
-                      <button type="button" @click="openRenameModal(group); closeActionMenu()">重命名</button>
-                      <button v-if="!group.is_public" type="button" @click="shareProject(group); closeActionMenu()">转共享</button>
-                      <button v-else type="button" @click="unshareProject(group); closeActionMenu()">转个人</button>
-                      <button type="button" class="danger" @click="deleteProject(group.id); closeActionMenu()">删除项目</button>
+                      <button type="button" :disabled="Boolean(projectMutationLoading)" @click="openRenameModal(group); closeActionMenu()">重命名</button>
+                      <button v-if="!group.is_public" type="button" :disabled="Boolean(projectMutationLoading)" @click="shareProject(group); closeActionMenu()">转共享</button>
+                      <button v-else type="button" :disabled="Boolean(projectMutationLoading)" @click="unshareProject(group); closeActionMenu()">转个人</button>
+                      <button type="button" class="danger" :disabled="Boolean(projectMutationLoading)" @click="deleteProject(group.id); closeActionMenu()">删除项目</button>
                     </template>
                   </div>
                 </div>
@@ -479,8 +479,8 @@
           <button v-if="!batchCompareMode"
                   class="btn btn-primary"
                   @click="submitCompare"
-                  :disabled="!compareProjectId || compareSelection.length!==2">
-            发起对比
+                  :disabled="!compareProjectId || compareSelection.length!==2 || compareSubmitLoading">
+            {{ compareSubmitLoading ? '创建中...' : '发起对比' }}
           </button>
           <button v-else
                   class="btn btn-primary"
@@ -557,13 +557,13 @@
         </div>
 
         <div class="compare-picker-footer bulk-picker-footer">
-          <button class="btn btn-outline" @click="toggleLoadedProjectBulkJobs" :disabled="projectBulkJobs.length===0">
+          <button class="btn btn-outline" @click="toggleLoadedProjectBulkJobs" :disabled="projectBulkJobs.length===0 || Boolean(projectBulkActionLoading)">
             {{ projectBulkLoadedAllSelected ? '取消已加载' : '选择已加载' }}
           </button>
-          <button class="btn btn-outline" @click="clearProjectBulkSelection" :disabled="historySelection.length===0">清空</button>
-          <button class="btn btn-outline" @click="openBulkMoveProject" :disabled="historySelection.length===0">移动到项目</button>
-          <button class="btn btn-outline" @click="bulkDeleteFiles" :disabled="historySelection.length===0">删除文件</button>
-          <button class="btn btn-danger" @click="bulkDeleteJobs" :disabled="historySelection.length===0">删除任务</button>
+          <button class="btn btn-outline" @click="clearProjectBulkSelection" :disabled="historySelection.length===0 || Boolean(projectBulkActionLoading)">清空</button>
+          <button class="btn btn-outline" @click="openBulkMoveProject" :disabled="historySelection.length===0 || Boolean(projectBulkActionLoading)">移动到项目</button>
+          <button class="btn btn-outline" @click="bulkDeleteFiles" :disabled="historySelection.length===0 || Boolean(projectBulkActionLoading)">{{ projectBulkActionLoading==='delete-files' ? '处理中...' : '删除文件' }}</button>
+          <button class="btn btn-danger" @click="bulkDeleteJobs" :disabled="historySelection.length===0 || Boolean(projectBulkActionLoading)">{{ projectBulkActionLoading==='delete-jobs' ? '删除中...' : '删除任务' }}</button>
         </div>
       </div>
     </div>
@@ -593,7 +593,7 @@
         </select>
         <div class="modal-actions">
           <button class="btn btn-outline" @click="showBulkMoveProject=false">取消</button>
-          <button class="btn btn-primary" @click="confirmBulkMoveProject">确认</button>
+          <button class="btn btn-primary" @click="confirmBulkMoveProject" :disabled="Boolean(projectBulkActionLoading)">{{ projectBulkActionLoading==='move' ? '移动中...' : '确认' }}</button>
         </div>
       </div>
     </div>
@@ -622,7 +622,7 @@
         </label>
         <div class="modal-actions">
           <button class="btn btn-outline" @click="showNewProject=false">取消</button>
-          <button class="btn btn-primary" @click="createProject">创建</button>
+          <button class="btn btn-primary" @click="createProject" :disabled="newProjectLoading || !newProjectName.trim()">{{ newProjectLoading ? '创建中...' : '创建' }}</button>
         </div>
       </div>
     </div>
@@ -634,7 +634,7 @@
         <input v-model="renameProjectName" class="input w-full" placeholder="项目名称" @keyup.enter="confirmRenameProject" />
         <div class="modal-actions">
           <button class="btn btn-outline" @click="showRenameProject=false">取消</button>
-          <button class="btn btn-primary" @click="confirmRenameProject">保存</button>
+          <button class="btn btn-primary" @click="confirmRenameProject" :disabled="renameProjectLoading || !(renameProjectName || '').trim()">{{ renameProjectLoading ? '保存中...' : '保存' }}</button>
         </div>
       </div>
     </div>
@@ -642,7 +642,7 @@
     <!-- ── Deleted projects recovery modal ── -->
     <div v-if="showDeletedProjects" class="modal-mask" @click.self="showDeletedProjects=false">
       <div class="modal">
-        <div class="modal-title">找回项目 <span class="text-xs text-gray">（近10天内删除）</span></div>
+        <div class="modal-title">找回项目 <span class="text-xs text-gray">（近10天内可恢复）</span></div>
         <div v-if="deletedProjects.length===0" class="empty-tip mt-4">暂无已删除的项目</div>
         <div v-else class="deleted-projects-list">
           <div v-for="p in deletedProjects" :key="p.id" class="deleted-project-item">
@@ -654,8 +654,8 @@
               </div>
             </div>
             <div class="deleted-project-actions">
-              <button class="btn btn-sm btn-primary" @click="restoreProject(p.id)">恢复</button>
-              <button v-if="isDeletedOver10Days(p.deleted_at)" class="btn btn-sm btn-danger" @click="permanentlyDeleteProject(p.id)">永久删除</button>
+              <button v-if="!isDeletedOver10Days(p.deleted_at)" class="btn btn-sm btn-primary" :disabled="Boolean(deletedProjectActionLoading)" @click="restoreProject(p.id)">{{ deletedProjectActionLoading==='restore:' + p.id ? '恢复中...' : '恢复' }}</button>
+              <button v-else class="btn btn-sm btn-danger" :disabled="Boolean(deletedProjectActionLoading)" @click="permanentlyDeleteProject(p.id)">{{ deletedProjectActionLoading==='delete:' + p.id ? '删除中...' : '永久删除' }}</button>
             </div>
           </div>
         </div>
@@ -1726,6 +1726,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=0.5.2"></script>
+  <script src="/static/app.js?v=0.5.3"></script>
 </body>
 </html>
