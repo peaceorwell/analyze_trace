@@ -75,3 +75,11 @@ def test_performance_overview_explains_compute_time_scope():
     assert "计算 Delta" in APP_JS
     assert "不等同于模型端到端耗时" in APP_JS
     assert "avg_count 合计" not in APP_JS
+
+
+def test_header_task_center_tracks_active_and_failed_jobs_globally():
+    assert 'class="task-center-popover"' in INDEX_HTML
+    assert 'statuses: "pending,running,error"' in APP_JS
+    assert "taskCenterPollTimer = setInterval(refreshTaskCenterWhenVisible, 5000)" in APP_JS
+    assert "taskCenterActiveJobs" in APP_JS
+    assert "copyTaskCenterError" in APP_JS

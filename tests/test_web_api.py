@@ -70,7 +70,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.5.8",
+        "version": "0.5.9",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -2914,6 +2914,33 @@ def test_jobs_search_includes_project_name_and_returns_project_label(client):
     by_file = client.get("/api/jobs?project_id=project-b&q=trace-b")
     assert by_file.status_code == 200
     assert [item["id"] for item in by_file.json()["data"]] == ["job-b"]
+
+
+def test_jobs_can_filter_task_center_statuses(client):
+    async def insert_rows():
+        db = await web_db.get_db()
+        try:
+            await db.executemany(
+                "INSERT INTO jobs(id, label, mode, status, created_at) VALUES(?,?,?,?,?)",
+                [
+                    ("job-done", "done", "single", "done", "2026-05-18 13:00:00"),
+                    ("job-error", "error", "single", "error", "2026-05-18 12:00:00"),
+                    ("job-running", "running", "single", "running", "2026-05-18 11:00:00"),
+                    ("job-pending", "pending", "single", "pending", "2026-05-18 10:00:00"),
+                ],
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_rows())
+
+    response = client.get("/api/jobs?statuses=pending,running,error&limit=40")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 3
+    assert [item["status"] for item in payload["data"]] == ["running", "pending", "error"]
+    assert client.get("/api/jobs?statuses=unknown").status_code == 400
 
 
 def test_group_jobs_load_lazily_with_search_and_pagination(client):

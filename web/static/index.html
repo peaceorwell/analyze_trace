@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>torch profiler analyzer</title>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.5.8" />
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.5.9" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.css" />
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
@@ -12,7 +12,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js"></script>
-  <link rel="stylesheet" href="/static/style.css?v=0.5.8" />
+  <link rel="stylesheet" href="/static/style.css?v=0.5.9" />
   <script>
     // Apply saved theme or system preference before page paint to avoid flash
     (function() {
@@ -133,7 +133,7 @@
     <!-- ── Header ── -->
     <header v-if="authChecked && (!authRequired || currentUser)" class="header">
       <div class="header-brand" @click="$router.push('/')" style="cursor:pointer" title="返回上传页面">
-        <img class="header-logo" src="/static/favicon.svg?v=0.5.8" alt="" />
+        <img class="header-logo" src="/static/favicon.svg?v=0.5.9" alt="" />
         <span class="header-title">Torch Profiler Analyzer</span>
         <span class="header-version">v{{ appVersion }}</span>
       </div>
@@ -143,6 +143,77 @@
         <span class="motto-phrase">让<i class="motto-key motto-key-cool">细节</i>说话</span>
       </div>
       <div class="header-actions">
+        <div class="task-center-wrap" @click.stop>
+          <button
+            :class="['task-center-trigger', taskCenterActiveCount ? 'has-active' : '']"
+            type="button"
+            :aria-expanded="String(showTaskCenter)"
+            aria-haspopup="dialog"
+            title="查看全局任务状态"
+            @click="toggleTaskCenter"
+          >
+            <span v-if="taskCenterActiveCount" class="task-center-live-dot" aria-hidden="true"></span>
+            <span class="task-center-trigger-label">任务</span>
+            <span v-if="taskCenterActiveCount" class="task-center-count">{{ taskCenterActiveCount }}</span>
+          </button>
+          <section v-if="showTaskCenter" class="task-center-popover" role="dialog" aria-label="任务中心">
+            <header class="task-center-head">
+              <div>
+                <strong>任务中心</strong>
+                <small>自动刷新全局分析状态</small>
+              </div>
+              <button class="task-center-refresh" type="button" :disabled="taskCenterLoading" @click="loadTaskCenter()">
+                {{ taskCenterLoading ? '刷新中' : '刷新' }}
+              </button>
+            </header>
+            <div v-if="taskCenterError" class="task-center-error">
+              <span>{{ taskCenterError }}</span>
+              <button type="button" @click="loadTaskCenter()">重试</button>
+            </div>
+            <div class="task-center-scroll">
+              <section v-if="taskCenterActiveJobs.length" class="task-center-section">
+                <div class="task-center-section-title">
+                  <span>进行中</span>
+                  <span>{{ taskCenterActiveJobs.length }}</span>
+                </div>
+                <button
+                  v-for="job in taskCenterActiveJobs"
+                  :key="'active-'+job.id"
+                  class="task-center-job"
+                  type="button"
+                  @click="openTaskCenterJob(job)"
+                >
+                  <span :class="['task-center-status', 'status-'+job.status]">{{ statusIcon(job.status) }}</span>
+                  <span class="task-center-job-main">
+                    <strong>{{ taskCenterJobLabel(job) }}</strong>
+                    <small>{{ taskCenterJobMeta(job) }}</small>
+                  </span>
+                  <span class="task-center-status-text">{{ statusText(job.status) }}</span>
+                </button>
+              </section>
+              <section v-if="taskCenterFailedJobs.length" class="task-center-section">
+                <div class="task-center-section-title tone-error">
+                  <span>最近失败</span>
+                  <span>{{ taskCenterFailedJobs.length }}</span>
+                </div>
+                <div v-for="job in taskCenterFailedJobs" :key="'failed-'+job.id" class="task-center-failed-row">
+                  <button class="task-center-job" type="button" @click="openTaskCenterJob(job)">
+                    <span :class="['task-center-status', 'status-'+job.status]">{{ statusIcon(job.status) }}</span>
+                    <span class="task-center-job-main">
+                      <strong>{{ taskCenterJobLabel(job) }}</strong>
+                      <small>{{ job.error_msg || taskCenterJobMeta(job) }}</small>
+                    </span>
+                  </button>
+                  <button class="task-center-copy" type="button" title="复制错误详情" @click.stop="copyTaskCenterError(job)">复制</button>
+                </div>
+              </section>
+              <div v-if="!taskCenterLoading && !taskCenterActiveJobs.length && !taskCenterFailedJobs.length" class="task-center-empty">
+                <strong>当前没有待处理任务</strong>
+                <span>新提交的分析会自动出现在这里</span>
+              </div>
+            </div>
+          </section>
+        </div>
         <span v-if="authRequired && currentUser"
               class="header-user-wrap"
               :title="currentUser.display_name || currentUser.username">
@@ -1711,6 +1782,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=0.5.8"></script>
+  <script src="/static/app.js?v=0.5.9"></script>
 </body>
 </html>

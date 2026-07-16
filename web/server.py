@@ -59,7 +59,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.5.8"
+APP_VERSION = "0.5.9"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -7468,6 +7468,7 @@ async def list_jobs(
     project_id: Optional[str] = None,
     project_view: Optional[str] = None,
     q: Optional[str] = None,
+    statuses: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
 ):
@@ -7494,7 +7495,21 @@ async def list_jobs(
     if search_sql:
         clauses.append(search_sql)
         params.extend(search_params)
+    requested_statuses = [item.strip() for item in (statuses or "").split(",") if item.strip()]
+    if requested_statuses:
+        allowed_statuses = {"pending", "running", "done", "error"}
+        invalid_statuses = sorted(set(requested_statuses) - allowed_statuses)
+        if invalid_statuses:
+            raise HTTPException(status_code=400, detail=f"Unsupported job status: {', '.join(invalid_statuses)}")
+        requested_statuses = list(dict.fromkeys(requested_statuses))
+        clauses.append(f"j.status IN ({','.join('?' for _ in requested_statuses)})")
+        params.extend(requested_statuses)
     where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    order_sql = (
+        "CASE WHEN j.status IN ('pending', 'running') THEN 0 ELSE 1 END, j.created_at DESC"
+        if requested_statuses
+        else "COALESCE(j.is_pinned, 0) DESC, j.created_at DESC"
+    )
 
     count_cursor = await db.execute(
         f"""
@@ -7512,7 +7527,7 @@ async def list_jobs(
             FROM jobs j
             LEFT JOIN projects p ON p.id = j.project_id
             {where_sql}
-            ORDER BY COALESCE(j.is_pinned, 0) DESC, j.created_at DESC
+            ORDER BY {order_sql}
             LIMIT ? OFFSET ?
         """, (*params, limit, offset))).fetchall()
 

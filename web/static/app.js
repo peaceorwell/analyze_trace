@@ -97,6 +97,10 @@ const historyJobsTotal = ref(0);
 const historyJobsLimit = ref(100);
 const historyJobsOffset = ref(0);
 const historyJobsLoading = ref(false);
+const showTaskCenter = ref(false);
+const taskCenterJobs = ref([]);
+const taskCenterLoading = ref(false);
+const taskCenterError = ref("");
 const historySearch = ref("");
 const filterProject = ref(localStorage.getItem("tpa-filter-project") || "");
 const historyProjectView = ref(localStorage.getItem("tpa-history-project-view") || "all");
@@ -172,7 +176,7 @@ const chartCanvasReady  = ref(false);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.5.8");
+const appVersion = ref("0.5.9");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -696,6 +700,15 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.9",
+    date: "2026-07-16",
+    title: "新增全局任务中心",
+    items: [
+      "页头集中显示排队中、运行中和最近失败的任务，不必停留在任务详情页等待。",
+      "任务状态会在页面可见时自动刷新，完成或失败后给出提示；失败详情支持一键复制。",
+    ],
+  },
   {
     version: "0.5.8",
     date: "2026-07-16",
@@ -2450,7 +2463,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.5.8";
+  appVersion.value = cfg.version || "0.5.9";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -2535,6 +2548,7 @@ const submitLogin = async () => {
     appInitialized = true;
     await loadProjects();
     await refreshSidebarData();
+    await loadTaskCenter({ silent: true });
     await resumeCurrentRouteAfterLogin();
   } catch (e) {
     loginError.value = e.message || "登录失败";
@@ -2551,6 +2565,9 @@ const logout = async () => {
   projects.value = [];
   historyGroups.value = [];
   historyJobs.value = [];
+  taskCenterJobs.value = [];
+  taskCenterInitialized = false;
+  closeTaskCenter();
   recentViewedProjects.value = [];
   collapsedGroups.value = {};
   compareJobs.value = [];
@@ -4098,6 +4115,9 @@ const deleteSelectedStorageFiles = async () => {
 
 let historyGroupsController = null;
 let historyJobsController = null;
+let taskCenterController = null;
+let taskCenterPollTimer = null;
+let taskCenterInitialized = false;
 let compareJobsController = null;
 let projectBulkJobsController = null;
 let resultTableController = null;
@@ -4204,6 +4224,108 @@ const loadHistoryJobs = async () => {
       historyJobsController = null;
     }
   }
+};
+
+const taskCenterActiveJobs = computed(() =>
+  taskCenterJobs.value.filter(job => job.status === "pending" || job.status === "running")
+);
+const taskCenterFailedJobs = computed(() =>
+  taskCenterJobs.value.filter(job => job.status === "error").slice(0, 8)
+);
+const taskCenterActiveCount = computed(() => taskCenterActiveJobs.value.length);
+
+const taskCenterJobLabel = job => job?.label || job?.file_a_name || String(job?.id || "").slice(0, 8);
+const taskCenterJobMeta = job => {
+  const parts = [];
+  if (job?.project_name) parts.push(job.project_name);
+  if (job?.created_at) parts.push(fmtDate(job.created_at));
+  return parts.join(" · ") || "未分组任务";
+};
+
+const loadTaskCenter = async ({ silent = false } = {}) => {
+  if (taskCenterController) {
+    if (silent) return;
+    taskCenterController.abort();
+  }
+  const controller = new AbortController();
+  taskCenterController = controller;
+  if (!silent) taskCenterLoading.value = true;
+  const previousActive = new Map(taskCenterActiveJobs.value.map(job => [job.id, job]));
+  try {
+    const params = new URLSearchParams({
+      statuses: "pending,running,error",
+      limit: "40",
+      offset: "0",
+    });
+    const r = await fetch(`/api/jobs?${params}`, {
+      credentials: "include",
+      signal: controller.signal,
+    });
+    const data = await readJsonResponse(r, {});
+    if (!r.ok) {
+      throw new ApiRequestError(apiErrorMessage(r, data, "加载任务中心失败"), {
+        status: r.status,
+        authExpired: r.status === 401,
+      });
+    }
+    if (taskCenterController !== controller) return;
+
+    const jobs = data.data || [];
+    taskCenterJobs.value = jobs;
+    taskCenterError.value = "";
+    if (taskCenterInitialized && previousActive.size) {
+      const currentById = new Map(jobs.map(job => [job.id, job]));
+      let shouldRefreshSidebar = false;
+      for (const [jobId, previous] of previousActive) {
+        const current = currentById.get(jobId);
+        if (current?.status === "error") {
+          showToast(`任务“${taskCenterJobLabel(current)}”分析失败`, "error", 4200);
+          shouldRefreshSidebar = true;
+          continue;
+        }
+        if (current?.status === "pending" || current?.status === "running") continue;
+        try {
+          const detail = await fetchJson(`/api/jobs/${encodeURIComponent(jobId)}`, { credentials: "include" }, "读取任务状态失败");
+          if (detail?.status === "done") {
+            showToast(`任务“${taskCenterJobLabel(detail) || taskCenterJobLabel(previous)}”分析完成`, "success", 4200);
+            shouldRefreshSidebar = true;
+          }
+        } catch (_error) {
+          // The task may have been deleted while the center was refreshing.
+        }
+      }
+      if (shouldRefreshSidebar) refreshSidebarData();
+    }
+    taskCenterInitialized = true;
+  } catch (e) {
+    if (e.name !== "AbortError") {
+      taskCenterError.value = normalizeApiError(e, "加载任务中心失败");
+      if (!silent && !e?.authExpired) showToast(taskCenterError.value, "error");
+    }
+  } finally {
+    if (taskCenterController === controller) {
+      taskCenterLoading.value = false;
+      taskCenterController = null;
+    }
+  }
+};
+
+const closeTaskCenter = () => {
+  showTaskCenter.value = false;
+};
+const toggleTaskCenter = () => {
+  showTaskCenter.value = !showTaskCenter.value;
+  closeActionMenu();
+  if (showTaskCenter.value) loadTaskCenter();
+};
+const openTaskCenterJob = job => {
+  closeTaskCenter();
+  navigateToJob(job);
+};
+const copyTaskCenterError = async job => {
+  const message = String(job?.error_msg || "").trim();
+  if (!message) return showToast("该任务没有可复制的错误详情", "info");
+  await copyTextToClipboard(message);
 };
 
 const updateHistoryGroup = (groupId, patch) => {
@@ -4451,6 +4573,7 @@ const initializeAppData = async () => {
     }
     await loadProjects();
     await refreshSidebarData();
+    await loadTaskCenter({ silent: true });
     appInitialized = true;
     return true;
   } catch (e) {
@@ -12188,6 +12311,7 @@ const handleGlobalEscape = event => {
   else if (showTritonCode.value) showTritonCode.value = false;
   else if (showGuide.value) showGuide.value = false;
   else if (showReleaseNotes.value) showReleaseNotes.value = false;
+  else if (showTaskCenter.value) closeTaskCenter();
   else if (isReadingMode.value) exitReadingMode();
   else handled = false;
   if (handled) {
@@ -12402,6 +12526,11 @@ const App = {
     let projectBulkSearchTimer = null;
     let resultTableTimer = null;
     let feedbackImageMutationObserver = null;
+    const refreshTaskCenterWhenVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      if (!authChecked.value || (authRequired.value && !currentUser.value)) return;
+      loadTaskCenter({ silent: true });
+    };
     const isFeedbackRoute = computed(() => router.currentRoute.value.name === "feedback");
     const showHeaderMotto = computed(() => router.currentRoute.value.path === "/");
     const handleFeedbackImageResize = () => scheduleFeedbackMarkdownImageResize();
@@ -12428,6 +12557,10 @@ const App = {
     });
     window.addEventListener("resize", handleFeedbackImageResize);
     document.addEventListener("click", handleFeedbackImageToggle);
+    document.addEventListener("click", closeTaskCenter);
+    document.addEventListener("visibilitychange", refreshTaskCenterWhenVisible);
+    clearInterval(taskCenterPollTimer);
+    taskCenterPollTimer = setInterval(refreshTaskCenterWhenVisible, 5000);
 
     let modalReturnFocus = null;
     const modalVisibilitySources = [
@@ -12593,6 +12726,11 @@ const App = {
       destroyFeedbackMarkdownEditors();
       window.removeEventListener("resize", handleFeedbackImageResize);
       document.removeEventListener("click", handleFeedbackImageToggle);
+      document.removeEventListener("click", closeTaskCenter);
+      document.removeEventListener("visibilitychange", refreshTaskCenterWhenVisible);
+      clearInterval(taskCenterPollTimer);
+      taskCenterPollTimer = null;
+      taskCenterController?.abort();
       feedbackImageMutationObserver?.disconnect();
       if (feedbackImageResizeRaf) window.cancelAnimationFrame(feedbackImageResizeRaf);
     });
@@ -12608,6 +12746,10 @@ const App = {
       authRequired, authChecked, authInitError, currentUser, isAdmin, loginForm, loginRememberUsername, loginLoading, loginError,
       loginCaptchaRequired, loginCaptchaImage,
       retryInitializeApp, submitLogin, refreshLoginCaptcha, logout,
+      showTaskCenter, taskCenterLoading, taskCenterError,
+      taskCenterActiveJobs, taskCenterFailedJobs, taskCenterActiveCount,
+      toggleTaskCenter, closeTaskCenter, loadTaskCenter,
+      openTaskCenterJob, copyTaskCenterError, taskCenterJobLabel, taskCenterJobMeta,
 
       // Sidebar data
       projects,
