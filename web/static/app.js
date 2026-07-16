@@ -179,7 +179,7 @@ const chartCanvasReady  = ref(false);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.5.13");
+const appVersion = ref("0.5.14");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -703,6 +703,15 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.14",
+    date: "2026-07-16",
+    title: "修复表格固定列滚动显示",
+    items: [
+      "修复结果表格纵向滚动时，固定首列内容覆盖左上角表头的问题。",
+      "统一表头、底部合计行和固定首列的显示层级，横向与纵向滚动时内容保持清晰。",
+    ],
+  },
   {
     version: "0.5.13",
     date: "2026-07-16",
@@ -2571,7 +2580,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.5.13";
+  appVersion.value = cfg.version || "0.5.14";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;

@@ -93,6 +93,9 @@ def test_large_csv_tables_have_safe_rendering_and_full_filtered_export():
     assert "loadResultTable()\">重试" in APP_JS
     assert ".data-table thead th:first-child" in STYLE_CSS
     assert "position: sticky; left: 0" in STYLE_CSS
+    assert ".data-table thead { position: sticky; top: 0; z-index: 4; }" in STYLE_CSS
+    assert ".data-table tbody td:first-child { z-index: 2; }" in STYLE_CSS
+    assert ".data-table tfoot { position: sticky; bottom: 0; z-index: 3; }" in STYLE_CSS
 
 
 def test_home_page_prioritizes_active_recent_and_project_work():

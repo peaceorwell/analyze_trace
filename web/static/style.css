@@ -4653,7 +4653,7 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
   border: 1px solid var(--border); border-radius: 8px;
 }
 .data-table { width: auto; border-collapse: collapse; font-size: 11px; table-layout: fixed; }
-.data-table thead { position: sticky; top: 0; z-index: 1; }
+.data-table thead { position: sticky; top: 0; z-index: 4; }
 
 .data-table th {
   background-color: var(--th-bg); color: var(--text2);
@@ -4813,7 +4813,7 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
 .cell-pos { color: var(--green); font-weight: 600; }
 .cell-neg { color: var(--red); font-weight: 600; }
 
-.data-table tfoot { position: sticky; bottom: 0; z-index: 1; }
+.data-table tfoot { position: sticky; bottom: 0; z-index: 3; }
 .sum-row td {
   background-color: var(--th-bg); color: var(--text2);
   border-top: 2px solid var(--border2); border-bottom: none;
