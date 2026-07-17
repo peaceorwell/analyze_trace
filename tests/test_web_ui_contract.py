@@ -89,6 +89,12 @@ def test_performance_overview_explains_compute_time_scope():
     assert 'type: "logarithmic"' in APP_JS
     assert "buildCallTimeScatterRows" in APP_JS
     assert "buildCompareScatterRows" in APP_JS
+    assert "compareScatterScaleBounds" in APP_JS
+    assert "logScaleTickLabel" in APP_JS
+    assert 'A 耗时 × B 耗时（点击下钻）' in APP_JS
+    assert '? { x: row.baselineMs, y: row.currentMs' in APP_JS
+    assert 'text: isCompareScatter ? "B 平均耗时（ms，对数）"' in APP_JS
+    assert 'row.baselineMs > 0 && row.currentMs > 0' in APP_JS
     assert 'chartScatterMode.value === "compare" ? "delta_dur_ms" : "avg_dur_ms"' in APP_JS
     assert 'makeCard("整体结论"' in APP_JS
     assert 'makeCard("回退 / 改善项"' in APP_JS
@@ -118,8 +124,9 @@ def test_performance_overview_explains_compute_time_scope():
     assert "comparisonStatusLabel" in APP_JS
     assert "chartScatterGuidesPlugin" in APP_JS
     assert "chartScatterHotspotLabelsPlugin" in APP_JS
-    assert "回退区 · B 更慢" in APP_JS
-    assert "改善区 · B 更快" in APP_JS
+    assert "回退 · B 更慢" in APP_JS
+    assert "改善 · B 更快" in APP_JS
+    assert 'class="scatter-legend-line"' in APP_JS
     assert 'class="chart-scatter-legend"' in APP_JS
     assert "点越大，绝对耗时变化越大" in APP_JS
     assert "pointHoverBorderWidth: 2.5" in APP_JS
