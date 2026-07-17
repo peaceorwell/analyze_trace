@@ -102,6 +102,9 @@ const taskCenterJobs = ref([]);
 const taskCenterLoading = ref(false);
 const taskCenterError = ref("");
 const homeRecentJobs = ref([]);
+const recentViewedJobs = ref([]);
+const homeJobView = ref("completed");
+const homeProjectView = ref("recent");
 const homeDashboardLoading = ref(false);
 const homeDashboardError = ref("");
 const historySearch = ref("");
@@ -165,6 +168,8 @@ const showColumnMenu = ref(false);
 const openActionMenu = ref("");
 const ktChartInst     = ref(null);
 const ktChart         = ref(null);
+const callTimeScatterInst = ref(null);
+const callTimeScatter = ref(null);
 const chartSource     = ref("");
 const chartMetric     = ref("");
 const chartTopN       = ref(10);
@@ -175,11 +180,12 @@ const chartSlowdowns    = ref([]);
 const chartSpeedups     = ref([]);
 const chartBarRows      = ref([]);
 const chartCanvasReady  = ref(false);
+const chartScatterRows  = ref([]);
 
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.5.14");
+const appVersion = ref("0.5.15");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -187,8 +193,11 @@ const currentUser = ref(null);
 const currentUserIsAdmin = ref(false);
 const PROJECT_EXPANSION_STORAGE_PREFIX = "tpa-expanded-groups-v2";
 const RECENT_VIEWED_PROJECTS_STORAGE_PREFIX = "tpa-recent-viewed-projects-v1";
+const RECENT_VIEWED_JOBS_STORAGE_PREFIX = "tpa-recent-viewed-jobs-v1";
 const RECENT_VIEWED_PROJECT_LIMIT = 6;
 const RECENT_VIEWED_PROJECT_STORE_LIMIT = 12;
+const RECENT_VIEWED_JOB_LIMIT = 6;
+const RECENT_VIEWED_JOB_STORE_LIMIT = 12;
 const LOGIN_USERNAME_KEY = "tpa-login-username";
 const LOGIN_REMEMBER_USERNAME_KEY = "tpa-login-remember-username";
 const loginRememberUsername = ref(readStoredBool(LOGIN_REMEMBER_USERNAME_KEY, true));
@@ -222,6 +231,8 @@ const restoreProjectExpansionState = () => {
 
 const recentViewedProjectsStorageKey = () =>
   `${RECENT_VIEWED_PROJECTS_STORAGE_PREFIX}:${projectExpansionUserKey()}`;
+const recentViewedJobsStorageKey = () =>
+  `${RECENT_VIEWED_JOBS_STORAGE_PREFIX}:${projectExpansionUserKey()}`;
 const perfettoOpening = ref({});
 const compareRerunLoading = ref(false);
 const singleTraceAnalyzeLoadingSlot = ref("");
@@ -703,6 +714,16 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.15",
+    date: "2026-07-17",
+    title: "性能总览与首页体验升级",
+    items: [
+      "性能总览改为基于完整 CSV 汇总，新增耗时占比、累计占比和调用数 × 单次耗时散点图。",
+      "耗时统计默认剔除通信类 Kernel/Op，排行、筛选和导出使用一致的全量口径。",
+      "首页工作台支持在最近访问/最近完成任务、最近/收藏项目之间快速切换。",
+    ],
+  },
   {
     version: "0.5.14",
     date: "2026-07-16",
@@ -1591,6 +1612,13 @@ const activeChartSourceConfig = computed(() =>
   chartSourceOptions.value.find(item => item.file === chartSource.value) || chartSourceOptions.value[0] || null
 );
 const activeChartMetricDef = computed(() => chartMetricDefFor(chartMetric.value));
+const chartScatterAvailable = computed(() => {
+  const source = activeChartSourceConfig.value;
+  const fields = selectedJob.value?.result_files?.[source?.file]?.fields || [];
+  return selectedJob.value?.mode !== "compare"
+    && fields.includes("avg_count")
+    && (fields.includes("avg_us_per_call") || fields.includes("avg_dur_ms"));
+});
 const activeChartTitle = computed(() => {
   const source = activeChartSourceConfig.value;
   const metric = activeChartMetricDef.value;
@@ -1643,6 +1671,7 @@ const LONG_TABLE_FIELD_RE = /(^|_)(input|stride|concrete|shape|dims|types|detail
 const NUMERIC_TABLE_FIELD_RE = /(^|_)(count|dur|duration|time|us|ms|gb|efficiency|delta|avg|total|pct|percent|call|calls)(_|$)/i;
 const NUMERIC_TABLE_VALUE_RE = /^[+-]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:e[+-]?\d+)?%?$/i;
 const EFFICIENCY_FIELD_RE = /(^|_)efficiency(_|$)/i;
+const DURATION_SHARE_FIELDS = new Set(["duration_pct", "cumulative_pct"]);
 const KERNEL_NAME_FIELD_RE = /^kernel_name(?:_[ab])?$/i;
 const TEXT_NAME_FIELD_RE = /(^|_)(name|operator|op_name)(_|$)/i;
 const SHORT_TEXT_FIELD_RE = /^(type|family|match_method)$/i;
@@ -1659,6 +1688,8 @@ const COMPACT_NUMERIC_COLUMN_MAX = {
   avg_io_gb: 112,
   avg_io_gb_a: 118,
   avg_io_gb_b: 118,
+  duration_pct: 112,
+  cumulative_pct: 118,
 };
 const TABLE_COLUMN_MIN_WIDTH = 60;
 // Single generous ceiling for both manual dragging and width preservation. It's
@@ -1693,6 +1724,8 @@ const TABLE_FIELD_META = Object.freeze({
   avg_compute_efficiency: { label: "计算效率 (%)", hint: "相对理论计算峰值的利用率" },
   avg_io_efficiency: { label: "IO 效率", hint: "相对理论 IO 峰值的利用率" },
   avg_op_efficiency: { label: "综合效率 (%)", hint: "计算与 IO 瓶颈下的综合效率" },
+  duration_pct: { label: "耗时占比 (%)", hint: "该行耗时占完整计算数据总耗时的比例，通信项不参与分母" },
+  cumulative_pct: { label: "累计占比 (%)", hint: "按耗时从高到低累计，占完整计算数据总耗时的比例" },
   triton_code_file: { label: "Triton 代码", hint: "生成的 Triton 源码文件" },
 });
 
@@ -1913,6 +1946,7 @@ const colSums = computed(() => {
   const rows   = filteredRows.value;
   const result = {};
   for (const f of fields) {
+    if (DURATION_SHARE_FIELDS.has(f)) { result[f] = null; continue; }
     if (f.toLowerCase().includes('efficiency')) { result[f] = null; continue; }
     if (rows.some(r => String(r[f] ?? '').trim().endsWith('%'))) {
       result[f] = null; continue;
@@ -2027,6 +2061,7 @@ const isNumericTableColumn = (field, rows = currentTable.value.rows || []) => {
   return seen > 0;
 };
 const isEfficiencyField = field => EFFICIENCY_FIELD_RE.test(normalizedTableField(field));
+const isDurationShareField = field => DURATION_SHARE_FIELDS.has(normalizedTableField(field));
 const isLongTableField = field => LONG_TABLE_FIELD_RE.test(normalizedTableField(field));
 // Long text columns whose content should truncate rather than dictate width.
 const isWideTextField = field => {
@@ -2131,6 +2166,7 @@ const tableHeaderClass = field => ({
   "num-col": numericTableColumns.value.has(field),
   "long-col": isLongTableField(field),
   "eff-col": isEfficiencyField(field),
+  "share-col": isDurationShareField(field),
 });
 const tableCellClass = (field, value) => ({
   ...tableHeaderClass(field),
@@ -2159,6 +2195,15 @@ const efficiencyTone = value => {
   if (number >= 60) return "good";
   if (number >= 35) return "warn";
   return "bad";
+};
+const durationShareStyle = value => ({
+  "--duration-share": `${Math.max(0, Math.min(100, Number.parseFloat(value) || 0))}%`,
+});
+const formatDurationShare = value => {
+  const number = Number.parseFloat(value);
+  if (!Number.isFinite(number)) return "—";
+  const digits = number >= 10 ? 1 : 2;
+  return `${Number(number.toFixed(digits))}%`;
 };
 const shouldUseEfficiencyPreset = (filename, fields, state = null) => {
   if (!EFFICIENCY_TABLE_FILES.has(filename)) return false;
@@ -2196,6 +2241,58 @@ const findProjectMeta = projectId => {
     || null;
 };
 
+const normalizeRecentViewedJob = (job, viewedAt) => {
+  if (!job?.id || job.status !== "done") return null;
+  const project = findProjectMeta(job.project_id);
+  return {
+    id: job.id,
+    seq: job.seq,
+    label: job.label || "",
+    file_a_name: job.file_a_name || "",
+    project_id: job.project_id || "",
+    project_name: job.project_name || project?.name || project?.label || "",
+    created_at: job.created_at || "",
+    viewed_at: viewedAt || job.viewed_at || new Date().toISOString(),
+    status: "done",
+    mode: job.mode || "single",
+  };
+};
+
+const writeRecentViewedJobs = () => {
+  try {
+    localStorage.setItem(
+      recentViewedJobsStorageKey(),
+      JSON.stringify(recentViewedJobs.value.slice(0, RECENT_VIEWED_JOB_STORE_LIMIT)),
+    );
+  } catch (e) {}
+};
+
+const restoreRecentViewedJobs = () => {
+  const stored = readStoredJson(recentViewedJobsStorageKey(), []);
+  recentViewedJobs.value = (Array.isArray(stored) ? stored : [])
+    .map(job => normalizeRecentViewedJob(job, job?.viewed_at))
+    .filter(Boolean)
+    .slice(0, RECENT_VIEWED_JOB_STORE_LIMIT);
+  homeJobView.value = recentViewedJobs.value.length ? "visited" : "completed";
+};
+
+const rememberRecentViewedJob = job => {
+  const record = normalizeRecentViewedJob(job);
+  if (!record) return;
+  recentViewedJobs.value = [
+    record,
+    ...recentViewedJobs.value.filter(item => item.id !== record.id),
+  ].slice(0, RECENT_VIEWED_JOB_STORE_LIMIT);
+  writeRecentViewedJobs();
+};
+
+const forgetRecentViewedJob = jobId => {
+  const next = recentViewedJobs.value.filter(job => job.id !== jobId);
+  if (next.length === recentViewedJobs.value.length) return;
+  recentViewedJobs.value = next;
+  writeRecentViewedJobs();
+};
+
 const normalizeRecentViewedProject = (projectOrId, viewedAt) => {
   const id = typeof projectOrId === "string" ? projectOrId : projectOrId?.id;
   if (!id || id === "__none__") return null;
@@ -2210,7 +2307,7 @@ const normalizeRecentViewedProject = (projectOrId, viewedAt) => {
     is_owner: source?.is_owner !== false,
     is_favorite: source?.is_favorite ? 1 : 0,
     has_experiment_tree: source?.has_experiment_tree ? 1 : 0,
-    viewed_at: viewedAt || source?.viewed_at || new Date().toISOString(),
+    viewed_at: viewedAt !== undefined ? viewedAt : (source?.viewed_at || new Date().toISOString()),
   };
 };
 
@@ -2274,13 +2371,37 @@ const homeRecentProjects = computed(() => {
       viewed_at: project.updated_at || project.created_at || "",
     }));
 });
+const homeFavoriteProjects = computed(() =>
+  projects.value
+    .filter(project => project.is_favorite)
+    .slice(0, 4)
+    .map(project => normalizeRecentViewedProject(project, ""))
+    .filter(Boolean)
+);
+const homeDisplayedProjects = computed(() =>
+  homeProjectView.value === "favorite" ? homeFavoriteProjects.value : homeRecentProjects.value
+);
+const homeVisitedJobs = computed(() => recentViewedJobs.value.slice(0, RECENT_VIEWED_JOB_LIMIT));
+const homeDisplayedJobs = computed(() =>
+  homeJobView.value === "visited" ? homeVisitedJobs.value : homeRecentJobs.value
+);
 const homeHasActivity = computed(() =>
   Boolean(
     taskCenterJobs.value.some(job => job.status === "pending" || job.status === "running")
     || homeRecentJobs.value.length
+    || homeVisitedJobs.value.length
     || homeRecentProjects.value.length
+    || homeFavoriteProjects.value.length
   )
 );
+
+const homeJobMeta = job => {
+  const parts = [];
+  if (job?.project_name) parts.push(job.project_name);
+  const timestamp = homeJobView.value === "visited" ? job?.viewed_at : job?.created_at;
+  if (timestamp) parts.push(`${homeJobView.value === "visited" ? "访问" : "完成"} ${fmtDate(timestamp)}`);
+  return parts.join(" · ") || "未分组任务";
+};
 
 const recentProjectSubtitle = project => {
   const visibility = project.is_public
@@ -2580,7 +2701,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.5.14";
+  appVersion.value = cfg.version || "0.5.15";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -2596,6 +2717,7 @@ const loadMe = async () => {
     authChecked.value = true;
     restoreProjectExpansionState();
     restoreRecentViewedProjects();
+    restoreRecentViewedJobs();
     return null;
   }
   if (!r.ok) {
@@ -2608,6 +2730,7 @@ const loadMe = async () => {
   authChecked.value = true;
   restoreProjectExpansionState();
   restoreRecentViewedProjects();
+  restoreRecentViewedJobs();
   return currentUser.value;
 };
 
@@ -2656,6 +2779,7 @@ const submitLogin = async () => {
     currentUserIsAdmin.value = Boolean(data.is_admin);
     restoreProjectExpansionState();
     restoreRecentViewedProjects();
+    restoreRecentViewedJobs();
     window.setTimeout(() => {
       loginForm.value.password = "";
       loginForm.value.captcha = "";
@@ -2693,6 +2817,9 @@ const logout = async () => {
   taskCenterInitialized = false;
   closeTaskCenter();
   recentViewedProjects.value = [];
+  recentViewedJobs.value = [];
+  homeJobView.value = "completed";
+  homeProjectView.value = "recent";
   collapsedGroups.value = {};
   compareJobs.value = [];
   selectedJobId.value = null;
@@ -4781,12 +4908,14 @@ const loadJob = async id => {
       });
     }
     selectedJob.value = null;
+    forgetRecentViewedJob(jobHandle);
     return false;
   }
   selectedJob.value = data;
   selectedJobId.value = data.id;
   clearProjectFilterIfJobIsHidden(data);
   rememberRecentProject(data.project_id);
+  rememberRecentViewedJob(data);
   resultTable.value = { fields: [], rows: [], total: 0, filtered_total: 0, limit: tableLimit.value, offset: tableOffset.value };
   resultTableFile.value = "";
   consoleSearch.value = "";
@@ -4799,6 +4928,7 @@ const loadJob = async id => {
   chartSpeedups.value = [];
   chartBarRows.value = [];
   chartCanvasReady.value = false;
+  chartScatterRows.value = [];
   aiAnalysisError.value = "";
   aiAnalysisContent.value = "";
   aiAnalysisArtifacts.value = [];
@@ -5589,8 +5719,8 @@ const PIE_COLORS = [
   'rgba(132,204,22,.82)',  'rgba(20,184,166,.82)',
 ];
 const getColors = n => Array.from({ length: n }, (_, i) => PIE_COLORS[i % PIE_COLORS.length]);
-const CHART_FETCH_LIMIT = 5000;
 const chartTopNOptions = [5, 10, 15, 20, 30];
+const CHART_FETCH_TOP_LIMIT = 100;
 
 const chartColors = () => {
   const dark = isDark.value;
@@ -5709,14 +5839,28 @@ const sortChartRows = (rows, metricDef) => {
     .sort((a, b) => metricValue(b) - metricValue(a));
 };
 
-const buildChartBarRows = (rows, metricDef, topN) => {
+const buildChartBarRows = (rows, metricDef, topN, fullMetricTotal = null) => {
   const sorted = sortChartRows(rows, metricDef);
-  const total = sorted.reduce((sum, row) => sum + row.displayValue, 0);
+  const total = Number.isFinite(Number(fullMetricTotal))
+    ? Number(fullMetricTotal)
+    : sorted.reduce((sum, row) => sum + row.displayValue, 0);
   return sorted.slice(0, topN).map(row => {
     const sharePct = total ? row.displayValue / total * 100 : 0;
     return { ...row, sharePct, shareLabel: fmtChartPercent(sharePct) };
   });
 };
+
+const buildCallTimeScatterRows = rows => (rows || [])
+  .map(row => {
+    const calls = parseChartNumber(row.raw?.avg_count);
+    const totalMs = parseChartNumber(row.raw?.avg_dur_ms);
+    const rawUsPerCall = parseChartNumber(row.raw?.avg_us_per_call);
+    const usPerCall = rawUsPerCall > 0 ? rawUsPerCall : (calls > 0 ? totalMs * 1000 / calls : 0);
+    return { ...row, calls, totalMs, usPerCall };
+  })
+  .filter(row => row.calls > 0 && row.usPerCall > 0)
+  .sort((a, b) => b.totalMs - a.totalMs)
+  .slice(0, CHART_FETCH_TOP_LIMIT);
 
 const chartShareHeader = metricDef => metricDef.signed ? "绝对值占比" : "占比";
 const chartFallbackBarWidth = row => {
@@ -5803,16 +5947,24 @@ const chartShareLabelsPlugin = {
 };
 
 const buildChartSummary = (rows, table, sourceConfig) => {
-  const totalLabel = table?.total && table.total > rows.length
+  const totalLabel = table?.aggregated
+    ? `全量 ${table.total || 0} 项`
+    : table?.total && table.total > rows.length
     ? `前 ${rows.length} / 共 ${table.total} 项`
     : `${rows.length} 项`;
   const makeCard = (label, value, sub = "", tone = "", row = null) => ({ label, value, sub, tone, row });
+  const highlightRow = key => normalizeChartRows(
+    table?.highlights?.[key] ? [table.highlights[key]] : [],
+    table?.fields || [],
+    sourceConfig,
+    activeChartMetricDef.value,
+  )[0] || null;
   if (selectedJob.value?.mode === "compare") {
-    const totalA = rows.reduce((sum, row) => sum + row.aValue, 0);
-    const totalB = rows.reduce((sum, row) => sum + row.bValue, 0);
-    const totalDelta = rows.reduce((sum, row) => sum + row.delta, 0);
-    const slowest = rows.filter(row => row.delta > 0).sort((a, b) => b.delta - a.delta)[0] || null;
-    const fastest = rows.filter(row => row.delta < 0).sort((a, b) => a.delta - b.delta)[0] || null;
+    const totalA = parseChartNumber(table?.sums?.avg_dur_ms_A ?? rows.reduce((sum, row) => sum + row.aValue, 0));
+    const totalB = parseChartNumber(table?.sums?.avg_dur_ms_B ?? rows.reduce((sum, row) => sum + row.bValue, 0));
+    const totalDelta = parseChartNumber(table?.sums?.delta_dur_ms ?? rows.reduce((sum, row) => sum + row.delta, 0));
+    const slowest = highlightRow("slowdown") || rows.filter(row => row.delta > 0).sort((a, b) => b.delta - a.delta)[0] || null;
+    const fastest = highlightRow("speedup") || rows.filter(row => row.delta < 0).sort((a, b) => a.delta - b.delta)[0] || null;
     return [
       makeCard("A 计算耗时", fmtChartValue(totalA, { unit: "ms" }), `已排除通信 · ${totalLabel}`),
       makeCard("B 计算耗时", fmtChartValue(totalB, { unit: "ms" }), `已排除通信 · ${sourceConfig.label} · ${totalLabel}`),
@@ -5822,16 +5974,16 @@ const buildChartSummary = (rows, table, sourceConfig) => {
     ];
   }
 
-  const totalDur = rows.reduce((sum, row) => sum + parseChartNumber(row.raw.avg_dur_ms), 0);
-  const totalCount = rows.reduce((sum, row) => sum + parseChartNumber(row.raw.avg_count), 0);
-  const hotspot = rows
+  const totalDur = parseChartNumber(table?.sums?.avg_dur_ms ?? rows.reduce((sum, row) => sum + parseChartNumber(row.raw.avg_dur_ms), 0));
+  const totalCount = parseChartNumber(table?.sums?.avg_count ?? rows.reduce((sum, row) => sum + parseChartNumber(row.raw.avg_count), 0));
+  const hotspot = highlightRow("hotspot") || rows
     .map(row => ({ ...row, hotValue: parseChartNumber(row.raw.avg_dur_ms) }))
     .sort((a, b) => b.hotValue - a.hotValue)[0] || null;
   const topPct = totalDur && hotspot ? hotspot.hotValue / totalDur * 100 : 0;
   return [
     makeCard("设备计算耗时", fmtChartValue(totalDur, { unit: "ms" }), `已排除通信 · ${totalLabel}`),
     makeCard("最大热点", hotspot ? fmtChartValue(hotspot.hotValue, { unit: "ms" }) : "0", hotspot ? shortChartLabel(hotspot.label, 28) : "无", "", hotspot),
-    makeCard("Kernel 调用数", fmtChartValue(totalCount), "当前已载入数据合计"),
+    makeCard("Kernel 调用数", fmtChartValue(totalCount), table?.aggregated ? "全量数据合计" : "当前已载入数据合计"),
     makeCard("最大热点占比", `${trimNumber(topPct)}%`, hotspot ? `占设备计算耗时 · ${shortChartLabel(hotspot.label, 28)}` : "无"),
   ];
 };
@@ -5855,6 +6007,7 @@ const updateDeltaLists = rows => {
 const destroyChartInstances = () => {
   chartCanvasReady.value = false;
   if (ktChartInst.value)     { ktChartInst.value.destroy();     ktChartInst.value = null; }
+  if (callTimeScatterInst.value) { callTimeScatterInst.value.destroy(); callTimeScatterInst.value = null; }
 };
 
 const waitChartFrame = () => new Promise(resolve => {
@@ -5926,16 +6079,21 @@ const buildChart = async () => {
   chartLoading.value = true;
   chartError.value = "";
   try {
-    if (!chartTables.value[sourceConfig.file]) {
+    const chartCacheKey = `${sourceConfig.file}:${metricDef.key}`;
+    if (!chartTables.value[chartCacheKey]) {
       try {
+        const params = new URLSearchParams({
+          chart_metric: metricDef.key,
+          chart_limit: String(CHART_FETCH_TOP_LIMIT),
+          exclude_communication: "true",
+        });
         chartTables.value = {
           ...chartTables.value,
-          [sourceConfig.file]: await fetchResultTable(sourceConfig.file, {
-            jobId,
-            limit: CHART_FETCH_LIMIT,
-            offset: 0,
-            ignoreViewState: true,
-          }),
+          [chartCacheKey]: await fetchJson(
+            `/api/jobs/${encodeURIComponent(jobId)}/results/${encodeURIComponent(sourceConfig.file)}?${params}`,
+            { credentials: "include" },
+            "加载性能总览失败",
+          ),
         };
         if (selectedJobId.value !== jobId) {
           chartLoading.value = false;
@@ -5947,18 +6105,44 @@ const buildChart = async () => {
         return;
       }
     }
-    const table = chartTables.value[sourceConfig.file];
+    const table = chartTables.value[chartCacheKey];
     const fields = table?.fields || selectedJob.value.result_files[sourceConfig.file]?.fields || [];
     const rows = filterChartCommunicationRows(
       normalizeChartRows(table?.rows || [], fields, sourceConfig, metricDef),
       sourceConfig
     );
+    let scatterTable = null;
+    if (chartScatterAvailable.value) {
+      const scatterCacheKey = `${sourceConfig.file}:avg_dur_ms`;
+      if (!chartTables.value[scatterCacheKey]) {
+        const scatterParams = new URLSearchParams({
+          chart_metric: "avg_dur_ms",
+          chart_limit: String(CHART_FETCH_TOP_LIMIT),
+          exclude_communication: "true",
+        });
+        chartTables.value = {
+          ...chartTables.value,
+          [scatterCacheKey]: await fetchJson(
+            `/api/jobs/${encodeURIComponent(jobId)}/results/${encodeURIComponent(sourceConfig.file)}?${scatterParams}`,
+            { credentials: "include" },
+            "加载调用耗时散点图失败",
+          ),
+        };
+      }
+      scatterTable = chartTables.value[scatterCacheKey];
+    }
     destroyChartInstances();
 
     chartSummaryCards.value = buildChartSummary(rows, table, sourceConfig);
     updateDeltaLists(rows);
     const topN = Math.max(1, Number(chartTopN.value) || 10);
-    chartBarRows.value = buildChartBarRows(rows, metricDef, topN);
+    chartBarRows.value = buildChartBarRows(rows, metricDef, topN, table?.metric_total);
+    chartScatterRows.value = scatterTable
+      ? buildCallTimeScatterRows(filterChartCommunicationRows(
+          normalizeChartRows(scatterTable.rows || [], scatterTable.fields || fields, sourceConfig, chartMetricDefFor("avg_dur_ms")),
+          sourceConfig,
+        ))
+      : [];
 
     if (!chartBarRows.value.length) {
       chartError.value = "当前指标没有可绘制的数据";
@@ -6057,6 +6241,63 @@ const buildChart = async () => {
     });
     ktChartInst.value = chart;
     chartCanvasReady.value = true;
+
+    if (callTimeScatter.value && chartScatterRows.value.length) {
+      const scatter = new Chart(callTimeScatter.value, {
+        type: "scatter",
+        data: {
+          datasets: [{
+            label: "Kernel / Op",
+            data: chartScatterRows.value.map(row => ({ x: row.calls, y: row.usPerCall })),
+            backgroundColor: "rgba(99,102,241,0.68)",
+            borderColor: "rgba(79,70,229,0.92)",
+            borderWidth: 1,
+            pointRadius: 4,
+            pointHoverRadius: 7,
+          }],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          onClick: (_, elements) => {
+            const row = chartScatterRows.value[elements?.[0]?.index];
+            if (row) drillDownChart(row);
+          },
+          onHover: (event, elements) => {
+            if (event?.native?.target) event.native.target.style.cursor = elements.length ? "pointer" : "default";
+          },
+          plugins: {
+            legend: { display: false },
+            tooltip: { callbacks: {
+              title: items => chartScatterRows.value[items[0]?.dataIndex]?.label || "",
+              label: ctx => {
+                const row = chartScatterRows.value[ctx.dataIndex];
+                return row ? [
+                  ` 调用数: ${trimNumber(row.calls)}`,
+                  ` 单次耗时: ${trimNumber(row.usPerCall)} us`,
+                  ` 总耗时: ${trimNumber(row.totalMs)} ms`,
+                ] : "";
+              },
+            }},
+          },
+          scales: {
+            x: {
+              type: "logarithmic",
+              title: { display: true, text: "平均调用数（对数）", color: cc.text },
+              ticks: { color: cc.text },
+              grid: { color: cc.grid },
+            },
+            y: {
+              type: "logarithmic",
+              title: { display: true, text: "平均单次耗时（μs，对数）", color: cc.text },
+              ticks: { color: cc.text },
+              grid: { color: cc.grid },
+            },
+          },
+        },
+      });
+      callTimeScatterInst.value = scatter;
+    }
   } catch (e) {
     chartCanvasReady.value = false;
     chartError.value = normalizeApiError(e, "生成图表失败");
@@ -6326,6 +6567,7 @@ const deleteJob = async () => {
       showToast("删除失败: " + (errorData.detail || errorData.message || "未知错误"), "error");
       return;
     }
+    forgetRecentViewedJob(jobId);
     if (selectedJobId.value === jobId) router.push({ path: "/" });
     await refreshSidebarData();
     showToast("任务已删除", "success");
@@ -8642,40 +8884,59 @@ const Home = {
         <section class="home-dashboard-panel">
           <div class="home-panel-head">
             <div>
-              <strong>最近完成</strong>
-              <small>快速回到最近的分析结果</small>
+              <strong>最近结果</strong>
+              <small>{{ homeJobView==='visited' ? '回到最近查看过的结果' : '查看最近完成的分析' }}</small>
             </div>
-            <button class="link-btn" type="button" :disabled="homeDashboardLoading" @click="loadHomeDashboard()">
-              {{ homeDashboardLoading ? '刷新中' : '刷新' }}
-            </button>
+            <span class="home-panel-actions">
+              <span class="home-view-toggle" aria-label="最近结果视图">
+                <button type="button" :class="{ active: homeJobView==='visited' }"
+                        :aria-pressed="String(homeJobView==='visited')" @click="homeJobView='visited'">最近访问</button>
+                <button type="button" :class="{ active: homeJobView==='completed' }"
+                        :aria-pressed="String(homeJobView==='completed')" @click="homeJobView='completed'">最近完成</button>
+              </span>
+              <button v-if="homeJobView==='completed'" class="link-btn" type="button"
+                      :disabled="homeDashboardLoading" @click="loadHomeDashboard()">
+                {{ homeDashboardLoading ? '刷新中' : '刷新' }}
+              </button>
+            </span>
           </div>
-          <div v-if="homeDashboardError" class="home-panel-error">
+          <div v-if="homeDashboardError && homeJobView==='completed'" class="home-panel-error">
             <span>{{ homeDashboardError }}</span>
             <button type="button" @click="loadHomeDashboard()">重试</button>
           </div>
-          <div v-if="homeRecentJobs.length" class="home-list">
-            <button v-for="job in homeRecentJobs" :key="job.id" class="home-list-row" type="button" @click="navigateToJob(job)">
+          <div v-if="homeDisplayedJobs.length" class="home-list">
+            <button v-for="job in homeDisplayedJobs" :key="job.id" class="home-list-row" type="button" @click="navigateToJob(job)">
               <span class="home-job-status status-done">{{ statusIcon(job.status) }}</span>
               <span class="home-job-main">
                 <strong>{{ taskCenterJobLabel(job) }}</strong>
-                <small>{{ taskCenterJobMeta(job) }}</small>
+                <small>{{ homeJobMeta(job) }}</small>
               </span>
               <span :class="['job-mode-badge', 'mode-'+job.mode]">{{ job.mode==='compare' ? '对比' : '单文件' }}</span>
             </button>
           </div>
-          <div v-else-if="!homeDashboardLoading" class="home-panel-empty">尚无已完成任务，提交首个 trace 后会显示在这里。</div>
+          <div v-else-if="!homeDashboardLoading" class="home-panel-empty">
+            {{ homeJobView==='visited' ? '尚无最近访问记录，打开一个已完成任务后会显示在这里。' : '尚无已完成任务，提交首个 trace 后会显示在这里。' }}
+          </div>
         </section>
 
         <section class="home-dashboard-panel">
           <div class="home-panel-head">
             <div>
-              <strong>最近项目</strong>
-              <small>继续项目内的实验和对比</small>
+              <strong>项目</strong>
+              <small>{{ homeProjectView==='favorite' ? '快速进入收藏项目' : '继续最近项目内的实验和对比' }}</small>
             </div>
-            <span class="home-panel-count">{{ homeRecentProjects.length }}</span>
+            <span class="home-panel-actions">
+              <span class="home-view-toggle" aria-label="项目视图">
+                <button type="button" :class="{ active: homeProjectView==='recent' }"
+                        :aria-pressed="String(homeProjectView==='recent')" @click="homeProjectView='recent'">最近</button>
+                <button type="button" :class="{ active: homeProjectView==='favorite' }"
+                        :aria-pressed="String(homeProjectView==='favorite')" @click="homeProjectView='favorite'">收藏</button>
+              </span>
+              <span class="home-panel-count">{{ homeDisplayedProjects.length }}</span>
+            </span>
           </div>
-          <div v-if="homeRecentProjects.length" class="home-project-list">
-            <div v-for="project in homeRecentProjects" :key="project.id" class="home-project-row">
+          <div v-if="homeDisplayedProjects.length" class="home-project-list">
+            <div v-for="project in homeDisplayedProjects" :key="project.id" class="home-project-row">
               <button class="home-project-main" type="button" @click="openHomeProject(project)">
                 <span :class="['home-project-icon', project.is_public ? 'shared' : '']">{{ project.is_public ? '共' : '项' }}</span>
                 <span>
@@ -8686,7 +8947,9 @@ const Home = {
               <button v-if="project.has_experiment_tree" class="home-project-tree" type="button" @click="openRecentProjectTree(project)">实验树</button>
             </div>
           </div>
-          <div v-else class="home-panel-empty">创建项目后，可在这里快速返回项目任务。</div>
+          <div v-else class="home-panel-empty">
+            {{ homeProjectView==='favorite' ? '尚未收藏项目，可在左侧项目管理中添加收藏。' : '创建或打开项目后，可在这里快速返回。' }}
+          </div>
         </section>
       </div>
 
@@ -8717,7 +8980,9 @@ const Home = {
       form, projects, projectOptionLabel, selectedJob,
       historyGroupsTotal, sidebarTab, showGuide, uploadFileMeta,
       taskCenterActiveJobs, taskCenterJobLabel, taskCenterJobMeta, toggleTaskCenter,
-      homeRecentJobs, homeRecentProjects, homeHasActivity, homeDashboardLoading, homeDashboardError,
+      homeRecentJobs, homeRecentProjects, homeDisplayedJobs, homeDisplayedProjects,
+      homeJobView, homeProjectView, homeJobMeta,
+      homeHasActivity, homeDashboardLoading, homeDashboardError,
       loadHomeDashboard, navigateToJob, openHomeProject, openRecentProjectTree, recentProjectSubtitle,
       setQuickUploadMode,
       onDrop, onFileChange, clearFile, submitJob,
@@ -8938,7 +9203,7 @@ const JobDetail = {
 
           <div class="chart-scope-note">
             <span class="chart-scope-badge">统计口径</span>
-            汇总当前数据源已载入的设备计算时间，默认剔除通信类 Kernel/Op；不等同于模型端到端耗时。
+            汇总当前数据源的完整设备计算数据，默认剔除通信类 Kernel/Op；不等同于模型端到端耗时。
           </div>
 
           <div v-if="chartError" class="error-box mb-2">{{ chartError }}</div>
@@ -9003,6 +9268,14 @@ const JobDetail = {
                   ref="ktChart"
                   :class="{ 'chart-canvas-pending': chartBarRows.length && !chartCanvasReady }"
                 ></canvas>
+              </div>
+            </div>
+            <div v-if="chartScatterAvailable" class="chart-panel chart-panel-wide">
+              <div class="chart-panel-title">调用数 × 单次耗时（点击下钻）</div>
+              <div class="chart-panel-note">展示全量数据中的 Top 100 耗时热点；横纵轴均为对数坐标。</div>
+              <div class="chart-scatter-area">
+                <div v-if="!chartScatterRows.length" class="chart-scatter-empty">暂无可绘制的调用数与单次耗时数据</div>
+                <canvas v-show="chartScatterRows.length" ref="callTimeScatter"></canvas>
               </div>
             </div>
           </div>
@@ -9314,6 +9587,11 @@ const JobDetail = {
                                 :title="'点击重新运行'">↻</button>
                       </template>
                     </template>
+                    <template v-else-if="isDurationShareField(f)">
+                      <span class="duration-share-cell" :style="durationShareStyle(row[f])">
+                        <span>{{ formatDurationShare(row[f]) }}</span>
+                      </span>
+                    </template>
                     <template v-else-if="f === 'family'">
                       <span :class="['family-chip', familyChipClass(row[f])]">{{ row[f] || '-' }}</span>
                     </template>
@@ -9364,6 +9642,7 @@ const JobDetail = {
   `,
   setup() {
     const ktChartRef = ref(null);
+    const callTimeScatterRef = ref(null);
 
     // Wire up template refs to module-level refs so buildChart() can use them
     watch(ktChartRef, (el) => {
@@ -9371,6 +9650,9 @@ const JobDetail = {
       if (el && resultTab.value === "chart" && selectedJob.value?.status === "done") {
         scheduleBuildChart();
       }
+    });
+    watch(callTimeScatterRef, (el) => {
+      callTimeScatter.value = el;
     });
 
     const switchTab = async (key) => {
@@ -9389,6 +9671,7 @@ const JobDetail = {
 
     return {
       ktChart: ktChartRef,
+      callTimeScatter: callTimeScatterRef,
       selectedJob, selectedJobId, selectedJobHandle, jobLoading, resultTab, availableTabs, currentTable,
       jobStepFilterLabel,
       isReadingMode, toggleReadingMode,
@@ -9398,6 +9681,7 @@ const JobDetail = {
       chartSource, chartMetric, chartTopN, chartTopNOptions, chartSourceOptions,
       chartMetricOptions, chartLoading, chartError, chartSummaryCards,
       chartSlowdowns, chartSpeedups, chartBarRows, chartCanvasReady,
+      chartScatterRows, chartScatterAvailable,
       activeChartMetricDef, activeChartTitle, chartShareHeader,
       chartFallbackBarWidth, chartFallbackBarTone, chartFallbackValueLabel,
       buildChart, drillDownChart, fmtDeltaMs,
@@ -9411,7 +9695,7 @@ const JobDetail = {
       isKernelTypeDrillCell, drillDownKernelType,
       isEfficiencyTable, isEfficiencyField, applyEfficiencyColumnPreset,
       tableStyle, tableColumnStyle, tableHeaderClass, tableCellClass, tableRowClass, familyChipClass, efficiencyTone,
-      tableFieldLabel, tableFieldTitle,
+      tableFieldLabel, tableFieldTitle, isDurationShareField, durationShareStyle, formatDurationShare,
       isTritonStepTab, tritonStatus, allowFileDownload, allowCodeExecution,
       claudeAnalysisEnabled, aiAnalysisMeta, aiAnalysisLoading, aiAnalysisStarting,
       aiAnalysisError, aiAnalysisContent, aiAnalysisArtifacts, aiAnalysisVisibleArtifacts,

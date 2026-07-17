@@ -75,6 +75,18 @@ def test_performance_overview_explains_compute_time_scope():
     assert "计算 Delta" in APP_JS
     assert "不等同于模型端到端耗时" in APP_JS
     assert "avg_count 合计" not in APP_JS
+    assert "chart_metric: metricDef.key" in APP_JS
+    assert "CHART_FETCH_LIMIT" not in APP_JS
+    assert "table?.sums?.avg_dur_ms" in APP_JS
+    assert "table?.metric_total" in APP_JS
+    assert 'duration_pct: { label: "耗时占比 (%)"' in APP_JS
+    assert 'cumulative_pct: { label: "累计占比 (%)"' in APP_JS
+    assert 'class="duration-share-cell"' in APP_JS
+    assert "调用数 × 单次耗时（点击下钻）" in APP_JS
+    assert 'type: "scatter"' in APP_JS
+    assert 'type: "logarithmic"' in APP_JS
+    assert "buildCallTimeScatterRows" in APP_JS
+    assert 'chart_metric: "avg_dur_ms"' in APP_JS
 
 
 def test_header_task_center_tracks_active_and_failed_jobs_globally():
@@ -105,8 +117,20 @@ def test_home_page_prioritizes_active_recent_and_project_work():
     assert "taskCenterActiveJobs" in home
     assert "homeRecentJobs" in home
     assert "homeRecentProjects" in home
+    assert "homeDisplayedJobs" in home
+    assert "homeDisplayedProjects" in home
+    assert ">最近访问</button>" in home
+    assert ">最近完成</button>" in home
+    assert ">收藏</button>" in home
     assert "继续你的性能分析" in home
     assert 'statuses: "done"' in APP_JS
+
+
+def test_recently_viewed_results_are_user_scoped_and_record_completed_jobs():
+    assert 'const RECENT_VIEWED_JOBS_STORAGE_PREFIX = "tpa-recent-viewed-jobs-v1";' in APP_JS
+    assert "`${RECENT_VIEWED_JOBS_STORAGE_PREFIX}:${projectExpansionUserKey()}`" in APP_JS
+    assert 'if (!job?.id || job.status !== "done") return null;' in APP_JS
+    assert "rememberRecentViewedJob(data);" in APP_JS
 
 
 def test_upload_project_picker_is_searchable_grouped_and_keyboard_accessible():

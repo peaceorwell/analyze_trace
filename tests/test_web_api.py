@@ -72,7 +72,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.5.14",
+        "version": "0.5.15",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -3876,7 +3876,7 @@ def test_done_job_lists_result_files_and_paginates_tables(client):
     assert detail.status_code == 200
     assert "results" not in detail.json()
     assert detail.json()["result_files"]["all_kernels_avg.csv"]["fields"] == [
-        "kernel_name", "avg_dur_ms", "family"
+        "kernel_name", "avg_dur_ms", "family", "duration_pct", "cumulative_pct",
     ]
 
     page = client.get(
@@ -3888,8 +3888,13 @@ def test_done_job_lists_result_files_and_paginates_tables(client):
     assert payload["total"] == 3
     assert payload["filtered_total"] == 3
     assert [row["kernel_name"] for row in payload["rows"]] == ["slow_kernel", "medium_kernel"]
+    assert payload["fields"][-2:] == ["duration_pct", "cumulative_pct"]
     assert "dur_pct" not in payload["fields"]
     assert "count_pct" not in payload["rows"][0]
+    assert payload["rows"][0]["duration_pct"] == "50"
+    assert payload["rows"][0]["cumulative_pct"] == "50"
+    assert payload["rows"][1]["duration_pct"] == "33.333"
+    assert payload["rows"][1]["cumulative_pct"] == "83.333"
 
     filtered = client.get(
         "/api/jobs/table-job/results/all_kernels_avg.csv",
@@ -3905,6 +3910,17 @@ def test_done_job_lists_result_files_and_paginates_tables(client):
     )
     assert old_percent_filter.status_code == 200
     assert old_percent_filter.json()["filtered_total"] == 3
+
+    share_filter = client.get(
+        "/api/jobs/table-job/results/all_kernels_avg.csv",
+        params={
+            "filters": json.dumps({"duration_pct": "30"}),
+            "filter_ops": json.dumps({"duration_pct": ">="}),
+            "limit": 10,
+        },
+    )
+    assert share_filter.status_code == 200
+    assert [row["kernel_name"] for row in share_filter.json()["rows"]] == ["slow_kernel", "medium_kernel"]
 
     exported = client.get(
         "/api/jobs/table-job/results/all_kernels_avg.csv",
@@ -3922,6 +3938,8 @@ def test_done_job_lists_result_files_and_paginates_tables(client):
     exported_rows = list(csv.DictReader(io.StringIO(exported.content.decode("utf-8-sig"))))
     assert [row["kernel_name"] for row in exported_rows] == ["medium_kernel", "slow_kernel"]
     assert "dur_pct" not in exported_rows[0]
+    assert exported_rows[0]["duration_pct"] == "33.333"
+    assert exported_rows[0]["cumulative_pct"] == "83.333"
 
 
 def test_job_report_download_includes_markdown_summary(client):
@@ -4086,6 +4104,80 @@ def test_result_table_can_return_more_than_default_page_cap(client):
     assert payload["limit"] == 1005
     assert payload["total"] == 1005
     assert len(payload["rows"]) == 1005
+
+
+def test_chart_summary_aggregates_complete_csv_and_returns_global_top(client):
+    result_dir = Path(web_server.result_dir("chart-summary-job"))
+    result_dir.mkdir(parents=True)
+    rows = ["kernel_name,family,avg_count,avg_dur_ms"]
+    rows.extend(f"kernel_{i},other,1,1" for i in range(5001))
+    rows.extend([
+        "late_hotspot,gemm,2,9999",
+        "TCDP_ALLREDUCE,collective,3,50000",
+    ])
+    (result_dir / "all_kernels_avg.csv").write_text("\n".join(rows) + "\n")
+
+    async def insert_job():
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                "INSERT INTO jobs(id, label, mode, status, result_dir) VALUES(?,?,?,?,?)",
+                ("chart-summary-job", "chart", "single", "done", str(result_dir)),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(insert_job())
+
+    response = client.get(
+        "/api/jobs/chart-summary-job/results/all_kernels_avg.csv",
+        params={"chart_metric": "avg_dur_ms", "chart_limit": 3},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["aggregated"] is True
+    assert payload["scanned_total"] == 5003
+    assert payload["total"] == 5002
+    assert payload["excluded_communication"] == 1
+    assert payload["sums"]["avg_dur_ms"] == 15000
+    assert payload["sums"]["avg_count"] == 5003
+    assert payload["metric_total"] == 15000
+    assert payload["rows"][0]["kernel_name"] == "late_hotspot"
+    assert payload["highlights"]["hotspot"]["kernel_name"] == "late_hotspot"
+
+    hotspot_share = client.get(
+        "/api/jobs/chart-summary-job/results/all_kernels_avg.csv",
+        params={"q": "late_hotspot", "limit": 1},
+    ).json()["rows"][0]
+    communication_share = client.get(
+        "/api/jobs/chart-summary-job/results/all_kernels_avg.csv",
+        params={"q": "TCDP_ALLREDUCE", "limit": 1},
+    ).json()["rows"][0]
+    assert hotspot_share["duration_pct"] == "66.66"
+    assert hotspot_share["cumulative_pct"] == "66.66"
+    assert communication_share["duration_pct"] == ""
+    assert communication_share["cumulative_pct"] == ""
+
+    (result_dir / "all_kernels_cmp.csv").write_text(
+        "kernel_name,family,avg_dur_ms_A,avg_dur_ms_B,delta_dur_ms\n"
+        "slowdown,gemm,1,5,4\n"
+        "speedup,gemm,10,1,-9\n"
+        "TCDP_ALLREDUCE,collective,1,101,100\n"
+    )
+    comparison = client.get(
+        "/api/jobs/chart-summary-job/results/all_kernels_cmp.csv",
+        params={"chart_metric": "delta_dur_ms", "chart_limit": 1},
+    )
+
+    assert comparison.status_code == 200
+    compare_payload = comparison.json()
+    assert compare_payload["metric_total"] == 13
+    assert compare_payload["sums"]["delta_dur_ms"] == -5
+    assert compare_payload["rows"][0]["kernel_name"] == "speedup"
+    assert compare_payload["highlights"]["slowdown"]["kernel_name"] == "slowdown"
+    assert compare_payload["highlights"]["speedup"]["kernel_name"] == "speedup"
 
 
 def test_done_job_without_perfetto_context_still_loads(client, sample_trace_file):

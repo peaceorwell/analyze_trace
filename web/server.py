@@ -5,6 +5,7 @@ import contextlib
 import csv
 from datetime import datetime, timedelta, timezone
 import gzip
+import heapq
 import html
 import io
 import json
@@ -59,7 +60,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.5.14"
+APP_VERSION = "0.5.15"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -1660,6 +1661,7 @@ def csv_to_rows(path: str) -> dict:
         fields = _result_csv_fields(filename, reader.fieldnames or [])
         rows = [_result_csv_row(filename, row) for row in reader]
         rows = _aggregate_kernel_type_rows(filename, fields, rows)
+        rows = _add_duration_share_columns(filename, fields, rows)
         return {"fields": fields, "rows": rows}
 
 
@@ -1794,11 +1796,49 @@ def _aggregate_kernel_type_rows(filename: str, fields: list[str], rows: list[dic
 
 
 def _result_csv_fields(filename: str, fields: list[str]) -> list[str]:
-    return _filter_result_csv_fields(_augment_result_csv_fields(filename, fields))
+    fields = _filter_result_csv_fields(_augment_result_csv_fields(filename, fields))
+    if "avg_dur_ms" in fields and not filename.endswith("_cmp.csv"):
+        fields.extend(field for field in ("duration_pct", "cumulative_pct") if field not in fields)
+    return fields
 
 
 def _result_csv_row(filename: str, row: dict) -> dict:
     return _filter_result_csv_row(_augment_result_csv_row(filename, row))
+
+
+def _format_share_pct(value: float) -> str:
+    return f"{value:.3f}".rstrip("0").rstrip(".")
+
+
+def _add_duration_share_columns(filename: str, fields: list[str], rows: list[dict]) -> list[dict]:
+    if "avg_dur_ms" not in fields or filename.endswith("_cmp.csv"):
+        return rows
+    for row in rows:
+        row["duration_pct"] = ""
+        row["cumulative_pct"] = ""
+
+    ranked = [
+        row for row in rows
+        if not _is_chart_communication_row(row)
+        and (_float_or_none(row.get("avg_dur_ms")) or 0) > 0
+    ]
+    ranked.sort(key=lambda row: _float_or_none(row.get("avg_dur_ms")) or 0, reverse=True)
+    total_duration = sum(_float_or_none(row.get("avg_dur_ms")) or 0 for row in ranked)
+    cumulative = 0.0
+    for index, row in enumerate(ranked):
+        duration_pct = (_float_or_none(row.get("avg_dur_ms")) or 0) / total_duration * 100
+        cumulative += duration_pct
+        row["duration_pct"] = _format_share_pct(duration_pct)
+        row["cumulative_pct"] = _format_share_pct(100.0 if index == len(ranked) - 1 else cumulative)
+
+    final_cumulative = 100.0 if total_duration else 0.0
+    ranked_ids = {id(row) for row in ranked}
+    for row in rows:
+        if _is_chart_communication_row(row) or id(row) in ranked_ids:
+            continue
+        row["duration_pct"] = _format_share_pct(0.0)
+        row["cumulative_pct"] = _format_share_pct(final_cumulative)
+    return rows
 
 
 def _ordered_result_csv_names(rdir: str) -> list[str]:
@@ -3728,12 +3768,13 @@ def read_csv_page(
         rows = []
         total = 0
         filtered_total = 0
-        if _is_kernel_type_result_csv(filename):
+        if _is_kernel_type_result_csv(filename) or "duration_pct" in fields:
             rows = _aggregate_kernel_type_rows(
                 filename,
                 fields,
                 [_result_csv_row(filename, row) for row in reader],
             )
+            rows = _add_duration_share_columns(filename, fields, rows)
             total = len(rows)
             rows = [row for row in rows if _csv_filter_match(row, q, filters, filter_ops)]
             filtered_total = len(rows)
@@ -3784,6 +3825,119 @@ def read_csv_page(
     }
 
 
+_CHART_COMMUNICATION_CATEGORIES = {"collective", "communication", "comm", "cncl", "nccl"}
+_CHART_COMMUNICATION_RE = re.compile(
+    r"(^|[_:\s./\\-])(tcdp|cncl|nccl|tccl|hccl|mpi)(?=$|[_:\s./\\-])"
+    r"|all[_-]?reduce|all[_-]?gather|all[_-]?to[_-]?all|allconnected"
+    r"|reduce[_-]?scatter|reducescatter|sendrecv"
+    r"|(^|[_:\s./\\-])i?(send|recv)(?=$|[_:\s./\\-])",
+    re.IGNORECASE,
+)
+_CHART_SUM_FIELDS = {
+    "avg_count", "avg_count_A", "avg_count_B", "delta_count",
+    "avg_dur_ms", "avg_dur_ms_A", "avg_dur_ms_B", "delta_dur_ms",
+}
+_CHART_SIGNED_METRICS = {"delta_count", "delta_dur_ms"}
+
+
+def _is_chart_communication_row(row: dict) -> bool:
+    category = str(row.get("family") or row.get("type") or "").strip().lower()
+    if category in _CHART_COMMUNICATION_CATEGORIES:
+        return True
+    label = next((
+        str(row.get(field) or "").strip()
+        for field in ("kernel_name", "op_name", "type", "operator")
+        if row.get(field)
+    ), "")
+    return bool(_CHART_COMMUNICATION_RE.search(label))
+
+
+def read_csv_chart_summary(
+    path: str,
+    *,
+    metric: str,
+    limit: int = 30,
+    exclude_communication: bool = True,
+) -> dict:
+    """Aggregate a complete result CSV while returning only global Top rows."""
+    filename = os.path.basename(path)
+    with open(path, newline="") as f:
+        reader = csv.DictReader(f)
+        fields = _result_csv_fields(filename, reader.fieldnames or [])
+        if metric not in fields:
+            raise ValueError(f"Unknown chart metric: {metric}")
+        if _is_kernel_type_result_csv(filename):
+            source_rows = _aggregate_kernel_type_rows(
+                filename,
+                fields,
+                [_result_csv_row(filename, row) for row in reader],
+            )
+        else:
+            source_rows = (_result_csv_row(filename, row) for row in reader)
+
+        top_limit = max(1, min(limit, 100))
+        signed = metric in _CHART_SIGNED_METRICS
+        sum_fields = [field for field in fields if field in _CHART_SUM_FIELDS]
+        sums = {field: 0.0 for field in sum_fields}
+        top_heap = []
+        scanned_total = 0
+        total = 0
+        metric_total = 0.0
+        hotspot = None
+        hotspot_value = 0.0
+        slowdown = None
+        slowdown_value = 0.0
+        speedup = None
+        speedup_value = 0.0
+
+        for index, row in enumerate(source_rows):
+            scanned_total += 1
+            if exclude_communication and _is_chart_communication_row(row):
+                continue
+            total += 1
+            for field in sum_fields:
+                sums[field] += _float_or_none(row.get(field)) or 0.0
+
+            duration = _float_or_none(row.get("avg_dur_ms")) or 0.0
+            if duration > hotspot_value:
+                hotspot, hotspot_value = row, duration
+            delta = _float_or_none(row.get("delta_dur_ms")) or 0.0
+            if delta > slowdown_value:
+                slowdown, slowdown_value = row, delta
+            if delta < speedup_value:
+                speedup, speedup_value = row, delta
+
+            raw_metric = _float_or_none(row.get(metric)) or 0.0
+            rank_value = abs(raw_metric) if signed else raw_metric
+            if rank_value <= 0:
+                continue
+            metric_total += rank_value
+            entry = (rank_value, index, row)
+            if len(top_heap) < top_limit:
+                heapq.heappush(top_heap, entry)
+            elif rank_value > top_heap[0][0]:
+                heapq.heapreplace(top_heap, entry)
+
+    ranked = [entry[2] for entry in sorted(top_heap, key=lambda entry: entry[0], reverse=True)]
+
+    return {
+        "fields": fields,
+        "rows": ranked,
+        "total": total,
+        "scanned_total": scanned_total,
+        "excluded_communication": scanned_total - total,
+        "metric": metric,
+        "metric_total": metric_total,
+        "sums": sums,
+        "highlights": {
+            "hotspot": hotspot,
+            "slowdown": slowdown,
+            "speedup": speedup,
+        },
+        "aggregated": True,
+    }
+
+
 def stream_filtered_csv(
     path: str,
     *,
@@ -3816,12 +3970,13 @@ def stream_filtered_csv(
 
         yield "\ufeff" + emit(header=True)
 
-        if _is_kernel_type_result_csv(filename):
+        if _is_kernel_type_result_csv(filename) or "duration_pct" in fields:
             rows = _aggregate_kernel_type_rows(
                 filename,
                 fields,
                 [_result_csv_row(filename, row) for row in reader],
             )
+            rows = _add_duration_share_columns(filename, fields, rows)
             rows = [row for row in rows if _csv_filter_match(row, q, filters, filter_ops)]
         elif sort_col and sort_col in fields:
             rows = []
@@ -9924,6 +10079,9 @@ async def get_job_result_table(
     filters: Optional[str] = None,
     filter_ops: Optional[str] = None,
     download: bool = False,
+    chart_metric: Optional[str] = None,
+    chart_limit: int = 30,
+    exclude_communication: bool = True,
 ):
     db = await get_db()
     try:
@@ -9945,6 +10103,16 @@ async def get_job_result_table(
         raise HTTPException(400, "Invalid table filters")
 
     path = _safe_result_csv_path(jid, filename)
+    if chart_metric:
+        try:
+            return read_csv_chart_summary(
+                path,
+                metric=chart_metric,
+                limit=chart_limit,
+                exclude_communication=exclude_communication,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
     if download:
         download_name = f"{os.path.splitext(os.path.basename(filename))[0]}_filtered.csv"
         return StreamingResponse(

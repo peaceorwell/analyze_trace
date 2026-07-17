@@ -3055,6 +3055,17 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 .home-panel-head > div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .home-panel-head strong { color: var(--text); font-size: 12px; }
 .home-panel-head small { color: var(--text3); font-size: 10px; }
+.home-panel-actions { flex: none; display: inline-flex; align-items: center; gap: 5px; }
+.home-view-toggle {
+  display: inline-flex; align-items: center; padding: 2px; border: 1px solid var(--border);
+  border-radius: 7px; background: var(--bg);
+}
+.home-view-toggle button {
+  height: 22px; padding: 0 7px; border: 0; border-radius: 5px;
+  background: transparent; color: var(--text3); font: 9.5px var(--sans); font-weight: 700; cursor: pointer;
+}
+.home-view-toggle button:hover { color: var(--text2); }
+.home-view-toggle button.active { background: var(--surface); color: var(--purple-l); box-shadow: 0 1px 4px rgba(15,23,42,.08); }
 .home-panel-count {
   min-width: 24px; height: 22px; padding: 0 7px; border-radius: 999px;
   display: inline-flex; align-items: center; justify-content: center;
@@ -4510,8 +4521,17 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
   color: var(--text3); font-size: 11px; font-weight: 800;
   margin: 0 0 4px;
 }
+.chart-panel-note {
+  margin: -1px 0 6px; color: var(--text3); font-size: 10px;
+}
 .chart-bar-area { position: relative; height: 320px; }
 .chart-bar-area canvas { width: 100% !important; height: 100% !important; }
+.chart-scatter-area { position: relative; height: 340px; }
+.chart-scatter-area canvas { width: 100% !important; height: 100% !important; }
+.chart-scatter-empty {
+  height: 100%; display: flex; align-items: center; justify-content: center;
+  color: var(--text3); font-size: 11px;
+}
 .chart-bar-area canvas.chart-canvas-pending {
   position: absolute;
   inset: 0;
@@ -4706,6 +4726,16 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
 }
 .data-table td.num-col:not(.cell-pos):not(.cell-neg) { color: var(--text); }
 .data-table tfoot td.num-col { text-align: center; font-family: var(--mono); }
+.duration-share-cell {
+  position: relative; display: inline-flex; align-items: center; justify-content: center;
+  width: 100%; min-height: 20px; overflow: hidden; border-radius: 4px;
+  background: var(--card2);
+}
+.duration-share-cell::before {
+  content: ""; position: absolute; inset: 0 auto 0 0; width: var(--duration-share);
+  background: rgba(99,102,241,.13);
+}
+.duration-share-cell > span { position: relative; z-index: 1; }
 
 /* family semantic chips */
 .family-chip {
