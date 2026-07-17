@@ -4503,6 +4503,10 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
   display: grid; gap: 8px;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
 }
+.chart-status-grid {
+  display: grid; gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
 .chart-delta-panel {
   min-width: 0; padding: 8px; border-radius: 7px;
   background: var(--bg); border: 1px solid var(--border);
@@ -4776,6 +4780,15 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
   background: rgba(239,68,68,.13);
 }
 .comparison-contribution-cell > span { position: relative; z-index: 1; }
+.compare-status-chip {
+  display: inline-flex; align-items: center; padding: 2px 7px; border-radius: 999px;
+  color: var(--text2); background: var(--card2); font-size: 9px; font-weight: 800;
+}
+.compare-status-added { color: var(--red); background: rgba(239,68,68,.12); }
+.compare-status-removed { color: var(--green); background: rgba(34,197,94,.12); }
+.compare-status-exact { color: var(--blue); background: rgba(59,130,246,.12); }
+.compare-status-inferred { color: var(--yellow); background: rgba(245,158,11,.13); }
+.compare-status-low-confidence { color: var(--red); background: rgba(239,68,68,.12); }
 
 /* family semantic chips */
 .family-chip {

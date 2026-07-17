@@ -107,6 +107,12 @@ def test_performance_overview_explains_compute_time_scope():
     assert 'regression_contribution: { label: "回退贡献 (%)"' in APP_JS
     assert 'class="comparison-contribution-cell"' in APP_JS
     assert 'class="compare-column-group"' in APP_JS
+    assert 'compare_status: { label: "对比状态"' in APP_JS
+    assert "新增项 Top" in APP_JS
+    assert "消失项 Top" in APP_JS
+    assert 'class="chart-status-grid"' in APP_JS
+    assert "'compare-status-chip'" in APP_JS
+    assert "comparisonStatusLabel" in APP_JS
 
 
 def test_header_task_center_tracks_active_and_failed_jobs_globally():

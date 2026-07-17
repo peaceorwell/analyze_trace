@@ -60,7 +60,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.5.19"
+APP_VERSION = "0.5.20"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -1802,7 +1802,7 @@ def _result_csv_fields(filename: str, fields: list[str]) -> list[str]:
         fields.extend(field for field in ("duration_pct", "cumulative_pct") if field not in fields)
     if filename.endswith("_cmp.csv") and {"avg_dur_ms_A", "avg_dur_ms_B", "delta_dur_ms"}.issubset(fields):
         fields.extend(
-            field for field in ("delta_pct", "delta_abs_ms", "regression_contribution")
+            field for field in ("delta_pct", "delta_abs_ms", "regression_contribution", "compare_status")
             if field not in fields
         )
     return fields
@@ -1867,7 +1867,23 @@ def _add_comparison_metric_columns(filename: str, fields: list[str], rows: list[
         else:
             contribution = delta / slowdown_total * 100 if delta > 0 and slowdown_total else 0.0
             row["regression_contribution"] = _format_share_pct(contribution)
+        row["compare_status"] = _comparison_row_status(row)
     return rows
+
+
+def _comparison_row_status(row: dict) -> str:
+    baseline = _float_or_none(row.get("avg_dur_ms_A")) or 0.0
+    current = _float_or_none(row.get("avg_dur_ms_B")) or 0.0
+    if baseline <= 0 < current:
+        return "added"
+    if current <= 0 < baseline:
+        return "removed"
+    method = str(row.get("match_method") or "").strip().lower()
+    if method in {"normalized_name_tiling"}:
+        return "inferred"
+    if method in {"normalized_name", "unmatched"}:
+        return "low_confidence"
+    return "exact"
 
 
 def _ordered_result_csv_names(rdir: str) -> list[str]:
@@ -3939,6 +3955,17 @@ def read_csv_chart_summary(
             "slowdown_total": 0.0,
             "speedup_total": 0.0,
         }
+        status_stats = {
+            "added_count": 0,
+            "removed_count": 0,
+            "exact_count": 0,
+            "inferred_count": 0,
+            "low_confidence_count": 0,
+            "added_duration": 0.0,
+            "removed_duration": 0.0,
+        }
+        added_heap = []
+        removed_heap = []
 
         for index, row in enumerate(source_rows):
             scanned_total += 1
@@ -3957,7 +3984,25 @@ def read_csv_chart_summary(
             if delta < speedup_value:
                 speedup, speedup_value = row, delta
             baseline_ms = _float_or_none(row.get("avg_dur_ms_A")) or 0.0
+            current_ms = _float_or_none(row.get("avg_dur_ms_B")) or 0.0
             delta_pct = delta / baseline_ms * 100 if baseline_ms > 0 else None
+            if "delta_dur_ms" in fields:
+                compare_status = _comparison_row_status(row)
+                status_stats[f"{compare_status}_count"] += 1
+                if compare_status == "added":
+                    status_stats["added_duration"] += current_ms
+                    entry = (current_ms, index, row)
+                    if len(added_heap) < 10:
+                        heapq.heappush(added_heap, entry)
+                    elif current_ms > added_heap[0][0]:
+                        heapq.heapreplace(added_heap, entry)
+                elif compare_status == "removed":
+                    status_stats["removed_duration"] += baseline_ms
+                    entry = (baseline_ms, index, row)
+                    if len(removed_heap) < 10:
+                        heapq.heappush(removed_heap, entry)
+                    elif baseline_ms > removed_heap[0][0]:
+                        heapq.heapreplace(removed_heap, entry)
             matches_filter = "delta_dur_ms" not in fields or (
                 (direction == "all" or (direction == "slowdown" and delta > 0) or (direction == "speedup" and delta < 0))
                 and abs(delta) >= min_abs_delta
@@ -4002,6 +4047,8 @@ def read_csv_chart_summary(
     ranked = [entry[2] for entry in sorted(top_heap, key=lambda entry: entry[0], reverse=True)]
     slowdown_rows = [entry[2] for entry in sorted(slowdown_heap, key=lambda entry: entry[0], reverse=True)]
     speedup_rows = [entry[2] for entry in sorted(speedup_heap, key=lambda entry: entry[0], reverse=True)]
+    added_rows = [entry[2] for entry in sorted(added_heap, key=lambda entry: entry[0], reverse=True)]
+    removed_rows = [entry[2] for entry in sorted(removed_heap, key=lambda entry: entry[0], reverse=True)]
 
     return {
         "fields": fields,
@@ -4022,6 +4069,11 @@ def read_csv_chart_summary(
         "direction_rows": {
             "slowdowns": slowdown_rows,
             "speedups": speedup_rows,
+        },
+        "status_stats": status_stats,
+        "status_rows": {
+            "added": added_rows,
+            "removed": removed_rows,
         },
         "chart_filters": {
             "direction": direction,

@@ -184,6 +184,8 @@ const chartError      = ref("");
 const chartSummaryCards = ref([]);
 const chartSlowdowns    = ref([]);
 const chartSpeedups     = ref([]);
+const chartAddedRows    = ref([]);
+const chartRemovedRows  = ref([]);
 const chartBarRows      = ref([]);
 const chartCanvasReady  = ref(false);
 const chartScatterRows  = ref([]);
@@ -191,7 +193,7 @@ const chartScatterRows  = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.5.19");
+const appVersion = ref("0.5.20");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -720,6 +722,16 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.20",
+    date: "2026-07-17",
+    title: "新增与消失项识别",
+    items: [
+      "对比结果识别新增、消失、精确匹配、推断匹配和低可信度匹配，并在表格中显示状态标签。",
+      "性能总览新增新增/消失数量、耗时和匹配质量摘要。",
+      "新增项与消失项提供独立 Top 列表，可直接点击下钻到对应 CSV。",
+    ],
+  },
   {
     version: "0.5.19",
     date: "2026-07-17",
@@ -1792,6 +1804,7 @@ const TABLE_FIELD_META = Object.freeze({
   delta_pct: { label: "变化率 (%)", hint: "B 相对 A 的耗时变化率；正值表示回退" },
   delta_abs_ms: { label: "绝对变化 (ms)", hint: "A/B 耗时差值的绝对值，用于按影响程度排序" },
   regression_contribution: { label: "回退贡献 (%)", hint: "该项回退占全部非通信回退耗时的比例" },
+  compare_status: { label: "对比状态", hint: "新增、消失或 A/B 行的匹配可信度" },
   triton_code_file: { label: "Triton 代码", hint: "生成的 Triton 源码文件" },
 });
 
@@ -2082,7 +2095,7 @@ const applyEfficiencyColumnPreset = () => {
 const comparisonPresetColumns = (mode = "compact", fields = currentTable.value.fields || []) => {
   if (mode === "full") return [...fields];
   const available = new Set(fields);
-  const identity = fields.filter(field => /^(kernel_name|op_name|operator|type|family|match_method)$/i.test(field));
+  const identity = fields.filter(field => /^(kernel_name|op_name|operator|type|family|compare_status|match_method)$/i.test(field));
   const metrics = mode === "calls"
     ? ["avg_count_A", "avg_count_B", "delta_count", "avg_dur_ms_A", "avg_dur_ms_B", "delta_dur_ms", "delta_pct"]
     : ["avg_dur_ms_A", "avg_dur_ms_B", "delta_dur_ms", "delta_pct", "delta_abs_ms", "regression_contribution"];
@@ -2312,6 +2325,14 @@ const comparisonColumnGroup = field => {
   if (/^delta_/i.test(field) || field === "regression_contribution") return "变化";
   return "";
 };
+const comparisonStatusLabel = value => ({
+  added: "新增",
+  removed: "消失",
+  exact: "精确匹配",
+  inferred: "推断匹配",
+  low_confidence: "低可信度",
+})[value] || value || "—";
+const comparisonStatusClass = value => `compare-status-${String(value || "unknown").replace(/_/g, "-")}`;
 const shouldUseEfficiencyPreset = (filename, fields, state = null) => {
   if (!EFFICIENCY_TABLE_FILES.has(filename)) return false;
   if (!fields?.length) return false;
@@ -2808,7 +2829,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.5.19";
+  appVersion.value = cfg.version || "0.5.20";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -5033,6 +5054,8 @@ const loadJob = async id => {
   chartSummaryCards.value = [];
   chartSlowdowns.value = [];
   chartSpeedups.value = [];
+  chartAddedRows.value = [];
+  chartRemovedRows.value = [];
   chartBarRows.value = [];
   chartCanvasReady.value = false;
   chartScatterRows.value = [];
@@ -6136,11 +6159,12 @@ const buildChartSummary = (rows, table, sourceConfig) => {
     const signedDelta = `${totalDelta > 0 ? "+" : ""}${fmtChartValue(totalDelta, { unit: "ms" })}`;
     const signedPct = deltaPct === null ? "变化率不可计算" : `${deltaPct > 0 ? "+" : ""}${trimNumber(deltaPct)}%`;
     const directionStats = table?.direction_stats || {};
+    const statusStats = table?.status_stats || {};
     const slowdownCount = directionStats.slowdown_count ?? rows.filter(row => row.delta > 0).length;
     const speedupCount = directionStats.speedup_count ?? rows.filter(row => row.delta < 0).length;
     const slowest = highlightRow("slowdown") || rows.filter(row => row.delta > 0).sort((a, b) => b.delta - a.delta)[0] || null;
     const fastest = highlightRow("speedup") || rows.filter(row => row.delta < 0).sort((a, b) => a.delta - b.delta)[0] || null;
-    return [
+    const cards = [
       makeCard("A 计算耗时", fmtChartValue(totalA, { unit: "ms" }), `已排除通信 · ${totalLabel}`),
       makeCard("B 计算耗时", fmtChartValue(totalB, { unit: "ms" }), `已排除通信 · ${sourceConfig.label} · ${totalLabel}`),
       makeCard("整体结论", deltaPct === null ? conclusion : `${conclusion} ${signedPct}`, `B - A: ${signedDelta}`, conclusionTone),
@@ -6148,6 +6172,20 @@ const buildChartSummary = (rows, table, sourceConfig) => {
       makeCard("最大回退", slowest ? fmtChartValue(slowest.delta, { unit: "ms" }) : "0", slowest ? shortChartLabel(slowest.label, 28) : "无", "neg", slowest),
       makeCard("最大改善", fastest ? fmtChartValue(fastest.delta, { unit: "ms" }) : "0", fastest ? shortChartLabel(fastest.label, 28) : "无", "pos", fastest),
     ];
+    cards.push(
+      makeCard(
+        "新增 / 消失",
+        `${statusStats.added_count || 0} / ${statusStats.removed_count || 0}`,
+        `新增 +${trimNumber(parseChartNumber(statusStats.added_duration))} ms · 消失 -${trimNumber(parseChartNumber(statusStats.removed_duration))} ms`,
+      ),
+      makeCard(
+        "匹配质量",
+        `${statusStats.exact_count || 0} 精确 · ${statusStats.inferred_count || 0} 推断`,
+        `低可信度 ${statusStats.low_confidence_count || 0} 项`,
+        statusStats.low_confidence_count ? "neg" : "",
+      ),
+    );
+    return cards;
   }
 
   const totalDur = parseChartNumber(table?.sums?.avg_dur_ms ?? rows.reduce((sum, row) => sum + parseChartNumber(row.raw.avg_dur_ms), 0));
@@ -6199,6 +6237,22 @@ const updateDeltaLists = (rows, table, sourceConfig) => {
     ...row,
     contributionPct: speedupTotal ? Math.abs(row.delta) / speedupTotal * 100 : 0,
   }));
+};
+
+const updateComparisonStatusLists = (table, sourceConfig) => {
+  if (selectedJob.value?.mode !== "compare") {
+    chartAddedRows.value = [];
+    chartRemovedRows.value = [];
+    return;
+  }
+  const fields = table?.fields || [];
+  const metricDef = chartMetricDefFor("delta_dur_ms");
+  const normalizeStatusRows = key => applyChartCommunicationFilter(
+    normalizeChartRows(table?.status_rows?.[key] || [], fields, sourceConfig, metricDef),
+    sourceConfig,
+  );
+  chartAddedRows.value = normalizeStatusRows("added");
+  chartRemovedRows.value = normalizeStatusRows("removed");
 };
 
 const destroyChartInstances = () => {
@@ -6337,6 +6391,7 @@ const buildChart = async () => {
 
     chartSummaryCards.value = buildChartSummary(rows, table, sourceConfig);
     updateDeltaLists(rows, table, sourceConfig);
+    updateComparisonStatusLists(table, sourceConfig);
     const topN = Math.max(1, Number(chartTopN.value) || 10);
     chartBarRows.value = buildChartBarRows(rows, metricDef, topN, table?.metric_total);
     if (scatterTable) {
@@ -9499,6 +9554,25 @@ const JobDetail = {
             </div>
           </div>
 
+          <div v-if="selectedJob.mode==='compare' && (chartAddedRows.length || chartRemovedRows.length)" class="chart-status-grid">
+            <div v-if="chartAddedRows.length" class="chart-delta-panel">
+              <div class="chart-delta-title tone-neg">新增项 Top</div>
+              <button v-for="row in chartAddedRows" :key="'added-'+row.source+'-'+row.label"
+                      class="chart-delta-row" @click="drillDownChart(row)">
+                <span class="chart-delta-name">{{ row.label }}</span>
+                <span class="chart-delta-value tone-neg">+{{ fmtChartValue(row.bValue, { unit: 'ms' }) }}</span>
+              </button>
+            </div>
+            <div v-if="chartRemovedRows.length" class="chart-delta-panel">
+              <div class="chart-delta-title tone-pos">消失项 Top</div>
+              <button v-for="row in chartRemovedRows" :key="'removed-'+row.source+'-'+row.label"
+                      class="chart-delta-row" @click="drillDownChart(row)">
+                <span class="chart-delta-name">{{ row.label }}</span>
+                <span class="chart-delta-value tone-pos">-{{ fmtChartValue(row.aValue, { unit: 'ms' }) }}</span>
+              </button>
+            </div>
+          </div>
+
           <div class="chart-main-grid">
             <div class="chart-panel chart-panel-wide">
               <div class="chart-panel-title">排序排行（点击下钻）</div>
@@ -9868,6 +9942,9 @@ const JobDetail = {
                     <template v-else-if="isComparisonDeltaPctField(f)">
                       <span>{{ formatComparisonPercent(row[f], { signed: true }) }}</span>
                     </template>
+                    <template v-else-if="f === 'compare_status'">
+                      <span :class="['compare-status-chip', comparisonStatusClass(row[f])]">{{ comparisonStatusLabel(row[f]) }}</span>
+                    </template>
                     <template v-else-if="f === 'family'">
                       <span :class="['family-chip', familyChipClass(row[f])]">{{ row[f] || '-' }}</span>
                     </template>
@@ -9958,11 +10035,11 @@ const JobDetail = {
       chartCompareDirection, chartMinAbsDelta, chartMinDeltaPct, chartMinBaselineMs,
       chartExcludeCommunication, chartFilterResultText, resetChartCompareFilters,
       chartMetricOptions, chartLoading, chartError, chartSummaryCards,
-      chartSlowdowns, chartSpeedups, chartBarRows, chartCanvasReady,
+      chartSlowdowns, chartSpeedups, chartAddedRows, chartRemovedRows, chartBarRows, chartCanvasReady,
       chartScatterRows, chartScatterAvailable, chartScatterTitle, chartScatterNote, chartScatterEmptyText,
       activeChartMetricDef, activeChartTitle, chartShareHeader,
       chartFallbackBarWidth, chartFallbackBarTone, chartFallbackValueLabel,
-      buildChart, drillDownChart, fmtDeltaMs, fmtChartPercent,
+      buildChart, drillDownChart, fmtDeltaMs, fmtChartPercent, fmtChartValue,
       displayedFields, filteredRows, tableSearch, sortCol, sortAsc, colWidths, colFilters,
       colFilterOps, visibleColumns, showColumnMenu, hiddenColumnCount,
       tableLimit, tableOffset, tableTotalRows, tablePageStart, tablePageEnd,
@@ -9973,6 +10050,7 @@ const JobDetail = {
       isComparisonTable, applyComparisonColumnPreset, comparisonColumnGroup,
       isComparisonContributionField, isComparisonDeltaPctField,
       comparisonContributionStyle, formatComparisonPercent,
+      comparisonStatusLabel, comparisonStatusClass,
       isKernelTypeDrillCell, drillDownKernelType,
       isEfficiencyTable, isEfficiencyField, applyEfficiencyColumnPreset,
       tableStyle, tableColumnStyle, tableHeaderClass, tableCellClass, tableRowClass, familyChipClass, efficiencyTone,

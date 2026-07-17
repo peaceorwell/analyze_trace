@@ -72,7 +72,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.5.19",
+        "version": "0.5.20",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -4005,7 +4005,7 @@ def test_all_kernels_cmp_without_family_exposes_virtual_family(client):
     assert detail.status_code == 200
     assert detail.json()["result_files"]["all_kernels_cmp.csv"]["fields"] == [
         "kernel_name", "family", "avg_dur_ms_A", "avg_dur_ms_B", "delta_dur_ms",
-        "delta_pct", "delta_abs_ms", "regression_contribution",
+        "delta_pct", "delta_abs_ms", "regression_contribution", "compare_status",
     ]
 
     filtered = client.get(
@@ -4023,6 +4023,7 @@ def test_all_kernels_cmp_without_family_exposes_virtual_family(client):
     assert filtered.json()["rows"][0]["delta_pct"] == "200"
     assert filtered.json()["rows"][0]["delta_abs_ms"] == "2"
     assert filtered.json()["rows"][0]["regression_contribution"] == "100"
+    assert filtered.json()["rows"][0]["compare_status"] == "exact"
 
     impact_sorted = client.get(
         "/api/jobs/cmp-table-job/results/all_kernels_cmp.csv",
@@ -4066,7 +4067,7 @@ def test_kernel_type_tables_normalize_legacy_triton_rows(client):
     assert detail.json()["result_files"]["kernel_types_cmp.csv"]["fields"] == [
         "type", "avg_dur_ms_A", "avg_dur_ms_B", "delta_dur_ms",
         "avg_count_A", "avg_count_B", "delta_count",
-        "delta_pct", "delta_abs_ms", "regression_contribution",
+        "delta_pct", "delta_abs_ms", "regression_contribution", "compare_status",
     ]
 
     page = client.get("/api/jobs/kernel-type-normalize-job/results/kernel_types_cmp.csv")
@@ -4083,6 +4084,7 @@ def test_kernel_type_tables_normalize_legacy_triton_rows(client):
     assert triton_rows[0]["delta_pct"] == "75"
     assert triton_rows[0]["delta_abs_ms"] == "3"
     assert triton_rows[0]["regression_contribution"] == "100"
+    assert triton_rows[0]["compare_status"] == "exact"
 
     kernels = client.get("/api/jobs/kernel-type-normalize-job/results/all_kernels_avg.csv")
     assert kernels.status_code == 200
@@ -4176,10 +4178,12 @@ def test_chart_summary_aggregates_complete_csv_and_returns_global_top(client):
     assert communication_share["cumulative_pct"] == ""
 
     (result_dir / "all_kernels_cmp.csv").write_text(
-        "kernel_name,family,avg_dur_ms_A,avg_dur_ms_B,delta_dur_ms\n"
-        "slowdown,gemm,1,5,4\n"
-        "speedup,gemm,10,1,-9\n"
-        "TCDP_ALLREDUCE,collective,1,101,100\n"
+        "kernel_name,family,avg_dur_ms_A,avg_dur_ms_B,delta_dur_ms,match_method\n"
+        "slowdown,gemm,1,5,4,exact_name\n"
+        "speedup,gemm,10,1,-9,normalized_name_tiling\n"
+        "new_kernel,other,0,2,2,unmatched\n"
+        "removed_kernel,other,3,0,-3,unmatched\n"
+        "TCDP_ALLREDUCE,collective,1,101,100,exact_name\n"
     )
     comparison = client.get(
         "/api/jobs/chart-summary-job/results/all_kernels_cmp.csv",
@@ -4188,20 +4192,31 @@ def test_chart_summary_aggregates_complete_csv_and_returns_global_top(client):
 
     assert comparison.status_code == 200
     compare_payload = comparison.json()
-    assert compare_payload["metric_total"] == 13
-    assert compare_payload["sums"]["delta_dur_ms"] == -5
+    assert compare_payload["metric_total"] == 18
+    assert compare_payload["sums"]["delta_dur_ms"] == -6
     assert compare_payload["rows"][0]["kernel_name"] == "speedup"
     assert compare_payload["highlights"]["slowdown"]["kernel_name"] == "slowdown"
     assert compare_payload["highlights"]["speedup"]["kernel_name"] == "speedup"
     assert compare_payload["direction_stats"] == {
-        "slowdown_count": 1,
-        "speedup_count": 1,
+        "slowdown_count": 2,
+        "speedup_count": 2,
         "unchanged_count": 0,
-        "slowdown_total": 4,
-        "speedup_total": 9,
+        "slowdown_total": 6,
+        "speedup_total": 12,
     }
     assert compare_payload["direction_rows"]["slowdowns"][0]["kernel_name"] == "slowdown"
     assert compare_payload["direction_rows"]["speedups"][0]["kernel_name"] == "speedup"
+    assert compare_payload["status_stats"] == {
+        "added_count": 1,
+        "removed_count": 1,
+        "exact_count": 1,
+        "inferred_count": 1,
+        "low_confidence_count": 0,
+        "added_duration": 2,
+        "removed_duration": 3,
+    }
+    assert compare_payload["status_rows"]["added"][0]["kernel_name"] == "new_kernel"
+    assert compare_payload["status_rows"]["removed"][0]["kernel_name"] == "removed_kernel"
 
     filtered_comparison = client.get(
         "/api/jobs/chart-summary-job/results/all_kernels_cmp.csv",
@@ -4213,12 +4228,12 @@ def test_chart_summary_aggregates_complete_csv_and_returns_global_top(client):
             "min_baseline_ms": 1,
         },
     ).json()
-    assert filtered_comparison["total"] == 2
+    assert filtered_comparison["total"] == 4
     assert filtered_comparison["filtered_total"] == 1
     assert filtered_comparison["rows"][0]["kernel_name"] == "slowdown"
     assert filtered_comparison["direction_stats"]["slowdown_count"] == 1
     assert filtered_comparison["direction_stats"]["speedup_count"] == 0
-    assert filtered_comparison["sums"]["delta_dur_ms"] == -5
+    assert filtered_comparison["sums"]["delta_dur_ms"] == -6
 
 
 def test_done_job_without_perfetto_context_still_loads(client, sample_trace_file):
