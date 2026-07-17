@@ -173,6 +173,12 @@ const callTimeScatter = ref(null);
 const chartSource     = ref("");
 const chartMetric     = ref("");
 const chartTopN       = ref(10);
+const chartCompareDirection = ref("all");
+const chartMinAbsDelta = ref(0);
+const chartMinDeltaPct = ref(0);
+const chartMinBaselineMs = ref(0);
+const chartExcludeCommunication = ref(true);
+const chartFilterResultText = ref("");
 const chartLoading    = ref(false);
 const chartError      = ref("");
 const chartSummaryCards = ref([]);
@@ -185,7 +191,7 @@ const chartScatterRows  = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.5.17");
+const appVersion = ref("0.5.18");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -714,6 +720,16 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.18",
+    date: "2026-07-17",
+    title: "对比变化筛选器",
+    items: [
+      "性能总览支持按回退/改善方向、绝对变化、变化率和 A 基线耗时筛选。",
+      "筛选在完整 CSV 扫描阶段执行，并统一作用于贡献排行、排序图和散点图。",
+      "支持切换是否排除通信项，并显示筛选后数据量。",
+    ],
+  },
   {
     version: "0.5.17",
     date: "2026-07-17",
@@ -2734,7 +2750,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.5.17";
+  appVersion.value = cfg.version || "0.5.18";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -4962,6 +4978,12 @@ const loadJob = async id => {
   chartBarRows.value = [];
   chartCanvasReady.value = false;
   chartScatterRows.value = [];
+  chartCompareDirection.value = "all";
+  chartMinAbsDelta.value = 0;
+  chartMinDeltaPct.value = 0;
+  chartMinBaselineMs.value = 0;
+  chartExcludeCommunication.value = true;
+  chartFilterResultText.value = "";
   aiAnalysisError.value = "";
   aiAnalysisContent.value = "";
   aiAnalysisArtifacts.value = [];
@@ -5864,6 +5886,30 @@ const isCommunicationChartRow = (row, sourceConfig) => {
 
 const filterChartCommunicationRows = (rows, sourceConfig) =>
   (rows || []).filter(row => !isCommunicationChartRow(row, sourceConfig));
+const applyChartCommunicationFilter = (rows, sourceConfig) =>
+  chartExcludeCommunication.value ? filterChartCommunicationRows(rows, sourceConfig) : (rows || []);
+
+const chartFilterParams = () => {
+  const params = {
+    exclude_communication: String(chartExcludeCommunication.value),
+  };
+  if (chartScatterMode.value === "compare") {
+    params.chart_direction = chartCompareDirection.value;
+    params.min_abs_delta = String(Math.max(0, Number(chartMinAbsDelta.value) || 0));
+    params.min_delta_pct = String(Math.max(0, Number(chartMinDeltaPct.value) || 0));
+    params.min_baseline_ms = String(Math.max(0, Number(chartMinBaselineMs.value) || 0));
+  }
+  return params;
+};
+const chartFilterCacheKey = () => new URLSearchParams(chartFilterParams()).toString();
+const resetChartCompareFilters = () => {
+  chartCompareDirection.value = "all";
+  chartMinAbsDelta.value = 0;
+  chartMinDeltaPct.value = 0;
+  chartMinBaselineMs.value = 0;
+  chartExcludeCommunication.value = true;
+  buildChart();
+};
 
 const sortChartRows = (rows, metricDef) => {
   const metricValue = row => metricDef.signed ? Math.abs(row.value) : row.value;
@@ -6062,7 +6108,7 @@ const updateDeltaLists = (rows, table, sourceConfig) => {
   }
   const fields = table?.fields || [];
   const metricDef = chartMetricDefFor("delta_dur_ms");
-  const normalizeDirectionRows = key => filterChartCommunicationRows(
+  const normalizeDirectionRows = key => applyChartCommunicationFilter(
     normalizeChartRows(table?.direction_rows?.[key] || [], fields, sourceConfig, metricDef),
     sourceConfig,
   );
@@ -6163,13 +6209,14 @@ const buildChart = async () => {
   chartLoading.value = true;
   chartError.value = "";
   try {
-    const chartCacheKey = `${sourceConfig.file}:${metricDef.key}`;
+    const filterCacheKey = chartFilterCacheKey();
+    const chartCacheKey = `${sourceConfig.file}:${metricDef.key}:${filterCacheKey}`;
     if (!chartTables.value[chartCacheKey]) {
       try {
         const params = new URLSearchParams({
           chart_metric: metricDef.key,
           chart_limit: String(CHART_FETCH_TOP_LIMIT),
-          exclude_communication: "true",
+          ...chartFilterParams(),
         });
         chartTables.value = {
           ...chartTables.value,
@@ -6190,20 +6237,23 @@ const buildChart = async () => {
       }
     }
     const table = chartTables.value[chartCacheKey];
+    chartFilterResultText.value = chartScatterMode.value === "compare"
+      ? `筛选后 ${table?.filtered_total ?? table?.total ?? 0} / ${table?.total ?? 0} 项`
+      : "";
     const fields = table?.fields || selectedJob.value.result_files[sourceConfig.file]?.fields || [];
-    const rows = filterChartCommunicationRows(
+    const rows = applyChartCommunicationFilter(
       normalizeChartRows(table?.rows || [], fields, sourceConfig, metricDef),
       sourceConfig
     );
     let scatterTable = null;
     if (chartScatterAvailable.value) {
       const scatterMetric = chartScatterMode.value === "compare" ? "delta_dur_ms" : "avg_dur_ms";
-      const scatterCacheKey = `${sourceConfig.file}:${scatterMetric}`;
+      const scatterCacheKey = `${sourceConfig.file}:${scatterMetric}:${filterCacheKey}`;
       if (!chartTables.value[scatterCacheKey]) {
         const scatterParams = new URLSearchParams({
           chart_metric: scatterMetric,
           chart_limit: String(CHART_FETCH_TOP_LIMIT),
-          exclude_communication: "true",
+          ...chartFilterParams(),
         });
         chartTables.value = {
           ...chartTables.value,
@@ -6224,7 +6274,7 @@ const buildChart = async () => {
     chartBarRows.value = buildChartBarRows(rows, metricDef, topN, table?.metric_total);
     if (scatterTable) {
       const scatterMetric = chartScatterMode.value === "compare" ? "delta_dur_ms" : "avg_dur_ms";
-      const scatterSourceRows = filterChartCommunicationRows(
+      const scatterSourceRows = applyChartCommunicationFilter(
         normalizeChartRows(
           scatterTable.rows || [],
           scatterTable.fields || fields,
@@ -9321,6 +9371,23 @@ const JobDetail = {
             <span v-if="chartLoading" class="chart-loading"><span class="spinner-small"></span> 生成图表...</span>
           </div>
 
+          <div v-if="selectedJob.mode==='compare'" class="chart-compare-filters">
+            <div class="chart-direction-switch" aria-label="变化方向筛选">
+              <button v-for="option in [{key:'all',label:'全部'},{key:'slowdown',label:'仅回退'},{key:'speedup',label:'仅改善'}]"
+                      :key="option.key" type="button"
+                      :class="['chart-filter-button', chartCompareDirection===option.key ? 'active' : '']"
+                      @click="chartCompareDirection=option.key; buildChart()">
+                {{ option.label }}
+              </button>
+            </div>
+            <label><span>绝对变化 ≥</span><input v-model.number="chartMinAbsDelta" type="number" min="0" step="0.1" class="input input-sm" @change="buildChart" /><em>ms</em></label>
+            <label><span>变化率 ≥</span><input v-model.number="chartMinDeltaPct" type="number" min="0" step="1" class="input input-sm" @change="buildChart" /><em>%</em></label>
+            <label><span>A 耗时 ≥</span><input v-model.number="chartMinBaselineMs" type="number" min="0" step="0.1" class="input input-sm" @change="buildChart" /><em>ms</em></label>
+            <label class="chart-filter-check"><input v-model="chartExcludeCommunication" type="checkbox" @change="buildChart" /> 排除通信</label>
+            <span class="chart-filter-result">{{ chartFilterResultText }}</span>
+            <button type="button" class="btn btn-xs btn-outline" @click="resetChartCompareFilters">重置</button>
+          </div>
+
           <div class="chart-scope-note">
             <span class="chart-scope-badge">统计口径</span>
             汇总当前数据源的完整设备计算数据，默认剔除通信类 Kernel/Op；不等同于模型端到端耗时。
@@ -9807,6 +9874,8 @@ const JobDetail = {
       consoleSearch, consoleHideWrote, consoleSections, consoleWroteCount,
       consoleSearchMatchCount, scrollConsoleSection,
       chartSource, chartMetric, chartTopN, chartTopNOptions, chartSourceOptions,
+      chartCompareDirection, chartMinAbsDelta, chartMinDeltaPct, chartMinBaselineMs,
+      chartExcludeCommunication, chartFilterResultText, resetChartCompareFilters,
       chartMetricOptions, chartLoading, chartError, chartSummaryCards,
       chartSlowdowns, chartSpeedups, chartBarRows, chartCanvasReady,
       chartScatterRows, chartScatterAvailable, chartScatterTitle, chartScatterNote, chartScatterEmptyText,

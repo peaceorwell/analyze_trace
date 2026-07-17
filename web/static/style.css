@@ -3854,6 +3854,18 @@ body.result-reading-active { overflow: hidden; }
   display: inline-flex; align-items: center; gap: 5px;
   color: var(--text3); font-size: 11px;
 }
+.chart-compare-filters {
+  display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+  padding: 7px 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg);
+}
+.chart-compare-filters label { display: inline-flex; align-items: center; gap: 4px; color: var(--text3); font-size: 10px; font-weight: 700; }
+.chart-compare-filters label .input { width: 72px; height: 26px; }
+.chart-compare-filters label em { color: var(--text3); font-style: normal; font-weight: 600; }
+.chart-direction-switch { display: inline-flex; padding: 2px; border-radius: 6px; background: var(--card2); }
+.chart-filter-button { border: 0; border-radius: 4px; padding: 4px 8px; color: var(--text3); background: transparent; font-size: 10px; font-weight: 700; cursor: pointer; }
+.chart-filter-button.active { color: var(--purple); background: var(--card); box-shadow: 0 0 0 1px var(--border); }
+.chart-filter-check input { margin: 0; }
+.chart-filter-result { color: var(--text3); font-size: 10px; font-weight: 700; }
 .chart-scope-note {
   display: flex; align-items: flex-start; gap: 7px;
   padding: 7px 9px; border: 1px solid var(--border); border-radius: 7px;

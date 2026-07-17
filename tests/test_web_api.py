@@ -72,7 +72,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.5.17",
+        "version": "0.5.18",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -4187,6 +4187,23 @@ def test_chart_summary_aggregates_complete_csv_and_returns_global_top(client):
     }
     assert compare_payload["direction_rows"]["slowdowns"][0]["kernel_name"] == "slowdown"
     assert compare_payload["direction_rows"]["speedups"][0]["kernel_name"] == "speedup"
+
+    filtered_comparison = client.get(
+        "/api/jobs/chart-summary-job/results/all_kernels_cmp.csv",
+        params={
+            "chart_metric": "delta_dur_ms",
+            "chart_direction": "slowdown",
+            "min_abs_delta": 3,
+            "min_delta_pct": 300,
+            "min_baseline_ms": 1,
+        },
+    ).json()
+    assert filtered_comparison["total"] == 2
+    assert filtered_comparison["filtered_total"] == 1
+    assert filtered_comparison["rows"][0]["kernel_name"] == "slowdown"
+    assert filtered_comparison["direction_stats"]["slowdown_count"] == 1
+    assert filtered_comparison["direction_stats"]["speedup_count"] == 0
+    assert filtered_comparison["sums"]["delta_dur_ms"] == -5
 
 
 def test_done_job_without_perfetto_context_still_loads(client, sample_trace_file):

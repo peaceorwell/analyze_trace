@@ -60,7 +60,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.5.17"
+APP_VERSION = "0.5.18"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -3858,9 +3858,18 @@ def read_csv_chart_summary(
     metric: str,
     limit: int = 30,
     exclude_communication: bool = True,
+    direction: str = "all",
+    min_abs_delta: float = 0.0,
+    min_delta_pct: float = 0.0,
+    min_baseline_ms: float = 0.0,
 ) -> dict:
     """Aggregate a complete result CSV while returning only global Top rows."""
     filename = os.path.basename(path)
+    if direction not in {"all", "slowdown", "speedup"}:
+        raise ValueError(f"Unknown chart direction: {direction}")
+    min_abs_delta = max(0.0, min_abs_delta)
+    min_delta_pct = max(0.0, min_delta_pct)
+    min_baseline_ms = max(0.0, min_baseline_ms)
     with open(path, newline="") as f:
         reader = csv.DictReader(f)
         fields = _result_csv_fields(filename, reader.fieldnames or [])
@@ -3882,6 +3891,7 @@ def read_csv_chart_summary(
         top_heap = []
         scanned_total = 0
         total = 0
+        filtered_total = 0
         metric_total = 0.0
         hotspot = None
         hotspot_value = 0.0
@@ -3916,6 +3926,17 @@ def read_csv_chart_summary(
                 slowdown, slowdown_value = row, delta
             if delta < speedup_value:
                 speedup, speedup_value = row, delta
+            baseline_ms = _float_or_none(row.get("avg_dur_ms_A")) or 0.0
+            delta_pct = delta / baseline_ms * 100 if baseline_ms > 0 else None
+            matches_filter = "delta_dur_ms" not in fields or (
+                (direction == "all" or (direction == "slowdown" and delta > 0) or (direction == "speedup" and delta < 0))
+                and abs(delta) >= min_abs_delta
+                and baseline_ms >= min_baseline_ms
+                and (min_delta_pct <= 0 or (delta_pct is not None and abs(delta_pct) >= min_delta_pct))
+            )
+            if not matches_filter:
+                continue
+            filtered_total += 1
             if "delta_dur_ms" in fields:
                 if delta > 0:
                     direction_stats["slowdown_count"] += 1
@@ -3956,6 +3977,7 @@ def read_csv_chart_summary(
         "fields": fields,
         "rows": ranked,
         "total": total,
+        "filtered_total": filtered_total,
         "scanned_total": scanned_total,
         "excluded_communication": scanned_total - total,
         "metric": metric,
@@ -3970,6 +3992,12 @@ def read_csv_chart_summary(
         "direction_rows": {
             "slowdowns": slowdown_rows,
             "speedups": speedup_rows,
+        },
+        "chart_filters": {
+            "direction": direction,
+            "min_abs_delta": min_abs_delta,
+            "min_delta_pct": min_delta_pct,
+            "min_baseline_ms": min_baseline_ms,
         },
         "aggregated": True,
     }
@@ -10119,6 +10147,10 @@ async def get_job_result_table(
     chart_metric: Optional[str] = None,
     chart_limit: int = 30,
     exclude_communication: bool = True,
+    chart_direction: str = "all",
+    min_abs_delta: float = 0.0,
+    min_delta_pct: float = 0.0,
+    min_baseline_ms: float = 0.0,
 ):
     db = await get_db()
     try:
@@ -10147,6 +10179,10 @@ async def get_job_result_table(
                 metric=chart_metric,
                 limit=chart_limit,
                 exclude_communication=exclude_communication,
+                direction=chart_direction,
+                min_abs_delta=min_abs_delta,
+                min_delta_pct=min_delta_pct,
+                min_baseline_ms=min_baseline_ms,
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc))

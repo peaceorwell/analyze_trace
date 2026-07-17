@@ -94,6 +94,12 @@ def test_performance_overview_explains_compute_time_scope():
     assert 'makeCard("回退 / 改善项"' in APP_JS
     assert "回退贡献 Top" in APP_JS
     assert "累计 {{ fmtChartPercent(row.cumulativePct) }}" in APP_JS
+    assert 'class="chart-compare-filters"' in APP_JS
+    assert "chartCompareDirection" in APP_JS
+    assert "chartMinAbsDelta" in APP_JS
+    assert "chartMinDeltaPct" in APP_JS
+    assert "chartMinBaselineMs" in APP_JS
+    assert "chartFilterCacheKey" in APP_JS
 
 
 def test_header_task_center_tracks_active_and_failed_jobs_globally():
