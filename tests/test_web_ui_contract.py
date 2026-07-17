@@ -79,6 +79,8 @@ def test_performance_overview_explains_compute_time_scope():
     assert "CHART_FETCH_LIMIT" not in APP_JS
     assert "table?.sums?.avg_dur_ms" in APP_JS
     assert "table?.metric_total" in APP_JS
+    assert "hotspot.raw?.avg_dur_ms ?? hotspot.hotValue ?? hotspot.value" in APP_JS
+    assert "hotspotDuration / totalDur * 100" in APP_JS
     assert 'duration_pct: { label: "耗时占比 (%)"' in APP_JS
     assert 'cumulative_pct: { label: "累计占比 (%)"' in APP_JS
     assert 'class="duration-share-cell"' in APP_JS

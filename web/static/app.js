@@ -185,7 +185,7 @@ const chartScatterRows  = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.5.15");
+const appVersion = ref("0.5.16");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -714,6 +714,15 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.16",
+    date: "2026-07-17",
+    title: "修复最大热点摘要显示",
+    items: [
+      "修复性能总览中最大热点耗时错误显示为 0 的问题。",
+      "最大热点耗时和占比统一读取全量汇总结果，与下方排行保持一致。",
+    ],
+  },
   {
     version: "0.5.15",
     date: "2026-07-17",
@@ -2701,7 +2710,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.5.15";
+  appVersion.value = cfg.version || "0.5.16";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -5979,10 +5988,13 @@ const buildChartSummary = (rows, table, sourceConfig) => {
   const hotspot = highlightRow("hotspot") || rows
     .map(row => ({ ...row, hotValue: parseChartNumber(row.raw.avg_dur_ms) }))
     .sort((a, b) => b.hotValue - a.hotValue)[0] || null;
-  const topPct = totalDur && hotspot ? hotspot.hotValue / totalDur * 100 : 0;
+  const hotspotDuration = hotspot
+    ? parseChartNumber(hotspot.raw?.avg_dur_ms ?? hotspot.hotValue ?? hotspot.value)
+    : 0;
+  const topPct = totalDur ? hotspotDuration / totalDur * 100 : 0;
   return [
     makeCard("设备计算耗时", fmtChartValue(totalDur, { unit: "ms" }), `已排除通信 · ${totalLabel}`),
-    makeCard("最大热点", hotspot ? fmtChartValue(hotspot.hotValue, { unit: "ms" }) : "0", hotspot ? shortChartLabel(hotspot.label, 28) : "无", "", hotspot),
+    makeCard("最大热点", hotspot ? fmtChartValue(hotspotDuration, { unit: "ms" }) : "0", hotspot ? shortChartLabel(hotspot.label, 28) : "无", "", hotspot),
     makeCard("Kernel 调用数", fmtChartValue(totalCount), table?.aggregated ? "全量数据合计" : "当前已载入数据合计"),
     makeCard("最大热点占比", `${trimNumber(topPct)}%`, hotspot ? `占设备计算耗时 · ${shortChartLabel(hotspot.label, 28)}` : "无"),
   ];
