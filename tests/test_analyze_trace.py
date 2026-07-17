@@ -932,7 +932,7 @@ class TestEndToEnd:
             "kernel_families": {},
             "avg_triton": {
                 "triton_poi_fused_add_55": {
-                    "avg_count": 1,
+                    "avg_count": 3,
                     "avg_dur_ms": 13,
                     "avg_io_gb": 1,
                     "avg_io_eff": 100,
@@ -955,6 +955,9 @@ class TestEndToEnd:
         assert rows[0]["kernel_name_B"] == "triton_poi_fused_add_55"
         assert rows[0]["match_method"] == "code_hash"
         assert rows[0]["delta_dur_ms"] == "3"
+        assert rows[0]["avg_count_A"] == "1"
+        assert rows[0]["avg_count_B"] == "3"
+        assert rows[0]["delta_count"] == "2"
 
     def test_triton_compare_matches_by_code_hash_intersection(self, temp_output_dir):
         data_a = {

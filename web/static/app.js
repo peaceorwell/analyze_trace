@@ -193,7 +193,7 @@ const chartScatterRows  = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.5.21");
+const appVersion = ref("0.5.23");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -722,6 +722,16 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.23",
+    date: "2026-07-17",
+    title: "对比表格指标精简",
+    items: [
+      "对比表格移除变化率、绝对变化和回退贡献三列。",
+      "默认展示 A/B 两侧 Kernel 数量及数量差值，并支持排序、筛选与导出。",
+      "补齐 Triton 对比结果和历史任务中的 Kernel 数量差值。",
+    ],
+  },
   {
     version: "0.5.21",
     date: "2026-07-17",
@@ -1647,7 +1657,6 @@ const CHART_COMMUNICATION_NAME_RE =
 const CHART_METRIC_DEFS = [
   { key: "delta_dur_ms", label: "耗时 Delta (B-A)", unit: "ms", signed: true },
   { key: "delta_count", label: "调用数 Delta", unit: "", signed: true },
-  { key: "delta_abs_ms", label: "耗时 Delta 绝对值", unit: "ms" },
   { key: "avg_dur_ms", label: "平均耗时", unit: "ms" },
   { key: "avg_dur_ms_A", label: "A 平均耗时", unit: "ms" },
   { key: "avg_dur_ms_B", label: "B 平均耗时", unit: "ms" },
@@ -1753,7 +1762,7 @@ const NUMERIC_TABLE_FIELD_RE = /(^|_)(count|dur|duration|time|us|ms|gb|efficienc
 const NUMERIC_TABLE_VALUE_RE = /^[+-]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:e[+-]?\d+)?%?$/i;
 const EFFICIENCY_FIELD_RE = /(^|_)efficiency(_|$)/i;
 const DURATION_SHARE_FIELDS = new Set(["duration_pct", "cumulative_pct"]);
-const COMPARISON_PERCENT_FIELDS = new Set(["delta_pct", "regression_contribution"]);
+const LEGACY_COMPARISON_TABLE_FIELDS = new Set(["delta_pct", "delta_abs_ms", "regression_contribution"]);
 const KERNEL_NAME_FIELD_RE = /^kernel_name(?:_[ab])?$/i;
 const TEXT_NAME_FIELD_RE = /(^|_)(name|operator|op_name)(_|$)/i;
 const SHORT_TEXT_FIELD_RE = /^(type|family|match_method)$/i;
@@ -1772,9 +1781,6 @@ const COMPACT_NUMERIC_COLUMN_MAX = {
   avg_io_gb_b: 118,
   duration_pct: 112,
   cumulative_pct: 118,
-  delta_pct: 112,
-  delta_abs_ms: 118,
-  regression_contribution: 136,
 };
 const TABLE_COLUMN_MIN_WIDTH = 60;
 // Single generous ceiling for both manual dragging and width preservation. It's
@@ -1803,7 +1809,6 @@ const TABLE_FIELD_META = Object.freeze({
   delta_count: { label: "调用数差值 (B-A)", hint: "B 相对 A 的平均调用次数变化" },
   avg_dur_ms: { label: "平均耗时 (ms)", hint: "所选 step 中累计设备耗时的平均值" },
   delta_dur_ms: { label: "耗时差值 (B-A, ms)", hint: "B 相对 A 的设备耗时变化，正值表示变慢" },
-  delta_abs_ms: { label: "耗时差值绝对值 (ms)", hint: "A/B 设备耗时差值的绝对值" },
   avg_us_per_call: { label: "平均单次耗时 (μs)", hint: "每次调用的平均设备执行时间" },
   avg_io_gb: { label: "平均 IO 量 (GB)", hint: "估算的平均读写数据量" },
   avg_compute_efficiency: { label: "计算效率 (%)", hint: "相对理论计算峰值的利用率" },
@@ -1811,9 +1816,6 @@ const TABLE_FIELD_META = Object.freeze({
   avg_op_efficiency: { label: "综合效率 (%)", hint: "计算与 IO 瓶颈下的综合效率" },
   duration_pct: { label: "耗时占比 (%)", hint: "该行耗时占完整计算数据总耗时的比例，通信项不参与分母" },
   cumulative_pct: { label: "累计占比 (%)", hint: "按耗时从高到低累计，占完整计算数据总耗时的比例" },
-  delta_pct: { label: "变化率 (%)", hint: "B 相对 A 的耗时变化率；正值表示回退" },
-  delta_abs_ms: { label: "绝对变化 (ms)", hint: "A/B 耗时差值的绝对值，用于按影响程度排序" },
-  regression_contribution: { label: "回退贡献 (%)", hint: "该项回退占全部非通信回退耗时的比例" },
   compare_status: { label: "对比状态", hint: "新增、消失或 A/B 行的匹配可信度" },
   triton_code_file: { label: "Triton 代码", hint: "生成的 Triton 源码文件" },
 });
@@ -1821,10 +1823,20 @@ const TABLE_FIELD_META = Object.freeze({
 const tableFieldMeta = field => {
   const raw = String(field || "");
   const key = raw.toLowerCase();
-  if (TABLE_FIELD_META[key]) return TABLE_FIELD_META[key];
+  const kernelCountTable = /^(all_kernels|triton_kernels|kernel_types)_/.test(resultTab.value || "");
+  const contextualMeta = baseKey => {
+    if (kernelCountTable && baseKey === "avg_count") {
+      return { label: "Kernel 数量", hint: "所选 step 中每步平均出现的 Kernel 数量" };
+    }
+    if (kernelCountTable && baseKey === "delta_count") {
+      return { label: "Kernel 数量差值 (B-A)", hint: "B 相对 A 的平均 Kernel 数量变化" };
+    }
+    return TABLE_FIELD_META[baseKey];
+  };
+  if (TABLE_FIELD_META[key]) return contextualMeta(key);
   const sideMatch = key.match(/^(.*)_([ab])$/);
   if (sideMatch && TABLE_FIELD_META[sideMatch[1]]) {
-    const base = TABLE_FIELD_META[sideMatch[1]];
+    const base = contextualMeta(sideMatch[1]);
     return { label: `${base.label} ${sideMatch[2].toUpperCase()}`, hint: `${sideMatch[2].toUpperCase()} 侧：${base.hint}` };
   }
   return { label: raw, hint: "" };
@@ -2036,7 +2048,7 @@ const colSums = computed(() => {
   const rows   = filteredRows.value;
   const result = {};
   for (const f of fields) {
-    if (DURATION_SHARE_FIELDS.has(f) || COMPARISON_PERCENT_FIELDS.has(f)) { result[f] = null; continue; }
+    if (DURATION_SHARE_FIELDS.has(f)) { result[f] = null; continue; }
     if (f.toLowerCase().includes('efficiency')) { result[f] = null; continue; }
     if (rows.some(r => String(r[f] ?? '').trim().endsWith('%'))) {
       result[f] = null; continue;
@@ -2107,19 +2119,13 @@ const comparisonPresetColumns = (mode = "compact", fields = currentTable.value.f
   const available = new Set(fields);
   const identity = fields.filter(field => /^(kernel_name|op_name|operator|type|family|compare_status|match_method)$/i.test(field));
   const metrics = mode === "calls"
-    ? ["avg_count_A", "avg_count_B", "delta_count", "avg_dur_ms_A", "avg_dur_ms_B", "delta_dur_ms", "delta_pct"]
-    : ["avg_dur_ms_A", "avg_dur_ms_B", "delta_dur_ms", "delta_pct", "delta_abs_ms", "regression_contribution"];
+    ? ["avg_count_A", "avg_count_B", "delta_count"]
+    : ["avg_dur_ms_A", "avg_dur_ms_B", "delta_dur_ms", "avg_count_A", "avg_count_B", "delta_count"];
   return [...new Set([...identity, ...metrics.filter(field => available.has(field))])];
 };
 
 const applyComparisonColumnPreset = mode => {
   visibleColumns.value = comparisonPresetColumns(mode);
-  if (currentTable.value.fields.includes("delta_abs_ms")) {
-    sortCol.value = "delta_abs_ms";
-    sortAsc.value = false;
-    tableOffset.value = 0;
-    loadResultTable({ resetOffset: true });
-  }
 };
 
 const applyCoreColumnPreset = () => {
@@ -2279,7 +2285,7 @@ const tableHeaderClass = field => ({
   "share-col": isDurationShareField(field),
   "compare-a-col": isComparisonTable.value && /_A$/i.test(field),
   "compare-b-col": isComparisonTable.value && /_B$/i.test(field),
-  "compare-change-col": isComparisonTable.value && (/^delta_/i.test(field) || field === "regression_contribution"),
+  "compare-change-col": isComparisonTable.value && /^delta_/i.test(field),
 });
 const tableCellClass = (field, value) => ({
   ...tableHeaderClass(field),
@@ -2318,21 +2324,10 @@ const formatDurationShare = value => {
   const digits = number >= 10 ? 1 : 2;
   return `${Number(number.toFixed(digits))}%`;
 };
-const isComparisonContributionField = field => field === "regression_contribution";
-const isComparisonDeltaPctField = field => field === "delta_pct";
-const comparisonContributionStyle = value => ({
-  "--comparison-contribution": `${Math.max(0, Math.min(100, Number.parseFloat(value) || 0))}%`,
-});
-const formatComparisonPercent = (value, { signed = false } = {}) => {
-  const number = Number.parseFloat(value);
-  if (!Number.isFinite(number)) return "—";
-  const prefix = signed && number > 0 ? "+" : "";
-  return `${prefix}${Number(number.toFixed(Math.abs(number) >= 10 ? 1 : 2))}%`;
-};
 const comparisonColumnGroup = field => {
   if (/_A$/i.test(field)) return "A 基线";
   if (/_B$/i.test(field)) return "B 当前";
-  if (/^delta_/i.test(field) || field === "regression_contribution") return "变化";
+  if (/^delta_/i.test(field)) return "变化";
   return "";
 };
 const comparisonStatusLabel = value => ({
@@ -2839,7 +2834,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.5.21";
+  appVersion.value = cfg.version || "0.5.23";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -5718,12 +5713,15 @@ const activateCsvTab = async (filename, { updateRoute = true, savePrevious = tru
   const controller = new AbortController();
   const state = resultViewStateFor(jobId, filename);
   const hasSavedView = Boolean(readResultMemory(jobId).tabs?.[filename]);
-  if (filename.endsWith("_cmp.csv") && !hasSavedView) {
+  if (filename.endsWith("_cmp.csv")) {
     const fields = selectedJob.value?.result_files?.[filename]?.fields || [];
-    state.visibleColumns = comparisonPresetColumns("compact", fields);
-    if (fields.includes("delta_abs_ms")) {
-      state.sortCol = "delta_abs_ms";
-      state.sortAsc = false;
+    const hasLegacyColumns = (state.visibleColumns || []).some(field => LEGACY_COMPARISON_TABLE_FIELDS.has(field));
+    if (!hasSavedView || hasLegacyColumns) {
+      state.visibleColumns = comparisonPresetColumns("compact", fields);
+    }
+    if (LEGACY_COMPARISON_TABLE_FIELDS.has(state.sortCol)) {
+      state.sortCol = "";
+      state.sortAsc = true;
     }
   }
   resultTableController = controller;
@@ -10081,14 +10079,6 @@ const JobDetail = {
                         <span>{{ formatDurationShare(row[f]) }}</span>
                       </span>
                     </template>
-                    <template v-else-if="isComparisonContributionField(f)">
-                      <span class="comparison-contribution-cell" :style="comparisonContributionStyle(row[f])">
-                        <span>{{ formatComparisonPercent(row[f]) }}</span>
-                      </span>
-                    </template>
-                    <template v-else-if="isComparisonDeltaPctField(f)">
-                      <span>{{ formatComparisonPercent(row[f], { signed: true }) }}</span>
-                    </template>
                     <template v-else-if="f === 'compare_status'">
                       <span :class="['compare-status-chip', comparisonStatusClass(row[f])]">{{ comparisonStatusLabel(row[f]) }}</span>
                     </template>
@@ -10195,8 +10185,6 @@ const JobDetail = {
       resultTableLoading, resultTableError, preparingResultTab, prevTablePage, nextTablePage, loadResultTable,
       hasColFilters, colSums, isKernelTypeTab, canDrillKernelTypeRow,
       isComparisonTable, applyComparisonColumnPreset, comparisonColumnGroup,
-      isComparisonContributionField, isComparisonDeltaPctField,
-      comparisonContributionStyle, formatComparisonPercent,
       comparisonStatusLabel, comparisonStatusClass,
       isKernelTypeDrillCell, drillDownKernelType,
       isEfficiencyTable, isEfficiencyField, applyEfficiencyColumnPreset,

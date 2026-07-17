@@ -2312,6 +2312,7 @@ def _write_triton_cmp_csv(path, avg_triton_a, avg_triton_b):
         a = avg_triton_a.get(name_a, zero)
         b = avg_triton_b.get(name_b, zero)
         delta = b["avg_dur_ms"] - a["avg_dur_ms"]
+        delta_count = b["avg_count"] - a["avg_count"]
         rows.append({
             "kernel_name":  _triton_display_name(name_a, name_b, a, b),
             "match_method": method,
@@ -2322,6 +2323,7 @@ def _write_triton_cmp_csv(path, avg_triton_a, avg_triton_b):
             "delta_dur_ms": fmt3(delta),
             "avg_count_A":  fmt3(a["avg_count"]),
             "avg_count_B":  fmt3(b["avg_count"]),
+            "delta_count":  fmt3(delta_count),
             "avg_io_gb_A":  fmt3(a["avg_io_gb"]),
             "avg_io_gb_B":  fmt3(b["avg_io_gb"]),
             "_sort":        abs(delta),
@@ -2340,6 +2342,7 @@ def _write_triton_cmp_csv(path, avg_triton_a, avg_triton_b):
             "delta_dur_ms": fmt3(delta),
             "avg_count_A":  fmt3(a["avg_count"]),
             "avg_count_B":  fmt3(0),
+            "delta_count":  fmt3(-a["avg_count"]),
             "avg_io_gb_A":  fmt3(a["avg_io_gb"]),
             "avg_io_gb_B":  fmt3(0),
             "_sort":        abs(delta),
@@ -2358,6 +2361,7 @@ def _write_triton_cmp_csv(path, avg_triton_a, avg_triton_b):
             "delta_dur_ms": fmt3(delta),
             "avg_count_A":  fmt3(0),
             "avg_count_B":  fmt3(b["avg_count"]),
+            "delta_count":  fmt3(b["avg_count"]),
             "avg_io_gb_A":  fmt3(0),
             "avg_io_gb_B":  fmt3(b["avg_io_gb"]),
             "_sort":        abs(delta),
@@ -2366,7 +2370,7 @@ def _write_triton_cmp_csv(path, avg_triton_a, avg_triton_b):
     rows.sort(key=lambda r: (-r["_sort"], r["kernel_name"]))
     fields = ["kernel_name", "match_method", "kernel_name_A", "kernel_name_B",
               "avg_dur_ms_A", "avg_dur_ms_B", "delta_dur_ms",
-              "avg_count_A", "avg_count_B", "avg_io_gb_A", "avg_io_gb_B"]
+              "avg_count_A", "avg_count_B", "delta_count", "avg_io_gb_A", "avg_io_gb_B"]
     with open(path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
         writer.writeheader()

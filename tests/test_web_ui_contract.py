@@ -104,8 +104,11 @@ def test_performance_overview_explains_compute_time_scope():
     assert "精简对比" in APP_JS
     assert "调用数" in APP_JS
     assert "完整字段" in APP_JS
-    assert 'regression_contribution: { label: "回退贡献 (%)"' in APP_JS
-    assert 'class="comparison-contribution-cell"' in APP_JS
+    assert 'return { label: "Kernel 数量"' in APP_JS
+    assert 'return { label: "Kernel 数量差值 (B-A)"' in APP_JS
+    assert '["avg_dur_ms_A", "avg_dur_ms_B", "delta_dur_ms", "avg_count_A", "avg_count_B", "delta_count"]' in APP_JS
+    assert 'regression_contribution: { label: "回退贡献 (%)"' not in APP_JS
+    assert 'class="comparison-contribution-cell"' not in APP_JS
     assert 'class="compare-column-group"' in APP_JS
     assert 'compare_status: { label: "对比状态"' in APP_JS
     assert "新增项 Top" in APP_JS
