@@ -60,7 +60,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.5.18"
+APP_VERSION = "0.5.19"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -1662,6 +1662,7 @@ def csv_to_rows(path: str) -> dict:
         rows = [_result_csv_row(filename, row) for row in reader]
         rows = _aggregate_kernel_type_rows(filename, fields, rows)
         rows = _add_duration_share_columns(filename, fields, rows)
+        rows = _add_comparison_metric_columns(filename, fields, rows)
         return {"fields": fields, "rows": rows}
 
 
@@ -1799,6 +1800,11 @@ def _result_csv_fields(filename: str, fields: list[str]) -> list[str]:
     fields = _filter_result_csv_fields(_augment_result_csv_fields(filename, fields))
     if "avg_dur_ms" in fields and not filename.endswith("_cmp.csv"):
         fields.extend(field for field in ("duration_pct", "cumulative_pct") if field not in fields)
+    if filename.endswith("_cmp.csv") and {"avg_dur_ms_A", "avg_dur_ms_B", "delta_dur_ms"}.issubset(fields):
+        fields.extend(
+            field for field in ("delta_pct", "delta_abs_ms", "regression_contribution")
+            if field not in fields
+        )
     return fields
 
 
@@ -1838,6 +1844,29 @@ def _add_duration_share_columns(filename: str, fields: list[str], rows: list[dic
             continue
         row["duration_pct"] = _format_share_pct(0.0)
         row["cumulative_pct"] = _format_share_pct(final_cumulative)
+    return rows
+
+
+def _add_comparison_metric_columns(filename: str, fields: list[str], rows: list[dict]) -> list[dict]:
+    required = {"avg_dur_ms_A", "avg_dur_ms_B", "delta_dur_ms"}
+    if not filename.endswith("_cmp.csv") or not required.issubset(fields):
+        return rows
+    slowdown_total = sum(
+        _float_or_none(row.get("delta_dur_ms")) or 0.0
+        for row in rows
+        if not _is_chart_communication_row(row)
+        and (_float_or_none(row.get("delta_dur_ms")) or 0.0) > 0
+    )
+    for row in rows:
+        baseline = _float_or_none(row.get("avg_dur_ms_A")) or 0.0
+        delta = _float_or_none(row.get("delta_dur_ms")) or 0.0
+        row["delta_pct"] = _format_share_pct(delta / baseline * 100) if baseline > 0 else ""
+        row["delta_abs_ms"] = _format_share_pct(abs(delta))
+        if _is_chart_communication_row(row):
+            row["regression_contribution"] = ""
+        else:
+            contribution = delta / slowdown_total * 100 if delta > 0 and slowdown_total else 0.0
+            row["regression_contribution"] = _format_share_pct(contribution)
     return rows
 
 
@@ -3768,13 +3797,14 @@ def read_csv_page(
         rows = []
         total = 0
         filtered_total = 0
-        if _is_kernel_type_result_csv(filename) or "duration_pct" in fields:
+        if _is_kernel_type_result_csv(filename) or "duration_pct" in fields or "delta_pct" in fields:
             rows = _aggregate_kernel_type_rows(
                 filename,
                 fields,
                 [_result_csv_row(filename, row) for row in reader],
             )
             rows = _add_duration_share_columns(filename, fields, rows)
+            rows = _add_comparison_metric_columns(filename, fields, rows)
             total = len(rows)
             rows = [row for row in rows if _csv_filter_match(row, q, filters, filter_ops)]
             filtered_total = len(rows)
@@ -4035,13 +4065,14 @@ def stream_filtered_csv(
 
         yield "\ufeff" + emit(header=True)
 
-        if _is_kernel_type_result_csv(filename) or "duration_pct" in fields:
+        if _is_kernel_type_result_csv(filename) or "duration_pct" in fields or "delta_pct" in fields:
             rows = _aggregate_kernel_type_rows(
                 filename,
                 fields,
                 [_result_csv_row(filename, row) for row in reader],
             )
             rows = _add_duration_share_columns(filename, fields, rows)
+            rows = _add_comparison_metric_columns(filename, fields, rows)
             rows = [row for row in rows if _csv_filter_match(row, q, filters, filter_ops)]
         elif sort_col and sort_col in fields:
             rows = []

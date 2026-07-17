@@ -100,6 +100,13 @@ def test_performance_overview_explains_compute_time_scope():
     assert "chartMinDeltaPct" in APP_JS
     assert "chartMinBaselineMs" in APP_JS
     assert "chartFilterCacheKey" in APP_JS
+    assert "comparisonPresetColumns" in APP_JS
+    assert "精简对比" in APP_JS
+    assert "调用数" in APP_JS
+    assert "完整字段" in APP_JS
+    assert 'regression_contribution: { label: "回退贡献 (%)"' in APP_JS
+    assert 'class="comparison-contribution-cell"' in APP_JS
+    assert 'class="compare-column-group"' in APP_JS
 
 
 def test_header_task_center_tracks_active_and_failed_jobs_globally():

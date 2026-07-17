@@ -191,7 +191,7 @@ const chartScatterRows  = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.5.18");
+const appVersion = ref("0.5.19");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -720,6 +720,16 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.19",
+    date: "2026-07-17",
+    title: "对比表格重构",
+    items: [
+      "对比 CSV 新增变化率、绝对变化和回退贡献，支持排序、筛选与导出。",
+      "新增精简对比、调用数和完整字段三种列预设，首次打开默认按绝对影响排序。",
+      "A 基线、B 当前和变化列使用分组标签与独立色彩，回退贡献使用进度背景展示。",
+    ],
+  },
   {
     version: "0.5.18",
     date: "2026-07-17",
@@ -1721,6 +1731,7 @@ const NUMERIC_TABLE_FIELD_RE = /(^|_)(count|dur|duration|time|us|ms|gb|efficienc
 const NUMERIC_TABLE_VALUE_RE = /^[+-]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:e[+-]?\d+)?%?$/i;
 const EFFICIENCY_FIELD_RE = /(^|_)efficiency(_|$)/i;
 const DURATION_SHARE_FIELDS = new Set(["duration_pct", "cumulative_pct"]);
+const COMPARISON_PERCENT_FIELDS = new Set(["delta_pct", "regression_contribution"]);
 const KERNEL_NAME_FIELD_RE = /^kernel_name(?:_[ab])?$/i;
 const TEXT_NAME_FIELD_RE = /(^|_)(name|operator|op_name)(_|$)/i;
 const SHORT_TEXT_FIELD_RE = /^(type|family|match_method)$/i;
@@ -1739,6 +1750,9 @@ const COMPACT_NUMERIC_COLUMN_MAX = {
   avg_io_gb_b: 118,
   duration_pct: 112,
   cumulative_pct: 118,
+  delta_pct: 112,
+  delta_abs_ms: 118,
+  regression_contribution: 136,
 };
 const TABLE_COLUMN_MIN_WIDTH = 60;
 // Single generous ceiling for both manual dragging and width preservation. It's
@@ -1775,6 +1789,9 @@ const TABLE_FIELD_META = Object.freeze({
   avg_op_efficiency: { label: "综合效率 (%)", hint: "计算与 IO 瓶颈下的综合效率" },
   duration_pct: { label: "耗时占比 (%)", hint: "该行耗时占完整计算数据总耗时的比例，通信项不参与分母" },
   cumulative_pct: { label: "累计占比 (%)", hint: "按耗时从高到低累计，占完整计算数据总耗时的比例" },
+  delta_pct: { label: "变化率 (%)", hint: "B 相对 A 的耗时变化率；正值表示回退" },
+  delta_abs_ms: { label: "绝对变化 (ms)", hint: "A/B 耗时差值的绝对值，用于按影响程度排序" },
+  regression_contribution: { label: "回退贡献 (%)", hint: "该项回退占全部非通信回退耗时的比例" },
   triton_code_file: { label: "Triton 代码", hint: "生成的 Triton 源码文件" },
 });
 
@@ -1831,6 +1848,7 @@ const displayedFields = computed(() => {
   const visible = new Set(visibleColumns.value);
   return fields.filter(field => visible.has(field));
 });
+const isComparisonTable = computed(() => resultTab.value?.endsWith("_cmp.csv"));
 
 const hiddenColumnCount = computed(() =>
   Math.max(0, currentTable.value.fields.length - displayedFields.value.length)
@@ -1995,7 +2013,7 @@ const colSums = computed(() => {
   const rows   = filteredRows.value;
   const result = {};
   for (const f of fields) {
-    if (DURATION_SHARE_FIELDS.has(f)) { result[f] = null; continue; }
+    if (DURATION_SHARE_FIELDS.has(f) || COMPARISON_PERCENT_FIELDS.has(f)) { result[f] = null; continue; }
     if (f.toLowerCase().includes('efficiency')) { result[f] = null; continue; }
     if (rows.some(r => String(r[f] ?? '').trim().endsWith('%'))) {
       result[f] = null; continue;
@@ -2059,6 +2077,26 @@ const efficiencyPresetColumns = (fields = currentTable.value.fields || []) => {
 
 const applyEfficiencyColumnPreset = () => {
   visibleColumns.value = efficiencyPresetColumns();
+};
+
+const comparisonPresetColumns = (mode = "compact", fields = currentTable.value.fields || []) => {
+  if (mode === "full") return [...fields];
+  const available = new Set(fields);
+  const identity = fields.filter(field => /^(kernel_name|op_name|operator|type|family|match_method)$/i.test(field));
+  const metrics = mode === "calls"
+    ? ["avg_count_A", "avg_count_B", "delta_count", "avg_dur_ms_A", "avg_dur_ms_B", "delta_dur_ms", "delta_pct"]
+    : ["avg_dur_ms_A", "avg_dur_ms_B", "delta_dur_ms", "delta_pct", "delta_abs_ms", "regression_contribution"];
+  return [...new Set([...identity, ...metrics.filter(field => available.has(field))])];
+};
+
+const applyComparisonColumnPreset = mode => {
+  visibleColumns.value = comparisonPresetColumns(mode);
+  if (currentTable.value.fields.includes("delta_abs_ms")) {
+    sortCol.value = "delta_abs_ms";
+    sortAsc.value = false;
+    tableOffset.value = 0;
+    loadResultTable({ resetOffset: true });
+  }
 };
 
 const applyCoreColumnPreset = () => {
@@ -2216,6 +2254,9 @@ const tableHeaderClass = field => ({
   "long-col": isLongTableField(field),
   "eff-col": isEfficiencyField(field),
   "share-col": isDurationShareField(field),
+  "compare-a-col": isComparisonTable.value && /_A$/i.test(field),
+  "compare-b-col": isComparisonTable.value && /_B$/i.test(field),
+  "compare-change-col": isComparisonTable.value && (/^delta_/i.test(field) || field === "regression_contribution"),
 });
 const tableCellClass = (field, value) => ({
   ...tableHeaderClass(field),
@@ -2253,6 +2294,23 @@ const formatDurationShare = value => {
   if (!Number.isFinite(number)) return "—";
   const digits = number >= 10 ? 1 : 2;
   return `${Number(number.toFixed(digits))}%`;
+};
+const isComparisonContributionField = field => field === "regression_contribution";
+const isComparisonDeltaPctField = field => field === "delta_pct";
+const comparisonContributionStyle = value => ({
+  "--comparison-contribution": `${Math.max(0, Math.min(100, Number.parseFloat(value) || 0))}%`,
+});
+const formatComparisonPercent = (value, { signed = false } = {}) => {
+  const number = Number.parseFloat(value);
+  if (!Number.isFinite(number)) return "—";
+  const prefix = signed && number > 0 ? "+" : "";
+  return `${prefix}${Number(number.toFixed(Math.abs(number) >= 10 ? 1 : 2))}%`;
+};
+const comparisonColumnGroup = field => {
+  if (/_A$/i.test(field)) return "A 基线";
+  if (/_B$/i.test(field)) return "B 当前";
+  if (/^delta_/i.test(field) || field === "regression_contribution") return "变化";
+  return "";
 };
 const shouldUseEfficiencyPreset = (filename, fields, state = null) => {
   if (!EFFICIENCY_TABLE_FILES.has(filename)) return false;
@@ -2750,7 +2808,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.5.18";
+  appVersion.value = cfg.version || "0.5.19";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -5626,6 +5684,15 @@ const activateCsvTab = async (filename, { updateRoute = true, savePrevious = tru
 
   const controller = new AbortController();
   const state = resultViewStateFor(jobId, filename);
+  const hasSavedView = Boolean(readResultMemory(jobId).tabs?.[filename]);
+  if (filename.endsWith("_cmp.csv") && !hasSavedView) {
+    const fields = selectedJob.value?.result_files?.[filename]?.fields || [];
+    state.visibleColumns = comparisonPresetColumns("compact", fields);
+    if (fields.includes("delta_abs_ms")) {
+      state.sortCol = "delta_abs_ms";
+      state.sortAsc = false;
+    }
+  }
   resultTableController = controller;
   preparingResultTab.value = filename;
   resultTableLoading.value = false;
@@ -9639,6 +9706,11 @@ const JobDetail = {
               <span v-if="isKernelTypeTab" class="filter-active-tip">点击类型行下钻到相关 Kernel</span>
             </div>
             <div class="table-toolbar-actions">
+              <div v-if="isComparisonTable" class="compare-column-presets" aria-label="对比表格列预设">
+                <button class="btn btn-sm btn-outline" type="button" @click="applyComparisonColumnPreset('compact')">精简对比</button>
+                <button class="btn btn-sm btn-outline" type="button" @click="applyComparisonColumnPreset('calls')">调用数</button>
+                <button class="btn btn-sm btn-outline" type="button" @click="applyComparisonColumnPreset('full')">完整字段</button>
+              </div>
               <button
                 v-if="isEfficiencyTable"
                 class="btn btn-sm btn-outline"
@@ -9704,6 +9776,7 @@ const JobDetail = {
                       :aria-label="tableFieldLabel(f) + '，点击排序'"
                       :title="tableFieldTitle(f)"
                       :style="tableColumnStyle(f)">
+                    <span v-if="comparisonColumnGroup(f)" class="compare-column-group">{{ comparisonColumnGroup(f) }}</span>
                     <span class="th-label">{{ tableFieldLabel(f) }}</span>
                     <span v-if="sortCol===f" class="th-sort-icon">{{ sortAsc?'↑':'↓' }}</span>
                     <div class="col-resize-handle"
@@ -9786,6 +9859,14 @@ const JobDetail = {
                       <span class="duration-share-cell" :style="durationShareStyle(row[f])">
                         <span>{{ formatDurationShare(row[f]) }}</span>
                       </span>
+                    </template>
+                    <template v-else-if="isComparisonContributionField(f)">
+                      <span class="comparison-contribution-cell" :style="comparisonContributionStyle(row[f])">
+                        <span>{{ formatComparisonPercent(row[f]) }}</span>
+                      </span>
+                    </template>
+                    <template v-else-if="isComparisonDeltaPctField(f)">
+                      <span>{{ formatComparisonPercent(row[f], { signed: true }) }}</span>
                     </template>
                     <template v-else-if="f === 'family'">
                       <span :class="['family-chip', familyChipClass(row[f])]">{{ row[f] || '-' }}</span>
@@ -9889,6 +9970,9 @@ const JobDetail = {
       tableAllRowLimit, tableAllRowsCapped, tableAllRowsLabel,
       resultTableLoading, resultTableError, preparingResultTab, prevTablePage, nextTablePage, loadResultTable,
       hasColFilters, colSums, isKernelTypeTab, canDrillKernelTypeRow,
+      isComparisonTable, applyComparisonColumnPreset, comparisonColumnGroup,
+      isComparisonContributionField, isComparisonDeltaPctField,
+      comparisonContributionStyle, formatComparisonPercent,
       isKernelTypeDrillCell, drillDownKernelType,
       isEfficiencyTable, isEfficiencyField, applyEfficiencyColumnPreset,
       tableStyle, tableColumnStyle, tableHeaderClass, tableCellClass, tableRowClass, familyChipClass, efficiencyTone,

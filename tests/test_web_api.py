@@ -72,7 +72,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.5.18",
+        "version": "0.5.19",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -4004,7 +4004,8 @@ def test_all_kernels_cmp_without_family_exposes_virtual_family(client):
     detail = client.get("/api/jobs/cmp-table-job")
     assert detail.status_code == 200
     assert detail.json()["result_files"]["all_kernels_cmp.csv"]["fields"] == [
-        "kernel_name", "family", "avg_dur_ms_A", "avg_dur_ms_B", "delta_dur_ms"
+        "kernel_name", "family", "avg_dur_ms_A", "avg_dur_ms_B", "delta_dur_ms",
+        "delta_pct", "delta_abs_ms", "regression_contribution",
     ]
 
     filtered = client.get(
@@ -4019,6 +4020,16 @@ def test_all_kernels_cmp_without_family_exposes_virtual_family(client):
     assert filtered.json()["filtered_total"] == 1
     assert filtered.json()["rows"][0]["kernel_name"] == "gemm_kernel"
     assert filtered.json()["rows"][0]["family"] == "gemm"
+    assert filtered.json()["rows"][0]["delta_pct"] == "200"
+    assert filtered.json()["rows"][0]["delta_abs_ms"] == "2"
+    assert filtered.json()["rows"][0]["regression_contribution"] == "100"
+
+    impact_sorted = client.get(
+        "/api/jobs/cmp-table-job/results/all_kernels_cmp.csv",
+        params={"sort_col": "delta_abs_ms", "sort_dir": "desc", "limit": 10},
+    ).json()
+    assert [row["kernel_name"] for row in impact_sorted["rows"]] == ["triton_poi_kernel", "gemm_kernel"]
+    assert impact_sorted["rows"][0]["delta_pct"] == "-75"
 
 
 def test_kernel_type_tables_normalize_legacy_triton_rows(client):
@@ -4055,6 +4066,7 @@ def test_kernel_type_tables_normalize_legacy_triton_rows(client):
     assert detail.json()["result_files"]["kernel_types_cmp.csv"]["fields"] == [
         "type", "avg_dur_ms_A", "avg_dur_ms_B", "delta_dur_ms",
         "avg_count_A", "avg_count_B", "delta_count",
+        "delta_pct", "delta_abs_ms", "regression_contribution",
     ]
 
     page = client.get("/api/jobs/kernel-type-normalize-job/results/kernel_types_cmp.csv")
@@ -4068,6 +4080,9 @@ def test_kernel_type_tables_normalize_legacy_triton_rows(client):
     assert triton_rows[0]["avg_count_A"] == "40"
     assert triton_rows[0]["avg_count_B"] == "70"
     assert triton_rows[0]["delta_count"] == "30"
+    assert triton_rows[0]["delta_pct"] == "75"
+    assert triton_rows[0]["delta_abs_ms"] == "3"
+    assert triton_rows[0]["regression_contribution"] == "100"
 
     kernels = client.get("/api/jobs/kernel-type-normalize-job/results/all_kernels_avg.csv")
     assert kernels.status_code == 200
