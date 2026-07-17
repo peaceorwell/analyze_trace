@@ -72,7 +72,7 @@ def test_csv_filter_defaults_to_text_for_the_implicit_contains_operator():
 def test_performance_overview_explains_compute_time_scope():
     assert "设备计算耗时" in APP_JS
     assert "A 计算耗时" in APP_JS
-    assert "计算 Delta" in APP_JS
+    assert "整体结论" in APP_JS
     assert "不等同于模型端到端耗时" in APP_JS
     assert "avg_count 合计" not in APP_JS
     assert "chart_metric: metricDef.key" in APP_JS
@@ -88,7 +88,12 @@ def test_performance_overview_explains_compute_time_scope():
     assert 'type: "scatter"' in APP_JS
     assert 'type: "logarithmic"' in APP_JS
     assert "buildCallTimeScatterRows" in APP_JS
-    assert 'chart_metric: "avg_dur_ms"' in APP_JS
+    assert "buildCompareScatterRows" in APP_JS
+    assert 'chartScatterMode.value === "compare" ? "delta_dur_ms" : "avg_dur_ms"' in APP_JS
+    assert 'makeCard("整体结论"' in APP_JS
+    assert 'makeCard("回退 / 改善项"' in APP_JS
+    assert "回退贡献 Top" in APP_JS
+    assert "累计 {{ fmtChartPercent(row.cumulativePct) }}" in APP_JS
 
 
 def test_header_task_center_tracks_active_and_failed_jobs_globally():

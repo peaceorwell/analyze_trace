@@ -72,7 +72,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.5.16",
+        "version": "0.5.17",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -4178,6 +4178,15 @@ def test_chart_summary_aggregates_complete_csv_and_returns_global_top(client):
     assert compare_payload["rows"][0]["kernel_name"] == "speedup"
     assert compare_payload["highlights"]["slowdown"]["kernel_name"] == "slowdown"
     assert compare_payload["highlights"]["speedup"]["kernel_name"] == "speedup"
+    assert compare_payload["direction_stats"] == {
+        "slowdown_count": 1,
+        "speedup_count": 1,
+        "unchanged_count": 0,
+        "slowdown_total": 4,
+        "speedup_total": 9,
+    }
+    assert compare_payload["direction_rows"]["slowdowns"][0]["kernel_name"] == "slowdown"
+    assert compare_payload["direction_rows"]["speedups"][0]["kernel_name"] == "speedup"
 
 
 def test_done_job_without_perfetto_context_still_loads(client, sample_trace_file):

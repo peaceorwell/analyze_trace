@@ -4497,10 +4497,16 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
 }
 .chart-delta-title { font-size: 11px; font-weight: 800; margin-bottom: 5px; }
 .chart-delta-row {
+  position: relative; overflow: hidden;
   width: 100%; border: 0; background: transparent;
-  display: flex; align-items: center; justify-content: space-between;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center;
   gap: 8px; min-height: 24px; padding: 3px 4px; border-radius: 5px;
   color: var(--text2); cursor: pointer; text-align: left;
+}
+.chart-delta-row > * { position: relative; z-index: 1; }
+.chart-delta-row.contribution-row::before {
+  content: ""; position: absolute; inset: 0 auto 0 0; width: var(--contribution);
+  background: rgba(239,68,68,.08); pointer-events: none;
 }
 .chart-delta-row:hover { background: var(--card2); }
 .chart-delta-name {
@@ -4508,6 +4514,8 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
   font-size: 11px; font-weight: 600;
 }
 .chart-delta-value { flex-shrink: 0; font-size: 11px; font-weight: 800; }
+.chart-delta-metrics { display: flex; align-items: flex-end; flex-direction: column; gap: 1px; }
+.chart-delta-share { color: var(--text3); font-size: 9px; font-weight: 700; white-space: nowrap; }
 .chart-main-grid {
   display: grid; gap: 10px;
   grid-template-columns: minmax(0, 1fr);

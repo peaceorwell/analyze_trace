@@ -60,7 +60,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.5.16"
+APP_VERSION = "0.5.17"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -3889,6 +3889,16 @@ def read_csv_chart_summary(
         slowdown_value = 0.0
         speedup = None
         speedup_value = 0.0
+        slowdown_heap = []
+        speedup_heap = []
+        direction_limit = 20
+        direction_stats = {
+            "slowdown_count": 0,
+            "speedup_count": 0,
+            "unchanged_count": 0,
+            "slowdown_total": 0.0,
+            "speedup_total": 0.0,
+        }
 
         for index, row in enumerate(source_rows):
             scanned_total += 1
@@ -3906,6 +3916,26 @@ def read_csv_chart_summary(
                 slowdown, slowdown_value = row, delta
             if delta < speedup_value:
                 speedup, speedup_value = row, delta
+            if "delta_dur_ms" in fields:
+                if delta > 0:
+                    direction_stats["slowdown_count"] += 1
+                    direction_stats["slowdown_total"] += delta
+                    entry = (delta, index, row)
+                    if len(slowdown_heap) < direction_limit:
+                        heapq.heappush(slowdown_heap, entry)
+                    elif delta > slowdown_heap[0][0]:
+                        heapq.heapreplace(slowdown_heap, entry)
+                elif delta < 0:
+                    improvement = abs(delta)
+                    direction_stats["speedup_count"] += 1
+                    direction_stats["speedup_total"] += improvement
+                    entry = (improvement, index, row)
+                    if len(speedup_heap) < direction_limit:
+                        heapq.heappush(speedup_heap, entry)
+                    elif improvement > speedup_heap[0][0]:
+                        heapq.heapreplace(speedup_heap, entry)
+                else:
+                    direction_stats["unchanged_count"] += 1
 
             raw_metric = _float_or_none(row.get(metric)) or 0.0
             rank_value = abs(raw_metric) if signed else raw_metric
@@ -3919,6 +3949,8 @@ def read_csv_chart_summary(
                 heapq.heapreplace(top_heap, entry)
 
     ranked = [entry[2] for entry in sorted(top_heap, key=lambda entry: entry[0], reverse=True)]
+    slowdown_rows = [entry[2] for entry in sorted(slowdown_heap, key=lambda entry: entry[0], reverse=True)]
+    speedup_rows = [entry[2] for entry in sorted(speedup_heap, key=lambda entry: entry[0], reverse=True)]
 
     return {
         "fields": fields,
@@ -3933,6 +3965,11 @@ def read_csv_chart_summary(
             "hotspot": hotspot,
             "slowdown": slowdown,
             "speedup": speedup,
+        },
+        "direction_stats": direction_stats,
+        "direction_rows": {
+            "slowdowns": slowdown_rows,
+            "speedups": speedup_rows,
         },
         "aggregated": True,
     }

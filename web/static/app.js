@@ -185,7 +185,7 @@ const chartScatterRows  = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.5.16");
+const appVersion = ref("0.5.17");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -714,6 +714,16 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.17",
+    date: "2026-07-17",
+    title: "对比任务展示升级",
+    items: [
+      "对比摘要新增整体变化率、回退/改善结论及全量变化项数量。",
+      "回退排行新增单项贡献和累计贡献，回退与改善分别按完整数据统计。",
+      "新增 A 耗时 × 变化率散点图，通过颜色和点大小突出高影响回退与改善项。",
+    ],
+  },
   {
     version: "0.5.16",
     date: "2026-07-17",
@@ -1621,13 +1631,27 @@ const activeChartSourceConfig = computed(() =>
   chartSourceOptions.value.find(item => item.file === chartSource.value) || chartSourceOptions.value[0] || null
 );
 const activeChartMetricDef = computed(() => chartMetricDefFor(chartMetric.value));
+const chartScatterMode = computed(() => selectedJob.value?.mode === "compare" ? "compare" : "single");
 const chartScatterAvailable = computed(() => {
   const source = activeChartSourceConfig.value;
   const fields = selectedJob.value?.result_files?.[source?.file]?.fields || [];
-  return selectedJob.value?.mode !== "compare"
-    && fields.includes("avg_count")
+  if (chartScatterMode.value === "compare") {
+    return fields.includes("avg_dur_ms_A")
+      && fields.includes("avg_dur_ms_B")
+      && fields.includes("delta_dur_ms");
+  }
+  return fields.includes("avg_count")
     && (fields.includes("avg_us_per_call") || fields.includes("avg_dur_ms"));
 });
+const chartScatterTitle = computed(() => chartScatterMode.value === "compare"
+  ? "A 耗时 × 变化率（点击下钻）"
+  : "调用数 × 单次耗时（点击下钻）");
+const chartScatterNote = computed(() => chartScatterMode.value === "compare"
+  ? "展示全量数据中的 Top 100 绝对变化项；点越大影响越大，红色为回退、绿色为改善。A 耗时为 0 的新增项不绘制。"
+  : "展示全量数据中的 Top 100 耗时热点；横纵轴均为对数坐标。");
+const chartScatterEmptyText = computed(() => chartScatterMode.value === "compare"
+  ? "暂无可绘制的 A 耗时与变化率数据"
+  : "暂无可绘制的调用数与单次耗时数据");
 const activeChartTitle = computed(() => {
   const source = activeChartSourceConfig.value;
   const metric = activeChartMetricDef.value;
@@ -2710,7 +2734,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.5.16";
+  appVersion.value = cfg.version || "0.5.17";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -5871,6 +5895,25 @@ const buildCallTimeScatterRows = rows => (rows || [])
   .sort((a, b) => b.totalMs - a.totalMs)
   .slice(0, CHART_FETCH_TOP_LIMIT);
 
+const buildCompareScatterRows = rows => {
+  const prepared = (rows || [])
+    .map(row => {
+      const baselineMs = parseChartNumber(row.raw?.avg_dur_ms_A);
+      const currentMs = parseChartNumber(row.raw?.avg_dur_ms_B);
+      const delta = parseChartNumber(row.raw?.delta_dur_ms);
+      const changePct = baselineMs > 0 ? delta / baselineMs * 100 : null;
+      return { ...row, baselineMs, currentMs, delta, changePct, absDelta: Math.abs(delta) };
+    })
+    .filter(row => row.baselineMs > 0 && Number.isFinite(row.changePct) && row.absDelta > 0)
+    .sort((a, b) => b.absDelta - a.absDelta)
+    .slice(0, CHART_FETCH_TOP_LIMIT);
+  const maxDelta = Math.max(1, ...prepared.map(row => row.absDelta));
+  return prepared.map(row => ({
+    ...row,
+    radius: 4 + Math.sqrt(row.absDelta / maxDelta) * 8,
+  }));
+};
+
 const chartShareHeader = metricDef => metricDef.signed ? "绝对值占比" : "占比";
 const chartFallbackBarWidth = row => {
   const value = Number(row?.displayValue) || Math.abs(Number(row?.value) || 0);
@@ -5972,12 +6015,23 @@ const buildChartSummary = (rows, table, sourceConfig) => {
     const totalA = parseChartNumber(table?.sums?.avg_dur_ms_A ?? rows.reduce((sum, row) => sum + row.aValue, 0));
     const totalB = parseChartNumber(table?.sums?.avg_dur_ms_B ?? rows.reduce((sum, row) => sum + row.bValue, 0));
     const totalDelta = parseChartNumber(table?.sums?.delta_dur_ms ?? rows.reduce((sum, row) => sum + row.delta, 0));
+    const deltaPct = totalA ? totalDelta / totalA * 100 : null;
+    const conclusion = deltaPct === null
+      ? "暂无基线"
+      : Math.abs(deltaPct) < 1 ? "基本持平" : deltaPct > 0 ? "回退" : "改善";
+    const conclusionTone = deltaPct === null || Math.abs(deltaPct) < 1 ? "" : deltaPct > 0 ? "neg" : "pos";
+    const signedDelta = `${totalDelta > 0 ? "+" : ""}${fmtChartValue(totalDelta, { unit: "ms" })}`;
+    const signedPct = deltaPct === null ? "变化率不可计算" : `${deltaPct > 0 ? "+" : ""}${trimNumber(deltaPct)}%`;
+    const directionStats = table?.direction_stats || {};
+    const slowdownCount = directionStats.slowdown_count ?? rows.filter(row => row.delta > 0).length;
+    const speedupCount = directionStats.speedup_count ?? rows.filter(row => row.delta < 0).length;
     const slowest = highlightRow("slowdown") || rows.filter(row => row.delta > 0).sort((a, b) => b.delta - a.delta)[0] || null;
     const fastest = highlightRow("speedup") || rows.filter(row => row.delta < 0).sort((a, b) => a.delta - b.delta)[0] || null;
     return [
       makeCard("A 计算耗时", fmtChartValue(totalA, { unit: "ms" }), `已排除通信 · ${totalLabel}`),
       makeCard("B 计算耗时", fmtChartValue(totalB, { unit: "ms" }), `已排除通信 · ${sourceConfig.label} · ${totalLabel}`),
-      makeCard("计算 Delta", fmtChartValue(totalDelta, { unit: "ms" }), "B - A", totalDelta > 0 ? "neg" : totalDelta < 0 ? "pos" : ""),
+      makeCard("整体结论", deltaPct === null ? conclusion : `${conclusion} ${signedPct}`, `B - A: ${signedDelta}`, conclusionTone),
+      makeCard("回退 / 改善项", `${slowdownCount} / ${speedupCount}`, `净变化 ${signedDelta}`, conclusionTone),
       makeCard("最大回退", slowest ? fmtChartValue(slowest.delta, { unit: "ms" }) : "0", slowest ? shortChartLabel(slowest.label, 28) : "无", "neg", slowest),
       makeCard("最大改善", fastest ? fmtChartValue(fastest.delta, { unit: "ms" }) : "0", fastest ? shortChartLabel(fastest.label, 28) : "无", "pos", fastest),
     ];
@@ -6000,20 +6054,38 @@ const buildChartSummary = (rows, table, sourceConfig) => {
   ];
 };
 
-const updateDeltaLists = rows => {
+const updateDeltaLists = (rows, table, sourceConfig) => {
   if (selectedJob.value?.mode !== "compare") {
     chartSlowdowns.value = [];
     chartSpeedups.value = [];
     return;
   }
-  chartSlowdowns.value = rows
-    .filter(row => row.delta > 0)
-    .sort((a, b) => b.delta - a.delta)
-    .slice(0, 6);
-  chartSpeedups.value = rows
-    .filter(row => row.delta < 0)
-    .sort((a, b) => a.delta - b.delta)
-    .slice(0, 6);
+  const fields = table?.fields || [];
+  const metricDef = chartMetricDefFor("delta_dur_ms");
+  const normalizeDirectionRows = key => filterChartCommunicationRows(
+    normalizeChartRows(table?.direction_rows?.[key] || [], fields, sourceConfig, metricDef),
+    sourceConfig,
+  );
+  const slowdowns = normalizeDirectionRows("slowdowns");
+  const speedups = normalizeDirectionRows("speedups");
+  const fallbackSlowdowns = rows.filter(row => row.delta > 0).sort((a, b) => b.delta - a.delta);
+  const fallbackSpeedups = rows.filter(row => row.delta < 0).sort((a, b) => a.delta - b.delta);
+  const slowdownRows = slowdowns.length ? slowdowns : fallbackSlowdowns;
+  const speedupRows = speedups.length ? speedups : fallbackSpeedups;
+  const slowdownTotal = parseChartNumber(table?.direction_stats?.slowdown_total)
+    || slowdownRows.reduce((sum, row) => sum + row.delta, 0);
+  const speedupTotal = parseChartNumber(table?.direction_stats?.speedup_total)
+    || speedupRows.reduce((sum, row) => sum + Math.abs(row.delta), 0);
+  let slowdownCumulative = 0;
+  chartSlowdowns.value = slowdownRows.slice(0, 8).map(row => {
+    const contributionPct = slowdownTotal ? row.delta / slowdownTotal * 100 : 0;
+    slowdownCumulative += contributionPct;
+    return { ...row, contributionPct, cumulativePct: slowdownCumulative };
+  });
+  chartSpeedups.value = speedupRows.slice(0, 8).map(row => ({
+    ...row,
+    contributionPct: speedupTotal ? Math.abs(row.delta) / speedupTotal * 100 : 0,
+  }));
 };
 
 const destroyChartInstances = () => {
@@ -6125,10 +6197,11 @@ const buildChart = async () => {
     );
     let scatterTable = null;
     if (chartScatterAvailable.value) {
-      const scatterCacheKey = `${sourceConfig.file}:avg_dur_ms`;
+      const scatterMetric = chartScatterMode.value === "compare" ? "delta_dur_ms" : "avg_dur_ms";
+      const scatterCacheKey = `${sourceConfig.file}:${scatterMetric}`;
       if (!chartTables.value[scatterCacheKey]) {
         const scatterParams = new URLSearchParams({
-          chart_metric: "avg_dur_ms",
+          chart_metric: scatterMetric,
           chart_limit: String(CHART_FETCH_TOP_LIMIT),
           exclude_communication: "true",
         });
@@ -6146,15 +6219,26 @@ const buildChart = async () => {
     destroyChartInstances();
 
     chartSummaryCards.value = buildChartSummary(rows, table, sourceConfig);
-    updateDeltaLists(rows);
+    updateDeltaLists(rows, table, sourceConfig);
     const topN = Math.max(1, Number(chartTopN.value) || 10);
     chartBarRows.value = buildChartBarRows(rows, metricDef, topN, table?.metric_total);
-    chartScatterRows.value = scatterTable
-      ? buildCallTimeScatterRows(filterChartCommunicationRows(
-          normalizeChartRows(scatterTable.rows || [], scatterTable.fields || fields, sourceConfig, chartMetricDefFor("avg_dur_ms")),
+    if (scatterTable) {
+      const scatterMetric = chartScatterMode.value === "compare" ? "delta_dur_ms" : "avg_dur_ms";
+      const scatterSourceRows = filterChartCommunicationRows(
+        normalizeChartRows(
+          scatterTable.rows || [],
+          scatterTable.fields || fields,
           sourceConfig,
-        ))
-      : [];
+          chartMetricDefFor(scatterMetric),
+        ),
+        sourceConfig,
+      );
+      chartScatterRows.value = chartScatterMode.value === "compare"
+        ? buildCompareScatterRows(scatterSourceRows)
+        : buildCallTimeScatterRows(scatterSourceRows);
+    } else {
+      chartScatterRows.value = [];
+    }
 
     if (!chartBarRows.value.length) {
       chartError.value = "当前指标没有可绘制的数据";
@@ -6255,17 +6339,24 @@ const buildChart = async () => {
     chartCanvasReady.value = true;
 
     if (callTimeScatter.value && chartScatterRows.value.length) {
+      const isCompareScatter = chartScatterMode.value === "compare";
       const scatter = new Chart(callTimeScatter.value, {
         type: "scatter",
         data: {
           datasets: [{
             label: "Kernel / Op",
-            data: chartScatterRows.value.map(row => ({ x: row.calls, y: row.usPerCall })),
-            backgroundColor: "rgba(99,102,241,0.68)",
-            borderColor: "rgba(79,70,229,0.92)",
+            data: chartScatterRows.value.map(row => isCompareScatter
+              ? { x: row.baselineMs, y: row.changePct, radius: row.radius }
+              : { x: row.calls, y: row.usPerCall }),
+            backgroundColor: context => isCompareScatter
+              ? (context.raw?.y > 0 ? "rgba(239,68,68,0.68)" : "rgba(34,197,94,0.68)")
+              : "rgba(99,102,241,0.68)",
+            borderColor: context => isCompareScatter
+              ? (context.raw?.y > 0 ? "rgba(220,38,38,0.92)" : "rgba(22,163,74,0.92)")
+              : "rgba(79,70,229,0.92)",
             borderWidth: 1,
-            pointRadius: 4,
-            pointHoverRadius: 7,
+            pointRadius: context => context.raw?.radius || 4,
+            pointHoverRadius: context => (context.raw?.radius || 4) + 3,
           }],
         },
         options: {
@@ -6284,24 +6375,41 @@ const buildChart = async () => {
               title: items => chartScatterRows.value[items[0]?.dataIndex]?.label || "",
               label: ctx => {
                 const row = chartScatterRows.value[ctx.dataIndex];
-                return row ? [
+                if (!row) return "";
+                if (isCompareScatter) {
+                  return [
+                    ` A 耗时: ${trimNumber(row.baselineMs)} ms`,
+                    ` B 耗时: ${trimNumber(row.currentMs)} ms`,
+                    ` 变化: ${row.delta > 0 ? "+" : ""}${trimNumber(row.delta)} ms`,
+                    ` 变化率: ${row.changePct > 0 ? "+" : ""}${trimNumber(row.changePct)}%`,
+                  ];
+                }
+                return [
                   ` 调用数: ${trimNumber(row.calls)}`,
                   ` 单次耗时: ${trimNumber(row.usPerCall)} us`,
                   ` 总耗时: ${trimNumber(row.totalMs)} ms`,
-                ] : "";
+                ];
               },
             }},
           },
           scales: {
             x: {
               type: "logarithmic",
-              title: { display: true, text: "平均调用数（对数）", color: cc.text },
+              title: {
+                display: true,
+                text: isCompareScatter ? "A 平均耗时（ms，对数）" : "平均调用数（对数）",
+                color: cc.text,
+              },
               ticks: { color: cc.text },
               grid: { color: cc.grid },
             },
             y: {
-              type: "logarithmic",
-              title: { display: true, text: "平均单次耗时（μs，对数）", color: cc.text },
+              type: isCompareScatter ? "linear" : "logarithmic",
+              title: {
+                display: true,
+                text: isCompareScatter ? "变化率（%，B-A）" : "平均单次耗时（μs，对数）",
+                color: cc.text,
+              },
               ticks: { color: cc.text },
               grid: { color: cc.grid },
             },
@@ -9232,11 +9340,16 @@ const JobDetail = {
 
           <div v-if="selectedJob.mode==='compare' && (chartSlowdowns.length || chartSpeedups.length)" class="chart-delta-grid">
             <div class="chart-delta-panel">
-              <div class="chart-delta-title tone-neg">Top 回退</div>
+              <div class="chart-delta-title tone-neg">回退贡献 Top</div>
               <button v-for="row in chartSlowdowns" :key="'slow-'+row.source+'-'+row.label"
-                      class="chart-delta-row" @click="drillDownChart(row)">
+                      class="chart-delta-row contribution-row"
+                      :style="{ '--contribution': Math.min(100, row.contributionPct) + '%' }"
+                      @click="drillDownChart(row)">
                 <span class="chart-delta-name">{{ row.label }}</span>
-                <span class="chart-delta-value tone-neg">+{{ fmtDeltaMs(row.delta) }}</span>
+                <span class="chart-delta-metrics">
+                  <span class="chart-delta-value tone-neg">+{{ fmtDeltaMs(row.delta) }}</span>
+                  <span class="chart-delta-share">贡献 {{ fmtChartPercent(row.contributionPct) }} · 累计 {{ fmtChartPercent(row.cumulativePct) }}</span>
+                </span>
               </button>
             </div>
             <div class="chart-delta-panel">
@@ -9244,7 +9357,10 @@ const JobDetail = {
               <button v-for="row in chartSpeedups" :key="'fast-'+row.source+'-'+row.label"
                       class="chart-delta-row" @click="drillDownChart(row)">
                 <span class="chart-delta-name">{{ row.label }}</span>
-                <span class="chart-delta-value tone-pos">{{ fmtDeltaMs(row.delta) }}</span>
+                <span class="chart-delta-metrics">
+                  <span class="chart-delta-value tone-pos">{{ fmtDeltaMs(row.delta) }}</span>
+                  <span class="chart-delta-share">改善贡献 {{ fmtChartPercent(row.contributionPct) }}</span>
+                </span>
               </button>
             </div>
           </div>
@@ -9283,10 +9399,10 @@ const JobDetail = {
               </div>
             </div>
             <div v-if="chartScatterAvailable" class="chart-panel chart-panel-wide">
-              <div class="chart-panel-title">调用数 × 单次耗时（点击下钻）</div>
-              <div class="chart-panel-note">展示全量数据中的 Top 100 耗时热点；横纵轴均为对数坐标。</div>
+              <div class="chart-panel-title">{{ chartScatterTitle }}</div>
+              <div class="chart-panel-note">{{ chartScatterNote }}</div>
               <div class="chart-scatter-area">
-                <div v-if="!chartScatterRows.length" class="chart-scatter-empty">暂无可绘制的调用数与单次耗时数据</div>
+                <div v-if="!chartScatterRows.length" class="chart-scatter-empty">{{ chartScatterEmptyText }}</div>
                 <canvas v-show="chartScatterRows.length" ref="callTimeScatter"></canvas>
               </div>
             </div>
@@ -9693,10 +9809,10 @@ const JobDetail = {
       chartSource, chartMetric, chartTopN, chartTopNOptions, chartSourceOptions,
       chartMetricOptions, chartLoading, chartError, chartSummaryCards,
       chartSlowdowns, chartSpeedups, chartBarRows, chartCanvasReady,
-      chartScatterRows, chartScatterAvailable,
+      chartScatterRows, chartScatterAvailable, chartScatterTitle, chartScatterNote, chartScatterEmptyText,
       activeChartMetricDef, activeChartTitle, chartShareHeader,
       chartFallbackBarWidth, chartFallbackBarTone, chartFallbackValueLabel,
-      buildChart, drillDownChart, fmtDeltaMs,
+      buildChart, drillDownChart, fmtDeltaMs, fmtChartPercent,
       displayedFields, filteredRows, tableSearch, sortCol, sortAsc, colWidths, colFilters,
       colFilterOps, visibleColumns, showColumnMenu, hiddenColumnCount,
       tableLimit, tableOffset, tableTotalRows, tablePageStart, tablePageEnd,
