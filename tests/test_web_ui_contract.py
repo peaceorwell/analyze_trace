@@ -113,6 +113,13 @@ def test_performance_overview_explains_compute_time_scope():
     assert 'class="chart-status-grid"' in APP_JS
     assert "'compare-status-chip'" in APP_JS
     assert "comparisonStatusLabel" in APP_JS
+    assert "chartScatterGuidesPlugin" in APP_JS
+    assert "chartScatterHotspotLabelsPlugin" in APP_JS
+    assert "回退区 · B 更慢" in APP_JS
+    assert "改善区 · B 更快" in APP_JS
+    assert 'class="chart-scatter-legend"' in APP_JS
+    assert "点越大，绝对耗时变化越大" in APP_JS
+    assert "pointHoverBorderWidth: 2.5" in APP_JS
 
 
 def test_header_task_center_tracks_active_and_failed_jobs_globally():

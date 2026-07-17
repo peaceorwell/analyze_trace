@@ -193,7 +193,7 @@ const chartScatterRows  = ref([]);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.5.20");
+const appVersion = ref("0.5.21");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -722,6 +722,16 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.21",
+    date: "2026-07-17",
+    title: "散点图视觉升级",
+    items: [
+      "对比散点图增加回退/改善语义分区、0% 基线和 Top 影响项标签。",
+      "点大小统一表达实际耗时影响，并增加颜色与大小图例。",
+      "优化画布层次、坐标刻度、悬停反馈和 Tooltip 显示效果。",
+    ],
+  },
   {
     version: "0.5.20",
     date: "2026-07-17",
@@ -2829,7 +2839,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.5.20";
+  appVersion.value = cfg.version || "0.5.21";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -6019,17 +6029,23 @@ const buildChartBarRows = (rows, metricDef, topN, fullMetricTotal = null) => {
   });
 };
 
-const buildCallTimeScatterRows = rows => (rows || [])
-  .map(row => {
+const buildCallTimeScatterRows = rows => {
+  const prepared = (rows || []).map(row => {
     const calls = parseChartNumber(row.raw?.avg_count);
     const totalMs = parseChartNumber(row.raw?.avg_dur_ms);
     const rawUsPerCall = parseChartNumber(row.raw?.avg_us_per_call);
     const usPerCall = rawUsPerCall > 0 ? rawUsPerCall : (calls > 0 ? totalMs * 1000 / calls : 0);
     return { ...row, calls, totalMs, usPerCall };
   })
-  .filter(row => row.calls > 0 && row.usPerCall > 0)
-  .sort((a, b) => b.totalMs - a.totalMs)
-  .slice(0, CHART_FETCH_TOP_LIMIT);
+    .filter(row => row.calls > 0 && row.usPerCall > 0)
+    .sort((a, b) => b.totalMs - a.totalMs)
+    .slice(0, CHART_FETCH_TOP_LIMIT);
+  const maxDuration = Math.max(1, ...prepared.map(row => row.totalMs));
+  return prepared.map(row => ({
+    ...row,
+    radius: 4 + Math.sqrt(row.totalMs / maxDuration) * 8,
+  }));
+};
 
 const buildCompareScatterRows = rows => {
   const prepared = (rows || [])
@@ -6130,6 +6146,91 @@ const chartShareLabelsPlugin = {
       const row = rows[index];
       if (row) ctx.fillText(row.shareLabel || fmtChartPercent(row.sharePct), x, element.y);
     });
+    ctx.restore();
+  },
+};
+
+const chartScatterGuidesPlugin = {
+  id: "chartScatterGuides",
+  beforeDatasetsDraw(chart, _args, options = {}) {
+    if (!options.compare || !chart.chartArea || !chart.scales?.y) return;
+    const { ctx, chartArea } = chart;
+    const zeroY = Math.max(chartArea.top, Math.min(chartArea.bottom, chart.scales.y.getPixelForValue(0)));
+    ctx.save();
+    ctx.fillStyle = options.regressionFill || "rgba(239,68,68,.045)";
+    ctx.fillRect(chartArea.left, chartArea.top, chartArea.width, Math.max(0, zeroY - chartArea.top));
+    ctx.fillStyle = options.improvementFill || "rgba(34,197,94,.045)";
+    ctx.fillRect(chartArea.left, zeroY, chartArea.width, Math.max(0, chartArea.bottom - zeroY));
+    ctx.strokeStyle = options.zeroColor || "rgba(100,116,139,.72)";
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([5, 4]);
+    ctx.beginPath();
+    ctx.moveTo(chartArea.left, zeroY);
+    ctx.lineTo(chartArea.right, zeroY);
+    ctx.stroke();
+    ctx.restore();
+  },
+  afterDraw(chart, _args, options = {}) {
+    if (!options.compare || !chart.chartArea) return;
+    const { ctx, chartArea } = chart;
+    ctx.save();
+    ctx.font = "700 10px system-ui, sans-serif";
+    ctx.textAlign = "right";
+    ctx.fillStyle = options.regressionText || "rgba(220,38,38,.78)";
+    ctx.fillText("回退区 · B 更慢", chartArea.right - 8, chartArea.top + 15);
+    ctx.fillStyle = options.improvementText || "rgba(22,163,74,.78)";
+    ctx.fillText("改善区 · B 更快", chartArea.right - 8, chartArea.bottom - 8);
+    ctx.restore();
+  },
+};
+
+const chartScatterHotspotLabelsPlugin = {
+  id: "chartScatterHotspotLabels",
+  afterDatasetsDraw(chart, _args, options = {}) {
+    const rows = options.rows || [];
+    const meta = chart.getDatasetMeta(0);
+    const area = chart.chartArea;
+    if (!rows.length || !meta?.data?.length || !area) return;
+    const ranked = rows
+      .map((row, index) => ({ row, index, impact: row.absDelta ?? row.totalMs ?? 0 }))
+      .sort((a, b) => b.impact - a.impact)
+      .slice(0, options.maxLabels || 5);
+    const boxes = [];
+    const ctx = chart.ctx;
+    ctx.save();
+    ctx.font = "700 10px system-ui, sans-serif";
+    ctx.textBaseline = "middle";
+    for (const item of ranked) {
+      const point = meta.data[item.index];
+      if (!point) continue;
+      const label = shortChartLabel(item.row.label, 22);
+      const width = ctx.measureText(label).width + 10;
+      const height = 18;
+      const candidates = [
+        { x: point.x + 8, y: point.y - height - 5 },
+        { x: point.x - width - 8, y: point.y - height - 5 },
+        { x: point.x + 8, y: point.y + 5 },
+      ];
+      const box = candidates.find(candidate =>
+        candidate.x >= area.left && candidate.x + width <= area.right
+        && candidate.y >= area.top && candidate.y + height <= area.bottom
+        && boxes.every(used => candidate.x + width < used.x || candidate.x > used.x + used.width
+          || candidate.y + height < used.y || candidate.y > used.y + used.height)
+      );
+      if (!box) continue;
+      boxes.push({ ...box, width, height });
+      ctx.fillStyle = options.background || "rgba(255,255,255,.88)";
+      ctx.strokeStyle = options.border || "rgba(148,163,184,.42)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      if (typeof ctx.roundRect === "function") ctx.roundRect(box.x, box.y, width, height, 4);
+      else ctx.rect(box.x, box.y, width, height);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = options.color || "#334155";
+      ctx.textAlign = "left";
+      ctx.fillText(label, box.x + 5, box.y + height / 2);
+    }
     ctx.restore();
   },
 };
@@ -6514,26 +6615,31 @@ const buildChart = async () => {
       const isCompareScatter = chartScatterMode.value === "compare";
       const scatter = new Chart(callTimeScatter.value, {
         type: "scatter",
+        plugins: [chartScatterGuidesPlugin, chartScatterHotspotLabelsPlugin],
         data: {
           datasets: [{
             label: "Kernel / Op",
             data: chartScatterRows.value.map(row => isCompareScatter
               ? { x: row.baselineMs, y: row.changePct, radius: row.radius }
-              : { x: row.calls, y: row.usPerCall }),
+              : { x: row.calls, y: row.usPerCall, radius: row.radius }),
             backgroundColor: context => isCompareScatter
               ? (context.raw?.y > 0 ? "rgba(239,68,68,0.68)" : "rgba(34,197,94,0.68)")
-              : "rgba(99,102,241,0.68)",
+              : `rgba(99,102,241,${Math.min(.82, .42 + (context.raw?.radius || 4) / 30)})`,
             borderColor: context => isCompareScatter
               ? (context.raw?.y > 0 ? "rgba(220,38,38,0.92)" : "rgba(22,163,74,0.92)")
               : "rgba(79,70,229,0.92)",
-            borderWidth: 1,
+            borderWidth: 1.5,
             pointRadius: context => context.raw?.radius || 4,
             pointHoverRadius: context => (context.raw?.radius || 4) + 3,
+            pointHoverBorderWidth: 2.5,
           }],
         },
         options: {
           responsive: true,
           maintainAspectRatio: false,
+          animation: { duration: 280 },
+          layout: { padding: { top: 8, right: 8, bottom: 2, left: 4 } },
+          interaction: { mode: "nearest", intersect: true },
           onClick: (_, elements) => {
             const row = chartScatterRows.value[elements?.[0]?.index];
             if (row) drillDownChart(row);
@@ -6543,7 +6649,26 @@ const buildChart = async () => {
           },
           plugins: {
             legend: { display: false },
-            tooltip: { callbacks: {
+            chartScatterGuides: {
+              compare: isCompareScatter,
+              zeroColor: isDark.value ? "rgba(148,163,184,.68)" : "rgba(100,116,139,.62)",
+            },
+            chartScatterHotspotLabels: {
+              rows: chartScatterRows.value,
+              maxLabels: 5,
+              color: cc.title,
+              background: isDark.value ? "rgba(15,23,42,.9)" : "rgba(255,255,255,.9)",
+              border: isDark.value ? "rgba(148,163,184,.34)" : "rgba(100,116,139,.26)",
+            },
+            tooltip: {
+              backgroundColor: isDark.value ? "rgba(15,23,42,.96)" : "rgba(255,255,255,.98)",
+              titleColor: cc.title,
+              bodyColor: cc.text,
+              borderColor: isDark.value ? "rgba(148,163,184,.35)" : "rgba(100,116,139,.24)",
+              borderWidth: 1,
+              padding: 10,
+              displayColors: false,
+              callbacks: {
               title: items => chartScatterRows.value[items[0]?.dataIndex]?.label || "",
               label: ctx => {
                 const row = chartScatterRows.value[ctx.dataIndex];
@@ -6562,7 +6687,8 @@ const buildChart = async () => {
                   ` 总耗时: ${trimNumber(row.totalMs)} ms`,
                 ];
               },
-            }},
+              },
+            },
           },
           scales: {
             x: {
@@ -6574,16 +6700,26 @@ const buildChart = async () => {
               },
               ticks: { color: cc.text },
               grid: { color: cc.grid },
+              border: { color: cc.grid },
             },
             y: {
               type: isCompareScatter ? "linear" : "logarithmic",
+              beginAtZero: isCompareScatter,
+              grace: isCompareScatter ? "8%" : 0,
               title: {
                 display: true,
                 text: isCompareScatter ? "变化率（%，B-A）" : "平均单次耗时（μs，对数）",
                 color: cc.text,
               },
-              ticks: { color: cc.text },
-              grid: { color: cc.grid },
+              ticks: isCompareScatter
+                ? { color: cc.text, callback: value => `${trimNumber(Number(value))}%` }
+                : { color: cc.text },
+              grid: {
+                color: context => isCompareScatter && Number(context.tick?.value) === 0
+                  ? (isDark.value ? "rgba(148,163,184,.42)" : "rgba(100,116,139,.34)")
+                  : cc.grid,
+              },
+              border: { color: cc.grid },
             },
           },
         },
@@ -9606,9 +9742,20 @@ const JobDetail = {
                 ></canvas>
               </div>
             </div>
-            <div v-if="chartScatterAvailable" class="chart-panel chart-panel-wide">
+            <div v-if="chartScatterAvailable" class="chart-panel chart-panel-wide chart-scatter-panel">
               <div class="chart-panel-title">{{ chartScatterTitle }}</div>
               <div class="chart-panel-note">{{ chartScatterNote }}</div>
+              <div class="chart-scatter-legend">
+                <template v-if="selectedJob.mode==='compare'">
+                  <span><i class="scatter-legend-dot regression"></i>回退</span>
+                  <span><i class="scatter-legend-dot improvement"></i>改善</span>
+                  <span><i class="scatter-legend-size small"></i><i class="scatter-legend-size large"></i>点越大，绝对耗时变化越大</span>
+                </template>
+                <template v-else>
+                  <span><i class="scatter-legend-dot hotspot"></i>Kernel / Op</span>
+                  <span><i class="scatter-legend-size small"></i><i class="scatter-legend-size large"></i>点越大，总耗时越高</span>
+                </template>
+              </div>
               <div class="chart-scatter-area">
                 <div v-if="!chartScatterRows.length" class="chart-scatter-empty">{{ chartScatterEmptyText }}</div>
                 <canvas v-show="chartScatterRows.length" ref="callTimeScatter"></canvas>
