@@ -1,4 +1,4 @@
-const { createApp, ref, reactive, computed, watch, nextTick, onBeforeUnmount } = Vue;
+const { createApp, ref, shallowRef, reactive, computed, watch, nextTick, onBeforeUnmount } = Vue;
 const { createRouter, createWebHashHistory } = VueRouter;
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -166,9 +166,9 @@ const colFilterOps  = ref({});
 const visibleColumns = ref([]);
 const showColumnMenu = ref(false);
 const openActionMenu = ref("");
-const ktChartInst     = ref(null);
+const ktChartInst     = shallowRef(null);
 const ktChart         = ref(null);
-const callTimeScatterInst = ref(null);
+const callTimeScatterInst = shallowRef(null);
 const callTimeScatter = ref(null);
 const chartSource     = ref("");
 const chartMetric     = ref("");
@@ -194,7 +194,7 @@ const chartDumbbellActive = ref(false);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.5.27");
+const appVersion = ref("0.5.28");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -724,13 +724,13 @@ const profileForm = reactive({
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
   {
-    version: "0.5.27",
+    version: "0.5.28",
     date: "2026-07-19",
-    title: "性能总览对比图联动优化",
+    title: "Kernel 与 Host Op 关联",
     items: [
-      "对比散点图增加 ±20% 变化率参考线，并以不同形状同时表达回退和改善。",
-      "推断或低可信度匹配使用空心点显示，Tooltip 同步说明匹配质量。",
-      "默认耗时 Delta 排行升级为 A/B 哑铃图，并与散点图双向悬停联动。",
+      "Kernel 汇总和对比结果新增主要 Host Op、主要 Aten Op 与映射覆盖率。",
+      "新增 Kernel ↔ Host Op 关系表，支持查看多对多关联、耗时占比和匹配方式。",
+      "修复百分比字段合计和性能总览图表悬停联动异常。",
     ],
   },
   {
@@ -1630,6 +1630,7 @@ const availableTabs = computed(() => {
   const csvMap = {
     "all_kernels_avg.csv":      "所有 Kernel",
     "all_kernels_cmp.csv":      "Kernel 对比",
+    "kernel_host_ops.csv":      "Kernel ↔ Host Op",
     "triton_kernels_avg.csv":   "Triton",
     "triton_kernels_cmp.csv":   "Triton 对比",
     "non_triton_kernel_efficiency_avg.csv": "非 Triton 效率",
@@ -1793,9 +1794,10 @@ const NUMERIC_TABLE_FIELD_RE = /(^|_)(count|dur|duration|time|us|ms|gb|efficienc
 const NUMERIC_TABLE_VALUE_RE = /^[+-]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:e[+-]?\d+)?%?$/i;
 const EFFICIENCY_FIELD_RE = /(^|_)efficiency(_|$)/i;
 const DURATION_SHARE_FIELDS = new Set(["duration_pct", "cumulative_pct"]);
+const SOURCE_PERCENT_FIELD_RE = /^(host_op_coverage_pct(?:_[ab])?|share_pct)$/i;
 const LEGACY_COMPARISON_TABLE_FIELDS = new Set(["delta_pct", "delta_abs_ms", "regression_contribution"]);
 const KERNEL_NAME_FIELD_RE = /^kernel_name(?:_[ab])?$/i;
-const TEXT_NAME_FIELD_RE = /(^|_)(name|operator|op_name)(_|$)/i;
+const TEXT_NAME_FIELD_RE = /(^|_)(name|operator|op_name|host_op|aten_op)(_|$)/i;
 const SHORT_TEXT_FIELD_RE = /^(type|family|match_method)$/i;
 const COMPACT_NUMERIC_COLUMN_MAX = {
   avg_count: 104,
@@ -1807,6 +1809,9 @@ const COMPACT_NUMERIC_COLUMN_MAX = {
   avg_dur_ms_b: 126,
   delta_dur_ms: 126,
   avg_us_per_call: 126,
+  host_op_count: 112,
+  host_op_coverage_pct: 132,
+  share_pct: 112,
   avg_io_gb: 112,
   avg_io_gb_a: 118,
   avg_io_gb_b: 118,
@@ -1833,14 +1838,21 @@ const TABLE_FIELD_META = Object.freeze({
   kernel_name: { label: "Kernel 名称", hint: "设备 Kernel 的完整名称" },
   op_name: { label: "算子名称", hint: "框架算子名称" },
   operator: { label: "算子 / 实现", hint: "识别到的算子或实现类型" },
+  host_op: { label: "Host Op", hint: "通过关联标识精确匹配到的 Host 侧算子" },
+  aten_op: { label: "Aten Op", hint: "同一关联标识下识别到的 Aten 算子" },
+  primary_host_op: { label: "主要 Host Op", hint: "关联 Kernel 耗时占比最高的 Host 侧算子" },
+  primary_aten_op: { label: "主要 Aten Op", hint: "关联 Kernel 耗时占比最高的 Aten 算子" },
   type: { label: "Kernel 类型", hint: "按执行特征归类的 Kernel 类型" },
   family: { label: "Kernel 家族", hint: "Kernel 所属计算或通信家族" },
-  match_method: { label: "匹配方式", hint: "对比任务中 A/B 行的匹配依据" },
+  match_method: { label: "匹配方式", hint: "当前行使用的算子关联或对比匹配依据" },
   avg_count: { label: "平均调用数", hint: "所选 step 中的平均调用次数" },
   delta_count: { label: "调用数差值 (B-A)", hint: "B 相对 A 的平均调用次数变化" },
   avg_dur_ms: { label: "平均耗时 (ms)", hint: "所选 step 中累计设备耗时的平均值" },
   delta_dur_ms: { label: "耗时差值 (B-A, ms)", hint: "B 相对 A 的设备耗时变化，正值表示变慢" },
   avg_us_per_call: { label: "平均单次耗时 (μs)", hint: "每次调用的平均设备执行时间" },
+  host_op_count: { label: "Host Op 数量", hint: "该 Kernel 关联到的不同 Host Op 数量" },
+  host_op_coverage_pct: { label: "Host Op 覆盖率 (%)", hint: "成功关联 Host Op 的 Kernel 设备耗时占比" },
+  share_pct: { label: "Kernel 内占比 (%)", hint: "该 Host Op 关系在此 Kernel 设备耗时中的占比" },
   avg_io_gb: { label: "平均 IO 量 (GB)", hint: "估算的平均读写数据量" },
   avg_compute_efficiency: { label: "计算效率 (%)", hint: "相对理论计算峰值的利用率" },
   avg_io_efficiency: { label: "IO 效率", hint: "相对理论 IO 峰值的利用率" },
@@ -2080,6 +2092,7 @@ const colSums = computed(() => {
   const result = {};
   for (const f of fields) {
     if (DURATION_SHARE_FIELDS.has(f)) { result[f] = null; continue; }
+    if (isSourcePercentField(f)) { result[f] = null; continue; }
     if (f.toLowerCase().includes('efficiency')) { result[f] = null; continue; }
     if (rows.some(r => String(r[f] ?? '').trim().endsWith('%'))) {
       result[f] = null; continue;
@@ -2209,6 +2222,7 @@ const isNumericTableColumn = (field, rows = currentTable.value.rows || []) => {
 };
 const isEfficiencyField = field => EFFICIENCY_FIELD_RE.test(normalizedTableField(field));
 const isDurationShareField = field => DURATION_SHARE_FIELDS.has(normalizedTableField(field));
+const isSourcePercentField = field => SOURCE_PERCENT_FIELD_RE.test(normalizedTableField(field));
 const isLongTableField = field => LONG_TABLE_FIELD_RE.test(normalizedTableField(field));
 // Long text columns whose content should truncate rather than dictate width.
 const isWideTextField = field => {
@@ -2865,7 +2879,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.5.27";
+  appVersion.value = cfg.version || "0.5.28";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -6488,12 +6502,19 @@ const destroyChartInstances = () => {
   if (callTimeScatterInst.value) { callTimeScatterInst.value.destroy(); callTimeScatterInst.value = null; }
 };
 
+let chartHighlightSyncing = false;
 const syncChartLinkedHighlight = label => {
+  if (chartHighlightSyncing) return;
   const nextLabel = label || "";
-  for (const chart of [ktChartInst.value, callTimeScatterInst.value]) {
-    if (!chart || chart.$linkedLabel === nextLabel) continue;
-    chart.$linkedLabel = nextLabel;
-    chart.update("none");
+  chartHighlightSyncing = true;
+  try {
+    for (const chart of [ktChartInst.value, callTimeScatterInst.value]) {
+      if (!chart || chart.$linkedLabel === nextLabel) continue;
+      chart.$linkedLabel = nextLabel;
+      chart.update("none");
+    }
+  } finally {
+    chartHighlightSyncing = false;
   }
 };
 
@@ -10381,6 +10402,9 @@ const JobDetail = {
                         <span>{{ formatDurationShare(row[f]) }}</span>
                       </span>
                     </template>
+                    <template v-else-if="isSourcePercentField(f)">
+                      <span>{{ formatDurationShare(row[f]) }}</span>
+                    </template>
                     <template v-else-if="f === 'compare_status'">
                       <span :class="['compare-status-chip', comparisonStatusClass(row[f])]">{{ comparisonStatusLabel(row[f]) }}</span>
                     </template>
@@ -10492,7 +10516,8 @@ const JobDetail = {
       isKernelTypeDrillCell, drillDownKernelType,
       isEfficiencyTable, isEfficiencyField, applyEfficiencyColumnPreset,
       tableStyle, tableColumnStyle, tableHeaderClass, tableCellClass, tableRowClass, familyChipClass, efficiencyTone,
-      tableFieldLabel, tableFieldTitle, isDurationShareField, durationShareStyle, formatDurationShare,
+      tableFieldLabel, tableFieldTitle, isDurationShareField, isSourcePercentField,
+      durationShareStyle, formatDurationShare,
       isTritonStepTab, tritonStatus, allowFileDownload, allowCodeExecution,
       claudeAnalysisEnabled, aiAnalysisMeta, aiAnalysisLoading, aiAnalysisStarting,
       aiAnalysisError, aiAnalysisContent, aiAnalysisArtifacts, aiAnalysisVisibleArtifacts,

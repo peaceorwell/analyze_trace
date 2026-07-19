@@ -69,6 +69,16 @@ def test_csv_filter_defaults_to_text_for_the_implicit_contains_operator():
     assert ":type=\"(!colFilterOps[f] || ['~', '!~', '=='].includes(colFilterOps[f])) ? 'text' : 'number'\"" in APP_JS
 
 
+def test_kernel_host_op_tables_have_clear_percent_display_contracts():
+    assert '"kernel_host_ops.csv":      "Kernel ↔ Host Op"' in APP_JS
+    assert 'primary_host_op: { label: "主要 Host Op"' in APP_JS
+    assert 'primary_aten_op: { label: "主要 Aten Op"' in APP_JS
+    assert 'host_op_coverage_pct: { label: "Host Op 覆盖率 (%)"' in APP_JS
+    assert 'share_pct: { label: "Kernel 内占比 (%)"' in APP_JS
+    assert "if (isSourcePercentField(f)) { result[f] = null; continue; }" in APP_JS
+    assert '<template v-else-if="isSourcePercentField(f)">' in APP_JS
+
+
 def test_performance_overview_explains_compute_time_scope():
     assert "设备计算耗时" in APP_JS
     assert "A 计算耗时" in APP_JS
@@ -101,6 +111,10 @@ def test_performance_overview_explains_compute_time_scope():
     assert "回退贡献 Top" in APP_JS
     assert "累计 {{ fmtChartPercent(row.cumulativePct) }}" in APP_JS
     assert 'class="chart-compare-filters"' in APP_JS
+    assert "let chartHighlightSyncing = false;" in APP_JS
+    assert "if (chartHighlightSyncing) return;" in APP_JS
+    assert "chartHighlightSyncing = true;" in APP_JS
+    assert "chartHighlightSyncing = false;" in APP_JS
     assert "chartCompareDirection" in APP_JS
     assert "chartMinAbsDelta" in APP_JS
     assert "chartMinDeltaPct" in APP_JS

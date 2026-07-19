@@ -2,6 +2,13 @@
 
 本文件记录 Torch Profiler Analyzer 的主要版本更新。
 
+## [0.5.28] - 2026-07-19
+
+- Kernel 汇总与对比 CSV 新增主要 Host Op、主要 Aten Op、关联数量和映射覆盖率。
+- 新增 `kernel_host_ops.csv`，按耗时拆分 Kernel 与 Host Op 的多对多关系，并在 Web 结果页提供独立视图。
+- PyTorch 通过 External id 关联 CPU Op，TensorFlow 通过 `tf_op` 关联；未匹配耗时保留并计入覆盖率。
+- 修复百分比字段合计和图表悬停联动递归问题，补充真实 Trace 页面与边界场景验证。
+
 ## [0.5.27] - 2026-07-19
 
 - 对比散点图增加 ±20% 变化率参考线，并用圆形、菱形与空心样式同时表达方向和匹配可信度。

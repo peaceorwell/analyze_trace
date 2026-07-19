@@ -2,7 +2,7 @@
 
 Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/内网性能分析工具，并兼容 TensorFlow Chrome Trace。它可以解析 `.json`、`.json.gz`、`.gz`、`.json.zip`、`.zip`、`.tar.gz` 和 `.tgz` trace 文件，统计 GPU kernel、Triton kernel、ATen Ops、TensorFlow Ops，并提供单 trace 分析、双 trace 对比、历史管理、AI 分析和 Web 可视化界面。
 
-当前版本：`0.5.27`
+当前版本：`0.5.28`
 
 ## 主要功能
 
@@ -116,7 +116,7 @@ Web 首页有三种上传模式：
 - `性能总览`：摘要卡片、TopN 柱状图、占比图、对比回退/优化列表，默认排除通信类 kernel/op，支持点击下钻到相关表格。
 - `控制台`：展示分析脚本输出，支持搜索、section 跳转、折叠生成文件日志和 Delta 着色。
 - `Kernel 类型` / `类型对比`：按 family 聚合，未知 Triton 兜底显示为 `triton_other`；对比表会同时展示耗时和调用数 delta，点击类型行可跳到相关 Kernel 表格。
-- `所有 Kernel`、`Triton`、`ATen Ops`：表格化查看明细；`Triton 对比` 会优先用 Triton code 指纹、code signature、多 step 指纹交集和规整化名称匹配 A/B kernel，减少末尾数字后缀不同导致的错位。
+- `所有 Kernel`、`Kernel ↔ Host Op`、`Triton`、`ATen Ops`：表格化查看明细；Kernel 通过 `External id`（TensorFlow 使用 `tf_op`）关联 Host/Aten Op；`Triton 对比` 会优先用 Triton code 指纹、code signature、多 step 指纹交集和规整化名称匹配 A/B kernel，减少末尾数字后缀不同导致的错位。
 - `Triton Step N`：当保存了 per-step Triton CSV 时显示。
 - `AI 分析`：服务端启用 Claude Code 后显示。
 
@@ -490,7 +490,8 @@ analyze-trace baseline.json.gz optimized.json.gz -o ./output
 
 | 文件 | 内容 |
 | --- | --- |
-| `all_kernels_avg.csv` | 所有 GPU kernel 按名称聚合的平均耗时和调用次数 |
+| `all_kernels_avg.csv` | 所有 GPU kernel 按名称聚合的平均耗时、调用次数、主要 Host/Aten Op 和关联覆盖率 |
+| `kernel_host_ops.csv` | Kernel 与 Host/Aten Op 的多对多关系、平均耗时、Kernel 内占比和匹配方式 |
 | `triton_kernels_avg.csv` | Triton kernel 的平均耗时、IO 量和平均 IO 效率 |
 | `non_triton_kernel_efficiency_avg.csv` | 非 Triton kernel 的 Compute/IO/OP efficiency 汇总，如 CNNL、GEMM、matmul 等；同名 kernel 会按 operator shape 拆分 |
 | `aten_ops_avg.csv` | ATen Ops 的平均耗时和调用次数 |

@@ -60,7 +60,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.5.27"
+APP_VERSION = "0.5.28"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -1605,6 +1605,7 @@ def _report_csv_sections(jid: str, mode: str) -> list[str]:
         "kernel_types_cmp.csv": "Kernel 类型对比",
         "all_kernels_avg.csv": "热点 Kernel",
         "all_kernels_cmp.csv": "Kernel 对比",
+        "kernel_host_ops.csv": "Kernel 与 Host Op 关联",
         "triton_kernels_avg.csv": "Triton Kernel",
         "triton_kernels_cmp.csv": "Triton Kernel 对比",
         "non_triton_kernel_efficiency_avg.csv": "非 Triton Kernel 效率",
@@ -1625,6 +1626,7 @@ def _report_csv_sections(jid: str, mode: str) -> list[str]:
         else [
             "kernel_types_avg.csv",
             "all_kernels_avg.csv",
+            "kernel_host_ops.csv",
             "triton_kernels_avg.csv",
             "non_triton_kernel_efficiency_avg.csv",
             "aten_ops_avg.csv",
@@ -1698,12 +1700,26 @@ def _is_percent_csv_field(field: str) -> bool:
     )
 
 
+_VISIBLE_SOURCE_PERCENT_FIELDS = {
+    "host_op_coverage_pct",
+    "host_op_coverage_pct_A",
+    "host_op_coverage_pct_B",
+    "share_pct",
+}
+
+
 def _filter_result_csv_fields(fields: list[str]) -> list[str]:
-    return [field for field in fields if not _is_percent_csv_field(field)]
+    return [
+        field for field in fields
+        if field in _VISIBLE_SOURCE_PERCENT_FIELDS or not _is_percent_csv_field(field)
+    ]
 
 
 def _filter_result_csv_row(row: dict) -> dict:
-    return {field: value for field, value in row.items() if not _is_percent_csv_field(field)}
+    return {
+        field: value for field, value in row.items()
+        if field in _VISIBLE_SOURCE_PERCENT_FIELDS or not _is_percent_csv_field(field)
+    }
 
 
 def _augment_result_csv_fields(filename: str, fields: list[str]) -> list[str]:
@@ -1881,7 +1897,7 @@ def _comparison_row_status(row: dict) -> str:
 
 def _ordered_result_csv_names(rdir: str) -> list[str]:
     names = []
-    for name in ["all_kernels_avg.csv", "all_kernels_cmp.csv",
+    for name in ["all_kernels_avg.csv", "all_kernels_cmp.csv", "kernel_host_ops.csv",
                  "triton_kernels_avg.csv", "triton_kernels_cmp.csv",
                  "non_triton_kernel_efficiency_avg.csv",
                  "aten_ops_avg.csv", "aten_ops_cmp.csv",
@@ -4145,7 +4161,7 @@ def stream_filtered_csv(
 def collect_results(jid: str) -> dict:
     rdir = result_dir(jid)
     files = {}
-    for name in ["all_kernels_avg.csv", "all_kernels_cmp.csv",
+    for name in ["all_kernels_avg.csv", "all_kernels_cmp.csv", "kernel_host_ops.csv",
                  "triton_kernels_avg.csv", "triton_kernels_cmp.csv",
                  "non_triton_kernel_efficiency_avg.csv",
                  "aten_ops_avg.csv", "aten_ops_cmp.csv",

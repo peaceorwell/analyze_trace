@@ -72,7 +72,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.5.27",
+        "version": "0.5.28",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -182,6 +182,10 @@ def test_collect_results_hides_empty_pytorch_csvs_for_tensorflow_trace(isolated_
         "void MLUMatMulGemm,gemm,1,0.2,200\n"
     )
     (rdir / "kernel_types_avg.csv").write_text("type,avg_count,avg_dur_ms\ngemm,1,0.2\n")
+    (rdir / "kernel_host_ops.csv").write_text(
+        "kernel_name,family,host_op,aten_op,avg_count,avg_dur_ms,share_pct,match_method\n"
+        "void MLUMatMulGemm,gemm,dense/MatMul:MatMul,,1,0.2,100,tf_op\n"
+    )
     (rdir / "tf_ops_avg.csv").write_text("op_name,avg_count,avg_dur_ms\ndense/MatMul:MatMul,1,0.1\n")
     (rdir / "triton_kernels_avg.csv").write_text(
         "kernel_name,avg_count,avg_dur_ms,avg_io_gb,avg_io_efficiency_gbps\n"
@@ -197,6 +201,8 @@ def test_collect_results_hides_empty_pytorch_csvs_for_tensorflow_trace(isolated_
 
     assert "all_kernels_avg.csv" in results
     assert "kernel_types_avg.csv" in results
+    assert "kernel_host_ops.csv" in results
+    assert results["kernel_host_ops.csv"]["rows"][0]["share_pct"] == "100"
     assert "tf_ops_avg.csv" in results
     assert "triton_kernels_avg.csv" not in results
     assert "aten_ops_avg.csv" not in results
@@ -3853,10 +3859,10 @@ def test_done_job_lists_result_files_and_paginates_tables(client):
     result_dir = Path(web_server.result_dir("table-job"))
     result_dir.mkdir(parents=True)
     (result_dir / "all_kernels_avg.csv").write_text(
-        "kernel_name,count_pct,avg_dur_ms,dur_pct,family\n"
-        "slow_kernel,50.0%,30,60.0%,gemm\n"
-        "medium_kernel,30.0%,20,30.0%,gemm\n"
-        "fast_kernel,20.0%,10,10.0%,other\n"
+        "kernel_name,count_pct,avg_dur_ms,dur_pct,family,primary_host_op,host_op_coverage_pct\n"
+        "slow_kernel,50.0%,30,60.0%,gemm,aten::mm,100\n"
+        "medium_kernel,30.0%,20,30.0%,gemm,aten::addmm,80\n"
+        "fast_kernel,20.0%,10,10.0%,other,,0\n"
     )
 
     async def insert_job():
@@ -3876,7 +3882,8 @@ def test_done_job_lists_result_files_and_paginates_tables(client):
     assert detail.status_code == 200
     assert "results" not in detail.json()
     assert detail.json()["result_files"]["all_kernels_avg.csv"]["fields"] == [
-        "kernel_name", "avg_dur_ms", "family", "duration_pct", "cumulative_pct",
+        "kernel_name", "avg_dur_ms", "family", "primary_host_op", "host_op_coverage_pct",
+        "duration_pct", "cumulative_pct",
     ]
 
     page = client.get(
@@ -3891,6 +3898,8 @@ def test_done_job_lists_result_files_and_paginates_tables(client):
     assert payload["fields"][-2:] == ["duration_pct", "cumulative_pct"]
     assert "dur_pct" not in payload["fields"]
     assert "count_pct" not in payload["rows"][0]
+    assert payload["rows"][0]["primary_host_op"] == "aten::mm"
+    assert payload["rows"][0]["host_op_coverage_pct"] == "100"
     assert payload["rows"][0]["duration_pct"] == "50"
     assert payload["rows"][0]["cumulative_pct"] == "50"
     assert payload["rows"][1]["duration_pct"] == "33.333"
@@ -4951,6 +4960,7 @@ def test_step_reanalysis_keeps_efficiency_csvs_when_source_disabled_triton_csv(
     assert "step_0_triton_kernels.csv" in result_files
     assert "triton_kernels_avg.csv" in result_files
     assert "non_triton_kernel_efficiency_avg.csv" in result_files
+    assert "kernel_host_ops.csv" in result_files
 
 
 def test_compare_trace_slot_analysis_creates_single_job(

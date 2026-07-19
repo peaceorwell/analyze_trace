@@ -349,8 +349,6 @@ def _operator_detail_from_event(name, cat, args):
     input_strides = _compact_detail_value(_first_arg_value(args, "Input Strides", "input_strides"))
     concrete_inputs = _compact_detail_value(_first_arg_value(args, "Concrete Inputs", "concrete_inputs"))
     operator_details = _compact_detail_value(_first_arg_value(args, "Operator Details", "operator_details"))
-    if not any((input_dims, input_types, input_strides, concrete_inputs, operator_details)):
-        return None
     signature = "|".join((name, input_dims, input_types, concrete_inputs, operator_details))
     return {
         "operator": name,
@@ -570,13 +568,15 @@ def write_avg_csv(path, data, name_field):
 
 
 def _write_kernels_avg_csv(path, avg_kernels, kernel_families=None):
-    """Write all_kernels_avg.csv with family and avg_us_per_call."""
+    """Write all_kernels_avg.csv with family, host-op mapping, and call cost."""
     # Pre-compute family for each kernel (avoid calling extract_kernel_family twice)
     kernel_families = kernel_families or {}
     families = {name: kernel_families.get(name) or extract_kernel_family(name) for name in avg_kernels}
     with open(path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=[
-            "kernel_name", "family", "avg_count", "avg_dur_ms", "avg_us_per_call",
+            "kernel_name", "family", "primary_host_op", "primary_aten_op",
+            "host_op_count", "host_op_coverage_pct",
+            "avg_count", "avg_dur_ms", "avg_us_per_call",
         ])
         writer.writeheader()
         for name, s in avg_kernels.items():
@@ -586,11 +586,38 @@ def _write_kernels_avg_csv(path, avg_kernels, kernel_families=None):
             writer.writerow({
                 "kernel_name":     name,
                 "family":          fam,
+                "primary_host_op": s.get("primary_host_op", ""),
+                "primary_aten_op": s.get("primary_aten_op", ""),
+                "host_op_count":   s.get("host_op_count", ""),
+                "host_op_coverage_pct": fmt3(s.get("host_op_coverage_pct")),
                 "avg_count":       fmt3(cnt),
                 "avg_dur_ms":      fmt3(dur),
                 "avg_us_per_call": fmt3(dur / cnt * 1000) if cnt > 0 else "",
             })
     print(f"Wrote {path} ({len(avg_kernels)} rows)")
+
+
+def _write_kernel_host_ops_csv(path, avg_kernel_host_ops):
+    """Write the many-to-many relationship between kernels and host operators."""
+    fields = [
+        "kernel_name", "family", "host_op", "aten_op", "avg_count",
+        "avg_dur_ms", "share_pct", "match_method",
+    ]
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        for row in avg_kernel_host_ops:
+            writer.writerow({
+                "kernel_name": row["kernel_name"],
+                "family": row.get("family", ""),
+                "host_op": row.get("host_op", ""),
+                "aten_op": row.get("aten_op", ""),
+                "avg_count": fmt3(row.get("avg_count")),
+                "avg_dur_ms": fmt3(row.get("avg_dur_ms")),
+                "share_pct": fmt3(row.get("share_pct")),
+                "match_method": row.get("match_method", ""),
+            })
+    print(f"Wrote {path} ({len(avg_kernel_host_ops)} rows)")
 
 
 def _fast_trace_json_limit():
@@ -974,6 +1001,7 @@ def _parse_tensorflow_trace(trace_file, *, keep_triton_code=False, progress_call
                     "triton_code_hash": triton_code_hash,
                     "triton_code_signature_hash": triton_code_signature_hash,
                     "triton_output_code": triton_output_code,
+                    "operator": operator,
                 })
             else:
                 step_to_non_triton_kernel_events[step].append({
@@ -1153,12 +1181,35 @@ def _parse_tensorflow_trace(trace_file, *, keep_triton_code=False, progress_call
                     })
             return result
 
+        def build_kernel_host_ops():
+            result = defaultdict(list)
+            for step in set(step_to_triton) | set(step_to_non_triton_kernel_events):
+                aggregated = defaultdict(lambda: {"count": 0, "dur_ms": 0.0})
+                kernel_groups = (step_to_triton.get(step, []), step_to_non_triton_kernel_events.get(step, []))
+                for kernels in kernel_groups:
+                    for kernel in kernels:
+                        host_op = kernel.get("operator", "") or ""
+                        match_method = "tf_op" if host_op else "unmatched"
+                        key = (kernel["kernel_name"], host_op, "", match_method)
+                        aggregated[key]["count"] += 1
+                        aggregated[key]["dur_ms"] += kernel.get("dur(ms)") or 0.0
+                for (kernel_name, host_op, aten_op, match_method), stats in aggregated.items():
+                    result[step].append({
+                        "kernel_name": kernel_name,
+                        "host_op": host_op,
+                        "aten_op": aten_op,
+                        "match_method": match_method,
+                        **stats,
+                    })
+            return result
+
         return {
             "framework": "tensorflow",
             "step_to_triton": step_to_triton,
             "step_to_kernels": step_to_kernels,
             "step_to_aten": step_to_aten,
             "step_to_tf_ops": step_to_tf_ops,
+            "step_to_kernel_host_ops": build_kernel_host_ops(),
             "step_to_non_triton_kernel_efficiency": build_non_triton_kernel_efficiency(),
             "step_durations": step_durations,
             "step_ranges": step_ranges,
@@ -1201,7 +1252,9 @@ def _parse_pytorch_trace(trace_file, *, keep_triton_code=False, progress_callbac
     step_to_aten         = defaultdict(lambda: defaultdict(lambda: {"count": 0, "dur_ms": 0.0}))
     step_to_non_triton_kernel_events = defaultdict(list)
     step_to_kernel_efficiency_counters = defaultdict(list)
+    host_operators_by_external_id = {}
     operator_details_by_external_id = {}
+    aten_operators_by_external_id = {}
     family_cache = {}
     parse_events_seen = 0
     parse_records_seen = 0
@@ -1360,6 +1413,7 @@ def _parse_pytorch_trace(trace_file, *, keep_triton_code=False, progress_callbac
                     "triton_code_hash":    triton_code_hash,
                     "triton_code_signature_hash": triton_code_signature_hash,
                     "triton_output_code":  triton_output_code,
+                    "external_id":         external_id,
                 })
             else:
                 step_to_non_triton_kernel_events[step].append({
@@ -1399,7 +1453,14 @@ def _parse_pytorch_trace(trace_file, *, keep_triton_code=False, progress_callbac
             args = {}
         detail = _operator_detail_from_event(name, cat, args)
         if detail:
-            operator_details_by_external_id.setdefault(_external_id_key(args.get("External id")), detail)
+            external_id = _external_id_key(args.get("External id"))
+            host_operators_by_external_id.setdefault(external_id, name)
+            if any(detail.get(key) for key in (
+                "input_dims", "input_types", "input_strides", "concrete_inputs", "operator_details",
+            )):
+                operator_details_by_external_id.setdefault(external_id, detail)
+            if name.startswith("aten::"):
+                aten_operators_by_external_id.setdefault(external_id, name)
         step_num = extract_step_number(name)
         if step_num is not None and cat != "kernel":
             interval = event_interval(e)
@@ -1561,19 +1622,47 @@ def _parse_pytorch_trace(trace_file, *, keep_triton_code=False, progress_callbac
 
                     if not any(value not in (None, 0, 0.0) for value in metrics.values()):
                         continue
-                    operator_detail = operator_details_by_external_id.get(kernel.get("external_id"), {})
+                    external_id = kernel.get("external_id")
+                    operator_detail = operator_details_by_external_id.get(external_id, {})
+                    operator = operator_detail.get("operator") or host_operators_by_external_id.get(external_id, "")
                     result[step].append({
                         "kernel_name": kernel["kernel_name"],
                         "family": kernel["family"],
                         "dur(ms)": kernel.get("dur(ms)"),
-                        "operator": operator_detail.get("operator", "") or kernel.get("operator", ""),
+                        "operator": operator or kernel.get("operator", ""),
                         "input_dims": operator_detail.get("input_dims", ""),
                         "input_types": operator_detail.get("input_types", ""),
                         "input_strides": operator_detail.get("input_strides", ""),
                         "concrete_inputs": operator_detail.get("concrete_inputs", ""),
                         "operator_details": operator_detail.get("operator_details", ""),
-                        "operator_signature": operator_detail.get("operator_signature", ""),
+                        "operator_signature": operator_detail.get("operator_signature", "") or operator,
                         **metrics,
+                    })
+            return result
+
+        def build_kernel_host_ops():
+            result = defaultdict(list)
+            for step in set(step_to_triton) | set(step_to_non_triton_kernel_events):
+                aggregated = defaultdict(lambda: {"count": 0, "dur_ms": 0.0})
+                kernel_groups = (step_to_triton.get(step, []), step_to_non_triton_kernel_events.get(step, []))
+                for kernels in kernel_groups:
+                    for kernel in kernels:
+                        external_id = kernel.get("external_id", "")
+                        host_op = host_operators_by_external_id.get(external_id, "")
+                        aten_op = aten_operators_by_external_id.get(external_id, "")
+                        if not aten_op and host_op.startswith("aten::"):
+                            aten_op = host_op
+                        match_method = "external_id" if host_op else "unmatched"
+                        key = (kernel["kernel_name"], host_op, aten_op, match_method)
+                        aggregated[key]["count"] += 1
+                        aggregated[key]["dur_ms"] += kernel.get("dur(ms)") or 0.0
+                for (kernel_name, host_op, aten_op, match_method), stats in aggregated.items():
+                    result[step].append({
+                        "kernel_name": kernel_name,
+                        "host_op": host_op,
+                        "aten_op": aten_op,
+                        "match_method": match_method,
+                        **stats,
                     })
             return result
 
@@ -1582,6 +1671,7 @@ def _parse_pytorch_trace(trace_file, *, keep_triton_code=False, progress_callbac
             "step_to_triton":       step_to_triton,
             "step_to_kernels":      step_to_kernels,
             "step_to_aten":         step_to_aten,
+            "step_to_kernel_host_ops": build_kernel_host_ops(),
             "step_to_non_triton_kernel_efficiency": build_non_triton_kernel_efficiency(),
             "step_durations":       step_durations,
             "step_ranges":          step_ranges,
@@ -1670,7 +1760,10 @@ def filter_parsed_steps(parsed, steps, *, require_match=True):
         raise TypeError("filter_parsed_steps expects the dict returned by parse_trace")
 
     available_steps = set(parsed.get("step_durations", {}))
-    for key in ("step_to_triton", "step_to_kernels", "step_to_aten", "step_to_tf_ops"):
+    for key in (
+        "step_to_triton", "step_to_kernels", "step_to_aten", "step_to_tf_ops",
+        "step_to_kernel_host_ops",
+    ):
         available_steps.update(parsed.get(key, {}))
 
     missing = [step for step in selected_steps if step not in available_steps]
@@ -1704,6 +1797,7 @@ def filter_parsed_steps(parsed, steps, *, require_match=True):
     filtered["step_to_kernels"] = filter_mapping("step_to_kernels")
     filtered["step_to_aten"] = filter_mapping("step_to_aten")
     filtered["step_to_tf_ops"] = filter_mapping("step_to_tf_ops")
+    filtered["step_to_kernel_host_ops"] = filter_mapping("step_to_kernel_host_ops")
     filtered["step_to_non_triton_kernel_efficiency"] = filter_mapping("step_to_non_triton_kernel_efficiency")
 
     kernel_names = set()
@@ -1748,6 +1842,7 @@ def compute_avgs(parsed):
         step_to_kernels      = parsed["step_to_kernels"]
         step_to_aten         = parsed["step_to_aten"]
         step_to_tf_ops       = parsed.get("step_to_tf_ops", defaultdict(lambda: defaultdict(lambda: {"count": 0, "dur_ms": 0.0})))
+        step_to_kernel_host_ops = parsed.get("step_to_kernel_host_ops", defaultdict(list))
         step_to_non_triton_kernel_efficiency = parsed.get("step_to_non_triton_kernel_efficiency", defaultdict(list))
         step_durations       = parsed["step_durations"]
         step_ranges          = parsed.get("step_ranges", {})
@@ -1759,6 +1854,7 @@ def compute_avgs(parsed):
         else:
             step_to_triton, step_to_kernels, step_to_aten, step_to_cncl, step_durations = parsed
         step_to_tf_ops = defaultdict(lambda: defaultdict(lambda: {"count": 0, "dur_ms": 0.0}))
+        step_to_kernel_host_ops = defaultdict(list)
         step_to_non_triton_kernel_efficiency = defaultdict(list)
         step_ranges = {}
         kernel_families = {}
@@ -1767,6 +1863,7 @@ def compute_avgs(parsed):
         | set(step_to_kernels)
         | set(step_to_aten)
         | set(step_to_tf_ops)
+        | set(step_to_kernel_host_ops)
         | set(step_to_non_triton_kernel_efficiency)
     )
     n_steps   = len(all_steps)
@@ -1797,6 +1894,73 @@ def compute_avgs(parsed):
 
     # Auto-classify kernel families from aggregated per-kernel stats
     avg_kernels_data = avg_stats(step_to_kernels, all_steps)
+
+    step_kernel_host_op_agg = defaultdict(lambda: defaultdict(lambda: {"count": 0, "dur_ms": 0.0}))
+    for step, relations in step_to_kernel_host_ops.items():
+        for relation in relations:
+            key = (
+                relation["kernel_name"],
+                relation.get("host_op", "") or "",
+                relation.get("aten_op", "") or "",
+                relation.get("match_method", "") or "unmatched",
+            )
+            stats = step_kernel_host_op_agg[step][key]
+            stats["count"] += relation.get("count", 1)
+            dur_ms = relation.get("dur_ms")
+            stats["dur_ms"] += dur_ms if dur_ms is not None else relation.get("dur(ms)") or 0.0
+
+    relation_keys = set()
+    for step in all_steps:
+        relation_keys.update(step_kernel_host_op_agg[step])
+
+    avg_kernel_host_ops = []
+    zero_relation = {"count": 0, "dur_ms": 0.0}
+    for kernel_name, host_op, aten_op, match_method in relation_keys:
+        key = (kernel_name, host_op, aten_op, match_method)
+        avg_count = mean([step_kernel_host_op_agg[s].get(key, zero_relation)["count"] for s in all_steps])
+        avg_dur_ms = mean([step_kernel_host_op_agg[s].get(key, zero_relation)["dur_ms"] for s in all_steps])
+        kernel_dur_ms = avg_kernels_data.get(kernel_name, {}).get("avg_dur_ms", 0.0)
+        avg_kernel_host_ops.append({
+            "kernel_name": kernel_name,
+            "family": kernel_families.get(kernel_name) or extract_kernel_family(kernel_name),
+            "host_op": host_op,
+            "aten_op": aten_op,
+            "avg_count": avg_count,
+            "avg_dur_ms": avg_dur_ms,
+            "share_pct": avg_dur_ms / kernel_dur_ms * 100 if kernel_dur_ms > 0 else 0.0,
+            "match_method": match_method,
+        })
+    avg_kernel_host_ops.sort(key=lambda row: (-row["avg_dur_ms"], row["kernel_name"], row["host_op"]))
+
+    relations_by_kernel = defaultdict(list)
+    for relation in avg_kernel_host_ops:
+        relations_by_kernel[relation["kernel_name"]].append(relation)
+    for kernel_name, stats in avg_kernels_data.items():
+        host_durations = defaultdict(float)
+        aten_durations = defaultdict(float)
+        mapped_dur_ms = 0.0
+        for relation in relations_by_kernel.get(kernel_name, []):
+            host_op = relation["host_op"]
+            aten_op = relation["aten_op"]
+            if host_op:
+                host_durations[host_op] += relation["avg_dur_ms"]
+                mapped_dur_ms += relation["avg_dur_ms"]
+            if aten_op:
+                aten_durations[aten_op] += relation["avg_dur_ms"]
+        kernel_dur_ms = stats["avg_dur_ms"]
+        stats.update({
+            "primary_host_op": (
+                max(host_durations.items(), key=lambda item: (item[1], item[0]))[0]
+                if host_durations else ""
+            ),
+            "primary_aten_op": (
+                max(aten_durations.items(), key=lambda item: (item[1], item[0]))[0]
+                if aten_durations else ""
+            ),
+            "host_op_count": len(host_durations),
+            "host_op_coverage_pct": mapped_dur_ms / kernel_dur_ms * 100 if kernel_dur_ms > 0 else 0.0,
+        })
+
     KERNEL_TYPES, kt_avgs = auto_classify_kernels(avg_kernels_data, kernel_families)
 
     # Triton aggregation: per step by kernel name
@@ -2002,6 +2166,7 @@ def compute_avgs(parsed):
         "KERNEL_TYPES":   KERNEL_TYPES,
         "kt_avgs":        kt_avgs,
         "avg_kernels":    avg_kernels_data,
+        "avg_kernel_host_ops": avg_kernel_host_ops,
         "avg_aten":       avg_stats(step_to_aten, all_steps),
         "avg_tf_ops":     avg_stats(step_to_tf_ops, all_steps),
         "avg_triton":     avg_triton,
@@ -2260,6 +2425,12 @@ def _write_kernels_cmp_csv(path, data_a, data_b):
         rows.append({
             "kernel_name":  name,
             "family":       families_b.get(name) or families_a.get(name) or extract_kernel_family(name),
+            "primary_host_op_A": a.get("primary_host_op", ""),
+            "primary_host_op_B": b.get("primary_host_op", ""),
+            "primary_aten_op_A": a.get("primary_aten_op", ""),
+            "primary_aten_op_B": b.get("primary_aten_op", ""),
+            "host_op_coverage_pct_A": fmt3(a.get("host_op_coverage_pct")),
+            "host_op_coverage_pct_B": fmt3(b.get("host_op_coverage_pct")),
             "avg_dur_ms_A": fmt3(a["avg_dur_ms"]),
             "avg_dur_ms_B": fmt3(b["avg_dur_ms"]),
             "delta_dur_ms": fmt3(delta),
@@ -2269,7 +2440,11 @@ def _write_kernels_cmp_csv(path, data_a, data_b):
             "_sort":        abs(delta),
         })
     rows.sort(key=lambda r: -r["_sort"])
-    fields = ["kernel_name", "family", "avg_dur_ms_A", "avg_dur_ms_B", "delta_dur_ms",
+    fields = [
+              "kernel_name", "family",
+              "primary_host_op_A", "primary_host_op_B", "primary_aten_op_A", "primary_aten_op_B",
+              "host_op_coverage_pct_A", "host_op_coverage_pct_B",
+              "avg_dur_ms_A", "avg_dur_ms_B", "delta_dur_ms",
               "avg_count_A", "avg_count_B", "delta_count"]
     with open(path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
@@ -2479,6 +2654,10 @@ def write_single(data, args):
         os.path.join(args.output_dir, "all_kernels_avg.csv"),
         data["avg_kernels"],
         data.get("kernel_families", {}),
+    )
+    _write_kernel_host_ops_csv(
+        os.path.join(args.output_dir, "kernel_host_ops.csv"),
+        data.get("avg_kernel_host_ops", []),
     )
     if not is_tensorflow or data["avg_triton"]:
         _write_triton_avg_csv(os.path.join(args.output_dir, "triton_kernels_avg.csv"), data["avg_triton"])

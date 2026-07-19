@@ -430,6 +430,146 @@ class TestComputeAvgs:
         assert "avg_io_efficiency_gbps" not in row
         assert "triton_poi_fused_add" not in avgs["avg_non_triton_kernel_efficiency"]
 
+    def test_kernel_host_ops_are_aggregated_from_external_id(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TRACE_FAST_TRACE_JSON_BYTES", "0")
+        trace_path = tmp_path / "trace.json"
+        trace_path.write_text(json.dumps({
+            "traceEvents": [
+                {"name": "ProfilerStep#0", "cat": "user_annotation", "ts": 1000, "dur": 2000},
+                {
+                    "name": "torch_mlu::fused_mm",
+                    "cat": "cpu_op",
+                    "ts": 1050,
+                    "dur": 30,
+                    "args": {"External id": 42},
+                },
+                {
+                    "name": "aten::mm",
+                    "cat": "cpu_op",
+                    "ts": 1040,
+                    "dur": 50,
+                    "args": {"External id": 42},
+                },
+                {
+                    "name": "shared_gemm_kernel",
+                    "cat": "kernel",
+                    "ts": 1100,
+                    "dur": 80,
+                    "args": {"External id": 42},
+                },
+                {
+                    "name": "aten::addmm",
+                    "cat": "cpu_op",
+                    "ts": 1200,
+                    "dur": 40,
+                    "args": {"External id": 43},
+                },
+                {
+                    "name": "shared_gemm_kernel",
+                    "cat": "kernel",
+                    "ts": 1250,
+                    "dur": 20,
+                    "args": {"External id": 43},
+                },
+                {
+                    "name": "unmatched_kernel",
+                    "cat": "kernel",
+                    "ts": 1300,
+                    "dur": 50,
+                    "args": {"External id": 99},
+                },
+                {
+                    "name": "triton_poi_fused_add",
+                    "cat": "kernel",
+                    "ts": 1400,
+                    "dur": 10,
+                    "args": {"External id": 43},
+                },
+                {
+                    "name": "partial_kernel",
+                    "cat": "kernel",
+                    "ts": 1500,
+                    "dur": 30,
+                    "args": {"External id": 42},
+                },
+                {
+                    "name": "partial_kernel",
+                    "cat": "kernel",
+                    "ts": 1600,
+                    "dur": 70,
+                    "args": {"External id": 99},
+                },
+            ],
+        }))
+
+        parsed = parse_trace(str(trace_path))
+        avgs = compute_avgs(parsed)
+
+        shared = avgs["avg_kernels"]["shared_gemm_kernel"]
+        assert shared["primary_host_op"] == "torch_mlu::fused_mm"
+        assert shared["primary_aten_op"] == "aten::mm"
+        assert shared["host_op_count"] == 2
+        assert shared["host_op_coverage_pct"] == 100.0
+
+        unmatched = avgs["avg_kernels"]["unmatched_kernel"]
+        assert unmatched["primary_host_op"] == ""
+        assert unmatched["host_op_coverage_pct"] == 0.0
+
+        partial = avgs["avg_kernels"]["partial_kernel"]
+        assert partial["primary_host_op"] == "torch_mlu::fused_mm"
+        assert partial["host_op_count"] == 1
+        assert partial["host_op_coverage_pct"] == 30.0
+
+        shared_relations = [
+            row for row in avgs["avg_kernel_host_ops"]
+            if row["kernel_name"] == "shared_gemm_kernel"
+        ]
+        assert {(row["host_op"], row["aten_op"]) for row in shared_relations} == {
+            ("torch_mlu::fused_mm", "aten::mm"),
+            ("aten::addmm", "aten::addmm"),
+        }
+        assert {row["share_pct"] for row in shared_relations} == {80.0, 20.0}
+
+        triton_relation = next(
+            row for row in avgs["avg_kernel_host_ops"]
+            if row["kernel_name"] == "triton_poi_fused_add"
+        )
+        assert triton_relation["host_op"] == "aten::addmm"
+        assert triton_relation["match_method"] == "external_id"
+
+        relations_by_kernel = {}
+        for relation in avgs["avg_kernel_host_ops"]:
+            relations_by_kernel.setdefault(relation["kernel_name"], []).append(relation)
+        for kernel_name, kernel_stats in avgs["avg_kernels"].items():
+            relation_dur_ms = sum(
+                relation["avg_dur_ms"]
+                for relation in relations_by_kernel[kernel_name]
+            )
+            assert relation_dur_ms == pytest.approx(kernel_stats["avg_dur_ms"])
+
+        output_dir = tmp_path / "out"
+        args = type("Args", (), {
+            "output_dir": str(output_dir),
+            "save_triton_csv": False,
+            "save_triton_code": False,
+        })
+        write_single(avgs, args)
+
+        with open(output_dir / "all_kernels_avg.csv") as f:
+            kernel_rows = {row["kernel_name"]: row for row in csv.DictReader(f)}
+        assert kernel_rows["shared_gemm_kernel"]["primary_host_op"] == "torch_mlu::fused_mm"
+        assert kernel_rows["shared_gemm_kernel"]["primary_aten_op"] == "aten::mm"
+        assert kernel_rows["shared_gemm_kernel"]["host_op_coverage_pct"] == "100"
+
+        with open(output_dir / "kernel_host_ops.csv") as f:
+            relation_rows = list(csv.DictReader(f))
+        assert any(
+            row["kernel_name"] == "shared_gemm_kernel"
+            and row["host_op"] == "aten::addmm"
+            and row["share_pct"] == "20"
+            for row in relation_rows
+        )
+
     def test_handwritten_triton_kernel_with_output_code_is_triton(self, tmp_path):
         trace_path = tmp_path / "trace.json"
         trace_path.write_text(json.dumps({
@@ -748,9 +888,21 @@ class TestComputeAvgs:
         csv_names = {path.name for path in out_dir.glob("*.csv")}
         assert csv_names == {
             "all_kernels_avg.csv",
+            "kernel_host_ops.csv",
             "kernel_types_avg.csv",
             "tf_ops_avg.csv",
         }
+
+        with open(out_dir / "all_kernels_avg.csv") as f:
+            kernel_rows = list(csv.DictReader(f))
+        assert kernel_rows[0]["primary_host_op"] == "dense/MatMul:MatMul"
+        assert kernel_rows[0]["host_op_coverage_pct"] == "100"
+
+        with open(out_dir / "kernel_host_ops.csv") as f:
+            relation_rows = list(csv.DictReader(f))
+        assert relation_rows[0]["host_op"] == "dense/MatMul:MatMul"
+        assert relation_rows[0]["aten_op"] == ""
+        assert relation_rows[0]["match_method"] == "tf_op"
 
 
 class TestWriteAvgCsv:
@@ -883,7 +1035,13 @@ class TestEndToEnd:
         data_a = {
             "KERNEL_TYPES": ["gemm"],
             "kt_avgs": {"gemm": (1, 2), "other": (0, 0), "collective": (0, 0)},
-            "avg_kernels": {"gemm_kernel_a": {"avg_count": 1, "avg_dur_ms": 2}},
+            "avg_kernels": {"gemm_kernel_a": {
+                "avg_count": 1,
+                "avg_dur_ms": 2,
+                "primary_host_op": "aten::mm",
+                "primary_aten_op": "aten::mm",
+                "host_op_coverage_pct": 100,
+            }},
             "kernel_families": {"gemm_kernel_a": "gemm"},
             "avg_triton": {},
             "avg_aten": {},
@@ -891,7 +1049,13 @@ class TestEndToEnd:
         data_b = {
             "KERNEL_TYPES": ["gemm"],
             "kt_avgs": {"gemm": (1, 5), "other": (0, 0), "collective": (0, 0)},
-            "avg_kernels": {"gemm_kernel_a": {"avg_count": 1, "avg_dur_ms": 5}},
+            "avg_kernels": {"gemm_kernel_a": {
+                "avg_count": 1,
+                "avg_dur_ms": 5,
+                "primary_host_op": "aten::addmm",
+                "primary_aten_op": "aten::addmm",
+                "host_op_coverage_pct": 80,
+            }},
             "kernel_families": {"gemm_kernel_a": "gemm"},
             "avg_triton": {},
             "avg_aten": {},
@@ -905,6 +1069,9 @@ class TestEndToEnd:
 
         assert rows[0]["kernel_name"] == "gemm_kernel_a"
         assert rows[0]["family"] == "gemm"
+        assert rows[0]["primary_host_op_A"] == "aten::mm"
+        assert rows[0]["primary_host_op_B"] == "aten::addmm"
+        assert rows[0]["host_op_coverage_pct_B"] == "80"
         assert rows[0]["delta_dur_ms"] == "3"
 
     def test_triton_compare_matches_different_suffixes_by_code_hash(self, temp_output_dir):
@@ -1091,7 +1258,7 @@ class TestEndToEnd:
         assert rows[0]["match_method"] == "normalized_name_tiling"
         assert rows[0]["kernel_name"] == "triton_poi_fused_add"
 
-    def test_single_csv_outputs_do_not_include_percentage_columns(self, temp_output_dir):
+    def test_single_csv_percentage_columns_are_limited_to_host_mapping(self, temp_output_dir):
         data = {
             "all_steps": [],
             "step_to_triton": {},
@@ -1136,6 +1303,7 @@ class TestEndToEnd:
 
         for name in [
             "all_kernels_avg.csv",
+            "kernel_host_ops.csv",
             "triton_kernels_avg.csv",
             "non_triton_kernel_efficiency_avg.csv",
             "aten_ops_avg.csv",
@@ -1144,7 +1312,15 @@ class TestEndToEnd:
         ]:
             with open(os.path.join(temp_output_dir, name)) as f:
                 fields = next(csv.reader(f))
-            assert not any("pct" in field.lower() or "percent" in field.lower() for field in fields)
+            percentage_fields = {
+                field for field in fields
+                if "pct" in field.lower() or "percent" in field.lower()
+            }
+            expected = {
+                "all_kernels_avg.csv": {"host_op_coverage_pct"},
+                "kernel_host_ops.csv": {"share_pct"},
+            }.get(name, set())
+            assert percentage_fields == expected
             if name == "non_triton_kernel_efficiency_avg.csv":
                 assert "operator_details" not in fields
                 assert "operator" in fields
