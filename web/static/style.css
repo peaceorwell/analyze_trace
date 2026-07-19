@@ -4562,9 +4562,11 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
 .chart-scatter-legend span { display: inline-flex; align-items: center; gap: 4px; }
 .scatter-legend-dot { width: 9px; height: 9px; border-radius: 50%; border: 1px solid rgba(255,255,255,.75); }
 .scatter-legend-dot.regression { background: rgba(239,68,68,.78); }
-.scatter-legend-dot.improvement { background: rgba(34,197,94,.78); }
+.scatter-legend-dot.improvement { border-radius: 2px; background: rgba(34,197,94,.78); transform: rotate(45deg) scale(.78); }
 .scatter-legend-dot.hotspot { background: rgba(99,102,241,.78); }
+.scatter-legend-dot.inferred { background: var(--bg); border: 2px solid var(--yellow); }
 .scatter-legend-line { width: 14px; border-top: 1.5px dashed var(--text3); }
+.scatter-legend-line.rate { transform: rotate(-22deg); }
 .scatter-legend-size { display: inline-block; border-radius: 50%; background: rgba(100,116,139,.34); }
 .scatter-legend-size.small { width: 6px; height: 6px; margin-right: -2px; }
 .scatter-legend-size.large { width: 12px; height: 12px; }

@@ -72,7 +72,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.5.25",
+        "version": "0.5.27",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -4191,6 +4191,7 @@ def test_chart_summary_aggregates_complete_csv_and_returns_global_top(client):
     assert compare_payload["metric_total"] == 18
     assert compare_payload["sums"]["delta_dur_ms"] == -6
     assert compare_payload["rows"][0]["kernel_name"] == "speedup"
+    assert compare_payload["rows"][0]["compare_status"] == "inferred"
     assert compare_payload["highlights"]["slowdown"]["kernel_name"] == "slowdown"
     assert compare_payload["highlights"]["speedup"]["kernel_name"] == "speedup"
     assert compare_payload["direction_stats"] == {
@@ -4201,6 +4202,7 @@ def test_chart_summary_aggregates_complete_csv_and_returns_global_top(client):
         "speedup_total": 12,
     }
     assert compare_payload["direction_rows"]["slowdowns"][0]["kernel_name"] == "slowdown"
+    assert compare_payload["direction_rows"]["slowdowns"][0]["compare_status"] == "exact"
     assert compare_payload["direction_rows"]["speedups"][0]["kernel_name"] == "speedup"
     assert compare_payload["status_stats"] == {
         "added_count": 1,
@@ -4212,6 +4214,7 @@ def test_chart_summary_aggregates_complete_csv_and_returns_global_top(client):
         "removed_duration": 3,
     }
     assert compare_payload["status_rows"]["added"][0]["kernel_name"] == "new_kernel"
+    assert compare_payload["status_rows"]["added"][0]["compare_status"] == "added"
     assert compare_payload["status_rows"]["removed"][0]["kernel_name"] == "removed_kernel"
 
     filtered_comparison = client.get(

@@ -60,7 +60,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.5.25"
+APP_VERSION = "0.5.27"
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -3981,6 +3981,7 @@ def read_csv_chart_summary(
             delta_pct = delta / baseline_ms * 100 if baseline_ms > 0 else None
             if "delta_dur_ms" in fields:
                 compare_status = _comparison_row_status(row)
+                row["compare_status"] = compare_status
                 status_stats[f"{compare_status}_count"] += 1
                 if compare_status == "added":
                     status_stats["added_duration"] += current_ms

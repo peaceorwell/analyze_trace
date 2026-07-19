@@ -91,7 +91,8 @@ def test_performance_overview_explains_compute_time_scope():
     assert "buildCompareScatterRows" in APP_JS
     assert "logScaleTickLabel" in APP_JS
     assert 'A 耗时与耗时增减（点击下钻）' in APP_JS
-    assert '? { x: row.baselineMs, y: row.delta' in APP_JS
+    assert "x: row.baselineMs" in APP_JS
+    assert "y: row.delta" in APP_JS
     assert 'text: isCompareScatter ? "B 比 A 多 / 少的耗时（ms）"' in APP_JS
     assert 'row.baselineMs > 0 && row.currentMs > 0' in APP_JS
     assert 'chartScatterMode.value === "compare" ? "delta_dur_ms" : "avg_dur_ms"' in APP_JS
@@ -123,6 +124,13 @@ def test_performance_overview_explains_compute_time_scope():
     assert "comparisonStatusLabel" in APP_JS
     assert "chartScatterGuidesPlugin" in APP_JS
     assert "chartScatterHotspotLabelsPlugin" in APP_JS
+    assert "chartCompareDumbbellPlugin" in APP_JS
+    assert "Top 项 A / B 精确对照（点击下钻）" in APP_JS
+    assert "relativeGuideRate: .2" in APP_JS
+    assert 'pointStyle: context => isCompareScatter && !context.raw?.regression ? "rectRot" : "circle"' in APP_JS
+    assert 'inferredMatch: row.inferredMatch' in APP_JS
+    assert "syncChartLinkedHighlight" in APP_JS
+    assert "推断 / 低可信度" in APP_JS
     assert "B 更慢（耗时增加）" in APP_JS
     assert "B 更快（耗时减少）" in APP_JS
     assert 'class="scatter-legend-line"' in APP_JS

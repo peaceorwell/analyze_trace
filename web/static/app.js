@@ -189,11 +189,12 @@ const chartRemovedRows  = ref([]);
 const chartBarRows      = ref([]);
 const chartCanvasReady  = ref(false);
 const chartScatterRows  = ref([]);
+const chartDumbbellActive = ref(false);
 
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.5.25");
+const appVersion = ref("0.5.27");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -722,6 +723,16 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.27",
+    date: "2026-07-19",
+    title: "性能总览对比图联动优化",
+    items: [
+      "对比散点图增加 ±20% 变化率参考线，并以不同形状同时表达回退和改善。",
+      "推断或低可信度匹配使用空心点显示，Tooltip 同步说明匹配质量。",
+      "默认耗时 Delta 排行升级为 A/B 哑铃图，并与散点图双向悬停联动。",
+    ],
+  },
   {
     version: "0.5.25",
     date: "2026-07-17",
@@ -2854,7 +2865,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.5.25";
+  appVersion.value = cfg.version || "0.5.27";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -5084,6 +5095,7 @@ const loadJob = async id => {
   chartBarRows.value = [];
   chartCanvasReady.value = false;
   chartScatterRows.value = [];
+  chartDumbbellActive.value = false;
   chartCompareDirection.value = "all";
   chartMinAbsDelta.value = 0;
   chartMinDeltaPct.value = 0;
@@ -5982,6 +5994,7 @@ const normalizeChartRows = (rows, fields, sourceConfig, metricDef) => {
         bValue: parseChartNumber(row.avg_dur_ms_B),
         countA: parseChartNumber(row.avg_count_A),
         countB: parseChartNumber(row.avg_count_B),
+        compareStatus: String(row.compare_status || "").trim(),
         source: sourceConfig.file,
         sourceLabel: sourceConfig.label,
         metric: metricDef.key,
@@ -6072,7 +6085,8 @@ const buildCompareScatterRows = rows => {
       const currentMs = parseChartNumber(row.raw?.avg_dur_ms_B);
       const delta = parseChartNumber(row.raw?.delta_dur_ms);
       const changePct = baselineMs > 0 ? delta / baselineMs * 100 : null;
-      return { ...row, baselineMs, currentMs, delta, changePct, absDelta: Math.abs(delta) };
+      const inferredMatch = ["inferred", "low_confidence"].includes(row.compareStatus);
+      return { ...row, baselineMs, currentMs, delta, changePct, absDelta: Math.abs(delta), inferredMatch };
     })
     .filter(row => row.baselineMs > 0 && row.currentMs > 0 && Number.isFinite(row.changePct) && row.absDelta > 0)
     .sort((a, b) => b.absDelta - a.absDelta)
@@ -6181,8 +6195,10 @@ const chartShareLabelsPlugin = {
 const chartScatterGuidesPlugin = {
   id: "chartScatterGuides",
   beforeDatasetsDraw(chart, _args, options = {}) {
-    if (!options.compare || !chart.chartArea || !chart.scales?.y) return;
+    if (!options.compare || !chart.chartArea || !chart.scales?.x || !chart.scales?.y) return;
     const { ctx, chartArea } = chart;
+    const xScale = chart.scales.x;
+    const yScale = chart.scales.y;
     const zeroY = Math.max(chartArea.top, Math.min(chartArea.bottom, chart.scales.y.getPixelForValue(0)));
     ctx.save();
     ctx.fillStyle = options.regressionFill || "rgba(239,68,68,.045)";
@@ -6196,6 +6212,42 @@ const chartScatterGuidesPlugin = {
     ctx.moveTo(chartArea.left, zeroY);
     ctx.lineTo(chartArea.right, zeroY);
     ctx.stroke();
+
+    const guideRate = Number(options.relativeGuideRate) || 0;
+    if (guideRate > 0 && xScale.min > 0 && xScale.max > xScale.min) {
+      const minLog = Math.log10(xScale.min);
+      const maxLog = Math.log10(xScale.max);
+      ctx.beginPath();
+      ctx.rect(chartArea.left, chartArea.top, chartArea.width, chartArea.height);
+      ctx.clip();
+      ctx.strokeStyle = options.relativeGuideColor || "rgba(100,116,139,.54)";
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 4]);
+      for (const rate of [guideRate, -guideRate]) {
+        ctx.beginPath();
+        let labelPoint = null;
+        for (let index = 0; index <= 64; index += 1) {
+          const xValue = 10 ** (minLog + (maxLog - minLog) * index / 64);
+          const yValue = xValue * rate;
+          const x = xScale.getPixelForValue(xValue);
+          const y = yScale.getPixelForValue(yValue);
+          if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+          if (index === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+          if (y >= chartArea.top + 8 && y <= chartArea.bottom - 8) labelPoint = { x, y };
+        }
+        ctx.stroke();
+        if (labelPoint) {
+          ctx.setLineDash([]);
+          ctx.fillStyle = options.relativeGuideText || options.relativeGuideColor || "rgba(100,116,139,.72)";
+          ctx.font = "700 10px system-ui, sans-serif";
+          ctx.textAlign = "right";
+          ctx.textBaseline = rate > 0 ? "bottom" : "top";
+          ctx.fillText(`${rate > 0 ? "+" : "−"}${trimNumber(guideRate * 100)}%`, labelPoint.x - 4, labelPoint.y + (rate > 0 ? -2 : 2));
+          ctx.setLineDash([3, 4]);
+        }
+      }
+    }
     ctx.restore();
   },
   afterDraw(chart, _args, options = {}) {
@@ -6209,6 +6261,50 @@ const chartScatterGuidesPlugin = {
     ctx.textAlign = "right";
     ctx.fillStyle = options.improvementText || "rgba(22,163,74,.78)";
     ctx.fillText("B 更快（耗时减少）", chartArea.right - 8, chartArea.bottom - 8);
+    ctx.restore();
+  },
+};
+
+const chartCompareDumbbellPlugin = {
+  id: "chartCompareDumbbell",
+  beforeDatasetsDraw(chart, _args, options = {}) {
+    const rows = options.rows || [];
+    const xScale = chart.scales?.x;
+    const yScale = chart.scales?.y;
+    if (!rows.length || !xScale || !yScale) return;
+    const ctx = chart.ctx;
+    ctx.save();
+    rows.forEach(row => {
+      const xA = xScale.getPixelForValue(row.aValue);
+      const xB = xScale.getPixelForValue(row.bValue);
+      const y = yScale.getPixelForValue(row.label);
+      if (![xA, xB, y].every(Number.isFinite)) return;
+      const linked = chart.$linkedLabel === row.label;
+      ctx.strokeStyle = row.delta >= 0 ? options.regressionColor : options.improvementColor;
+      ctx.globalAlpha = linked ? .88 : .48;
+      ctx.lineWidth = linked ? 5 : 3;
+      ctx.beginPath();
+      ctx.moveTo(xA, y);
+      ctx.lineTo(xB, y);
+      ctx.stroke();
+    });
+    ctx.restore();
+  },
+  afterDatasetsDraw(chart, _args, options = {}) {
+    const rows = options.rows || [];
+    const yScale = chart.scales?.y;
+    if (!rows.length || !yScale) return;
+    const ctx = chart.ctx;
+    ctx.save();
+    ctx.fillStyle = options.labelColor || "#475569";
+    ctx.font = "700 11px system-ui, sans-serif";
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
+    rows.forEach(row => {
+      const y = yScale.getPixelForValue(row.label);
+      if (!Number.isFinite(y)) return;
+      ctx.fillText(`${trimNumber(row.aValue)} → ${trimNumber(row.bValue)}`, chart.width - 10, y);
+    });
     ctx.restore();
   },
 };
@@ -6392,6 +6488,15 @@ const destroyChartInstances = () => {
   if (callTimeScatterInst.value) { callTimeScatterInst.value.destroy(); callTimeScatterInst.value = null; }
 };
 
+const syncChartLinkedHighlight = label => {
+  const nextLabel = label || "";
+  for (const chart of [ktChartInst.value, callTimeScatterInst.value]) {
+    if (!chart || chart.$linkedLabel === nextLabel) continue;
+    chart.$linkedLabel = nextLabel;
+    chart.update("none");
+  }
+};
+
 const waitChartFrame = () => new Promise(resolve => {
   let settled = false;
   const finish = () => {
@@ -6524,7 +6629,16 @@ const buildChart = async () => {
     updateDeltaLists(rows, table, sourceConfig);
     updateComparisonStatusLists(table, sourceConfig);
     const topN = Math.max(1, Number(chartTopN.value) || 10);
-    chartBarRows.value = buildChartBarRows(rows, metricDef, topN, table?.metric_total);
+    const dumbbellRows = rows.filter(row => row.aValue > 0 && row.bValue > 0);
+    chartDumbbellActive.value = selectedJob.value?.mode === "compare"
+      && metricDef.key === "delta_dur_ms"
+      && dumbbellRows.length > 0;
+    chartBarRows.value = buildChartBarRows(
+      chartDumbbellActive.value ? dumbbellRows : rows,
+      metricDef,
+      topN,
+      table?.metric_total,
+    );
     if (scatterTable) {
       const scatterMetric = chartScatterMode.value === "compare" ? "delta_dur_ms" : "avg_dur_ms";
       const scatterSourceRows = applyChartCommunicationFilter(
@@ -6569,80 +6683,198 @@ const buildChart = async () => {
     }
 
     const cc = chartColors();
-    const barColors = metricDef.signed
-      ? chartBarRows.value.map(row => row.value >= 0 ? "rgba(239,68,68,0.76)" : "rgba(34,197,94,0.76)")
-      : getColors(chartBarRows.value.length);
-    const chart = new Chart(ktChart.value, {
-      type: "bar",
-      plugins: [chartValueLabelsPlugin, chartShareLabelsPlugin],
-      data: {
-        labels: chartBarRows.value.map(row => row.shortLabel),
-        datasets: [{
-          label: metricDef.label,
-          data: chartBarRows.value.map(row => row.value),
-          backgroundColor: barColors,
-          borderRadius: 4,
-          barThickness: 18,
-        }],
-      },
-      options: {
-        indexAxis: 'y',
-        responsive: true, maintainAspectRatio: false,
-        layout: { padding: { right: metricDef.signed ? 154 : 132 } },
-        onClick: (_, elements) => {
-          const row = chartBarRows.value[elements?.[0]?.index];
-          if (row) drillDownChart(row);
-        },
-        onHover: (event, elements) => {
-          if (event?.native?.target) event.native.target.style.cursor = elements.length ? "pointer" : "default";
-        },
-        plugins: {
-          legend: { display: false },
-          title: { display: true, text: `${sourceConfig.label} · ${metricDef.label}`, font: { size: 13 }, color: cc.title },
-          chartValueLabels: {
-            rows: chartBarRows.value,
-            metricDef,
-            color: cc.title,
-            shareColumnWidth: metricDef.signed ? 78 : 56,
-          },
-          chartShareLabels: {
-            rows: chartBarRows.value,
-            header: chartShareHeader(metricDef),
-            color: cc.text,
-            headerColor: cc.title,
-          },
-          tooltip: { callbacks: {
-            title: items => chartBarRows.value[items[0]?.dataIndex]?.label || "",
-            label: ctx => ` ${metricDef.label}: ${fmtChartValue(ctx.parsed.x, metricDef)}`,
-            afterLabel: ctx => {
-              const row = chartBarRows.value[ctx.dataIndex];
-              if (!row) return "";
-              const lines = [`${chartShareHeader(metricDef)}: ${row.shareLabel}`];
-              if (selectedJob.value?.mode === "compare") {
-                lines.push(
-                  `A: ${fmtChartValue(row.aValue, { unit: "ms" })}`,
-                  `B: ${fmtChartValue(row.bValue, { unit: "ms" })}`,
-                  `count: ${trimNumber(row.countA)} -> ${trimNumber(row.countB)}`
-                );
-              }
-              return lines;
+    let chart;
+    if (chartDumbbellActive.value) {
+      const pointFill = isDark.value ? "rgba(15,23,42,.96)" : "rgba(255,255,255,.98)";
+      const regressionColor = "rgba(239,68,68,.82)";
+      const improvementColor = "rgba(34,197,94,.82)";
+      const linkedRadius = (context, base) => {
+        const row = chartBarRows.value[context.raw?.rowIndex];
+        return base + (row && context.chart.$linkedLabel === row.label ? 2 : 0);
+      };
+      chart = new Chart(ktChart.value, {
+        type: "scatter",
+        plugins: [chartCompareDumbbellPlugin],
+        data: {
+          labels: chartBarRows.value.map(row => row.label),
+          datasets: [
+            {
+              label: "A",
+              data: chartBarRows.value.map((row, index) => ({ x: row.aValue, y: row.label, rowIndex: index })),
+              backgroundColor: pointFill,
+              borderColor: cc.text,
+              borderWidth: 2,
+              pointRadius: context => linkedRadius(context, 5),
+              pointHoverRadius: 7,
             },
-          }},
+            {
+              label: "B",
+              data: chartBarRows.value.map((row, index) => ({ x: row.bValue, y: row.label, rowIndex: index })),
+              backgroundColor: context => {
+                const row = chartBarRows.value[context.raw?.rowIndex];
+                if (!row || row.inferredMatch || ["inferred", "low_confidence"].includes(row.compareStatus)) return pointFill;
+                return row.delta >= 0 ? regressionColor : improvementColor;
+              },
+              borderColor: context => {
+                const row = chartBarRows.value[context.raw?.rowIndex];
+                return row?.delta >= 0 ? regressionColor : improvementColor;
+              },
+              borderWidth: context => {
+                const row = chartBarRows.value[context.raw?.rowIndex];
+                return row && ["inferred", "low_confidence"].includes(row.compareStatus) ? 2.5 : 1.5;
+              },
+              pointRadius: context => linkedRadius(context, 6),
+              pointHoverRadius: 8,
+            },
+          ],
         },
-        scales: {
-          x: { beginAtZero: true,
-            ticks: { font: { size: 11 }, color: cc.text },
-            grid:  { color: cc.grid } },
-          y: { ticks: { font: { size: 11 }, color: cc.text },
-            grid:  { color: cc.grid } },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: { duration: 280 },
+          layout: { padding: { top: 4, right: 108 } },
+          interaction: { mode: "nearest", intersect: true },
+          onClick: (_, elements) => {
+            const rowIndex = elements?.[0]?.index;
+            const row = chartBarRows.value[rowIndex];
+            if (row) drillDownChart(row);
+          },
+          onHover: (event, elements) => {
+            const rowIndex = elements?.[0]?.index;
+            const row = chartBarRows.value[rowIndex];
+            syncChartLinkedHighlight(row?.label || "");
+            if (event?.native?.target) event.native.target.style.cursor = row ? "pointer" : "default";
+          },
+          plugins: {
+            legend: { display: false },
+            chartCompareDumbbell: {
+              rows: chartBarRows.value,
+              regressionColor,
+              improvementColor,
+              labelColor: cc.text,
+            },
+            tooltip: {
+              displayColors: false,
+              callbacks: {
+                title: items => {
+                  const rowIndex = items[0]?.raw?.rowIndex;
+                  return chartBarRows.value[rowIndex]?.label || "";
+                },
+                label: context => {
+                  const row = chartBarRows.value[context.raw?.rowIndex];
+                  if (!row) return "";
+                  const signedPct = row.aValue ? row.delta / row.aValue * 100 : null;
+                  return [
+                    ` A → B: ${trimNumber(row.aValue)} → ${trimNumber(row.bValue)} ms`,
+                    ` B - A: ${row.delta > 0 ? "+" : ""}${trimNumber(row.delta)} ms${signedPct === null ? "" : `（${signedPct > 0 ? "+" : ""}${trimNumber(signedPct)}%）`}`,
+                    ` 匹配: ${comparisonStatusLabel(row.compareStatus)}`,
+                  ];
+                },
+              },
+            },
+          },
+          scales: {
+            x: {
+              type: "logarithmic",
+              title: { display: true, text: "A / B 平均耗时（ms，对数）", color: cc.text },
+              ticks: { color: cc.text, callback: logScaleTickLabel, maxRotation: 0, minRotation: 0 },
+              grid: { color: context => logScaleTickLabel(context.tick?.value) ? cc.grid : "transparent" },
+              border: { color: cc.grid },
+            },
+            y: {
+              type: "category",
+              offset: true,
+              ticks: {
+                color: cc.text,
+                callback: (_value, index) => chartBarRows.value[index]?.shortLabel || "",
+              },
+              grid: { display: false },
+              border: { display: false },
+            },
+          },
         },
-      },
-    });
+      });
+    } else {
+      const barColors = metricDef.signed
+        ? chartBarRows.value.map(row => row.value >= 0 ? "rgba(239,68,68,0.76)" : "rgba(34,197,94,0.76)")
+        : getColors(chartBarRows.value.length);
+      chart = new Chart(ktChart.value, {
+        type: "bar",
+        plugins: [chartValueLabelsPlugin, chartShareLabelsPlugin],
+        data: {
+          labels: chartBarRows.value.map(row => row.shortLabel),
+          datasets: [{
+            label: metricDef.label,
+            data: chartBarRows.value.map(row => row.value),
+            backgroundColor: barColors,
+            borderColor: cc.title,
+            borderWidth: context => context.chart.$linkedLabel === chartBarRows.value[context.dataIndex]?.label ? 2 : 0,
+            borderRadius: 4,
+            barThickness: 18,
+          }],
+        },
+        options: {
+          indexAxis: 'y',
+          responsive: true, maintainAspectRatio: false,
+          layout: { padding: { right: metricDef.signed ? 154 : 132 } },
+          onClick: (_, elements) => {
+            const row = chartBarRows.value[elements?.[0]?.index];
+            if (row) drillDownChart(row);
+          },
+          onHover: (event, elements) => {
+            const row = chartBarRows.value[elements?.[0]?.index];
+            syncChartLinkedHighlight(row?.label || "");
+            if (event?.native?.target) event.native.target.style.cursor = row ? "pointer" : "default";
+          },
+          plugins: {
+            legend: { display: false },
+            title: { display: true, text: `${sourceConfig.label} · ${metricDef.label}`, font: { size: 13 }, color: cc.title },
+            chartValueLabels: {
+              rows: chartBarRows.value,
+              metricDef,
+              color: cc.title,
+              shareColumnWidth: metricDef.signed ? 78 : 56,
+            },
+            chartShareLabels: {
+              rows: chartBarRows.value,
+              header: chartShareHeader(metricDef),
+              color: cc.text,
+              headerColor: cc.title,
+            },
+            tooltip: { callbacks: {
+              title: items => chartBarRows.value[items[0]?.dataIndex]?.label || "",
+              label: ctx => ` ${metricDef.label}: ${fmtChartValue(ctx.parsed.x, metricDef)}`,
+              afterLabel: ctx => {
+                const row = chartBarRows.value[ctx.dataIndex];
+                if (!row) return "";
+                const lines = [`${chartShareHeader(metricDef)}: ${row.shareLabel}`];
+                if (selectedJob.value?.mode === "compare") {
+                  lines.push(
+                    `A: ${fmtChartValue(row.aValue, { unit: "ms" })}`,
+                    `B: ${fmtChartValue(row.bValue, { unit: "ms" })}`,
+                    `count: ${trimNumber(row.countA)} -> ${trimNumber(row.countB)}`
+                  );
+                }
+                return lines;
+              },
+            }},
+          },
+          scales: {
+            x: { beginAtZero: true,
+              ticks: { font: { size: 11 }, color: cc.text },
+              grid:  { color: cc.grid } },
+            y: { ticks: { font: { size: 11 }, color: cc.text },
+              grid:  { color: cc.grid } },
+          },
+        },
+      });
+    }
     ktChartInst.value = chart;
     chartCanvasReady.value = true;
 
     if (callTimeScatter.value && chartScatterRows.value.length) {
       const isCompareScatter = chartScatterMode.value === "compare";
+      const scatterPointFill = isDark.value ? "rgba(15,23,42,.96)" : "rgba(255,255,255,.98)";
       const scatter = new Chart(callTimeScatter.value, {
         type: "scatter",
         plugins: [chartScatterGuidesPlugin, chartScatterHotspotLabelsPlugin],
@@ -6650,16 +6882,30 @@ const buildChart = async () => {
           datasets: [{
             label: "Kernel / Op",
             data: chartScatterRows.value.map(row => isCompareScatter
-              ? { x: row.baselineMs, y: row.delta, radius: row.radius, regression: row.delta > 0 }
-              : { x: row.calls, y: row.usPerCall, radius: row.radius }),
+              ? {
+                  x: row.baselineMs,
+                  y: row.delta,
+                  radius: row.radius,
+                  label: row.label,
+                  regression: row.delta > 0,
+                  inferredMatch: row.inferredMatch,
+                }
+              : { x: row.calls, y: row.usPerCall, radius: row.radius, label: row.label }),
             backgroundColor: context => isCompareScatter
-              ? (context.raw?.regression ? "rgba(239,68,68,0.68)" : "rgba(34,197,94,0.68)")
+              ? (context.raw?.inferredMatch
+                  ? scatterPointFill
+                  : context.raw?.regression ? "rgba(239,68,68,0.68)" : "rgba(34,197,94,0.68)")
               : `rgba(99,102,241,${Math.min(.82, .42 + (context.raw?.radius || 4) / 30)})`,
             borderColor: context => isCompareScatter
               ? (context.raw?.regression ? "rgba(220,38,38,0.92)" : "rgba(22,163,74,0.92)")
               : "rgba(79,70,229,0.92)",
-            borderWidth: 1.5,
-            pointRadius: context => context.raw?.radius || 4,
+            borderWidth: context => {
+              if (context.chart.$linkedLabel === context.raw?.label) return 3;
+              return context.raw?.inferredMatch ? 2.5 : 1.5;
+            },
+            pointStyle: context => isCompareScatter && !context.raw?.regression ? "rectRot" : "circle",
+            pointRadius: context => (context.raw?.radius || 4)
+              + (context.chart.$linkedLabel === context.raw?.label ? 2 : 0),
             pointHoverRadius: context => (context.raw?.radius || 4) + 3,
             pointHoverBorderWidth: 2.5,
           }],
@@ -6675,13 +6921,18 @@ const buildChart = async () => {
             if (row) drillDownChart(row);
           },
           onHover: (event, elements) => {
-            if (event?.native?.target) event.native.target.style.cursor = elements.length ? "pointer" : "default";
+            const row = chartScatterRows.value[elements?.[0]?.index];
+            syncChartLinkedHighlight(row?.label || "");
+            if (event?.native?.target) event.native.target.style.cursor = row ? "pointer" : "default";
           },
           plugins: {
             legend: { display: false },
             chartScatterGuides: {
               compare: isCompareScatter,
               equalityColor: isDark.value ? "rgba(148,163,184,.68)" : "rgba(100,116,139,.62)",
+              relativeGuideRate: .2,
+              relativeGuideColor: isDark.value ? "rgba(148,163,184,.48)" : "rgba(100,116,139,.46)",
+              relativeGuideText: cc.text,
             },
             chartScatterHotspotLabels: {
               rows: chartScatterRows.value,
@@ -6711,6 +6962,7 @@ const buildChart = async () => {
                   return [
                     ` A → B: ${trimNumber(row.baselineMs)} → ${trimNumber(row.currentMs)} ms`,
                     ` B 比 A ${direction}: ${trimNumber(Math.abs(row.delta))} ms（${signedPct}）`,
+                    ` 匹配: ${comparisonStatusLabel(row.compareStatus)}`,
                   ];
                 }
                 return [
@@ -9749,7 +10001,12 @@ const JobDetail = {
 
           <div class="chart-main-grid">
             <div class="chart-panel chart-panel-wide">
-              <div class="chart-panel-title">排序排行（点击下钻）</div>
+              <div class="chart-panel-title">
+                {{ chartDumbbellActive && chartCanvasReady ? 'Top 项 A / B 精确对照（点击下钻）' : '排序排行（点击下钻）' }}
+              </div>
+              <div v-if="chartDumbbellActive && chartCanvasReady" class="chart-panel-note">
+                空心点为 A，实心点为 B；连线颜色表示回退或改善，空心 B 表示推断或低可信度匹配。悬停会与散点图联动。
+              </div>
               <div class="chart-bar-area">
                 <div v-if="chartBarRows.length && !chartCanvasReady" class="chart-fallback-bars">
                   <div class="chart-fallback-heading">
@@ -9777,6 +10034,8 @@ const JobDetail = {
                 <canvas
                   ref="ktChart"
                   :class="{ 'chart-canvas-pending': chartBarRows.length && !chartCanvasReady }"
+                  role="img"
+                  :aria-label="chartDumbbellActive ? 'Top 变化项 A 与 B 耗时精确对照图' : '性能指标排序排行图'"
                 ></canvas>
               </div>
             </div>
@@ -9788,6 +10047,8 @@ const JobDetail = {
                   <span><i class="scatter-legend-dot regression"></i>红色：B 更慢</span>
                   <span><i class="scatter-legend-dot improvement"></i>绿色：B 更快</span>
                   <span><i class="scatter-legend-line"></i>横线：没有变化</span>
+                  <span><i class="scatter-legend-line rate"></i>斜线：±20% 变化率</span>
+                  <span><i class="scatter-legend-dot inferred"></i>空心：推断 / 低可信度</span>
                   <span><i class="scatter-legend-size small"></i><i class="scatter-legend-size large"></i>点越大：耗时变化越大</span>
                 </template>
                 <template v-else>
@@ -9797,7 +10058,7 @@ const JobDetail = {
               </div>
               <div class="chart-scatter-area">
                 <div v-if="!chartScatterRows.length" class="chart-scatter-empty">{{ chartScatterEmptyText }}</div>
-                <canvas v-show="chartScatterRows.length" ref="callTimeScatter"></canvas>
+                <canvas v-show="chartScatterRows.length" ref="callTimeScatter" role="img" :aria-label="chartScatterTitle"></canvas>
               </div>
             </div>
           </div>
@@ -10214,6 +10475,7 @@ const JobDetail = {
       chartExcludeCommunication, chartFilterResultText, resetChartCompareFilters,
       chartMetricOptions, chartLoading, chartError, chartSummaryCards,
       chartSlowdowns, chartSpeedups, chartAddedRows, chartRemovedRows, chartBarRows, chartCanvasReady,
+      chartDumbbellActive,
       chartScatterRows, chartScatterAvailable, chartScatterTitle, chartScatterNote, chartScatterEmptyText,
       activeChartMetricDef, activeChartTitle, chartShareHeader,
       chartFallbackBarWidth, chartFallbackBarTone, chartFallbackValueLabel,
