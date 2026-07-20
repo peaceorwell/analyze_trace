@@ -73,7 +73,7 @@ def test_config_reports_local_execution_flags(client):
     assert r.status_code == 200
     assert r.headers["cache-control"] == "no-store, max-age=0"
     assert r.json() == {
-        "version": "0.5.30",
+        "version": "0.5.31",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -208,6 +208,8 @@ def test_collect_results_hides_empty_pytorch_csvs_for_tensorflow_trace(isolated_
     assert "kernel_types_avg.csv" in results
     assert "kernel_host_ops.csv" in results
     assert results["kernel_host_ops.csv"]["rows"][0]["share_pct"] == "100"
+    assert "duration_pct" not in results["kernel_host_ops.csv"]["fields"]
+    assert "cumulative_pct" not in results["kernel_host_ops.csv"]["fields"]
     assert "tf_ops_avg.csv" in results
     assert "triton_kernels_avg.csv" not in results
     assert "aten_ops_avg.csv" not in results
@@ -3864,16 +3866,17 @@ def test_done_job_lists_result_files_and_paginates_tables(client):
     result_dir = Path(web_server.result_dir("table-job"))
     result_dir.mkdir(parents=True)
     (result_dir / "all_kernels_avg.csv").write_text(
-        "kernel_name,count_pct,avg_dur_ms,dur_pct,family,primary_host_op,host_op_coverage_pct\n"
-        "slow_kernel,50.0%,30,60.0%,gemm,aten::mm,100\n"
-        "medium_kernel,30.0%,20,30.0%,gemm,aten::addmm,80\n"
-        "fast_kernel,20.0%,10,10.0%,other,,0\n"
+        "kernel_name,count_pct,avg_dur_ms,dur_pct,family,primary_host_op,primary_aten_op,host_op_coverage_pct\n"
+        "slow_kernel,50.0%,30,60.0%,gemm,torch_mlu::mm,aten::mm,100\n"
+        "medium_kernel,30.0%,20,30.0%,gemm,torch_mlu::addmm,aten::addmm,80\n"
+        "fast_kernel,20.0%,10,10.0%,other,,,0\n"
     )
     (result_dir / "kernel_host_ops.csv").write_text(
         "kernel_name,family,host_op,aten_op,avg_count,avg_dur_ms,share_pct,match_method\n"
         "medium_kernel,gemm,aten::addmm,aten::addmm,1,12,60,external_id\n"
         "medium_kernel,gemm,,,1,8,40,unmatched\n"
         "fast_kernel,other,,,1,10,100,unmatched\n"
+        '"comma,kernel",gemm,"aten::complex,op",aten::complex,1,7,100,external_id\n'
     )
 
     async def insert_job():
@@ -3909,7 +3912,9 @@ def test_done_job_lists_result_files_and_paginates_tables(client):
     assert payload["fields"][-2:] == ["duration_pct", "cumulative_pct"]
     assert "dur_pct" not in payload["fields"]
     assert "count_pct" not in payload["rows"][0]
-    assert payload["rows"][0]["primary_host_op"] == "aten::mm"
+    assert payload["rows"][0]["primary_host_op"] == "torch_mlu::mm"
+    assert "primary_aten_op" not in payload["fields"]
+    assert "primary_aten_op" not in payload["rows"][0]
     assert payload["rows"][0]["host_op_coverage_pct"] == "100"
     assert payload["rows"][0]["duration_pct"] == "50"
     assert payload["rows"][0]["cumulative_pct"] == "50"
@@ -3948,21 +3953,28 @@ def test_done_job_lists_result_files_and_paginates_tables(client):
     assert old_percent_filter.json()["filtered_total"] == 3
 
     host_op_detail = client.get(
-        "/api/jobs/table-job/results/kernel_host_ops.csv",
+        "/api/jobs/table-job/kernel-host-ops",
         params={
-            "filters": json.dumps({"kernel_name": "medium_kernel"}),
-            "filter_ops": json.dumps({"kernel_name": "=="}),
-            "sort_col": "avg_dur_ms",
-            "sort_dir": "desc",
+            "kernel_name": "medium_kernel",
             "limit": 50,
         },
     )
     assert host_op_detail.status_code == 200
     assert host_op_detail.json()["filtered_total"] == 2
+    assert "duration_pct" not in host_op_detail.json()["fields"]
+    assert "cumulative_pct" not in host_op_detail.json()["fields"]
     assert [row["match_method"] for row in host_op_detail.json()["rows"]] == [
         "external_id",
         "unmatched",
     ]
+
+    comma_kernel_detail = client.get(
+        "/api/jobs/table-job/kernel-host-ops",
+        params={"kernel_name": "comma,kernel", "limit": 50},
+    )
+    assert comma_kernel_detail.status_code == 200
+    assert comma_kernel_detail.json()["filtered_total"] == 1
+    assert comma_kernel_detail.json()["rows"][0]["host_op"] == "aten::complex,op"
 
     share_filter = client.get(
         "/api/jobs/table-job/results/all_kernels_avg.csv",
@@ -3991,6 +4003,7 @@ def test_done_job_lists_result_files_and_paginates_tables(client):
     exported_rows = list(csv.DictReader(io.StringIO(exported.content.decode("utf-8-sig"))))
     assert [row["kernel_name"] for row in exported_rows] == ["medium_kernel", "slow_kernel"]
     assert "dur_pct" not in exported_rows[0]
+    assert "primary_aten_op" not in exported_rows[0]
     assert exported_rows[0]["duration_pct"] == "40"
     assert exported_rows[0]["cumulative_pct"] == "100"
 
@@ -4036,9 +4049,9 @@ def test_all_kernels_cmp_without_family_exposes_virtual_family(client):
     result_dir = Path(web_server.result_dir("cmp-table-job"))
     result_dir.mkdir(parents=True)
     (result_dir / "all_kernels_cmp.csv").write_text(
-        "kernel_name,avg_dur_ms_A,avg_dur_ms_B,delta_dur_ms,avg_count_A,avg_count_B\n"
-        "gemm_kernel,1,3,2,10,14\n"
-        "triton_poi_kernel,4,1,-3,7,2\n"
+        "kernel_name,primary_host_op_A,primary_host_op_B,primary_aten_op_A,primary_aten_op_B,avg_dur_ms_A,avg_dur_ms_B,delta_dur_ms,avg_count_A,avg_count_B\n"
+        "gemm_kernel,torch_mlu::mm,torch_mlu::addmm,aten::mm,aten::addmm,1,3,2,10,14\n"
+        "triton_poi_kernel,aten::add,aten::add,aten::add,aten::add,4,1,-3,7,2\n"
     )
 
     async def insert_job():
@@ -4057,7 +4070,8 @@ def test_all_kernels_cmp_without_family_exposes_virtual_family(client):
     detail = client.get("/api/jobs/cmp-table-job")
     assert detail.status_code == 200
     assert detail.json()["result_files"]["all_kernels_cmp.csv"]["fields"] == [
-        "kernel_name", "family", "avg_dur_ms_A", "avg_dur_ms_B", "delta_dur_ms",
+        "kernel_name", "family", "primary_host_op_A", "primary_host_op_B",
+        "avg_dur_ms_A", "avg_dur_ms_B", "delta_dur_ms",
         "avg_count_A", "avg_count_B", "delta_count", "compare_status",
     ]
 
@@ -4073,6 +4087,9 @@ def test_all_kernels_cmp_without_family_exposes_virtual_family(client):
     assert filtered.json()["filtered_total"] == 1
     assert filtered.json()["rows"][0]["kernel_name"] == "gemm_kernel"
     assert filtered.json()["rows"][0]["family"] == "gemm"
+    assert filtered.json()["rows"][0]["primary_host_op_A"] == "torch_mlu::mm"
+    assert "primary_aten_op_A" not in filtered.json()["rows"][0]
+    assert "primary_aten_op_B" not in filtered.json()["rows"][0]
     assert filtered.json()["rows"][0]["avg_count_A"] == "10"
     assert filtered.json()["rows"][0]["avg_count_B"] == "14"
     assert filtered.json()["rows"][0]["delta_count"] == "4"

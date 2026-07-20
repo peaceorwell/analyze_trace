@@ -535,7 +535,7 @@ class TestComputeAvgs:
 
         shared = avgs["avg_kernels"]["shared_gemm_kernel"]
         assert shared["primary_host_op"] == "torch_mlu::fused_mm"
-        assert shared["primary_aten_op"] == "aten::mm"
+        assert "primary_aten_op" not in shared
         assert shared["host_op_count"] == 2
         assert shared["host_op_coverage_pct"] == 100.0
 
@@ -597,7 +597,7 @@ class TestComputeAvgs:
         with open(output_dir / "all_kernels_avg.csv") as f:
             kernel_rows = {row["kernel_name"]: row for row in csv.DictReader(f)}
         assert kernel_rows["shared_gemm_kernel"]["primary_host_op"] == "torch_mlu::fused_mm"
-        assert kernel_rows["shared_gemm_kernel"]["primary_aten_op"] == "aten::mm"
+        assert "primary_aten_op" not in kernel_rows["shared_gemm_kernel"]
         assert kernel_rows["shared_gemm_kernel"]["host_op_coverage_pct"] == "100"
 
         with open(output_dir / "kernel_host_ops.csv") as f:
@@ -1078,7 +1078,6 @@ class TestEndToEnd:
                 "avg_count": 1,
                 "avg_dur_ms": 2,
                 "primary_host_op": "aten::mm",
-                "primary_aten_op": "aten::mm",
                 "host_op_coverage_pct": 100,
             }},
             "kernel_families": {"gemm_kernel_a": "gemm"},
@@ -1092,7 +1091,6 @@ class TestEndToEnd:
                 "avg_count": 1,
                 "avg_dur_ms": 5,
                 "primary_host_op": "aten::addmm",
-                "primary_aten_op": "aten::addmm",
                 "host_op_coverage_pct": 80,
             }},
             "kernel_families": {"gemm_kernel_a": "gemm"},
@@ -1110,6 +1108,8 @@ class TestEndToEnd:
         assert rows[0]["family"] == "gemm"
         assert rows[0]["primary_host_op_A"] == "aten::mm"
         assert rows[0]["primary_host_op_B"] == "aten::addmm"
+        assert "primary_aten_op_A" not in rows[0]
+        assert "primary_aten_op_B" not in rows[0]
         assert rows[0]["host_op_coverage_pct_B"] == "80"
         assert rows[0]["delta_dur_ms"] == "3"
 

@@ -7,7 +7,7 @@ const { createRouter, createWebHashHistory } = VueRouter;
 
 let appInitialized = false;
 const DEFAULT_RESULT_TAB = "chart";
-const CLIENT_APP_VERSION = "0.5.30";
+const CLIENT_APP_VERSION = "0.5.31";
 const APP_VERSION_CHECK_INTERVAL_MS = 60_000;
 let appVersionCheckTimer = null;
 
@@ -734,6 +734,16 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.31",
+    date: "2026-07-20",
+    title: "Host Op 展示与明细性能优化",
+    items: [
+      "Kernel 汇总和对比结果合并重复的主要 Host/Aten Op 列，仅保留信息更完整的主要 Host Op。",
+      "Host/Aten 多对多关系仍在 Host Op 关联数中按需展开，诊断信息保持完整。",
+      "大规模关系明细改为精确索引式读取并增加前端缓存，显著降低展开等待时间。",
+    ],
+  },
   {
     version: "0.5.30",
     date: "2026-07-20",
@@ -1876,7 +1886,6 @@ const TABLE_FIELD_META = Object.freeze({
   host_op: { label: "Host Op", hint: "通过关联标识精确匹配到的 Host 侧算子" },
   aten_op: { label: "Aten Op", hint: "同一关联标识下识别到的 Aten 算子" },
   primary_host_op: { label: "主要 Host Op", hint: "关联 Kernel 耗时占比最高的 Host 侧算子" },
-  primary_aten_op: { label: "主要 Aten Op", hint: "关联 Kernel 耗时占比最高的 Aten 算子" },
   type: { label: "Kernel 类型", hint: "按执行特征归类的 Kernel 类型" },
   family: { label: "Kernel 家族", hint: "Kernel 所属计算或通信家族" },
   match_method: { label: "匹配方式", hint: "当前行使用的算子关联或对比匹配依据" },
@@ -5791,6 +5800,8 @@ const fetchResultTable = async (filename, options = {}) => {
 };
 
 const KERNEL_HOST_OP_DETAIL_LIMIT = 50;
+const KERNEL_HOST_OP_DETAIL_CACHE_LIMIT = 100;
+const kernelHostOpDetailCache = new Map();
 const kernelHostOpNumber = value => {
   const number = Number.parseFloat(String(value ?? "").replace("%", ""));
   return Number.isFinite(number) ? number : null;
@@ -5828,35 +5839,47 @@ const loadKernelHostOpDetail = async row => {
   const kernelName = String(row?.kernel_name || "").trim();
   if (!jobId || !kernelName || !canExpandKernelHostOpRow(row)) return;
   kernelHostOpDetailController?.abort();
+  kernelHostOpDetailController = null;
+  const cacheKey = `${jobId}\n${kernelName}`;
+  const cached = kernelHostOpDetailCache.get(cacheKey);
+  if (cached) {
+    kernelHostOpDetailCache.delete(cacheKey);
+    kernelHostOpDetailCache.set(cacheKey, cached);
+    kernelHostOpDetail.value = { kernelName, ...cached, loading: false, error: "" };
+    return;
+  }
   const controller = new AbortController();
   kernelHostOpDetailController = controller;
   kernelHostOpDetail.value = { kernelName, rows: [], total: 0, loading: true, error: "" };
-  const viewState = {
-    ...defaultResultViewState(),
-    tableLimit: KERNEL_HOST_OP_DETAIL_LIMIT,
-    tableOffset: 0,
-    sortCol: "avg_dur_ms",
-    sortAsc: false,
-    colFilters: { kernel_name: kernelName },
-    colFilterOps: { kernel_name: "==" },
-  };
   try {
-    const data = await fetchResultTable("kernel_host_ops.csv", {
-      jobId,
-      signal: controller.signal,
-      limit: KERNEL_HOST_OP_DETAIL_LIMIT,
-      offset: 0,
-      viewState,
+    const params = new URLSearchParams({
+      kernel_name: kernelName,
+      limit: String(KERNEL_HOST_OP_DETAIL_LIMIT),
     });
+    const response = await fetch(
+      `/api/jobs/${encodeURIComponent(jobId)}/kernel-host-ops?${params}`,
+      { credentials: "include", signal: controller.signal },
+    );
+    const data = await readJsonResponse(response, {});
+    if (!response.ok) {
+      throw new ApiRequestError(apiErrorMessage(response, data, "加载 Host Op 关联失败"), {
+        status: response.status,
+        authExpired: response.status === 401,
+      });
+    }
     if (kernelHostOpDetailController !== controller) return;
     if (selectedJobId.value !== jobId || kernelHostOpDetail.value.kernelName !== kernelName) return;
-    kernelHostOpDetail.value = {
-      kernelName,
+    const detail = {
       rows: data.rows || [],
       total: data.filtered_total ?? data.total ?? 0,
       loading: false,
       error: "",
     };
+    kernelHostOpDetailCache.set(cacheKey, detail);
+    if (kernelHostOpDetailCache.size > KERNEL_HOST_OP_DETAIL_CACHE_LIMIT) {
+      kernelHostOpDetailCache.delete(kernelHostOpDetailCache.keys().next().value);
+    }
+    kernelHostOpDetail.value = { kernelName, ...detail };
   } catch (error) {
     if (error.name === "AbortError" || kernelHostOpDetailController !== controller) return;
     kernelHostOpDetail.value = {

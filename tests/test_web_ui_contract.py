@@ -73,15 +73,15 @@ def test_kernel_host_op_details_are_nested_under_all_kernels():
     assert '"kernel_host_ops.csv":      "Kernel ↔ Host Op"' not in APP_JS
     assert "多关联或未匹配项可在 Host Op 关联数列展开" in APP_JS
     assert 'f === \'host_op_count\' && canExpandKernelHostOpRow(row)' in APP_JS
-    assert 'colFilters: { kernel_name: kernelName }' in APP_JS
-    assert 'colFilterOps: { kernel_name: "==" }' in APP_JS
-    assert 'fetchResultTable("kernel_host_ops.csv"' in APP_JS
+    assert 'kernel-host-ops?${params}' in APP_JS
+    assert "const kernelHostOpDetailCache = new Map();" in APP_JS
+    assert "const cached = kernelHostOpDetailCache.get(cacheKey);" in APP_JS
     assert "导出 Host Op 关系 CSV" in APP_JS
     assert 'class="kernel-host-op-detail-panel"' in APP_JS
     assert "const number = Number(v);" in APP_JS
     assert "fmtSum(relation.avg_count)" in APP_JS
     assert 'primary_host_op: { label: "主要 Host Op"' in APP_JS
-    assert 'primary_aten_op: { label: "主要 Aten Op"' in APP_JS
+    assert "primary_aten_op:" not in APP_JS
     assert 'host_op_coverage_pct: { label: "Host Op 覆盖率 (%)"' in APP_JS
     assert 'share_pct: { label: "Kernel 内占比 (%)"' in APP_JS
     assert "if (isSourcePercentField(f)) { result[f] = null; continue; }" in APP_JS
@@ -89,7 +89,7 @@ def test_kernel_host_op_details_are_nested_under_all_kernels():
 
 
 def test_frontend_recovers_from_a_stale_version():
-    assert 'const CLIENT_APP_VERSION = "0.5.30";' in APP_JS
+    assert 'const CLIENT_APP_VERSION = "0.5.31";' in APP_JS
     assert 'const APP_VERSION_CHECK_INTERVAL_MS = 60_000;' in APP_JS
     assert 'cache: "no-store"' in APP_JS
     assert 'url.searchParams.set("_app_version", normalized);' in APP_JS

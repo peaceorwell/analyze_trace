@@ -11,6 +11,7 @@ import io
 import json
 import logging
 import math
+import mmap
 import mimetypes
 import os
 import re
@@ -60,7 +61,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.5.30"
+APP_VERSION = "0.5.31"
 NO_STORE_HEADERS = {"Cache-Control": "no-store, max-age=0"}
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
@@ -1708,18 +1709,26 @@ _VISIBLE_SOURCE_PERCENT_FIELDS = {
     "share_pct",
 }
 
+_HIDDEN_RESULT_CSV_FIELDS = {
+    "primary_aten_op",
+    "primary_aten_op_A",
+    "primary_aten_op_B",
+}
+
 
 def _filter_result_csv_fields(fields: list[str]) -> list[str]:
     return [
         field for field in fields
-        if field in _VISIBLE_SOURCE_PERCENT_FIELDS or not _is_percent_csv_field(field)
+        if field not in _HIDDEN_RESULT_CSV_FIELDS
+        and (field in _VISIBLE_SOURCE_PERCENT_FIELDS or not _is_percent_csv_field(field))
     ]
 
 
 def _filter_result_csv_row(row: dict) -> dict:
     return {
         field: value for field, value in row.items()
-        if field in _VISIBLE_SOURCE_PERCENT_FIELDS or not _is_percent_csv_field(field)
+        if field not in _HIDDEN_RESULT_CSV_FIELDS
+        and (field in _VISIBLE_SOURCE_PERCENT_FIELDS or not _is_percent_csv_field(field))
     }
 
 
@@ -1826,7 +1835,11 @@ def _aggregate_kernel_type_rows(filename: str, fields: list[str], rows: list[dic
 
 def _result_csv_fields(filename: str, fields: list[str]) -> list[str]:
     fields = _filter_result_csv_fields(_augment_result_csv_fields(filename, fields))
-    if "avg_dur_ms" in fields and not filename.endswith("_cmp.csv"):
+    if (
+        "avg_dur_ms" in fields
+        and not filename.endswith("_cmp.csv")
+        and filename != "kernel_host_ops.csv"
+    ):
         fields.extend(field for field in ("duration_pct", "cumulative_pct") if field not in fields)
     if filename.endswith("_cmp.csv") and {"avg_dur_ms_A", "avg_dur_ms_B", "delta_dur_ms"}.issubset(fields):
         fields.extend(field for field in ("compare_status",) if field not in fields)
@@ -3824,6 +3837,71 @@ def _sort_value(value):
         return (0, float(value))
     except (TypeError, ValueError):
         return (1, str(value or "").lower())
+
+
+def read_kernel_host_op_detail(path: str, kernel_name: str, limit: int = 50) -> dict:
+    """Read one kernel's relation rows without scanning and parsing the whole CSV."""
+    limit = max(1, min(limit, 50))
+    rows = None
+    if kernel_name and "\n" not in kernel_name and "\r" not in kernel_name:
+        encoded_field = io.StringIO(newline="")
+        csv.writer(encoded_field, lineterminator="").writerow([kernel_name])
+        prefix = encoded_field.getvalue().encode("utf-8") + b","
+        try:
+            with open(path, "rb") as source:
+                if os.fstat(source.fileno()).st_size == 0:
+                    rows = []
+                    fields = []
+                else:
+                    with mmap.mmap(source.fileno(), 0, access=mmap.ACCESS_READ) as data:
+                        header_end = data.find(b"\n")
+                        if header_end < 0:
+                            rows = []
+                            fields = []
+                        else:
+                            header = data[:header_end].rstrip(b"\r").decode("utf-8-sig")
+                            fields = next(csv.reader([header]))
+                            rows = []
+                            marker = b"\n" + prefix
+                            position = data.find(marker, header_end)
+                            while position >= 0:
+                                row_start = position + 1
+                                row_end = data.find(b"\n", row_start)
+                                if row_end < 0:
+                                    row_end = len(data)
+                                raw = data[row_start:row_end].rstrip(b"\r").decode("utf-8")
+                                values = next(csv.reader([raw]))
+                                if len(values) != len(fields) or values[0] != kernel_name:
+                                    rows = None
+                                    break
+                                rows.append(_result_csv_row(os.path.basename(path), dict(zip(fields, values))))
+                                position = data.find(marker, row_end)
+        except (OSError, UnicodeDecodeError, csv.Error, StopIteration):
+            rows = None
+
+    if rows is None:
+        result = read_csv_page(
+            path,
+            filters={"kernel_name": kernel_name},
+            filter_ops={"kernel_name": "=="},
+            sort_col="avg_dur_ms",
+            sort_dir="desc",
+            limit=limit,
+            offset=0,
+        )
+        result["total"] = result["filtered_total"]
+        return result
+
+    fields = _result_csv_fields(os.path.basename(path), fields)
+    rows.sort(key=lambda item: _sort_value(item.get("avg_dur_ms")), reverse=True)
+    return {
+        "fields": fields,
+        "rows": rows[:limit],
+        "total": len(rows),
+        "filtered_total": len(rows),
+        "limit": limit,
+        "offset": 0,
+    }
 
 
 def read_csv_page(
@@ -10348,6 +10426,27 @@ async def get_job_result_table(
         limit=limit,
         offset=offset,
     )
+
+
+@app.get("/api/jobs/{jid}/kernel-host-ops")
+async def get_kernel_host_op_detail(
+    request: Request,
+    jid: str,
+    kernel_name: str,
+    limit: int = 50,
+):
+    db = await get_db()
+    try:
+        row = await load_accessible_job(db, request, jid, "id, status")
+    finally:
+        await db.close()
+    if not row:
+        raise HTTPException(404)
+    if row["status"] != "done":
+        raise HTTPException(409, "Job is not done")
+
+    path = _safe_result_csv_path(row["id"], "kernel_host_ops.csv")
+    return await run_in_threadpool(read_kernel_host_op_detail, path, kernel_name, limit)
 
 
 @app.patch("/api/jobs/{jid}")

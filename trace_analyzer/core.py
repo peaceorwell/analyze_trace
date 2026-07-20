@@ -574,7 +574,7 @@ def _write_kernels_avg_csv(path, avg_kernels, kernel_families=None):
     families = {name: kernel_families.get(name) or extract_kernel_family(name) for name in avg_kernels}
     with open(path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=[
-            "kernel_name", "family", "primary_host_op", "primary_aten_op",
+            "kernel_name", "family", "primary_host_op",
             "host_op_count", "host_op_coverage_pct",
             "avg_count", "avg_dur_ms", "avg_us_per_call",
         ])
@@ -587,7 +587,6 @@ def _write_kernels_avg_csv(path, avg_kernels, kernel_families=None):
                 "kernel_name":     name,
                 "family":          fam,
                 "primary_host_op": s.get("primary_host_op", ""),
-                "primary_aten_op": s.get("primary_aten_op", ""),
                 "host_op_count":   s.get("host_op_count", ""),
                 "host_op_coverage_pct": fmt3(s.get("host_op_coverage_pct")),
                 "avg_count":       fmt3(cnt),
@@ -1937,27 +1936,19 @@ def compute_avgs(parsed):
         relations_by_kernel[relation["kernel_name"]].append(relation)
     for kernel_name, stats in avg_kernels_data.items():
         host_durations = defaultdict(float)
-        aten_durations = defaultdict(float)
         mapped_dur_ms = 0.0
         matched_relation_count = 0
         for relation in relations_by_kernel.get(kernel_name, []):
             host_op = relation["host_op"]
-            aten_op = relation["aten_op"]
             if host_op:
                 host_durations[host_op] += relation["avg_dur_ms"]
                 mapped_dur_ms += relation["avg_dur_ms"]
                 matched_relation_count += 1
-            if aten_op:
-                aten_durations[aten_op] += relation["avg_dur_ms"]
         kernel_dur_ms = stats["avg_dur_ms"]
         stats.update({
             "primary_host_op": (
                 max(host_durations.items(), key=lambda item: (item[1], item[0]))[0]
                 if host_durations else ""
-            ),
-            "primary_aten_op": (
-                max(aten_durations.items(), key=lambda item: (item[1], item[0]))[0]
-                if aten_durations else ""
             ),
             "host_op_count": matched_relation_count,
             "host_op_coverage_pct": mapped_dur_ms / kernel_dur_ms * 100 if kernel_dur_ms > 0 else 0.0,
@@ -2429,8 +2420,6 @@ def _write_kernels_cmp_csv(path, data_a, data_b):
             "family":       families_b.get(name) or families_a.get(name) or extract_kernel_family(name),
             "primary_host_op_A": a.get("primary_host_op", ""),
             "primary_host_op_B": b.get("primary_host_op", ""),
-            "primary_aten_op_A": a.get("primary_aten_op", ""),
-            "primary_aten_op_B": b.get("primary_aten_op", ""),
             "host_op_coverage_pct_A": fmt3(a.get("host_op_coverage_pct")),
             "host_op_coverage_pct_B": fmt3(b.get("host_op_coverage_pct")),
             "avg_dur_ms_A": fmt3(a["avg_dur_ms"]),
@@ -2444,7 +2433,7 @@ def _write_kernels_cmp_csv(path, data_a, data_b):
     rows.sort(key=lambda r: -r["_sort"])
     fields = [
               "kernel_name", "family",
-              "primary_host_op_A", "primary_host_op_B", "primary_aten_op_A", "primary_aten_op_B",
+              "primary_host_op_A", "primary_host_op_B",
               "host_op_coverage_pct_A", "host_op_coverage_pct_B",
               "avg_dur_ms_A", "avg_dur_ms_B", "delta_dur_ms",
               "avg_count_A", "avg_count_B", "delta_count"]
