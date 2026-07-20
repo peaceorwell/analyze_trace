@@ -77,7 +77,12 @@ def test_kernel_host_op_details_are_nested_under_all_kernels():
     assert "const kernelHostOpDetailCache = new Map();" in APP_JS
     assert "const cached = kernelHostOpDetailCache.get(cacheKey);" in APP_JS
     assert "导出 Host Op 关系 CSV" in APP_JS
+    assert 'v-memo="tableRenderMemo"' in APP_JS
+    assert 'class="kernel-host-op-detail-drawer"' in APP_JS
     assert 'class="kernel-host-op-detail-panel"' in APP_JS
+    assert "position: absolute; z-index: 9;" in STYLE_CSS
+    assert "contain: layout paint;" in STYLE_CSS
+    assert "kernel-host-op-detail-row" not in APP_JS
     assert "const number = Number(v);" in APP_JS
     assert "fmtSum(relation.avg_count)" in APP_JS
     assert 'primary_host_op: { label: "主要 Host Op"' in APP_JS

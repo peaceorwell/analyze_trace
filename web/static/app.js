@@ -2147,6 +2147,25 @@ const colSums = computed(() => {
   return result;
 });
 
+// Keep the large table subtree stable while the Host Op drawer changes state.
+// The drawer is rendered outside the table and does not need to invalidate
+// thousands of otherwise unchanged cells on open, load, or close.
+const tableRenderMemo = computed(() => [
+  displayedFields.value,
+  filteredRows.value,
+  colSums.value,
+  sortCol.value,
+  sortAsc.value,
+  colWidths.value,
+  colFilters.value,
+  colFilterOps.value,
+  resultTab.value,
+  tableStyle.value,
+  tritonStatus.value,
+  allowCodeExecution.value,
+  hasKernelHostOpRelations.value,
+]);
+
 const fmtSum = v => {
   if (v === null || v === undefined || v === '') return '';
   const number = Number(v);
@@ -5899,6 +5918,10 @@ const toggleKernelHostOpDetail = row => {
     return;
   }
   loadKernelHostOpDetail(row);
+};
+const retryKernelHostOpDetail = () => {
+  const row = filteredRows.value.find(item => item.kernel_name === kernelHostOpDetail.value.kernelName);
+  if (row) loadKernelHostOpDetail(row);
 };
 
 const loadResultTable = async ({ resetOffset = false, filename = resultTab.value, viewState = null } = {}) => {
@@ -10512,7 +10535,7 @@ const JobDetail = {
               <span class="spinner-small"></span> 加载表格...
             </div>
             <div class="csv-table-wrap">
-            <table class="data-table" :style="tableStyle" aria-label="性能分析结果表格">
+            <table v-memo="tableRenderMemo" class="data-table" :style="tableStyle" aria-label="性能分析结果表格">
               <colgroup>
                 <col v-for="f in displayedFields" :key="f"
                      :style="tableColumnStyle(f)" />
@@ -10586,8 +10609,7 @@ const JobDetail = {
                       <template v-else-if="f === 'host_op_count' && canExpandKernelHostOpRow(row)">
                         <button type="button"
                                 class="table-cell-link kernel-host-op-toggle"
-                                :class="{ expanded: isKernelHostOpDetailExpanded(row) }"
-                                :aria-expanded="String(isKernelHostOpDetailExpanded(row))"
+                                aria-haspopup="dialog"
                                 :title="kernelHostOpDetailReason(row) + '，点击查看 Host Op 关联明细'"
                                 @click.stop="toggleKernelHostOpDetail(row)">
                           <span>{{ row[f] || 0 }}</span>
@@ -10640,46 +10662,6 @@ const JobDetail = {
                       <span v-else>{{ row[f] }}</span>
                     </td>
                   </tr>
-                  <tr v-if="isKernelHostOpDetailExpanded(row)" class="kernel-host-op-detail-row">
-                    <td :colspan="Math.max(displayedFields.length, 1)">
-                      <div class="kernel-host-op-detail-panel">
-                        <div class="kernel-host-op-detail-header">
-                          <div>
-                            <strong>Host Op 关联明细</strong>
-                            <span :title="kernelHostOpDetail.kernelName">{{ kernelHostOpDetail.kernelName }}</span>
-                          </div>
-                          <div>
-                            <span v-if="!kernelHostOpDetail.loading && !kernelHostOpDetail.error">
-                              {{ kernelHostOpDetail.total }} 条关系<span v-if="kernelHostOpDetail.total > kernelHostOpDetail.rows.length">，显示前 {{ kernelHostOpDetail.rows.length }} 条</span>
-                            </span>
-                            <button type="button" class="btn btn-xs btn-outline" @click.stop="closeKernelHostOpDetail">收起</button>
-                          </div>
-                        </div>
-                        <div v-if="kernelHostOpDetail.loading" class="kernel-host-op-detail-state">
-                          <span class="spinner-small"></span> 加载关联明细...
-                        </div>
-                        <div v-else-if="kernelHostOpDetail.error" class="kernel-host-op-detail-state error">
-                          <span>{{ kernelHostOpDetail.error }}</span>
-                          <button type="button" class="btn btn-xs btn-outline" @click.stop="loadKernelHostOpDetail(row)">重试</button>
-                        </div>
-                        <div v-else-if="!kernelHostOpDetail.rows.length" class="kernel-host-op-detail-state">暂无关联明细</div>
-                        <div v-else class="kernel-host-op-detail-list">
-                          <div v-for="(relation, relationIndex) in kernelHostOpDetail.rows"
-                               :key="relation.host_op + '|' + relation.aten_op + '|' + relationIndex"
-                               :class="['kernel-host-op-detail-item', { unmatched: !relation.host_op }]">
-                            <div class="kernel-host-op-detail-name">
-                              <strong :title="relation.host_op || '未匹配 Host Op'">{{ relation.host_op || '未匹配 Host Op' }}</strong>
-                              <span v-if="relation.aten_op && relation.aten_op !== relation.host_op" :title="relation.aten_op">Aten · {{ relation.aten_op }}</span>
-                            </div>
-                            <span><small>平均调用</small>{{ fmtSum(relation.avg_count) }}</span>
-                            <span><small>平均耗时</small>{{ fmtSum(relation.avg_dur_ms) }} ms</span>
-                            <span><small>Kernel 内占比</small>{{ formatDurationShare(relation.share_pct) }}</span>
-                            <span class="kernel-host-op-match">{{ kernelHostOpMatchLabel(relation.match_method) }}</span>
-                          </div>
-                        </div>
-                      </div>
-                    </td>
-                  </tr>
                 </template>
               </tbody>
               <tfoot v-if="filteredRows.length > 0">
@@ -10691,6 +10673,47 @@ const JobDetail = {
                 </tr>
               </tfoot>
             </table>
+            </div>
+          </div>
+          <div v-if="kernelHostOpDetail.kernelName"
+               class="kernel-host-op-detail-drawer"
+               role="dialog"
+               aria-label="Host Op 关联明细">
+            <div class="kernel-host-op-detail-panel">
+              <div class="kernel-host-op-detail-header">
+                <div>
+                  <strong>Host Op 关联明细</strong>
+                  <span :title="kernelHostOpDetail.kernelName">{{ kernelHostOpDetail.kernelName }}</span>
+                </div>
+                <div>
+                  <span v-if="!kernelHostOpDetail.loading && !kernelHostOpDetail.error">
+                    {{ kernelHostOpDetail.total }} 条关系<span v-if="kernelHostOpDetail.total > kernelHostOpDetail.rows.length">，显示前 {{ kernelHostOpDetail.rows.length }} 条</span>
+                  </span>
+                  <button type="button" class="btn btn-xs btn-outline" @click.stop="closeKernelHostOpDetail">收起</button>
+                </div>
+              </div>
+              <div v-if="kernelHostOpDetail.loading" class="kernel-host-op-detail-state">
+                <span class="spinner-small"></span> 加载关联明细...
+              </div>
+              <div v-else-if="kernelHostOpDetail.error" class="kernel-host-op-detail-state error">
+                <span>{{ kernelHostOpDetail.error }}</span>
+                <button type="button" class="btn btn-xs btn-outline" @click.stop="retryKernelHostOpDetail">重试</button>
+              </div>
+              <div v-else-if="!kernelHostOpDetail.rows.length" class="kernel-host-op-detail-state">暂无关联明细</div>
+              <div v-else class="kernel-host-op-detail-list">
+                <div v-for="(relation, relationIndex) in kernelHostOpDetail.rows"
+                     :key="relation.host_op + '|' + relation.aten_op + '|' + relationIndex"
+                     :class="['kernel-host-op-detail-item', { unmatched: !relation.host_op }]">
+                  <div class="kernel-host-op-detail-name">
+                    <strong :title="relation.host_op || '未匹配 Host Op'">{{ relation.host_op || '未匹配 Host Op' }}</strong>
+                    <span v-if="relation.aten_op && relation.aten_op !== relation.host_op" :title="relation.aten_op">Aten · {{ relation.aten_op }}</span>
+                  </div>
+                  <span><small>平均调用</small>{{ fmtSum(relation.avg_count) }}</span>
+                  <span><small>平均耗时</small>{{ fmtSum(relation.avg_dur_ms) }} ms</span>
+                  <span><small>Kernel 内占比</small>{{ formatDurationShare(relation.share_pct) }}</span>
+                  <span class="kernel-host-op-match">{{ kernelHostOpMatchLabel(relation.match_method) }}</span>
+                </div>
+              </div>
             </div>
           </div>
           <div class="table-footer table-footer-paged">
@@ -10768,7 +10791,7 @@ const JobDetail = {
       activeChartMetricDef, activeChartTitle, chartShareHeader,
       chartFallbackBarWidth, chartFallbackBarTone, chartFallbackValueLabel,
       buildChart, drillDownChart, fmtDeltaMs, fmtChartPercent, fmtChartValue,
-      displayedFields, filteredRows, tableSearch, sortCol, sortAsc, colWidths, colFilters,
+      displayedFields, filteredRows, tableRenderMemo, tableSearch, sortCol, sortAsc, colWidths, colFilters,
       colFilterOps, visibleColumns, showColumnMenu, hiddenColumnCount,
       tableLimit, tableOffset, tableTotalRows, tablePageStart, tablePageEnd,
       tablePageSizeOptions, customTableLimit, changeTableLimit, showAllTableRows,
@@ -10776,8 +10799,9 @@ const JobDetail = {
       resultTableLoading, resultTableError, preparingResultTab, prevTablePage, nextTablePage, loadResultTable,
       hasColFilters, colSums, isKernelTypeTab, canDrillKernelTypeRow,
       hasKernelHostOpRelations, kernelHostOpDetail,
-      canExpandKernelHostOpRow, isKernelHostOpDetailExpanded, kernelHostOpDetailReason,
-      kernelHostOpMatchLabel, toggleKernelHostOpDetail, loadKernelHostOpDetail, closeKernelHostOpDetail,
+      canExpandKernelHostOpRow, kernelHostOpDetailReason,
+      kernelHostOpMatchLabel, toggleKernelHostOpDetail,
+      retryKernelHostOpDetail, closeKernelHostOpDetail,
       isComparisonTable, applyComparisonColumnPreset, comparisonColumnGroup,
       comparisonStatusLabel, comparisonStatusClass,
       isKernelTypeDrillCell, drillDownKernelType,
