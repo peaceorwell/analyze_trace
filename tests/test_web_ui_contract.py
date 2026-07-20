@@ -69,8 +69,17 @@ def test_csv_filter_defaults_to_text_for_the_implicit_contains_operator():
     assert ":type=\"(!colFilterOps[f] || ['~', '!~', '=='].includes(colFilterOps[f])) ? 'text' : 'number'\"" in APP_JS
 
 
-def test_kernel_host_op_tables_have_clear_percent_display_contracts():
-    assert '"kernel_host_ops.csv":      "Kernel ↔ Host Op"' in APP_JS
+def test_kernel_host_op_details_are_nested_under_all_kernels():
+    assert '"kernel_host_ops.csv":      "Kernel ↔ Host Op"' not in APP_JS
+    assert "多关联或未匹配项可在 Host Op 关联数列展开" in APP_JS
+    assert 'f === \'host_op_count\' && canExpandKernelHostOpRow(row)' in APP_JS
+    assert 'colFilters: { kernel_name: kernelName }' in APP_JS
+    assert 'colFilterOps: { kernel_name: "==" }' in APP_JS
+    assert 'fetchResultTable("kernel_host_ops.csv"' in APP_JS
+    assert "导出 Host Op 关系 CSV" in APP_JS
+    assert 'class="kernel-host-op-detail-panel"' in APP_JS
+    assert "const number = Number(v);" in APP_JS
+    assert "fmtSum(relation.avg_count)" in APP_JS
     assert 'primary_host_op: { label: "主要 Host Op"' in APP_JS
     assert 'primary_aten_op: { label: "主要 Aten Op"' in APP_JS
     assert 'host_op_coverage_pct: { label: "Host Op 覆盖率 (%)"' in APP_JS

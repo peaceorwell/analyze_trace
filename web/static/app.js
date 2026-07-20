@@ -155,6 +155,14 @@ const resultTable = ref({ fields: [], rows: [], total: 0, filtered_total: 0, lim
 const resultTableFile = ref("");
 const resultTableLoading = ref(false);
 const resultTableError = ref("");
+const kernelHostOpDetail = ref({
+  kernelName: "",
+  rows: [],
+  total: 0,
+  loading: false,
+  error: "",
+});
+let kernelHostOpDetailController = null;
 const preparingResultTab = ref("");
 const isReadingMode = ref(false);
 const consoleSearch = ref("");
@@ -194,7 +202,7 @@ const chartDumbbellActive = ref(false);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.5.28");
+const appVersion = ref("0.5.29");
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -723,6 +731,16 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.29",
+    date: "2026-07-20",
+    title: "Host Op 关系展示精简",
+    items: [
+      "移除重复的 Kernel ↔ Host Op 一级页签，将异常关系收进所有 Kernel 按需展开。",
+      "明细展示 Host/Aten Op、调用数、耗时占比和匹配方式，并保留完整 CSV 导出。",
+      "补充同一 Host 对应多个 Aten 的计数，并修复明细渲染和横向滚动布局。",
+    ],
+  },
   {
     version: "0.5.28",
     date: "2026-07-19",
@@ -1630,7 +1648,6 @@ const availableTabs = computed(() => {
   const csvMap = {
     "all_kernels_avg.csv":      "所有 Kernel",
     "all_kernels_cmp.csv":      "Kernel 对比",
-    "kernel_host_ops.csv":      "Kernel ↔ Host Op",
     "triton_kernels_avg.csv":   "Triton",
     "triton_kernels_cmp.csv":   "Triton 对比",
     "non_triton_kernel_efficiency_avg.csv": "非 Triton 效率",
@@ -1774,6 +1791,11 @@ const currentTable = computed(() => {
   return emptyResultTableForTab(resultTab.value);
 });
 
+const hasKernelHostOpRelations = computed(() => Boolean(
+  selectedJob.value?.result_files?.["kernel_host_ops.csv"]
+  || selectedJob.value?.results?.["kernel_host_ops.csv"]
+));
+
 const isKernelTypeTab = computed(() =>
   ["kernel_types_avg.csv", "kernel_types_cmp.csv"].includes(resultTab.value)
 );
@@ -1850,7 +1872,7 @@ const TABLE_FIELD_META = Object.freeze({
   avg_dur_ms: { label: "平均耗时 (ms)", hint: "所选 step 中累计设备耗时的平均值" },
   delta_dur_ms: { label: "耗时差值 (B-A, ms)", hint: "B 相对 A 的设备耗时变化，正值表示变慢" },
   avg_us_per_call: { label: "平均单次耗时 (μs)", hint: "每次调用的平均设备执行时间" },
-  host_op_count: { label: "Host Op 数量", hint: "该 Kernel 关联到的不同 Host Op 数量" },
+  host_op_count: { label: "Host Op 关联数", hint: "该 Kernel 关联到的不同 Host/Aten 关系数量" },
   host_op_coverage_pct: { label: "Host Op 覆盖率 (%)", hint: "成功关联 Host Op 的 Kernel 设备耗时占比" },
   share_pct: { label: "Kernel 内占比 (%)", hint: "该 Host Op 关系在此 Kernel 设备耗时中的占比" },
   avg_io_gb: { label: "平均 IO 量 (GB)", hint: "估算的平均读写数据量" },
@@ -2104,9 +2126,11 @@ const colSums = computed(() => {
 });
 
 const fmtSum = v => {
-  if (v === null) return '';
-  if (Number.isInteger(v)) return String(v);
-  const s = v.toFixed(3);
+  if (v === null || v === undefined || v === '') return '';
+  const number = Number(v);
+  if (!Number.isFinite(number)) return String(v);
+  if (Number.isInteger(number)) return String(number);
+  const s = number.toFixed(3);
   return parseFloat(s).toString();
 };
 
@@ -2879,7 +2903,7 @@ const normalizeApiError = (error, fallback = "请求失败") => {
 
 const loadConfig = async () => {
   const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.5.28";
+  appVersion.value = cfg.version || "0.5.29";
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
@@ -5712,9 +5736,98 @@ const fetchResultTable = async (filename, options = {}) => {
   return data;
 };
 
+const KERNEL_HOST_OP_DETAIL_LIMIT = 50;
+const kernelHostOpNumber = value => {
+  const number = Number.parseFloat(String(value ?? "").replace("%", ""));
+  return Number.isFinite(number) ? number : null;
+};
+const canExpandKernelHostOpRow = row => {
+  if (resultTab.value !== "all_kernels_avg.csv" || !hasKernelHostOpRelations.value || !row?.kernel_name) {
+    return false;
+  }
+  const count = kernelHostOpNumber(row.host_op_count);
+  const coverage = kernelHostOpNumber(row.host_op_coverage_pct);
+  if (count === null || coverage === null) return false;
+  return count !== 1 || coverage < 99.999;
+};
+const isKernelHostOpDetailExpanded = row =>
+  Boolean(row?.kernel_name && kernelHostOpDetail.value.kernelName === row.kernel_name);
+const kernelHostOpDetailReason = row => {
+  const count = kernelHostOpNumber(row?.host_op_count) || 0;
+  const coverage = kernelHostOpNumber(row?.host_op_coverage_pct) || 0;
+  if (count === 0 || coverage <= 0) return "未匹配";
+  if (coverage < 99.999) return "部分匹配";
+  return "多关联";
+};
+const kernelHostOpMatchLabel = method => ({
+  external_id: "External id",
+  tf_op: "tf_op",
+  unmatched: "未匹配",
+}[method] || method || "未匹配");
+const closeKernelHostOpDetail = () => {
+  kernelHostOpDetailController?.abort();
+  kernelHostOpDetailController = null;
+  kernelHostOpDetail.value = { kernelName: "", rows: [], total: 0, loading: false, error: "" };
+};
+const loadKernelHostOpDetail = async row => {
+  const jobId = selectedJobId.value;
+  const kernelName = String(row?.kernel_name || "").trim();
+  if (!jobId || !kernelName || !canExpandKernelHostOpRow(row)) return;
+  kernelHostOpDetailController?.abort();
+  const controller = new AbortController();
+  kernelHostOpDetailController = controller;
+  kernelHostOpDetail.value = { kernelName, rows: [], total: 0, loading: true, error: "" };
+  const viewState = {
+    ...defaultResultViewState(),
+    tableLimit: KERNEL_HOST_OP_DETAIL_LIMIT,
+    tableOffset: 0,
+    sortCol: "avg_dur_ms",
+    sortAsc: false,
+    colFilters: { kernel_name: kernelName },
+    colFilterOps: { kernel_name: "==" },
+  };
+  try {
+    const data = await fetchResultTable("kernel_host_ops.csv", {
+      jobId,
+      signal: controller.signal,
+      limit: KERNEL_HOST_OP_DETAIL_LIMIT,
+      offset: 0,
+      viewState,
+    });
+    if (kernelHostOpDetailController !== controller) return;
+    if (selectedJobId.value !== jobId || kernelHostOpDetail.value.kernelName !== kernelName) return;
+    kernelHostOpDetail.value = {
+      kernelName,
+      rows: data.rows || [],
+      total: data.filtered_total ?? data.total ?? 0,
+      loading: false,
+      error: "",
+    };
+  } catch (error) {
+    if (error.name === "AbortError" || kernelHostOpDetailController !== controller) return;
+    kernelHostOpDetail.value = {
+      kernelName,
+      rows: [],
+      total: 0,
+      loading: false,
+      error: normalizeApiError(error, "加载 Host Op 关联失败"),
+    };
+  } finally {
+    if (kernelHostOpDetailController === controller) kernelHostOpDetailController = null;
+  }
+};
+const toggleKernelHostOpDetail = row => {
+  if (isKernelHostOpDetailExpanded(row)) {
+    closeKernelHostOpDetail();
+    return;
+  }
+  loadKernelHostOpDetail(row);
+};
+
 const loadResultTable = async ({ resetOffset = false, filename = resultTab.value, viewState = null } = {}) => {
   const jobId = selectedJobId.value;
   if (!jobId || !filename?.endsWith(".csv")) return;
+  if (kernelHostOpDetail.value.kernelName) closeKernelHostOpDetail();
   if (resetOffset) {
     if (viewState) viewState = { ...viewState, tableOffset: 0 };
     else tableOffset.value = 0;
@@ -5753,6 +5866,9 @@ const loadResultTable = async ({ resetOffset = false, filename = resultTab.value
 const activateCsvTab = async (filename, { updateRoute = true, savePrevious = true } = {}) => {
   const jobId = selectedJobId.value;
   if (!jobId || !filename?.endsWith(".csv")) return;
+  if (filename !== "all_kernels_avg.csv" && kernelHostOpDetail.value.kernelName) {
+    closeKernelHostOpDetail();
+  }
   if (savePrevious) saveResultViewState(activeResultStateJobId, resultTab.value);
   if (resultTableController) resultTableController.abort();
 
@@ -7988,6 +8104,19 @@ const downloadFilteredCsv = filename => {
   a.click();
   a.remove();
   showToast(`已开始导出 ${fmtCount(tableTotalRows.value)} 行筛选结果`, "success");
+};
+
+const downloadKernelHostOpsCsv = () => {
+  const jobId = selectedJobId.value;
+  if (!jobId || !hasKernelHostOpRelations.value) return;
+  const params = new URLSearchParams({ download: "true" });
+  const a = document.createElement("a");
+  a.href = `/api/jobs/${encodeURIComponent(jobId)}/results/kernel_host_ops.csv?${params}`;
+  a.download = "kernel_host_ops.csv";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  showToast("已开始导出完整 Host Op 关系 CSV", "success");
 };
 
 const runSingleTriton = async (codePath) => {
@@ -10246,6 +10375,9 @@ const JobDetail = {
                 <button class="btn-clear-filter" @click="clearColFilters()">✕ 清除</button>
               </span>
               <span v-if="isKernelTypeTab" class="filter-active-tip">点击类型行下钻到相关 Kernel</span>
+              <span v-if="resultTab==='all_kernels_avg.csv' && hasKernelHostOpRelations" class="filter-active-tip">
+                多关联或未匹配项可在 Host Op 关联数列展开
+              </span>
             </div>
             <div class="table-toolbar-actions">
               <div v-if="isComparisonTable" class="compare-column-presets" aria-label="对比表格列预设">
@@ -10286,6 +10418,8 @@ const JobDetail = {
                 <div v-if="openActionMenu==='table'" class="action-menu">
                   <button type="button" @click="downloadFilteredCsv(resultTab); closeActionMenu()">导出全部筛选结果</button>
                   <button type="button" @click="downloadCsv(resultTab); closeActionMenu()">下载当前页 CSV</button>
+                  <button v-if="resultTab==='all_kernels_avg.csv' && hasKernelHostOpRelations"
+                          type="button" @click="downloadKernelHostOpsCsv(); closeActionMenu()">导出 Host Op 关系 CSV</button>
                   <button v-if="isTritonStepTab && allowCodeExecution" type="button"
                           @click="clearInductorCache(); closeActionMenu()">清除 Cache</button>
                 </div>
@@ -10358,65 +10492,118 @@ const JobDetail = {
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="(row,i) in filteredRows" :key="i"
-                    :class="[{ 'drill-row': canDrillKernelTypeRow(row) }, tableRowClass(row)]"
-                    @click="drillDownKernelType(row)">
-                  <td v-for="f in displayedFields" :key="f"
-                      :class="[deltaCellClass(f, row[f]), tableCellClass(f, row[f])]"
-                      :title="row[f]">
-                    <template v-if="isKernelTypeDrillCell(f, row)">
-                      <button type="button"
-                              class="table-cell-link kernel-type-drill-link"
-                              :title="'下钻到 ' + row[f] + ' 相关 Kernel'"
-                              @click.stop="drillDownKernelType(row)">
-                        {{ row[f] }}
-                      </button>
-                    </template>
-                    <template v-else-if="f === 'triton_code_file' && row[f]">
-                      <button class="btn btn-xs btn-perfetto mb-1"
-                              @click.stop="viewTritonCode(row[f])">
-                        查看代码
-                      </button>
-                      <br />
-                      <button v-if="allowCodeExecution && (!tritonStatus[row[f]] || tritonStatus[row[f]].status === 'idle' || tritonStatus[row[f]].status === 'failed')"
-                              class="btn btn-xs btn-run"
-                              @click.stop="runSingleTriton(row[f])">
-                        运行
-                      </button>
-                      <span v-else-if="allowCodeExecution && tritonStatus[row[f]].status === 'running'"
-                            class="status-running">运行中...</span>
-                      <template v-else-if="allowCodeExecution && tritonStatus[row[f]].status === 'success'">
-                        <span class="eff-value" :class="tritonStatus[row[f]].custom ? 'eff-custom' : 'btn-success'"
-                              :title="'点击重新运行\\n' + tritonStatus[row[f]].output"
-                              @click.stop="runSingleTriton(row[f])">
-                          <span v-if="tritonStatus[row[f]].custom" class="custom-badge">✎</span>
-                          {{ tritonStatus[row[f]].value }} GB/s ✓
-                        </span>
-                        <button class="btn btn-xs btn-outline ml-1"
-                                @click.stop="runSingleTriton(row[f])"
-                                :title="'点击重新运行'">↻</button>
+                <template v-for="(row,i) in filteredRows" :key="row.kernel_name || i">
+                  <tr :class="[{ 'drill-row': canDrillKernelTypeRow(row) }, tableRowClass(row)]"
+                      @click="drillDownKernelType(row)">
+                    <td v-for="f in displayedFields" :key="f"
+                        :class="[deltaCellClass(f, row[f]), tableCellClass(f, row[f])]"
+                        :title="row[f]">
+                      <template v-if="isKernelTypeDrillCell(f, row)">
+                        <button type="button"
+                                class="table-cell-link kernel-type-drill-link"
+                                :title="'下钻到 ' + row[f] + ' 相关 Kernel'"
+                                @click.stop="drillDownKernelType(row)">
+                          {{ row[f] }}
+                        </button>
                       </template>
-                    </template>
-                    <template v-else-if="isDurationShareField(f)">
-                      <span class="duration-share-cell" :style="durationShareStyle(row[f])">
+                      <template v-else-if="f === 'host_op_count' && canExpandKernelHostOpRow(row)">
+                        <button type="button"
+                                class="table-cell-link kernel-host-op-toggle"
+                                :class="{ expanded: isKernelHostOpDetailExpanded(row) }"
+                                :aria-expanded="String(isKernelHostOpDetailExpanded(row))"
+                                :title="kernelHostOpDetailReason(row) + '，点击查看 Host Op 关联明细'"
+                                @click.stop="toggleKernelHostOpDetail(row)">
+                          <span>{{ row[f] || 0 }}</span>
+                          <span class="kernel-host-op-reason">{{ kernelHostOpDetailReason(row) }}</span>
+                          <span class="kernel-host-op-caret" aria-hidden="true">⌄</span>
+                        </button>
+                      </template>
+                      <template v-else-if="f === 'triton_code_file' && row[f]">
+                        <button class="btn btn-xs btn-perfetto mb-1"
+                                @click.stop="viewTritonCode(row[f])">
+                          查看代码
+                        </button>
+                        <br />
+                        <button v-if="allowCodeExecution && (!tritonStatus[row[f]] || tritonStatus[row[f]].status === 'idle' || tritonStatus[row[f]].status === 'failed')"
+                                class="btn btn-xs btn-run"
+                                @click.stop="runSingleTriton(row[f])">
+                          运行
+                        </button>
+                        <span v-else-if="allowCodeExecution && tritonStatus[row[f]].status === 'running'"
+                              class="status-running">运行中...</span>
+                        <template v-else-if="allowCodeExecution && tritonStatus[row[f]].status === 'success'">
+                          <span class="eff-value" :class="tritonStatus[row[f]].custom ? 'eff-custom' : 'btn-success'"
+                                :title="'点击重新运行\\n' + tritonStatus[row[f]].output"
+                                @click.stop="runSingleTriton(row[f])">
+                            <span v-if="tritonStatus[row[f]].custom" class="custom-badge">✎</span>
+                            {{ tritonStatus[row[f]].value }} GB/s ✓
+                          </span>
+                          <button class="btn btn-xs btn-outline ml-1"
+                                  @click.stop="runSingleTriton(row[f])"
+                                  :title="'点击重新运行'">↻</button>
+                        </template>
+                      </template>
+                      <template v-else-if="isDurationShareField(f)">
+                        <span class="duration-share-cell" :style="durationShareStyle(row[f])">
+                          <span>{{ formatDurationShare(row[f]) }}</span>
+                        </span>
+                      </template>
+                      <template v-else-if="isSourcePercentField(f)">
                         <span>{{ formatDurationShare(row[f]) }}</span>
-                      </span>
-                    </template>
-                    <template v-else-if="isSourcePercentField(f)">
-                      <span>{{ formatDurationShare(row[f]) }}</span>
-                    </template>
-                    <template v-else-if="f === 'compare_status'">
-                      <span :class="['compare-status-chip', comparisonStatusClass(row[f])]">{{ comparisonStatusLabel(row[f]) }}</span>
-                    </template>
-                    <template v-else-if="f === 'family'">
-                      <span :class="['family-chip', familyChipClass(row[f])]">{{ row[f] || '-' }}</span>
-                    </template>
-                    <template v-else-if="isEfficiencyField(f)">
-                      <span :class="['eff-badge', 'eff-' + efficiencyTone(row[f])]">{{ row[f] || '-' }}</span>
-                    </template>
-                    <span v-else>{{ row[f] }}</span>
-                  </td>
-                </tr>
+                      </template>
+                      <template v-else-if="f === 'compare_status'">
+                        <span :class="['compare-status-chip', comparisonStatusClass(row[f])]">{{ comparisonStatusLabel(row[f]) }}</span>
+                      </template>
+                      <template v-else-if="f === 'family'">
+                        <span :class="['family-chip', familyChipClass(row[f])]">{{ row[f] || '-' }}</span>
+                      </template>
+                      <template v-else-if="isEfficiencyField(f)">
+                        <span :class="['eff-badge', 'eff-' + efficiencyTone(row[f])]">{{ row[f] || '-' }}</span>
+                      </template>
+                      <span v-else>{{ row[f] }}</span>
+                    </td>
+                  </tr>
+                  <tr v-if="isKernelHostOpDetailExpanded(row)" class="kernel-host-op-detail-row">
+                    <td :colspan="Math.max(displayedFields.length, 1)">
+                      <div class="kernel-host-op-detail-panel">
+                        <div class="kernel-host-op-detail-header">
+                          <div>
+                            <strong>Host Op 关联明细</strong>
+                            <span :title="kernelHostOpDetail.kernelName">{{ kernelHostOpDetail.kernelName }}</span>
+                          </div>
+                          <div>
+                            <span v-if="!kernelHostOpDetail.loading && !kernelHostOpDetail.error">
+                              {{ kernelHostOpDetail.total }} 条关系<span v-if="kernelHostOpDetail.total > kernelHostOpDetail.rows.length">，显示前 {{ kernelHostOpDetail.rows.length }} 条</span>
+                            </span>
+                            <button type="button" class="btn btn-xs btn-outline" @click.stop="closeKernelHostOpDetail">收起</button>
+                          </div>
+                        </div>
+                        <div v-if="kernelHostOpDetail.loading" class="kernel-host-op-detail-state">
+                          <span class="spinner-small"></span> 加载关联明细...
+                        </div>
+                        <div v-else-if="kernelHostOpDetail.error" class="kernel-host-op-detail-state error">
+                          <span>{{ kernelHostOpDetail.error }}</span>
+                          <button type="button" class="btn btn-xs btn-outline" @click.stop="loadKernelHostOpDetail(row)">重试</button>
+                        </div>
+                        <div v-else-if="!kernelHostOpDetail.rows.length" class="kernel-host-op-detail-state">暂无关联明细</div>
+                        <div v-else class="kernel-host-op-detail-list">
+                          <div v-for="(relation, relationIndex) in kernelHostOpDetail.rows"
+                               :key="relation.host_op + '|' + relation.aten_op + '|' + relationIndex"
+                               :class="['kernel-host-op-detail-item', { unmatched: !relation.host_op }]">
+                            <div class="kernel-host-op-detail-name">
+                              <strong :title="relation.host_op || '未匹配 Host Op'">{{ relation.host_op || '未匹配 Host Op' }}</strong>
+                              <span v-if="relation.aten_op && relation.aten_op !== relation.host_op" :title="relation.aten_op">Aten · {{ relation.aten_op }}</span>
+                            </div>
+                            <span><small>平均调用</small>{{ fmtSum(relation.avg_count) }}</span>
+                            <span><small>平均耗时</small>{{ fmtSum(relation.avg_dur_ms) }} ms</span>
+                            <span><small>Kernel 内占比</small>{{ formatDurationShare(relation.share_pct) }}</span>
+                            <span class="kernel-host-op-match">{{ kernelHostOpMatchLabel(relation.match_method) }}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                </template>
               </tbody>
               <tfoot v-if="filteredRows.length > 0">
                 <tr class="sum-row">
@@ -10511,6 +10698,9 @@ const JobDetail = {
       tableAllRowLimit, tableAllRowsCapped, tableAllRowsLabel,
       resultTableLoading, resultTableError, preparingResultTab, prevTablePage, nextTablePage, loadResultTable,
       hasColFilters, colSums, isKernelTypeTab, canDrillKernelTypeRow,
+      hasKernelHostOpRelations, kernelHostOpDetail,
+      canExpandKernelHostOpRow, isKernelHostOpDetailExpanded, kernelHostOpDetailReason,
+      kernelHostOpMatchLabel, toggleKernelHostOpDetail, loadKernelHostOpDetail, closeKernelHostOpDetail,
       isComparisonTable, applyComparisonColumnPreset, comparisonColumnGroup,
       comparisonStatusLabel, comparisonStatusClass,
       isKernelTypeDrillCell, drillDownKernelType,
@@ -10538,7 +10728,7 @@ const JobDetail = {
       shareJob, togglePinJob, editLabel, moveProject, deleteJob, deleteFile,
       openCompareSource, rerunCompareSwapped, singleTraceAnalyzeLoadingSlot, analyzeCompareTraceSlot,
       downloadTraceFile, downloadReport, openInPerfetto, perfettoOpening, perfettoButtonLabel,
-      setSort, startResize, downloadCsv, downloadFilteredCsv,
+      setSort, startResize, downloadCsv, downloadFilteredCsv, downloadKernelHostOpsCsv,
       viewTritonCode, runSingleTriton, clearInductorCache,
       fmtDate, fmtDateTime, fmtSum, fmtBytes, deltaCellClass, clearColFilters,
       isColumnVisible, resetVisibleColumns, applyCoreColumnPreset, toggleColumnVisibility,
@@ -14226,6 +14416,9 @@ const App = {
 
     // Watchers that need to live at the root level
     watch(resultTab, (v, previousTab) => {
+      if (v !== "all_kernels_avg.csv" && kernelHostOpDetail.value.kernelName) {
+        closeKernelHostOpDetail();
+      }
       if (suppressResultTabWatch) return;
       if (previousTab) saveResultViewState(activeResultStateJobId, previousTab);
       restoreResultViewState(selectedJobId.value, v);
@@ -14243,6 +14436,10 @@ const App = {
     watch(selectedJob, v => {
       if (v?.status === "done" && resultTab.value === "chart") scheduleBuildChart();
     }, { deep: true });
+
+    watch(selectedJobId, () => {
+      if (kernelHostOpDetail.value.kernelName) closeKernelHostOpDetail();
+    });
 
     watch(filterProject, () => {
       historyGroupsOffset.value = 0;
@@ -14353,6 +14550,7 @@ const App = {
     });
     onBeforeUnmount(() => {
       clearTimeout(projectBulkSearchTimer);
+      closeKernelHostOpDetail();
       destroyFeedbackMarkdownEditors();
       window.removeEventListener("resize", handleFeedbackImageResize);
       document.removeEventListener("click", handleFeedbackImageToggle);

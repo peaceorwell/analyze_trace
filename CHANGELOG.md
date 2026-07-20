@@ -2,6 +2,13 @@
 
 本文件记录 Torch Profiler Analyzer 的主要版本更新。
 
+## [0.5.29] - 2026-07-20
+
+- 移除重复的 `Kernel ↔ Host Op` 一级页签，将多关联、部分匹配和未匹配关系收进“所有 Kernel”按需展开。
+- 展开明细展示 Host/Aten Op、调用数、耗时、Kernel 内占比和匹配方式，并保留完整关系 CSV 导出。
+- Host Op 关联数按不同 Host/Aten 关系统计，覆盖同一 Host Op 对应多个 Aten Op 的场景。
+- 修复关联明细的数值字符串渲染和横向滚动布局问题，补充接口及真实 Trace 验证。
+
 ## [0.5.28] - 2026-07-19
 
 - Kernel 汇总与对比 CSV 新增主要 Host Op、主要 Aten Op、关联数量和映射覆盖率。

@@ -499,6 +499,34 @@ class TestComputeAvgs:
                     "dur": 70,
                     "args": {"External id": 99},
                 },
+                {
+                    "name": "torch_mlu::fused_mm",
+                    "cat": "cpu_op",
+                    "ts": 1700,
+                    "dur": 30,
+                    "args": {"External id": 44},
+                },
+                {
+                    "name": "aten::bmm",
+                    "cat": "cpu_op",
+                    "ts": 1710,
+                    "dur": 20,
+                    "args": {"External id": 44},
+                },
+                {
+                    "name": "same_host_multi_aten_kernel",
+                    "cat": "kernel",
+                    "ts": 1800,
+                    "dur": 50,
+                    "args": {"External id": 42},
+                },
+                {
+                    "name": "same_host_multi_aten_kernel",
+                    "cat": "kernel",
+                    "ts": 1900,
+                    "dur": 50,
+                    "args": {"External id": 44},
+                },
             ],
         }))
 
@@ -519,6 +547,17 @@ class TestComputeAvgs:
         assert partial["primary_host_op"] == "torch_mlu::fused_mm"
         assert partial["host_op_count"] == 1
         assert partial["host_op_coverage_pct"] == 30.0
+
+        same_host_multi_aten = avgs["avg_kernels"]["same_host_multi_aten_kernel"]
+        assert same_host_multi_aten["primary_host_op"] == "torch_mlu::fused_mm"
+        assert same_host_multi_aten["host_op_count"] == 2
+        assert same_host_multi_aten["host_op_coverage_pct"] == 100.0
+        same_host_relations = [
+            row for row in avgs["avg_kernel_host_ops"]
+            if row["kernel_name"] == "same_host_multi_aten_kernel"
+        ]
+        assert {row["host_op"] for row in same_host_relations} == {"torch_mlu::fused_mm"}
+        assert {row["aten_op"] for row in same_host_relations} == {"aten::mm", "aten::bmm"}
 
         shared_relations = [
             row for row in avgs["avg_kernel_host_ops"]

@@ -1939,12 +1939,14 @@ def compute_avgs(parsed):
         host_durations = defaultdict(float)
         aten_durations = defaultdict(float)
         mapped_dur_ms = 0.0
+        matched_relation_count = 0
         for relation in relations_by_kernel.get(kernel_name, []):
             host_op = relation["host_op"]
             aten_op = relation["aten_op"]
             if host_op:
                 host_durations[host_op] += relation["avg_dur_ms"]
                 mapped_dur_ms += relation["avg_dur_ms"]
+                matched_relation_count += 1
             if aten_op:
                 aten_durations[aten_op] += relation["avg_dur_ms"]
         kernel_dur_ms = stats["avg_dur_ms"]
@@ -1957,7 +1959,7 @@ def compute_avgs(parsed):
                 max(aten_durations.items(), key=lambda item: (item[1], item[0]))[0]
                 if aten_durations else ""
             ),
-            "host_op_count": len(host_durations),
+            "host_op_count": matched_relation_count,
             "host_op_coverage_pct": mapped_dur_ms / kernel_dur_ms * 100 if kernel_dur_ms > 0 else 0.0,
         })
 

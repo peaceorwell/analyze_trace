@@ -72,7 +72,7 @@ def test_config_reports_local_execution_flags(client):
 
     assert r.status_code == 200
     assert r.json() == {
-        "version": "0.5.28",
+        "version": "0.5.29",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -3864,6 +3864,12 @@ def test_done_job_lists_result_files_and_paginates_tables(client):
         "medium_kernel,30.0%,20,30.0%,gemm,aten::addmm,80\n"
         "fast_kernel,20.0%,10,10.0%,other,,0\n"
     )
+    (result_dir / "kernel_host_ops.csv").write_text(
+        "kernel_name,family,host_op,aten_op,avg_count,avg_dur_ms,share_pct,match_method\n"
+        "medium_kernel,gemm,aten::addmm,aten::addmm,1,12,60,external_id\n"
+        "medium_kernel,gemm,,,1,8,40,unmatched\n"
+        "fast_kernel,other,,,1,10,100,unmatched\n"
+    )
 
     async def insert_job():
         db = await web_db.get_db()
@@ -3919,6 +3925,23 @@ def test_done_job_lists_result_files_and_paginates_tables(client):
     )
     assert old_percent_filter.status_code == 200
     assert old_percent_filter.json()["filtered_total"] == 3
+
+    host_op_detail = client.get(
+        "/api/jobs/table-job/results/kernel_host_ops.csv",
+        params={
+            "filters": json.dumps({"kernel_name": "medium_kernel"}),
+            "filter_ops": json.dumps({"kernel_name": "=="}),
+            "sort_col": "avg_dur_ms",
+            "sort_dir": "desc",
+            "limit": 50,
+        },
+    )
+    assert host_op_detail.status_code == 200
+    assert host_op_detail.json()["filtered_total"] == 2
+    assert [row["match_method"] for row in host_op_detail.json()["rows"]] == [
+        "external_id",
+        "unmatched",
+    ]
 
     share_filter = client.get(
         "/api/jobs/table-job/results/all_kernels_avg.csv",
