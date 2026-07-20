@@ -7,6 +7,9 @@ const { createRouter, createWebHashHistory } = VueRouter;
 
 let appInitialized = false;
 const DEFAULT_RESULT_TAB = "chart";
+const CLIENT_APP_VERSION = "0.5.30";
+const APP_VERSION_CHECK_INTERVAL_MS = 60_000;
+let appVersionCheckTimer = null;
 
 const readStoredJson = (key, fallback) => {
   try {
@@ -202,7 +205,7 @@ const chartDumbbellActive = ref(false);
 const allowFileDownload = ref(true);
 const allowCodeExecution = ref(false);
 const claudeAnalysisEnabled = ref(false);
-const appVersion = ref("0.5.29");
+const appVersion = ref(CLIENT_APP_VERSION);
 const authRequired = ref(false);
 const authChecked = ref(false);
 const authInitError = ref("");
@@ -731,6 +734,16 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.30",
+    date: "2026-07-20",
+    title: "筛选占比与版本同步修复",
+    items: [
+      "耗时占比与累计占比改为按当前搜索和列筛选结果重新计算。",
+      "筛选结果下载与页面保持同一占比口径，累计值最终准确到达 100%。",
+      "页面定时检测服务版本并自动刷新，减少升级后旧资源和旧页签残留。",
+    ],
+  },
   {
     version: "0.5.29",
     date: "2026-07-20",
@@ -1879,8 +1892,8 @@ const TABLE_FIELD_META = Object.freeze({
   avg_compute_efficiency: { label: "计算效率 (%)", hint: "相对理论计算峰值的利用率" },
   avg_io_efficiency: { label: "IO 效率", hint: "相对理论 IO 峰值的利用率" },
   avg_op_efficiency: { label: "综合效率 (%)", hint: "计算与 IO 瓶颈下的综合效率" },
-  duration_pct: { label: "耗时占比 (%)", hint: "该行耗时占完整计算数据总耗时的比例，通信项不参与分母" },
-  cumulative_pct: { label: "累计占比 (%)", hint: "按耗时从高到低累计，占完整计算数据总耗时的比例" },
+  duration_pct: { label: "耗时占比 (%)", hint: "该行耗时占当前筛选结果中计算总耗时的比例，通信项不参与分母" },
+  cumulative_pct: { label: "累计占比 (%)", hint: "按耗时从高到低累计，占当前筛选结果中计算总耗时的比例" },
   compare_status: { label: "对比状态", hint: "新增、消失或 A/B 行的匹配可信度" },
   triton_code_file: { label: "Triton 代码", hint: "生成的 Triton 源码文件" },
 });
@@ -2901,13 +2914,54 @@ const normalizeApiError = (error, fallback = "请求失败") => {
   return error?.message || fallback;
 };
 
+const reloadForAppVersionMismatch = serverVersion => {
+  const normalized = String(serverVersion || "").trim();
+  if (!normalized || normalized === CLIENT_APP_VERSION) return false;
+  const reloadKey = `tpa-version-reload:${CLIENT_APP_VERSION}:${normalized}`;
+  try {
+    if (sessionStorage.getItem(reloadKey) === "1") return false;
+    sessionStorage.setItem(reloadKey, "1");
+  } catch {
+    // Continue with the reload when session storage is unavailable.
+  }
+  const url = new URL(window.location.href);
+  url.searchParams.set("_app_version", normalized);
+  window.location.replace(url.toString());
+  return true;
+};
+
+const checkAppVersion = async () => {
+  try {
+    const cfg = await fetchJson(
+      "/api/config",
+      { credentials: "include", cache: "no-store" },
+      "检查版本失败",
+    );
+    reloadForAppVersionMismatch(cfg.version);
+  } catch {
+    // A transient version-check failure must not interrupt the active page.
+  }
+};
+
+const startAppVersionChecks = () => {
+  if (appVersionCheckTimer) return;
+  appVersionCheckTimer = setInterval(checkAppVersion, APP_VERSION_CHECK_INTERVAL_MS);
+};
+
 const loadConfig = async () => {
-  const cfg = await fetchJson("/api/config", { credentials: "include" }, "加载配置失败");
-  appVersion.value = cfg.version || "0.5.29";
+  const cfg = await fetchJson(
+    "/api/config",
+    { credentials: "include", cache: "no-store" },
+    "加载配置失败",
+  );
+  if (reloadForAppVersionMismatch(cfg.version)) return false;
+  appVersion.value = cfg.version || CLIENT_APP_VERSION;
   authRequired.value = Boolean(cfg.auth_required);
   allowFileDownload.value = cfg.allow_file_download ?? true;
   allowCodeExecution.value = cfg.allow_code_execution ?? false;
   claudeAnalysisEnabled.value = cfg.claude_analysis_enabled ?? false;
+  startAppVersionChecks();
+  return true;
 };
 
 const loadMe = async () => {
@@ -5071,7 +5125,7 @@ const initializeAppData = async () => {
   }
   authInitError.value = "";
   try {
-    await loadConfig();
+    if (!await loadConfig()) return false;
     await loadMe();
     if (authRequired.value && !currentUser.value) {
       appInitialized = true;
@@ -14549,6 +14603,8 @@ const App = {
       scheduleFeedbackMarkdownImageResize();
     });
     onBeforeUnmount(() => {
+      clearInterval(appVersionCheckTimer);
+      appVersionCheckTimer = null;
       clearTimeout(projectBulkSearchTimer);
       closeKernelHostOpDetail();
       destroyFeedbackMarkdownEditors();

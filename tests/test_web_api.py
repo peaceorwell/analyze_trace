@@ -71,14 +71,19 @@ def test_config_reports_local_execution_flags(client):
     r = client.get("/api/config")
 
     assert r.status_code == 200
+    assert r.headers["cache-control"] == "no-store, max-age=0"
     assert r.json() == {
-        "version": "0.5.29",
+        "version": "0.5.30",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
         "allow_code_execution": False,
         "claude_analysis_enabled": False,
     }
+
+    index = client.get("/")
+    assert index.status_code == 200
+    assert index.headers["cache-control"] == "no-store, max-age=0"
 
 
 def test_job_seq_auto_assigns_and_resolves_uuid_or_numeric_handle(client):
@@ -3918,6 +3923,22 @@ def test_done_job_lists_result_files_and_paginates_tables(client):
     assert filtered.status_code == 200
     assert filtered.json()["filtered_total"] == 1
     assert filtered.json()["rows"][0]["kernel_name"] == "fast_kernel"
+    assert filtered.json()["rows"][0]["duration_pct"] == "100"
+    assert filtered.json()["rows"][0]["cumulative_pct"] == "100"
+
+    family_filtered = client.get(
+        "/api/jobs/table-job/results/all_kernels_avg.csv",
+        params={
+            "filters": json.dumps({"family": "gemm"}),
+            "filter_ops": json.dumps({"family": "=="}),
+            "sort_col": "avg_dur_ms",
+            "sort_dir": "desc",
+            "limit": 10,
+        },
+    )
+    assert family_filtered.status_code == 200
+    assert [row["duration_pct"] for row in family_filtered.json()["rows"]] == ["60", "40"]
+    assert [row["cumulative_pct"] for row in family_filtered.json()["rows"]] == ["60", "100"]
 
     old_percent_filter = client.get(
         "/api/jobs/table-job/results/all_kernels_avg.csv",
@@ -3970,8 +3991,8 @@ def test_done_job_lists_result_files_and_paginates_tables(client):
     exported_rows = list(csv.DictReader(io.StringIO(exported.content.decode("utf-8-sig"))))
     assert [row["kernel_name"] for row in exported_rows] == ["medium_kernel", "slow_kernel"]
     assert "dur_pct" not in exported_rows[0]
-    assert exported_rows[0]["duration_pct"] == "33.333"
-    assert exported_rows[0]["cumulative_pct"] == "83.333"
+    assert exported_rows[0]["duration_pct"] == "40"
+    assert exported_rows[0]["cumulative_pct"] == "100"
 
 
 def test_job_report_download_includes_markdown_summary(client):
@@ -4200,8 +4221,8 @@ def test_chart_summary_aggregates_complete_csv_and_returns_global_top(client):
         "/api/jobs/chart-summary-job/results/all_kernels_avg.csv",
         params={"q": "TCDP_ALLREDUCE", "limit": 1},
     ).json()["rows"][0]
-    assert hotspot_share["duration_pct"] == "66.66"
-    assert hotspot_share["cumulative_pct"] == "66.66"
+    assert hotspot_share["duration_pct"] == "100"
+    assert hotspot_share["cumulative_pct"] == "100"
     assert communication_share["duration_pct"] == ""
     assert communication_share["cumulative_pct"] == ""
 

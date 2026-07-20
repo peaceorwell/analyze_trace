@@ -88,6 +88,14 @@ def test_kernel_host_op_details_are_nested_under_all_kernels():
     assert '<template v-else-if="isSourcePercentField(f)">' in APP_JS
 
 
+def test_frontend_recovers_from_a_stale_version():
+    assert 'const CLIENT_APP_VERSION = "0.5.30";' in APP_JS
+    assert 'const APP_VERSION_CHECK_INTERVAL_MS = 60_000;' in APP_JS
+    assert 'cache: "no-store"' in APP_JS
+    assert 'url.searchParams.set("_app_version", normalized);' in APP_JS
+    assert "window.location.replace(url.toString());" in APP_JS
+
+
 def test_performance_overview_explains_compute_time_scope():
     assert "设备计算耗时" in APP_JS
     assert "A 计算耗时" in APP_JS

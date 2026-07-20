@@ -60,7 +60,8 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.5.29"
+APP_VERSION = "0.5.30"
+NO_STORE_HEADERS = {"Cache-Control": "no-store, max-age=0"}
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
 MAX_BATCH_COMPARE_JOBS = 50
@@ -1877,6 +1878,34 @@ def _add_comparison_status_column(filename: str, fields: list[str], rows: list[d
         return rows
     for row in rows:
         row["compare_status"] = _comparison_row_status(row)
+    return rows
+
+
+def _filter_materialized_result_rows(
+    filename: str,
+    fields: list[str],
+    rows: list[dict],
+    q: Optional[str],
+    filters: dict,
+    filter_ops: dict,
+) -> list[dict]:
+    rows = _add_comparison_status_column(filename, fields, rows)
+    if "duration_pct" not in fields:
+        return [row for row in rows if _csv_filter_match(row, q, filters, filter_ops)]
+
+    share_fields = {"duration_pct", "cumulative_pct"}
+    base_filters = {key: value for key, value in filters.items() if key not in share_fields}
+    base_filter_ops = {key: value for key, value in filter_ops.items() if key not in share_fields}
+    share_filters = {key: value for key, value in filters.items() if key in share_fields}
+    share_filter_ops = {key: value for key, value in filter_ops.items() if key in share_fields}
+
+    rows = [row for row in rows if _csv_filter_match(row, q, base_filters, base_filter_ops)]
+    rows = _add_duration_share_columns(filename, fields, rows)
+    if share_filters:
+        rows = [
+            row for row in rows
+            if _csv_filter_match(row, None, share_filters, share_filter_ops)
+        ]
     return rows
 
 
@@ -3828,10 +3857,15 @@ def read_csv_page(
                 fields,
                 [_result_csv_row(filename, row) for row in reader],
             )
-            rows = _add_duration_share_columns(filename, fields, rows)
-            rows = _add_comparison_status_column(filename, fields, rows)
             total = len(rows)
-            rows = [row for row in rows if _csv_filter_match(row, q, filters, filter_ops)]
+            rows = _filter_materialized_result_rows(
+                filename,
+                fields,
+                rows,
+                q,
+                filters,
+                filter_ops,
+            )
             filtered_total = len(rows)
             if sort_col and sort_col in fields:
                 rows.sort(
@@ -4133,9 +4167,14 @@ def stream_filtered_csv(
                 fields,
                 [_result_csv_row(filename, row) for row in reader],
             )
-            rows = _add_duration_share_columns(filename, fields, rows)
-            rows = _add_comparison_status_column(filename, fields, rows)
-            rows = [row for row in rows if _csv_filter_match(row, q, filters, filter_ops)]
+            rows = _filter_materialized_result_rows(
+                filename,
+                fields,
+                rows,
+                q,
+                filters,
+                filter_ops,
+            )
         elif sort_col and sort_col in fields:
             rows = []
             for row in reader:
@@ -5329,19 +5368,25 @@ async def metrics():
 
 @app.get("/")
 async def index():
-    return FileResponse(os.path.join(os.path.dirname(__file__), "static", "index.html"))
+    return FileResponse(
+        os.path.join(os.path.dirname(__file__), "static", "index.html"),
+        headers=NO_STORE_HEADERS,
+    )
 
 
 @app.get("/api/config")
 async def get_config():
-    return {
-        "version": APP_VERSION,
-        "auth_mode": AUTH_MODE,
-        "auth_required": AUTH_ENABLED,
-        "allow_file_download": ALLOW_FILE_DOWNLOAD,
-        "allow_code_execution": ALLOW_CODE_EXECUTION,
-        "claude_analysis_enabled": CLAUDE_ANALYSIS_ENABLED,
-    }
+    return JSONResponse(
+        {
+            "version": APP_VERSION,
+            "auth_mode": AUTH_MODE,
+            "auth_required": AUTH_ENABLED,
+            "allow_file_download": ALLOW_FILE_DOWNLOAD,
+            "allow_code_execution": ALLOW_CODE_EXECUTION,
+            "claude_analysis_enabled": CLAUDE_ANALYSIS_ENABLED,
+        },
+        headers=NO_STORE_HEADERS,
+    )
 
 
 @app.get("/api/email/diagnostics")
