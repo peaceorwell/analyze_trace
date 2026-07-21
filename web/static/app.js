@@ -10602,7 +10602,7 @@ const JobDetail = {
                 </tr>
               </thead>
               <tbody>
-                <template v-for="(row,i) in filteredRows" :key="row.kernel_name || i">
+                <template v-for="(row,i) in filteredRows" :key="resultTab + ':' + (tableOffset + i)">
                   <tr :class="[{ 'drill-row': canDrillKernelTypeRow(row) }, tableRowClass(row)]"
                       @click="drillDownKernelType(row)">
                     <td v-for="f in displayedFields" :key="f"

@@ -191,6 +191,8 @@ def test_large_csv_tables_have_safe_rendering_and_full_filtered_export():
     assert 'params.set("download", "true")' in APP_JS
     assert "tableFieldLabel(f)" in APP_JS
     assert "loadResultTable()\">重试" in APP_JS
+    assert ':key="resultTab + \':\' + (tableOffset + i)"' in APP_JS
+    assert ':key="row.kernel_name || i"' not in APP_JS
     assert ".data-table thead th:first-child" in STYLE_CSS
     assert "position: sticky; left: 0" in STYLE_CSS
     assert ".data-table thead { position: sticky; top: 0; z-index: 4; }" in STYLE_CSS
