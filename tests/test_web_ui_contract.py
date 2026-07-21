@@ -94,7 +94,7 @@ def test_kernel_host_op_details_are_nested_under_all_kernels():
 
 
 def test_frontend_recovers_from_a_stale_version():
-    assert 'const CLIENT_APP_VERSION = "0.5.31";' in APP_JS
+    assert 'const CLIENT_APP_VERSION = "0.5.32";' in APP_JS
     assert 'const APP_VERSION_CHECK_INTERVAL_MS = 60_000;' in APP_JS
     assert 'cache: "no-store"' in APP_JS
     assert 'url.searchParams.set("_app_version", normalized);' in APP_JS
@@ -173,6 +173,8 @@ def test_performance_overview_explains_compute_time_scope():
     assert 'class="chart-scatter-legend"' in APP_JS
     assert "点越大：耗时变化越大" in APP_JS
     assert "pointHoverBorderWidth: 2.5" in APP_JS
+    assert "watch(() => selectedJob.value?.status, status => {" in APP_JS
+    assert "watch(selectedJob, v => {" not in APP_JS
 
 
 def test_header_task_center_tracks_active_and_failed_jobs_globally():

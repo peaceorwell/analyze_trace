@@ -7,7 +7,7 @@ const { createRouter, createWebHashHistory } = VueRouter;
 
 let appInitialized = false;
 const DEFAULT_RESULT_TAB = "chart";
-const CLIENT_APP_VERSION = "0.5.31";
+const CLIENT_APP_VERSION = "0.5.32";
 const APP_VERSION_CHECK_INTERVAL_MS = 60_000;
 let appVersionCheckTimer = null;
 
@@ -734,6 +734,16 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.32",
+    date: "2026-07-21",
+    title: "图表稳定性与派生分析补全",
+    items: [
+      "性能总览仅在任务状态真正变化时重建图表，避免后台 AI 状态轮询引起散点图持续跳动。",
+      "对比任务单独分析 A/B 时强制保留 Triton CSV 数据，补全逐 step 明细和 Kernel 效率结果。",
+      "补充图表重绘与 gzip trace 派生分析回归测试，覆盖 Triton 汇总和非 Triton 效率 CSV。",
+    ],
+  },
   {
     version: "0.5.31",
     date: "2026-07-20",
@@ -14534,9 +14544,9 @@ const App = {
       }
     });
 
-    watch(selectedJob, v => {
-      if (v?.status === "done" && resultTab.value === "chart") scheduleBuildChart();
-    }, { deep: true });
+    watch(() => selectedJob.value?.status, status => {
+      if (status === "done" && resultTab.value === "chart") scheduleBuildChart();
+    });
 
     watch(selectedJobId, () => {
       if (kernelHostOpDetail.value.kernelName) closeKernelHostOpDetail();

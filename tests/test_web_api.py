@@ -73,7 +73,7 @@ def test_config_reports_local_execution_flags(client):
     assert r.status_code == 200
     assert r.headers["cache-control"] == "no-store, max-age=0"
     assert r.json() == {
-        "version": "0.5.31",
+        "version": "0.5.32",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -5131,6 +5131,8 @@ def test_compare_trace_slot_analysis_runs_gzip_trace(
     assert job["mode"] == "single"
     assert job["file_a_path"] is None
     assert job["file_a_gzip_path"].endswith(".json.gz")
+    assert job["save_triton_csv"] == 1
+    assert job["save_triton_code"] == 0
     assert enqueued == [job["id"]]
 
     asyncio.run(web_server.run_analysis(job["id"]))
@@ -5145,6 +5147,10 @@ def test_compare_trace_slot_analysis_runs_gzip_trace(
 
     analyzed = asyncio.run(fetch_job())
     assert analyzed["status"] == "done"
+    result_files = {path.name for path in Path(web_server.result_dir(job["id"])).glob("*.csv")}
+    assert "step_0_triton_kernels.csv" in result_files
+    assert "triton_kernels_avg.csv" in result_files
+    assert "non_triton_kernel_efficiency_avg.csv" in result_files
 
 
 def test_step_reanalysis_creates_compare_job_with_independent_steps(
