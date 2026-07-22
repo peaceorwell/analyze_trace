@@ -193,8 +193,11 @@ def test_large_csv_tables_have_safe_rendering_and_full_filtered_export():
     assert "loadResultTable()\">重试" in APP_JS
     assert ':key="resultTab + \':\' + (tableOffset + i)"' in APP_JS
     assert ':key="row.kernel_name || i"' not in APP_JS
-    assert 'const DEFAULT_FULL_WIDTH_TABLE_FIELDS = new Set(["tiling_config", "launch_dims"]);' in APP_JS
-    assert "if (DEFAULT_FULL_WIDTH_TABLE_FIELDS.has(normalizedTableField(field))) return TABLE_WIDE_COL_MAX;" in APP_JS
+    assert "const TABLE_FIELD_AUTO_MAX_WIDTHS = Object.freeze({" in APP_JS
+    assert "tiling_config: 320," in APP_JS
+    assert "launch_dims: 240," in APP_JS
+    assert "const fieldMaxWidth = TABLE_FIELD_AUTO_MAX_WIDTHS[normalizedTableField(field)];" in APP_JS
+    assert "if (fieldMaxWidth) width = Math.min(width + 8, fieldMaxWidth);" in APP_JS
     assert ".data-table thead th:first-child" in STYLE_CSS
     assert "position: sticky; left: 0" in STYLE_CSS
     assert ".data-table thead { position: sticky; top: 0; z-index: 4; }" in STYLE_CSS

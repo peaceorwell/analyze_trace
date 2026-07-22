@@ -739,7 +739,7 @@ const releaseNotes = Object.freeze([
     date: "2026-07-22",
     title: "Triton 配置展示与源码补全",
     items: [
-      "Triton Step 表格默认完整展开 tiling config 和 launch_dims，减少关键配置被截断。",
+      "Triton Step 表格按内容收缩 tiling config 和 launch_dims，并限制最大宽度，减少无效留白。",
       "对比任务单独分析 A/B 时同步保存 Triton CSV 与源码，Triton 代码列可直接查看生成代码。",
       "补充列宽与源码路径回归测试，并使用真实 step 1102 trace 验证源码文件完整生成。",
     ],
@@ -1893,7 +1893,10 @@ const TABLE_COLUMN_SAFETY_MAX = 2000;
 // are capped so they truncate; short/numeric columns shrink to content.
 const TABLE_AUTO_MIN_WIDTH = 96;       // floor so the filter-row op + input stay usable
 const TABLE_WIDE_COL_MAX = 440;        // truncation cap for long text columns
-const DEFAULT_FULL_WIDTH_TABLE_FIELDS = new Set(["tiling_config", "launch_dims"]);
+const TABLE_FIELD_AUTO_MAX_WIDTHS = Object.freeze({
+  tiling_config: 320,
+  launch_dims: 240,
+});
 const TABLE_CELL_PADDING_X = 9;        // matches td/th horizontal padding
 const TABLE_AUTO_MEASURE_SAMPLE = 400; // rows sampled when measuring width
 const TABLE_HEADER_FONT = "600 10.5px 'JetBrains Mono', monospace";
@@ -2335,7 +2338,6 @@ const measureTextWidth = (text, font) => {
 const measureColumnContentWidth = (field, rows) => {
   // triton_code_file renders action buttons, not the path text — fixed width.
   if (field === "triton_code_file") return 110;
-  if (DEFAULT_FULL_WIDTH_TABLE_FIELDS.has(normalizedTableField(field))) return TABLE_WIDE_COL_MAX;
   const numeric = isNumericTableColumn(field, rows);
   const valueFont = numeric ? TABLE_MONO_VALUE_FONT : TABLE_TEXT_VALUE_FONT;
   // Header reserves room for the sort icon (~16px).
@@ -2351,6 +2353,8 @@ const measureColumnContentWidth = (field, rows) => {
   }
   let width = Math.ceil(max) + TABLE_CELL_PADDING_X * 2 + 6;
   if (isWideTextField(field)) width = Math.min(width, TABLE_WIDE_COL_MAX);
+  const fieldMaxWidth = TABLE_FIELD_AUTO_MAX_WIDTHS[normalizedTableField(field)];
+  if (fieldMaxWidth) width = Math.min(width + 8, fieldMaxWidth);
   const compactMax = compactNumericColumnMax(field);
   if (compactMax) width = Math.min(width, compactMax);
   return Math.max(TABLE_AUTO_MIN_WIDTH, Math.min(TABLE_COLUMN_SAFETY_MAX, width));
