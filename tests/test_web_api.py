@@ -73,7 +73,7 @@ def test_config_reports_local_execution_flags(client):
     assert r.status_code == 200
     assert r.headers["cache-control"] == "no-store, max-age=0"
     assert r.json() == {
-        "version": "0.5.32",
+        "version": "0.5.33",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -5132,7 +5132,7 @@ def test_compare_trace_slot_analysis_runs_gzip_trace(
     assert job["file_a_path"] is None
     assert job["file_a_gzip_path"].endswith(".json.gz")
     assert job["save_triton_csv"] == 1
-    assert job["save_triton_code"] == 0
+    assert job["save_triton_code"] == 1
     assert enqueued == [job["id"]]
 
     asyncio.run(web_server.run_analysis(job["id"]))
@@ -5147,10 +5147,16 @@ def test_compare_trace_slot_analysis_runs_gzip_trace(
 
     analyzed = asyncio.run(fetch_job())
     assert analyzed["status"] == "done"
-    result_files = {path.name for path in Path(web_server.result_dir(job["id"])).glob("*.csv")}
+    result_dir = Path(web_server.result_dir(job["id"]))
+    result_files = {path.name for path in result_dir.glob("*.csv")}
     assert "step_0_triton_kernels.csv" in result_files
     assert "triton_kernels_avg.csv" in result_files
     assert "non_triton_kernel_efficiency_avg.csv" in result_files
+    with open(result_dir / "step_0_triton_kernels.csv") as f:
+        triton_rows = list(csv.DictReader(f))
+    assert triton_rows
+    assert all(row["triton_code_file"] for row in triton_rows)
+    assert all((result_dir / row["triton_code_file"]).is_file() for row in triton_rows)
 
 
 def test_step_reanalysis_creates_compare_job_with_independent_steps(

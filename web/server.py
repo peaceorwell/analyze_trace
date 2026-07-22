@@ -61,7 +61,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.5.32"
+APP_VERSION = "0.5.33"
 NO_STORE_HEADERS = {"Cache-Control": "no-store, max-age=0"}
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
@@ -9707,8 +9707,9 @@ async def analyze_compare_trace_slot(request: Request, jid: str, body: dict):
                 new_jid, project_id or None, user_token, label, "single",
                 trace_name, new_a_path, new_a_gzip_path,
                 source_id,
+                # Match the default standalone analysis outputs for derived A/B traces.
                 1,
-                int(job.get("save_triton_code", 0) or 0),
+                1,
             ),
         )
         await _refresh_job_storage_cache(db, new_jid)

@@ -94,7 +94,7 @@ def test_kernel_host_op_details_are_nested_under_all_kernels():
 
 
 def test_frontend_recovers_from_a_stale_version():
-    assert 'const CLIENT_APP_VERSION = "0.5.32";' in APP_JS
+    assert 'const CLIENT_APP_VERSION = "0.5.33";' in APP_JS
     assert 'const APP_VERSION_CHECK_INTERVAL_MS = 60_000;' in APP_JS
     assert 'cache: "no-store"' in APP_JS
     assert 'url.searchParams.set("_app_version", normalized);' in APP_JS
@@ -193,6 +193,8 @@ def test_large_csv_tables_have_safe_rendering_and_full_filtered_export():
     assert "loadResultTable()\">重试" in APP_JS
     assert ':key="resultTab + \':\' + (tableOffset + i)"' in APP_JS
     assert ':key="row.kernel_name || i"' not in APP_JS
+    assert 'const DEFAULT_FULL_WIDTH_TABLE_FIELDS = new Set(["tiling_config", "launch_dims"]);' in APP_JS
+    assert "if (DEFAULT_FULL_WIDTH_TABLE_FIELDS.has(normalizedTableField(field))) return TABLE_WIDE_COL_MAX;" in APP_JS
     assert ".data-table thead th:first-child" in STYLE_CSS
     assert "position: sticky; left: 0" in STYLE_CSS
     assert ".data-table thead { position: sticky; top: 0; z-index: 4; }" in STYLE_CSS
