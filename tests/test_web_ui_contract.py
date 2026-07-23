@@ -96,8 +96,12 @@ def test_kernel_host_op_details_are_nested_under_all_kernels():
 def test_frontend_recovers_from_a_stale_version():
     assert 'const CLIENT_APP_VERSION = "0.5.33";' in APP_JS
     assert 'const APP_VERSION_CHECK_INTERVAL_MS = 60_000;' in APP_JS
+    assert 'const APP_VERSION_QUERY_PARAM = "_app_version";' in APP_JS
     assert 'cache: "no-store"' in APP_JS
-    assert 'url.searchParams.set("_app_version", normalized);' in APP_JS
+    assert "if (!url.searchParams.has(APP_VERSION_QUERY_PARAM)) return;" in APP_JS
+    assert "url.searchParams.delete(APP_VERSION_QUERY_PARAM);" in APP_JS
+    assert 'window.history.replaceState(window.history.state, "", url.toString());' in APP_JS
+    assert "url.searchParams.set(APP_VERSION_QUERY_PARAM, normalized);" in APP_JS
     assert "window.location.replace(url.toString());" in APP_JS
 
 

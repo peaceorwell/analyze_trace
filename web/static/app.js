@@ -9,7 +9,16 @@ let appInitialized = false;
 const DEFAULT_RESULT_TAB = "chart";
 const CLIENT_APP_VERSION = "0.5.33";
 const APP_VERSION_CHECK_INTERVAL_MS = 60_000;
+const APP_VERSION_QUERY_PARAM = "_app_version";
 let appVersionCheckTimer = null;
+
+const clearAppVersionQueryParam = () => {
+  const url = new URL(window.location.href);
+  if (!url.searchParams.has(APP_VERSION_QUERY_PARAM)) return;
+  url.searchParams.delete(APP_VERSION_QUERY_PARAM);
+  window.history.replaceState(window.history.state, "", url.toString());
+};
+clearAppVersionQueryParam();
 
 const readStoredJson = (key, fallback) => {
   try {
@@ -2979,7 +2988,7 @@ const reloadForAppVersionMismatch = serverVersion => {
     // Continue with the reload when session storage is unavailable.
   }
   const url = new URL(window.location.href);
-  url.searchParams.set("_app_version", normalized);
+  url.searchParams.set(APP_VERSION_QUERY_PARAM, normalized);
   window.location.replace(url.toString());
   return true;
 };
