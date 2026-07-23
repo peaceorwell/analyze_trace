@@ -120,10 +120,11 @@ def extract_kernel_family(name: str) -> str:
 
     Priority order:
     1. triton_ prefix  -> triton sub-type (triton_reduce / triton_pointwise / triton_other)
-    2. Collective / communication keywords  (checked BEFORE semantic patterns to avoid
+    2. nvjet_sm90 prefix -> GEMM
+    3. Collective / communication keywords  (checked BEFORE semantic patterns to avoid
        misclassifying e.g. TCDP_RING_ALLREDUCE as "reduce")
-    3. Known semantic patterns from _FAMILY_PATTERNS
-    4. Fallback: first meaningful token from the cleaned name
+    4. Known semantic patterns from _FAMILY_PATTERNS
+    5. Fallback: first meaningful token from the cleaned name
     """
     nl = name.lower()
 
@@ -141,6 +142,9 @@ def extract_kernel_family(name: str) -> str:
         if any(x in nl for x in ("red", "per")):
             return "triton_reduce"
         return "triton_other"
+
+    if nl.startswith("nvjet_sm90"):
+        return "gemm"
 
     # Collective / communication — must come before _FAMILY_PATTERNS so that names like
     # TCDP_RING_ALLREDUCE_* are not matched by the "reduce_" pattern first.

@@ -70,6 +70,10 @@ class TestClassifyKernel:
         result = classify_kernel("gemm_cuda_kernel")
         assert result == "gemm"
 
+    def test_nvjet_sm90_kernel_family(self):
+        result = classify_kernel("nvjet_sm90_128x128x64_tma_warpspecialized")
+        assert result == "gemm"
+
     def test_collective(self):
         result = classify_kernel(
             "some_kernel", {"Collective name": "allreduce"}

@@ -2,6 +2,12 @@
 
 本文件记录 Torch Profiler Analyzer 的主要版本更新。
 
+## [0.5.34] - 2026-07-23
+
+- GPU Kernel 名称以 `nvjet_sm90` 开头时自动归类为 GEMM，使 Kernel 类型汇总、非 Triton 效率和对比结果保持正确。
+- 版本不一致触发刷新后自动清理 URL 中的一次性 `_app_version` 参数，并保留其他查询参数和 Hash 路由。
+- 补充 NVJet Kernel 分类和前端版本参数清理回归测试。
+
 ## [0.5.33] - 2026-07-22
 
 - Triton Step 表格的 `tiling config` 与 `launch_dims` 改为按内容自适应宽度，并分别限制为最大 320px 与 240px，兼顾完整显示和横向空间。

@@ -7,7 +7,7 @@ const { createRouter, createWebHashHistory } = VueRouter;
 
 let appInitialized = false;
 const DEFAULT_RESULT_TAB = "chart";
-const CLIENT_APP_VERSION = "0.5.33";
+const CLIENT_APP_VERSION = "0.5.34";
 const APP_VERSION_CHECK_INTERVAL_MS = 60_000;
 const APP_VERSION_QUERY_PARAM = "_app_version";
 let appVersionCheckTimer = null;
@@ -743,6 +743,16 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.34",
+    date: "2026-07-23",
+    title: "GPU GEMM 分类与版本地址清理",
+    items: [
+      "名称以 nvjet_sm90 开头的 GPU Kernel 自动归类为 GEMM，类型汇总与效率结果保持准确。",
+      "版本切换刷新完成后自动移除 URL 中的一次性 _app_version 参数。",
+      "清理版本参数时保留其他查询参数和 Hash 路由，避免影响当前页面位置。",
+    ],
+  },
   {
     version: "0.5.33",
     date: "2026-07-22",
