@@ -2,6 +2,12 @@
 
 本文件记录 Torch Profiler Analyzer 的主要版本更新。
 
+## [0.5.35] - 2026-07-23
+
+- 修复名称包含 `all_reduce` 的 Triton 融合 Kernel 被误判为通信项的问题。
+- Triton 汇总表中的耗时占比和累计占比恢复完整计算，同时继续排除显式标记为 collective 的通信 Kernel。
+- 补充 Triton/collective 优先级回归测试，并通过实际页面验证占比正确累计至 100%。
+
 ## [0.5.34] - 2026-07-23
 
 - GPU Kernel 名称以 `nvjet_sm90` 开头时自动归类为 GEMM，使 Kernel 类型汇总、非 Triton 效率和对比结果保持正确。

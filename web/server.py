@@ -61,7 +61,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.5.34"
+APP_VERSION = "0.5.35"
 NO_STORE_HEADERS = {"Cache-Control": "no-store, max-age=0"}
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
@@ -4016,6 +4016,8 @@ def _is_chart_communication_row(row: dict) -> bool:
         for field in ("kernel_name", "op_name", "type", "operator")
         if row.get(field)
     ), "")
+    if label.lower().startswith("triton_"):
+        return False
     return bool(_CHART_COMMUNICATION_RE.search(label))
 
 

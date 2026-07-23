@@ -7,7 +7,7 @@ const { createRouter, createWebHashHistory } = VueRouter;
 
 let appInitialized = false;
 const DEFAULT_RESULT_TAB = "chart";
-const CLIENT_APP_VERSION = "0.5.34";
+const CLIENT_APP_VERSION = "0.5.35";
 const APP_VERSION_CHECK_INTERVAL_MS = 60_000;
 const APP_VERSION_QUERY_PARAM = "_app_version";
 let appVersionCheckTimer = null;
@@ -743,6 +743,16 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.35",
+    date: "2026-07-23",
+    title: "Triton 占比识别修复",
+    items: [
+      "名称包含 all_reduce 的 Triton 融合 Kernel 不再误判为通信项。",
+      "Triton 汇总表恢复完整的耗时占比与累计占比，并准确累计至 100%。",
+      "显式标记为 collective 的通信 Kernel 仍保持排除，计算口径不变。",
+    ],
+  },
   {
     version: "0.5.34",
     date: "2026-07-23",

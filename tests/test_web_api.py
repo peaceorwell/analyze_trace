@@ -73,7 +73,7 @@ def test_config_reports_local_execution_flags(client):
     assert r.status_code == 200
     assert r.headers["cache-control"] == "no-store, max-age=0"
     assert r.json() == {
-        "version": "0.5.34",
+        "version": "0.5.35",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -4006,6 +4006,37 @@ def test_done_job_lists_result_files_and_paginates_tables(client):
     assert "primary_aten_op" not in exported_rows[0]
     assert exported_rows[0]["duration_pct"] == "40"
     assert exported_rows[0]["cumulative_pct"] == "100"
+
+
+def test_triton_kernel_with_all_reduce_keeps_duration_share():
+    rows = [
+        {
+            "kernel_name": "triton_poi_fused_add_all_reduce__mul_sigmoid_0",
+            "avg_dur_ms": "6",
+        },
+        {
+            "kernel_name": "triton_poi_fused_copy_0",
+            "avg_dur_ms": "4",
+        },
+        {
+            "kernel_name": "TCDP_ALLREDUCE",
+            "family": "collective",
+            "avg_dur_ms": "100",
+        },
+    ]
+
+    web_server._add_duration_share_columns(
+        "triton_kernels_avg.csv",
+        ["kernel_name", "avg_dur_ms", "duration_pct", "cumulative_pct"],
+        rows,
+    )
+
+    assert rows[0]["duration_pct"] == "60"
+    assert rows[0]["cumulative_pct"] == "60"
+    assert rows[1]["duration_pct"] == "40"
+    assert rows[1]["cumulative_pct"] == "100"
+    assert rows[2]["duration_pct"] == ""
+    assert rows[2]["cumulative_pct"] == ""
 
 
 def test_job_report_download_includes_markdown_summary(client):
