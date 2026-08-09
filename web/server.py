@@ -61,7 +61,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.5.35"
+APP_VERSION = "0.5.36"
 NO_STORE_HEADERS = {"Cache-Control": "no-store, max-age=0"}
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
@@ -920,6 +920,8 @@ def _usage_identity(request: Request) -> Optional[tuple[str, str]]:
 
 def _should_record_usage(request: Request) -> bool:
     path = request.url.path
+    if request.headers.get("X-Usage-Intent", "").strip().lower() == "background":
+        return False
     if path.startswith("/static/"):
         return False
     if path in {"/healthz", "/readyz", "/metrics"}:

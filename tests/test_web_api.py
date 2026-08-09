@@ -73,7 +73,7 @@ def test_config_reports_local_execution_flags(client):
     assert r.status_code == 200
     assert r.headers["cache-control"] == "no-store, max-age=0"
     assert r.json() == {
-        "version": "0.5.35",
+        "version": "0.5.36",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -2026,6 +2026,14 @@ def test_admin_usage_stats_tracks_daily_activity(client):
     assert client.get("/api/config", headers={"X-Remote-User": "alice"}).status_code == 200
     assert client.get("/api/projects", headers={"X-Remote-User": "alice"}).status_code == 200
     assert client.get("/api/config", headers={"X-Remote-User": "bob"}).status_code == 200
+    assert client.get(
+        "/api/jobs",
+        headers={"X-Remote-User": "carol", "X-Usage-Intent": "background"},
+    ).status_code == 200
+    assert client.get(
+        "/api/config",
+        headers={"X-Remote-User": "alice", "X-Usage-Intent": "background"},
+    ).status_code == 200
 
     async def insert_audit_rows():
         db = await web_db.get_db()

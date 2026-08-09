@@ -7,7 +7,7 @@ const { createRouter, createWebHashHistory } = VueRouter;
 
 let appInitialized = false;
 const DEFAULT_RESULT_TAB = "chart";
-const CLIENT_APP_VERSION = "0.5.35";
+const CLIENT_APP_VERSION = "0.5.36";
 const APP_VERSION_CHECK_INTERVAL_MS = 60_000;
 const APP_VERSION_QUERY_PARAM = "_app_version";
 let appVersionCheckTimer = null;
@@ -743,6 +743,16 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.36",
+    date: "2026-08-09",
+    title: "用户使用统计口径修复",
+    items: [
+      "任务中心、版本检查及任务和 AI 状态轮询不再计入前台请求量。",
+      "后台刷新不再刷新用户的最后访问时间，避免无操作时统计持续增长。",
+      "用户列表明确为当天累计访问记录，不再与当前在线状态混淆。",
+    ],
+  },
   {
     version: "0.5.35",
     date: "2026-07-23",
@@ -2042,7 +2052,7 @@ const adminUsageCards = computed(() => {
   const rangeLabel = `近 ${rangeDays} 天`;
   return [
     { label: "范围活跃", value: range.active_users || 0, hint: `${rangeLabel} · 今日 ${fmtCount(today.dau || 0)}` },
-    { label: "范围请求", value: range.requests || 0, hint: `今日 ${fmtCount(today.requests || 0)} · ${adminUsage.value.timezone || "-"}` },
+    { label: "前台请求", value: range.requests || 0, hint: `今日 ${fmtCount(today.requests || 0)} · ${adminUsage.value.timezone || "-"}` },
     {
       label: "范围任务",
       value: (range.upload_jobs || 0) + (range.compare_jobs || 0),
@@ -2058,7 +2068,7 @@ const adminUsageCards = computed(() => {
 
 const adminUsageMetricOptions = [
   { key: "dau", label: "日活" },
-  { key: "requests", label: "请求" },
+  { key: "requests", label: "前台请求" },
   { key: "tasks", label: "任务" },
   { key: "ai_runs", label: "AI" },
 ];
@@ -3017,7 +3027,11 @@ const checkAppVersion = async () => {
   try {
     const cfg = await fetchJson(
       "/api/config",
-      { credentials: "include", cache: "no-store" },
+      {
+        credentials: "include",
+        cache: "no-store",
+        headers: { "X-Usage-Intent": "background" },
+      },
       "检查版本失败",
     );
     reloadForAppVersionMismatch(cfg.version);
@@ -4851,6 +4865,7 @@ const loadTaskCenter = async ({ silent = false } = {}) => {
     const r = await fetch(`/api/jobs?${params}`, {
       credentials: "include",
       signal: controller.signal,
+      headers: silent ? { "X-Usage-Intent": "background" } : undefined,
     });
     const data = await readJsonResponse(r, {});
     if (!r.ok) {
@@ -4876,7 +4891,14 @@ const loadTaskCenter = async ({ silent = false } = {}) => {
         }
         if (current?.status === "pending" || current?.status === "running") continue;
         try {
-          const detail = await fetchJson(`/api/jobs/${encodeURIComponent(jobId)}`, { credentials: "include" }, "读取任务状态失败");
+          const detail = await fetchJson(
+            `/api/jobs/${encodeURIComponent(jobId)}`,
+            {
+              credentials: "include",
+              headers: { "X-Usage-Intent": "background" },
+            },
+            "读取任务状态失败",
+          );
           if (detail?.status === "done") {
             showToast(`任务“${taskCenterJobLabel(detail) || taskCenterJobLabel(previous)}”分析完成`, "success", 4200);
             shouldRefreshSidebar = true;
@@ -5230,10 +5252,13 @@ const initializeAppData = async () => {
   }
 };
 
-const loadJob = async id => {
+const loadJob = async (id, { background = false } = {}) => {
   const jobHandle = String(id || "");
   const requestSeq = ++loadJobRequestSeq;
-  const r = await fetch(`/api/jobs/${encodeURIComponent(jobHandle)}`, { credentials: "include" });
+  const r = await fetch(`/api/jobs/${encodeURIComponent(jobHandle)}`, {
+    credentials: "include",
+    headers: background ? { "X-Usage-Intent": "background" } : undefined,
+  });
   const data = await readJsonResponse(r, {});
   if (requestSeq !== loadJobRequestSeq) return "stale";
   if (!r.ok) {
@@ -5558,7 +5583,10 @@ const refreshAiAnalysis = async ({ silent = false, versionId } = {}) => {
   if (!silent) aiAnalysisLoading.value = true;
   aiAnalysisError.value = "";
   try {
-    const r = await fetch(url, { credentials: "include" });
+    const r = await fetch(url, {
+      credentials: "include",
+      headers: silent ? { "X-Usage-Intent": "background" } : undefined,
+    });
     const payload = await readJsonResponse(r, {});
     if (!r.ok) {
       throw new ApiRequestError(apiErrorMessage(r, payload, "加载 AI 分析失败"), {
@@ -6162,7 +6190,7 @@ const startPoll = () => {
   pollTimer = setInterval(async () => {
     if (!selectedJobId.value) return clearInterval(pollTimer);
     try {
-      await loadJob(selectedJobId.value);
+      await loadJob(selectedJobId.value, { background: true });
     } catch (e) {
       return; // network error, retry next tick
     }

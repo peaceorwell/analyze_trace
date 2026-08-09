@@ -94,7 +94,7 @@ def test_kernel_host_op_details_are_nested_under_all_kernels():
 
 
 def test_frontend_recovers_from_a_stale_version():
-    assert 'const CLIENT_APP_VERSION = "0.5.35";' in APP_JS
+    assert 'const CLIENT_APP_VERSION = "0.5.36";' in APP_JS
     assert 'const APP_VERSION_CHECK_INTERVAL_MS = 60_000;' in APP_JS
     assert 'const APP_VERSION_QUERY_PARAM = "_app_version";' in APP_JS
     assert 'cache: "no-store"' in APP_JS
@@ -187,6 +187,21 @@ def test_header_task_center_tracks_active_and_failed_jobs_globally():
     assert "taskCenterPollTimer = setInterval(refreshTaskCenterWhenVisible, 5000)" in APP_JS
     assert "taskCenterActiveJobs" in APP_JS
     assert "copyTaskCenterError" in APP_JS
+
+
+def test_background_refreshes_do_not_count_as_user_activity():
+    version_check = _section(APP_JS, "const checkAppVersion = async () => {", "const startAppVersionChecks")
+    task_center = _section(APP_JS, "const loadTaskCenter = async", "let taskCenterReturnFocus")
+    job_loader = _section(APP_JS, "const loadJob = async", "const aiAnalysisMeta")
+    ai_refresh = _section(APP_JS, "const refreshAiAnalysis = async", "const changeAiAnalysisVersion")
+    job_poll = _section(APP_JS, "const startPoll = () => {", "// ══════════════════════════════════════════════════════════════════════════════\n// Chart")
+
+    assert 'headers: { "X-Usage-Intent": "background" }' in version_check
+    assert 'headers: silent ? { "X-Usage-Intent": "background" } : undefined' in task_center
+    assert 'headers: background ? { "X-Usage-Intent": "background" } : undefined' in job_loader
+    assert 'headers: silent ? { "X-Usage-Intent": "background" } : undefined' in ai_refresh
+    assert "loadJob(selectedJobId.value, { background: true })" in job_poll
+    assert "当天累计，非当前在线" in INDEX_HTML
 
 
 def test_large_csv_tables_have_safe_rendering_and_full_filtered_export():

@@ -2,7 +2,7 @@
 
 Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/内网性能分析工具，并兼容 TensorFlow Chrome Trace。它可以解析 `.json`、`.json.gz`、`.gz`、`.json.zip`、`.zip`、`.tar.gz` 和 `.tgz` trace 文件，统计 GPU kernel、Triton kernel、ATen Ops、TensorFlow Ops，并提供单 trace 分析、双 trace 对比、历史管理、AI 分析和 Web 可视化界面。
 
-当前版本：`0.5.35`
+当前版本：`0.5.36`
 
 ## 主要功能
 
@@ -381,7 +381,7 @@ sudo systemctl status analyze-trace --no-pager
 - AI 分析结束后会写入 `ai_analysis_email_sent` / `ai_analysis_email_failed` / `ai_analysis_email_not_sent`，用于确认触发人和任务所属人的完成通知是否成功发送。
 - 关键操作会写入 SQLite 的 `audit_logs` 表。
 - 可通过 `GET /api/audit-logs?limit=100` 查看审计记录。
-- 访问使用量会按天聚合到 SQLite 的 `usage_daily` 表；管理员接口 `GET /api/admin/usage?days=14` 用于查看日活、请求量和业务动作趋势。该统计从启用本版本后开始准确累计，历史数据不会从旧请求日志自动补齐。
+- 访问使用量会按天聚合到 SQLite 的 `usage_daily` 表；管理员接口 `GET /api/admin/usage?days=14` 用于查看日活、前台请求量和业务动作趋势。任务中心、版本检查及任务/AI 状态轮询等后台请求不计入使用量。该统计从启用本版本后开始准确累计，历史数据不会从旧请求日志自动补齐。
 
 ### 备份
 
