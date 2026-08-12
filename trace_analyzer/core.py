@@ -855,6 +855,44 @@ def parse_trace(
     )
 
 
+def _merge_time_intervals(intervals):
+    merged = []
+    for start, end in sorted(intervals):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _group_label_ranges_by_step(label_ranges, source_step_ranges, steps):
+    step_ranges = {}
+    step_durations = {}
+    assignment_ranges = []
+    for step in steps:
+        step_start, step_end = source_step_ranges[step]
+        intersections = []
+        for label_start, label_end in label_ranges:
+            start = max(label_start, step_start)
+            end = min(label_end, step_end)
+            if end > start:
+                intersections.append((start, end))
+        merged_intersections = _merge_time_intervals(intersections)
+        if not merged_intersections:
+            continue
+        step_ranges[step] = (
+            merged_intersections[0][0],
+            merged_intersections[-1][1],
+        )
+        step_durations[step] = sum(
+            end - start for start, end in merged_intersections
+        ) / 1000
+        assignment_ranges.extend(
+            (start, end, step) for start, end in merged_intersections
+        )
+    return step_ranges, step_durations, assignment_ranges
+
+
 def _parse_tensorflow_trace(
     trace_file,
     *,
@@ -871,6 +909,7 @@ def _parse_tensorflow_trace(
     source_step_ranges = {}
     label_ranges = []
     label_range_set = set()
+    assignment_ranges = None
     step_cache_dirty = True
     cached_step_starts = []
     cached_step_ends = []
@@ -1159,7 +1198,7 @@ def _parse_tensorflow_trace(
         if label_filter:
             if not label_ranges:
                 raise ValueError(f"Analysis label not found: {label_filter}")
-            effective_ranges = sorted(label_ranges)
+            target_steps = selected_label_steps or tuple(sorted(source_step_ranges))
             if selected_label_steps:
                 missing = [step for step in selected_label_steps if step not in source_step_ranges]
                 if missing:
@@ -1168,27 +1207,31 @@ def _parse_tensorflow_trace(
                     raise ValueError(
                         f"Selected step(s) not found: {missing_text}. Available steps: {available}"
                     )
-                effective_ranges = []
-                for label_start, label_end in sorted(label_ranges):
-                    for step in selected_label_steps:
-                        step_start, step_end = source_step_ranges[step]
-                        start = max(label_start, step_start)
-                        end = min(label_end, step_end)
-                        if end > start:
-                            effective_ranges.append((start, end))
-                if not effective_ranges:
-                    selected_text = ", ".join(str(step) for step in selected_label_steps)
+            if target_steps:
+                step_ranges, step_durations, assignment_ranges = _group_label_ranges_by_step(
+                    sorted(label_ranges), source_step_ranges, target_steps
+                )
+                if not assignment_ranges:
+                    selected_text = ", ".join(str(step) for step in target_steps)
                     raise ValueError(
                         f"Analysis label {label_filter!r} does not overlap selected step(s): {selected_text}"
                     )
-            for index, (start, end) in enumerate(effective_ranges):
-                add_step_range(index, start, end - start)
+            else:
+                for index, (start, end) in enumerate(sorted(label_ranges)):
+                    add_step_range(index, start, end - start)
         elif not step_ranges and analyzable_intervals:
             start = min(interval[0] for interval in analyzable_intervals)
             end = max(interval[1] for interval in analyzable_intervals)
             add_step_range(0, start, max(end - start, 0.0))
 
-        sorted_steps = sorted(step_ranges.items(), key=lambda x: x[1][0])
+        sorted_steps = (
+            sorted(
+                ((step, (start, end)) for start, end, step in assignment_ranges),
+                key=lambda x: x[1][0],
+            )
+            if assignment_ranges is not None
+            else sorted(step_ranges.items(), key=lambda x: x[1][0])
+        )
         step_starts = [v[0] for _, v in sorted_steps]
         step_ends = [v[1] for _, v in sorted_steps]
         step_nums = [k for k, _ in sorted_steps]
@@ -1338,6 +1381,7 @@ def _parse_pytorch_trace(
     source_step_ranges = {}
     label_ranges = []
     label_range_set = set()
+    assignment_ranges = None
     kernel_families   = {}
     analyzable_intervals = []
     fallback_intervals = []
@@ -1681,7 +1725,7 @@ def _parse_pytorch_trace(
                 source_step_ranges.update(step_ranges)
                 step_ranges.clear()
                 step_durations.clear()
-            effective_ranges = sorted(label_ranges)
+            target_steps = selected_label_steps or tuple(sorted(source_step_ranges))
             if selected_label_steps:
                 missing = [step for step in selected_label_steps if step not in source_step_ranges]
                 if missing:
@@ -1690,25 +1734,29 @@ def _parse_pytorch_trace(
                     raise ValueError(
                         f"Selected step(s) not found: {missing_text}. Available steps: {available}"
                     )
-                effective_ranges = []
-                for label_start, label_end in sorted(label_ranges):
-                    for step in selected_label_steps:
-                        step_start, step_end = source_step_ranges[step]
-                        start = max(label_start, step_start)
-                        end = min(label_end, step_end)
-                        if end > start:
-                            effective_ranges.append((start, end))
-                if not effective_ranges:
-                    selected_text = ", ".join(str(step) for step in selected_label_steps)
+            if target_steps:
+                step_ranges, step_durations, assignment_ranges = _group_label_ranges_by_step(
+                    sorted(label_ranges), source_step_ranges, target_steps
+                )
+                if not assignment_ranges:
+                    selected_text = ", ".join(str(step) for step in target_steps)
                     raise ValueError(
                         f"Analysis label {label_filter!r} does not overlap selected step(s): {selected_text}"
                     )
-            for index, (start, end) in enumerate(effective_ranges):
-                add_step_range(index, start, end - start)
+            else:
+                for index, (start, end) in enumerate(sorted(label_ranges)):
+                    add_step_range(index, start, end - start)
         elif not step_ranges:
             add_fallback_step_ranges()
 
-        sorted_steps = sorted(step_ranges.items(), key=lambda x: x[1][0])
+        sorted_steps = (
+            sorted(
+                ((step, (start, end)) for start, end, step in assignment_ranges),
+                key=lambda x: x[1][0],
+            )
+            if assignment_ranges is not None
+            else sorted(step_ranges.items(), key=lambda x: x[1][0])
+        )
         step_starts  = [v[0] for _, v in sorted_steps]
         step_ends    = [v[1] for _, v in sorted_steps]
         step_nums    = [k    for k, _ in sorted_steps]

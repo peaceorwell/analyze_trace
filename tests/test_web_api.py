@@ -73,7 +73,7 @@ def test_config_reports_local_execution_flags(client):
     assert r.status_code == 200
     assert r.headers["cache-control"] == "no-store, max-age=0"
     assert r.json() == {
-        "version": "0.5.39",
+        "version": "0.5.40",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,

@@ -7,7 +7,7 @@ const { createRouter, createWebHashHistory } = VueRouter;
 
 let appInitialized = false;
 const DEFAULT_RESULT_TAB = "chart";
-const CLIENT_APP_VERSION = "0.5.39";
+const CLIENT_APP_VERSION = "0.5.40";
 const APP_VERSION_CHECK_INTERVAL_MS = 60_000;
 const APP_VERSION_QUERY_PARAM = "_app_version";
 let appVersionCheckTimer = null;
@@ -745,6 +745,16 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.40",
+    date: "2026-08-12",
+    title: "修复标签重分析 Step 口径",
+    items: [
+      "标签重分析显示 Trace 中的真实 Step ID，不再从 0 重新编号。",
+      "同一 Step 内的多个标签区间汇总到一条结果。",
+      "重叠区间只统计一次，区间之间的空白不会纳入分析。",
+    ],
+  },
   {
     version: "0.5.39",
     date: "2026-08-12",

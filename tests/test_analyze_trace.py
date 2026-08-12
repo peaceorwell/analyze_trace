@@ -287,10 +287,11 @@ class TestParseTrace:
         trace_path = tmp_path / "label_filter.json"
         trace_path.write_text(json.dumps({
             "traceEvents": [
-                {"name": "ProfilerStep#0", "cat": "user_annotation", "ts": 0, "dur": 10000},
+                {"name": "ProfilerStep#50", "cat": "user_annotation", "ts": 0, "dur": 3000},
                 {"name": "Optimizer.step#muon.step", "cat": "python_function", "ts": 1000, "dur": 1000},
                 {"name": "gemm_cuda_kernel", "cat": "kernel", "ts": 1200, "dur": 100, "args": {}},
                 {"name": "outside_kernel", "cat": "kernel", "ts": 2500, "dur": 100, "args": {}},
+                {"name": "ProfilerStep#51", "cat": "user_annotation", "ts": 3000, "dur": 4000},
                 {"name": "Optimizer.step#muon.step", "cat": "python_function", "ts": 4000, "dur": 2000},
                 {"name": "gemm_cuda_kernel", "cat": "kernel", "ts": 4200, "dur": 300, "args": {}},
                 {"name": "aten::add", "cat": "cpu_op", "ts": 4300, "dur": 50, "args": {}},
@@ -301,7 +302,8 @@ class TestParseTrace:
         avgs = compute_avgs(parsed)
 
         assert parsed["analysis_label"] == "Optimizer.step#muon.step"
-        assert parsed["step_ranges"] == {0: (1000.0, 2000.0), 1: (4000.0, 6000.0)}
+        assert parsed["step_ranges"] == {50: (1000.0, 2000.0), 51: (4000.0, 6000.0)}
+        assert avgs["all_steps"] == [50, 51]
         assert avgs["n_steps"] == 2
         assert avgs["avg_kernels"]["gemm_cuda_kernel"]["avg_count"] == 1
         assert avgs["avg_kernels"]["gemm_cuda_kernel"]["avg_dur_ms"] == 0.2
@@ -320,8 +322,12 @@ class TestParseTrace:
                 {"name": "Optimizer.step#muon.step", "cat": "python_function", "ts": 1000, "dur": 1000},
                 {"name": "step_0_kernel", "cat": "kernel", "ts": 1200, "dur": 100, "args": {}},
                 {"name": "ProfilerStep#1", "cat": "user_annotation", "ts": 3000, "dur": 3000},
-                {"name": "Optimizer.step#muon.step", "cat": "python_function", "ts": 4000, "dur": 1000},
+                {"name": "Optimizer.step#muon.step", "cat": "python_function", "ts": 4000, "dur": 500},
+                {"name": "Optimizer.step#muon.step", "cat": "python_function", "ts": 4100, "dur": 200},
                 {"name": "step_1_kernel", "cat": "kernel", "ts": 4200, "dur": 200, "args": {}},
+                {"name": "gap_kernel", "cat": "kernel", "ts": 4600, "dur": 100, "args": {}},
+                {"name": "Optimizer.step#muon.step", "cat": "python_function", "ts": 4800, "dur": 200},
+                {"name": "step_1_tail_kernel", "cat": "kernel", "ts": 4900, "dur": 50, "args": {}},
             ],
         }))
 
@@ -332,10 +338,14 @@ class TestParseTrace:
         )
         avgs = compute_avgs(parsed)
 
-        assert parsed["step_ranges"] == {0: (4000.0, 5000.0)}
+        assert parsed["step_ranges"] == {1: (4000.0, 5000.0)}
+        assert parsed["step_durations"] == {1: 0.7}
+        assert avgs["all_steps"] == [1]
         assert avgs["n_steps"] == 1
         assert "step_0_kernel" not in avgs["avg_kernels"]
+        assert "gap_kernel" not in avgs["avg_kernels"]
         assert avgs["avg_kernels"]["step_1_kernel"]["avg_count"] == 1
+        assert avgs["avg_kernels"]["step_1_tail_kernel"]["avg_count"] == 1
 
         multi_step = parse_trace(
             str(trace_path),
@@ -348,9 +358,12 @@ class TestParseTrace:
             0: (1000.0, 2000.0),
             1: (4000.0, 5000.0),
         }
+        assert multi_step["step_durations"] == {0: 1.0, 1: 0.7}
         assert multi_step_avgs["n_steps"] == 2
         assert multi_step_avgs["avg_kernels"]["step_0_kernel"]["avg_count"] == 0.5
         assert multi_step_avgs["avg_kernels"]["step_1_kernel"]["avg_count"] == 0.5
+        assert multi_step_avgs["avg_kernels"]["step_1_tail_kernel"]["avg_count"] == 0.5
+        assert "gap_kernel" not in multi_step_avgs["avg_kernels"]
 
     def test_step_and_label_filters_report_no_overlap(self, tmp_path):
         trace_path = tmp_path / "step_and_label_no_overlap.json"
@@ -920,6 +933,33 @@ class TestComputeAvgs:
         assert parsed["framework"] == "tensorflow"
         assert parsed["step_to_tf_ops"][0]["relu:Relu"]["count"] == 1
         assert parsed["step_to_kernels"][0]["void MLUReluKernel"]["count"] == 1
+
+    def test_tensorflow_step_and_label_filters_group_intersections_by_source_step(self, tmp_path):
+        trace_path = tmp_path / "sample.tf.trace.json"
+        trace_path.write_text(json.dumps({
+            "traceEvents": [
+                {"name": "SessionRun", "ph": "X", "ts": 1000, "dur": 2000, "args": {"group_id": "51"}},
+                {"name": "Optimizer", "ph": "X", "ts": 1100, "dur": 300, "args": {}},
+                {"name": "void FirstKernel", "ph": "X", "pid": 1, "tid": 1, "ts": 1200, "dur": 50, "args": {"tf_op": "optimizer", "correlation_id": "1"}},
+                {"name": "void GapKernel", "ph": "X", "pid": 1, "tid": 1, "ts": 1600, "dur": 50, "args": {"tf_op": "optimizer", "correlation_id": "2"}},
+                {"name": "Optimizer", "ph": "X", "ts": 1800, "dur": 400, "args": {}},
+                {"name": "void LastKernel", "ph": "X", "pid": 1, "tid": 1, "ts": 1900, "dur": 50, "args": {"tf_op": "optimizer", "correlation_id": "3"}},
+            ],
+        }))
+
+        parsed = parse_trace(str(trace_path), label_filter="Optimizer", label_steps="51")
+        avgs = compute_avgs(parsed)
+
+        assert parsed["framework"] == "tensorflow"
+        assert parsed["step_ranges"] == {51: (1100.0, 2200.0)}
+        assert parsed["step_durations"] == {51: 0.7}
+        assert avgs["all_steps"] == [51]
+        assert "void FirstKernel" in avgs["avg_kernels"]
+        assert "void LastKernel" in avgs["avg_kernels"]
+        assert "void GapKernel" not in avgs["avg_kernels"]
+
+        label_only = compute_avgs(parse_trace(str(trace_path), label_filter="Optimizer"))
+        assert label_only["all_steps"] == [51]
 
     def test_tensorflow_trace_uses_tf_prefix_source_name(self, tmp_path, monkeypatch):
         monkeypatch.setenv("TRACE_FAST_TRACE_JSON_BYTES", "0")
