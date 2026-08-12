@@ -73,7 +73,7 @@ def test_config_reports_local_execution_flags(client):
     assert r.status_code == 200
     assert r.headers["cache-control"] == "no-store, max-age=0"
     assert r.json() == {
-        "version": "0.5.38",
+        "version": "0.5.39",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -5081,10 +5081,18 @@ def test_label_reanalysis_creates_and_runs_single_job(
     assert "Label filter A: Optimizer.step#muon.step" in analyzed["console_out"]
 
 
-def test_region_reanalysis_rejects_step_and_label_for_same_trace(
+def test_region_reanalysis_accepts_step_and_label_for_same_trace(
     client,
     sample_trace_file,
+    monkeypatch,
 ):
+    enqueued = []
+
+    async def fake_enqueue(job_id):
+        enqueued.append(job_id)
+
+    monkeypatch.setattr(web_server, "enqueue_analysis_job", fake_enqueue)
+
     async def insert_job():
         db = await web_db.get_db()
         try:
@@ -5106,8 +5114,27 @@ def test_region_reanalysis_rejects_step_and_label_for_same_trace(
         json={"step_filter_a": "0", "label_filter_a": "ProfilerStep#0"},
     )
 
-    assert response.status_code == 400
-    assert "不能同时指定" in response.json()["detail"]
+    assert response.status_code == 201
+    job = response.json()
+    assert job["step_filter_a"] == "0"
+    assert job["label_filter_a"] == "ProfilerStep#0"
+    assert "step 0 / 标签 ProfilerStep#0" in job["label"]
+    assert enqueued == [job["id"]]
+
+    asyncio.run(web_server.run_analysis(job["id"]))
+
+    async def fetch_job():
+        db = await web_db.get_db()
+        try:
+            cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (job["id"],))
+            return await web_server.row_to_dict(await cursor.fetchone())
+        finally:
+            await db.close()
+
+    analyzed = asyncio.run(fetch_job())
+    assert analyzed["status"] == "done"
+    assert "Step filter A: 0" in analyzed["console_out"]
+    assert "Label filter A: ProfilerStep#0" in analyzed["console_out"]
 
 
 def test_step_reanalysis_keeps_efficiency_csvs_when_source_disabled_triton_csv(

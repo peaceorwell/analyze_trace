@@ -7,7 +7,7 @@ const { createRouter, createWebHashHistory } = VueRouter;
 
 let appInitialized = false;
 const DEFAULT_RESULT_TAB = "chart";
-const CLIENT_APP_VERSION = "0.5.38";
+const CLIENT_APP_VERSION = "0.5.39";
 const APP_VERSION_CHECK_INTERVAL_MS = 60_000;
 const APP_VERSION_QUERY_PARAM = "_app_version";
 let appVersionCheckTimer = null;
@@ -272,8 +272,6 @@ const stepReanalysisFilterA = ref("");
 const stepReanalysisFilterB = ref("");
 const stepReanalysisLabelFilterA = ref("");
 const stepReanalysisLabelFilterB = ref("");
-const stepReanalysisTypeA = ref("step");
-const stepReanalysisTypeB = ref("step");
 const aiAnalysisLoading = ref(false);
 const aiAnalysisStarting = ref(false);
 const aiAnalysisError = ref("");
@@ -747,6 +745,16 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.39",
+    date: "2026-08-12",
+    title: "支持 Step 与标签组合重分析",
+    items: [
+      "可按 step、时间轴上的 optimizer/module 标签，或两者的区间交集精确重分析。",
+      "同名标签的多个交集区间作为独立样本求平均，避免累计值混入单次口径。",
+      "对比任务的 A/B 可分别设置 step 与标签，留空的一侧使用完整 trace。",
+    ],
+  },
   {
     version: "0.5.38",
     date: "2026-08-12",
@@ -1768,15 +1776,17 @@ const availableTabs = computed(() => {
 const jobStepFilterLabel = computed(() => {
   const job = selectedJob.value;
   if (!job) return "";
-  const a = (job.label_filter_a || "").trim() || (job.step_filter_a || "").trim();
-  const b = (job.label_filter_b || "").trim() || (job.step_filter_b || "").trim();
+  const describe = (step, label) => [
+    step ? `Step: ${step}` : "",
+    label ? `标签: ${label}` : "",
+  ].filter(Boolean).join(" + ");
+  const a = describe((job.step_filter_a || "").trim(), (job.label_filter_a || "").trim());
+  const b = describe((job.step_filter_b || "").trim(), (job.label_filter_b || "").trim());
   if (!a && !b) return "";
-  const typeA = job.label_filter_a ? "标签" : "Step";
-  const typeB = job.label_filter_b ? "标签" : "Step";
   if (job.mode === "compare") {
-    return `A ${a ? `${typeA}: ${a}` : "全部"} / B ${b ? `${typeB}: ${b}` : "全部"}`;
+    return `A ${a || "全部"} / B ${b || "全部"}`;
   }
-  return `${typeA}: ${a}`;
+  return a;
 });
 
 const CHART_SOURCE_CONFIGS = [
@@ -9394,8 +9404,6 @@ const openStepReanalysisModal = () => {
   stepReanalysisFilterB.value = selectedJob.value.mode === "compare" ? (selectedJob.value.step_filter_b || "") : "";
   stepReanalysisLabelFilterA.value = selectedJob.value.label_filter_a || "";
   stepReanalysisLabelFilterB.value = selectedJob.value.mode === "compare" ? (selectedJob.value.label_filter_b || "") : "";
-  stepReanalysisTypeA.value = stepReanalysisLabelFilterA.value ? "label" : "step";
-  stepReanalysisTypeB.value = stepReanalysisLabelFilterB.value ? "label" : "step";
   showStepReanalysisModal.value = true;
 };
 
@@ -9406,14 +9414,10 @@ const closeStepReanalysisModal = () => {
 
 const confirmStepReanalysis = async () => {
   if (!selectedJobId.value || !selectedJob.value || stepReanalysisLoading.value) return;
-  const filterA = stepReanalysisTypeA.value === "step" ? stepReanalysisFilterA.value.trim() : "";
-  const filterB = selectedJob.value.mode === "compare" && stepReanalysisTypeB.value === "step"
-    ? stepReanalysisFilterB.value.trim()
-    : "";
-  const labelFilterA = stepReanalysisTypeA.value === "label" ? stepReanalysisLabelFilterA.value.trim() : "";
-  const labelFilterB = selectedJob.value.mode === "compare" && stepReanalysisTypeB.value === "label"
-    ? stepReanalysisLabelFilterB.value.trim()
-    : "";
+  const filterA = stepReanalysisFilterA.value.trim();
+  const filterB = selectedJob.value.mode === "compare" ? stepReanalysisFilterB.value.trim() : "";
+  const labelFilterA = stepReanalysisLabelFilterA.value.trim();
+  const labelFilterB = selectedJob.value.mode === "compare" ? stepReanalysisLabelFilterB.value.trim() : "";
   if (selectedJob.value.mode === "single" && !filterA && !labelFilterA) {
     showToast("请指定要分析的 step 或标签", "error");
     return;
@@ -14890,7 +14894,6 @@ const App = {
       showStepReanalysisModal, stepReanalysisLoading, stepReanalysisLabel,
       stepReanalysisFilterA, stepReanalysisFilterB,
       stepReanalysisLabelFilterA, stepReanalysisLabelFilterB,
-      stepReanalysisTypeA, stepReanalysisTypeB,
       openStepReanalysisModal, closeStepReanalysisModal, confirmStepReanalysis,
       toasts, showConfirmModal, confirmModal, resolveConfirm,
       openActionMenu, toggleActionMenu, closeActionMenu,

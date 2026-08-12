@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>torch profiler analyzer</title>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.5.38" />
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.5.39" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.css" />
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
@@ -12,7 +12,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js"></script>
-  <link rel="stylesheet" href="/static/style.css?v=0.5.38" />
+  <link rel="stylesheet" href="/static/style.css?v=0.5.39" />
   <script>
     // Apply saved theme or system preference before page paint to avoid flash
     (function() {
@@ -133,7 +133,7 @@
     <!-- ── Header ── -->
     <header v-if="authChecked && (!authRequired || currentUser)" class="header">
       <button class="header-brand" type="button" @click="$router.push('/')" title="返回上传页面" aria-label="返回上传与工作台首页">
-        <img class="header-logo" src="/static/favicon.svg?v=0.5.38" alt="" />
+        <img class="header-logo" src="/static/favicon.svg?v=0.5.39" alt="" />
         <span class="header-title">Torch Profiler Analyzer</span>
         <span class="header-version">v{{ appVersion }}</span>
       </button>
@@ -1562,7 +1562,7 @@
       <div class="modal step-reanalysis-modal" role="dialog" aria-modal="true" aria-label="指定区域重分析">
         <div class="modal-title">指定区域重分析</div>
         <div class="step-reanalysis-desc">
-          会基于当前任务创建一个新的历史条目；原任务保持不变。可以按 step，或按时间轴上的区间标签精确匹配，例如 Optimizer.step#muon.step、某个 module 名称。
+          会基于当前任务创建一个新的历史条目；原任务保持不变。Step 和标签可单独使用，也可同时填写以分析指定 Step 内的标签区域。
         </div>
         <label class="step-reanalysis-label" for="step-reanalysis-label">新任务别名（可选）</label>
         <input id="step-reanalysis-label"
@@ -1572,37 +1572,29 @@
         <div class="step-reanalysis-grid">
           <label class="step-reanalysis-field" for="step-reanalysis-a">
             <span>{{ selectedJob?.mode === 'compare' ? 'A Trace 区域' : 'Trace 区域' }}</span>
-            <div class="step-reanalysis-type">
-              <button type="button" :class="{active: stepReanalysisTypeA === 'step'}" @click="stepReanalysisTypeA = 'step'">按 Step</button>
-              <button type="button" :class="{active: stepReanalysisTypeA === 'label'}" @click="stepReanalysisTypeA = 'label'">按标签</button>
-            </div>
-            <input v-if="stepReanalysisTypeA === 'step'" id="step-reanalysis-a"
+            <input id="step-reanalysis-a"
                    v-model="stepReanalysisFilterA"
                    class="input step-reanalysis-input"
-                   placeholder="例如 0 或 1-4" />
-            <input v-else id="label-reanalysis-a"
+                   placeholder="Step（可选），例如 0 或 1-4" />
+            <input id="label-reanalysis-a"
                    v-model="stepReanalysisLabelFilterA"
-                   class="input step-reanalysis-input"
-                   placeholder="粘贴完整标签名称" />
+                   class="input step-reanalysis-input step-reanalysis-label-input"
+                   placeholder="标签（可选），粘贴完整名称" />
           </label>
           <label v-if="selectedJob?.mode === 'compare'" class="step-reanalysis-field" for="step-reanalysis-b">
             <span>B Trace 区域</span>
-            <div class="step-reanalysis-type">
-              <button type="button" :class="{active: stepReanalysisTypeB === 'step'}" @click="stepReanalysisTypeB = 'step'">按 Step</button>
-              <button type="button" :class="{active: stepReanalysisTypeB === 'label'}" @click="stepReanalysisTypeB = 'label'">按标签</button>
-            </div>
-            <input v-if="stepReanalysisTypeB === 'step'" id="step-reanalysis-b"
+            <input id="step-reanalysis-b"
                    v-model="stepReanalysisFilterB"
                    class="input step-reanalysis-input"
-                   placeholder="留空表示全部 step" />
-            <input v-else id="label-reanalysis-b"
+                   placeholder="Step（可选），留空表示不限制" />
+            <input id="label-reanalysis-b"
                    v-model="stepReanalysisLabelFilterB"
-                   class="input step-reanalysis-input"
-                   placeholder="留空表示完整 trace" />
+                   class="input step-reanalysis-input step-reanalysis-label-input"
+                   placeholder="标签（可选），留空表示不限制" />
           </label>
         </div>
         <div class="step-reanalysis-note">
-          同名标签出现多次时，每个区间作为一次样本并按现有口径求平均。对比任务中 A/B 可分别选择 step 或标签；留空的一侧使用完整 trace。
+          同时填写时取 Step 与标签区间的交集；同名标签出现多次时，每个交集区间作为一次样本求平均。对比任务中 A/B 可分别设置，全部留空的一侧使用完整 trace。
         </div>
         <div class="modal-actions">
           <button class="btn btn-outline" @click="closeStepReanalysisModal" :disabled="stepReanalysisLoading">取消</button>
@@ -1826,6 +1818,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=0.5.38"></script>
+  <script src="/static/app.js?v=0.5.39"></script>
 </body>
 </html>

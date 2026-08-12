@@ -312,6 +312,64 @@ class TestParseTrace:
         with pytest.raises(ValueError, match="Analysis label not found"):
             parse_trace(sample_trace_file, label_filter="optimizer.step")
 
+    def test_step_and_label_filters_use_their_interval_intersection(self, tmp_path):
+        trace_path = tmp_path / "step_and_label_filter.json"
+        trace_path.write_text(json.dumps({
+            "traceEvents": [
+                {"name": "ProfilerStep#0", "cat": "user_annotation", "ts": 0, "dur": 3000},
+                {"name": "Optimizer.step#muon.step", "cat": "python_function", "ts": 1000, "dur": 1000},
+                {"name": "step_0_kernel", "cat": "kernel", "ts": 1200, "dur": 100, "args": {}},
+                {"name": "ProfilerStep#1", "cat": "user_annotation", "ts": 3000, "dur": 3000},
+                {"name": "Optimizer.step#muon.step", "cat": "python_function", "ts": 4000, "dur": 1000},
+                {"name": "step_1_kernel", "cat": "kernel", "ts": 4200, "dur": 200, "args": {}},
+            ],
+        }))
+
+        parsed = parse_trace(
+            str(trace_path),
+            label_filter="Optimizer.step#muon.step",
+            label_steps="1",
+        )
+        avgs = compute_avgs(parsed)
+
+        assert parsed["step_ranges"] == {0: (4000.0, 5000.0)}
+        assert avgs["n_steps"] == 1
+        assert "step_0_kernel" not in avgs["avg_kernels"]
+        assert avgs["avg_kernels"]["step_1_kernel"]["avg_count"] == 1
+
+        multi_step = parse_trace(
+            str(trace_path),
+            label_filter="Optimizer.step#muon.step",
+            label_steps="0-1",
+        )
+        multi_step_avgs = compute_avgs(multi_step)
+
+        assert multi_step["step_ranges"] == {
+            0: (1000.0, 2000.0),
+            1: (4000.0, 5000.0),
+        }
+        assert multi_step_avgs["n_steps"] == 2
+        assert multi_step_avgs["avg_kernels"]["step_0_kernel"]["avg_count"] == 0.5
+        assert multi_step_avgs["avg_kernels"]["step_1_kernel"]["avg_count"] == 0.5
+
+    def test_step_and_label_filters_report_no_overlap(self, tmp_path):
+        trace_path = tmp_path / "step_and_label_no_overlap.json"
+        trace_path.write_text(json.dumps({
+            "traceEvents": [
+                {"name": "ProfilerStep#0", "cat": "user_annotation", "ts": 0, "dur": 3000},
+                {"name": "Optimizer.step#muon.step", "cat": "python_function", "ts": 1000, "dur": 1000},
+                {"name": "ProfilerStep#1", "cat": "user_annotation", "ts": 3000, "dur": 3000},
+                {"name": "step_1_kernel", "cat": "kernel", "ts": 4200, "dur": 200, "args": {}},
+            ],
+        }))
+
+        with pytest.raises(ValueError, match="does not overlap selected step"):
+            parse_trace(
+                str(trace_path),
+                label_filter="Optimizer.step#muon.step",
+                label_steps="1",
+            )
+
 
 class TestComputeAvgs:
     def test_parse_step_filter(self):

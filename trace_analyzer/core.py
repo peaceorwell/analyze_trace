@@ -835,6 +835,7 @@ def parse_trace(
     progress_callback=None,
     source_name=None,
     label_filter="",
+    label_steps=(),
 ):
     """Parse a Chrome trace with framework-specific parsers."""
     if _detect_trace_format(trace_file, source_name=source_name) == "tensorflow":
@@ -843,12 +844,14 @@ def parse_trace(
             keep_triton_code=keep_triton_code,
             progress_callback=progress_callback,
             label_filter=label_filter,
+            label_steps=label_steps,
         )
     return _parse_pytorch_trace(
         trace_file,
         keep_triton_code=keep_triton_code,
         progress_callback=progress_callback,
         label_filter=label_filter,
+        label_steps=label_steps,
     )
 
 
@@ -858,11 +861,14 @@ def _parse_tensorflow_trace(
     keep_triton_code=False,
     progress_callback=None,
     label_filter="",
+    label_steps=(),
 ):
     """Parse TensorFlow Chrome traces without reusing PyTorch event rules."""
     label_filter = str(label_filter or "").strip()
+    selected_label_steps = parse_step_filter(label_steps) if label_filter else tuple()
     step_ranges = {}
     step_durations = {}
+    source_step_ranges = {}
     label_ranges = []
     label_range_set = set()
     step_cache_dirty = True
@@ -925,6 +931,15 @@ def _parse_tensorflow_trace(
         step_ranges[step_num] = (start, end)
         step_durations[step_num] = (end - start) / 1000
         step_cache_dirty = True
+
+    def add_source_step_range(step_num, ts, dur):
+        start = ts
+        end = ts + dur
+        if step_num in source_step_ranges:
+            old_start, old_end = source_step_ranges[step_num]
+            start = min(old_start, start)
+            end = max(old_end, end)
+        source_step_ranges[step_num] = (start, end)
 
     def find_known_step(ts):
         nonlocal step_cache_dirty, cached_step_starts, cached_step_ends, cached_step_nums
@@ -1068,16 +1083,21 @@ def _parse_tensorflow_trace(
         args = e.get("args", {}) or {}
         if not isinstance(args, dict):
             args = {}
+        if _is_tensorflow_step_event(name, cat, args):
+            interval = event_interval(e)
+            if interval is not None:
+                step_num = _tensorflow_group_step(args)
+                if label_filter:
+                    add_source_step_range(step_num, interval[0], interval[1] - interval[0])
+                else:
+                    add_step_range(step_num, interval[0], interval[1] - interval[0])
+            if not (label_filter and name == label_filter):
+                return False
         if label_filter and name == label_filter and cat != "kernel":
             interval = event_interval(e)
             if interval is not None and interval[1] > interval[0] and interval not in label_range_set:
                 label_range_set.add(interval)
                 label_ranges.append(interval)
-            return False
-        if not label_filter and _is_tensorflow_step_event(name, cat, args):
-            interval = event_interval(e)
-            if interval is not None:
-                add_step_range(_tensorflow_group_step(args), interval[0], interval[1] - interval[0])
             return False
         if not is_tf_record_event(e, name, cat, args):
             return False
@@ -1137,10 +1157,32 @@ def _parse_tensorflow_trace(
         maybe_report_parse_progress(force=True)
 
         if label_filter:
-            for index, (start, end) in enumerate(sorted(label_ranges)):
-                add_step_range(index, start, end - start)
-            if not step_ranges:
+            if not label_ranges:
                 raise ValueError(f"Analysis label not found: {label_filter}")
+            effective_ranges = sorted(label_ranges)
+            if selected_label_steps:
+                missing = [step for step in selected_label_steps if step not in source_step_ranges]
+                if missing:
+                    available = ", ".join(str(step) for step in sorted(source_step_ranges)) or "none"
+                    missing_text = ", ".join(str(step) for step in missing)
+                    raise ValueError(
+                        f"Selected step(s) not found: {missing_text}. Available steps: {available}"
+                    )
+                effective_ranges = []
+                for label_start, label_end in sorted(label_ranges):
+                    for step in selected_label_steps:
+                        step_start, step_end = source_step_ranges[step]
+                        start = max(label_start, step_start)
+                        end = min(label_end, step_end)
+                        if end > start:
+                            effective_ranges.append((start, end))
+                if not effective_ranges:
+                    selected_text = ", ".join(str(step) for step in selected_label_steps)
+                    raise ValueError(
+                        f"Analysis label {label_filter!r} does not overlap selected step(s): {selected_text}"
+                    )
+            for index, (start, end) in enumerate(effective_ranges):
+                add_step_range(index, start, end - start)
         elif not step_ranges and analyzable_intervals:
             start = min(interval[0] for interval in analyzable_intervals)
             end = max(interval[1] for interval in analyzable_intervals)
@@ -1271,6 +1313,7 @@ def _parse_pytorch_trace(
     keep_triton_code=False,
     progress_callback=None,
     label_filter="",
+    label_steps=(),
 ):
     """Parse a PyTorch profiler trace JSON.
 
@@ -1288,9 +1331,11 @@ def _parse_pytorch_trace(
     analyzable events.  This keeps valid traces from producing empty results.
     """
     label_filter = str(label_filter or "").strip()
+    selected_label_steps = parse_step_filter(label_steps) if label_filter else tuple()
     # step_num -> (start_ts, end_ts)
     step_ranges    = {}
     step_durations = {}   # step_num -> ms
+    source_step_ranges = {}
     label_ranges = []
     label_range_set = set()
     kernel_families   = {}
@@ -1356,6 +1401,15 @@ def _parse_pytorch_trace(
         step_ranges[step_num] = (start, end)
         step_durations[step_num] = (end - start) / 1000
         step_cache_dirty = True
+
+    def add_source_step_range(step_num, ts, dur):
+        start = ts
+        end = ts + dur
+        if step_num in source_step_ranges:
+            old_start, old_end = source_step_ranges[step_num]
+            start = min(old_start, start)
+            end = max(old_end, end)
+        source_step_ranges[step_num] = (start, end)
 
     def find_known_step(ts):
         nonlocal step_cache_dirty, cached_step_starts, cached_step_ends, cached_step_nums
@@ -1515,21 +1569,25 @@ def _parse_pytorch_trace(
                 operator_details_by_external_id.setdefault(external_id, detail)
             if name.startswith("aten::"):
                 aten_operators_by_external_id.setdefault(external_id, name)
+        step_num = extract_step_number(name)
+        if step_num is not None and cat != "kernel":
+            interval = event_interval(e)
+            if interval is not None:
+                if label_filter:
+                    add_source_step_range(step_num, interval[0], interval[1] - interval[0])
+                else:
+                    add_step_range(step_num, interval[0], interval[1] - interval[0])
+            if not (label_filter and name == label_filter):
+                return
         if label_filter and name == label_filter and cat != "kernel":
             interval = event_interval(e)
             if interval is not None and interval[1] > interval[0] and interval not in label_range_set:
                 label_range_set.add(interval)
                 label_ranges.append(interval)
             return False
-        step_num = extract_step_number(name)
-        if not label_filter and step_num is not None and cat != "kernel":
+        if cat != "kernel" and is_fallback_step_marker(name):
             interval = event_interval(e)
-            if interval is not None:
-                add_step_range(step_num, interval[0], interval[1] - interval[0])
-            return
-        if not label_filter and cat != "kernel" and is_fallback_step_marker(name):
-            interval = event_interval(e)
-            if interval and interval[1] > interval[0] and not step_ranges:
+            if interval and interval[1] > interval[0] and not (step_ranges or source_step_ranges):
                 fallback_intervals.append(interval)
             return
         if not is_interesting_event(e, name, cat, args):
@@ -1616,10 +1674,37 @@ def _parse_pytorch_trace(
                 add_step_range(0, start, max(end - start, 0.0))
 
         if label_filter:
-            for index, (start, end) in enumerate(sorted(label_ranges)):
-                add_step_range(index, start, end - start)
-            if not step_ranges:
+            if not label_ranges:
                 raise ValueError(f"Analysis label not found: {label_filter}")
+            if selected_label_steps and not source_step_ranges:
+                add_fallback_step_ranges()
+                source_step_ranges.update(step_ranges)
+                step_ranges.clear()
+                step_durations.clear()
+            effective_ranges = sorted(label_ranges)
+            if selected_label_steps:
+                missing = [step for step in selected_label_steps if step not in source_step_ranges]
+                if missing:
+                    available = ", ".join(str(step) for step in sorted(source_step_ranges)) or "none"
+                    missing_text = ", ".join(str(step) for step in missing)
+                    raise ValueError(
+                        f"Selected step(s) not found: {missing_text}. Available steps: {available}"
+                    )
+                effective_ranges = []
+                for label_start, label_end in sorted(label_ranges):
+                    for step in selected_label_steps:
+                        step_start, step_end = source_step_ranges[step]
+                        start = max(label_start, step_start)
+                        end = min(label_end, step_end)
+                        if end > start:
+                            effective_ranges.append((start, end))
+                if not effective_ranges:
+                    selected_text = ", ".join(str(step) for step in selected_label_steps)
+                    raise ValueError(
+                        f"Analysis label {label_filter!r} does not overlap selected step(s): {selected_text}"
+                    )
+            for index, (start, end) in enumerate(effective_ranges):
+                add_step_range(index, start, end - start)
         elif not step_ranges:
             add_fallback_step_ranges()
 

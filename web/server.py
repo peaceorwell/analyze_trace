@@ -61,7 +61,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.5.38"
+APP_VERSION = "0.5.39"
 NO_STORE_HEADERS = {"Cache-Control": "no-store, max-age=0"}
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
@@ -5107,11 +5107,14 @@ def _run_sync_analysis(job, rdir, path_a, path_b, name_a, name_b, progress_callb
             progress_callback=parse_progress,
             source_name=source_name,
             label_filter=label_filter,
+            label_steps=step_filter if label_filter else (),
         )
         steps = parse_step_filter(step_filter)
-        if steps:
+        if steps and not label_filter:
             stage(f"筛选 Trace {slot.upper()} step: {step_filter}")
             parsed = filter_parsed_steps(parsed, steps)
+        elif steps and label_filter:
+            stage(f"筛选 Trace {slot.upper()} step {step_filter} 内的标签: {label_filter}")
         stage(f"聚合 Trace {slot.upper()} 指标")
         return compute_avgs(parsed)
 
@@ -9673,6 +9676,8 @@ def _reanalysis_suffix(
     label_filter_b: str = "",
 ) -> str:
     def describe(step_filter: str, label_filter: str) -> str:
+        if step_filter and label_filter:
+            return f"step {step_filter} / 标签 {label_filter}"
         if label_filter:
             return f"标签 {label_filter}"
         if step_filter:
@@ -9804,10 +9809,6 @@ async def reanalyze_job_steps(request: Request, jid: str, body: dict):
         step_filter_b = _normalize_step_filter(body.get("step_filter_b"), "B") if mode == "compare" else ""
         label_filter_a = _normalize_label_filter(body.get("label_filter_a"), "A")
         label_filter_b = _normalize_label_filter(body.get("label_filter_b"), "B") if mode == "compare" else ""
-        if step_filter_a and label_filter_a:
-            raise HTTPException(400, "A Trace 不能同时指定 step 和标签")
-        if step_filter_b and label_filter_b:
-            raise HTTPException(400, "B Trace 不能同时指定 step 和标签")
         if mode == "single" and not (step_filter_a or label_filter_a):
             raise HTTPException(400, "单 trace 重分析需要指定 step 或标签")
         if mode == "compare" and not (step_filter_a or step_filter_b or label_filter_a or label_filter_b):
