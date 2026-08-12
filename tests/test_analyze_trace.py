@@ -283,6 +283,35 @@ class TestParseTrace:
         assert result["step_to_kernels"][0]["triton_poi_fused_add"]["count"] == 1
         assert result["step_to_aten"][0]["aten::linear"]["count"] == 1
 
+    def test_label_filter_uses_each_matching_interval_as_a_sample(self, tmp_path):
+        trace_path = tmp_path / "label_filter.json"
+        trace_path.write_text(json.dumps({
+            "traceEvents": [
+                {"name": "ProfilerStep#0", "cat": "user_annotation", "ts": 0, "dur": 10000},
+                {"name": "Optimizer.step#muon.step", "cat": "python_function", "ts": 1000, "dur": 1000},
+                {"name": "gemm_cuda_kernel", "cat": "kernel", "ts": 1200, "dur": 100, "args": {}},
+                {"name": "outside_kernel", "cat": "kernel", "ts": 2500, "dur": 100, "args": {}},
+                {"name": "Optimizer.step#muon.step", "cat": "python_function", "ts": 4000, "dur": 2000},
+                {"name": "gemm_cuda_kernel", "cat": "kernel", "ts": 4200, "dur": 300, "args": {}},
+                {"name": "aten::add", "cat": "cpu_op", "ts": 4300, "dur": 50, "args": {}},
+            ],
+        }))
+
+        parsed = parse_trace(str(trace_path), label_filter="Optimizer.step#muon.step")
+        avgs = compute_avgs(parsed)
+
+        assert parsed["analysis_label"] == "Optimizer.step#muon.step"
+        assert parsed["step_ranges"] == {0: (1000.0, 2000.0), 1: (4000.0, 6000.0)}
+        assert avgs["n_steps"] == 2
+        assert avgs["avg_kernels"]["gemm_cuda_kernel"]["avg_count"] == 1
+        assert avgs["avg_kernels"]["gemm_cuda_kernel"]["avg_dur_ms"] == 0.2
+        assert "outside_kernel" not in avgs["avg_kernels"]
+        assert avgs["avg_aten"]["aten::add"]["avg_count"] == 0.5
+
+    def test_label_filter_reports_missing_exact_name(self, sample_trace_file):
+        with pytest.raises(ValueError, match="Analysis label not found"):
+            parse_trace(sample_trace_file, label_filter="optimizer.step")
+
 
 class TestComputeAvgs:
     def test_parse_step_filter(self):

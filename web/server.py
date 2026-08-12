@@ -61,7 +61,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.5.36"
+APP_VERSION = "0.5.37"
 NO_STORE_HEADERS = {"Cache-Control": "no-store, max-age=0"}
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
@@ -4732,7 +4732,7 @@ def _perfetto_context(data):
     padding_us = max(int(dur_us * 0.1), 1)
     return {
         "step": step,
-        "step_name": f"ProfilerStep#{step}",
+        "step_name": data.get("analysis_label") or f"ProfilerStep#{step}",
         "ts_ns": start_us * 1000,
         "dur_ns": dur_us * 1000,
         "vis_start_ns": max(0, start_us - padding_us) * 1000,
@@ -5088,7 +5088,7 @@ def _run_sync_analysis(job, rdir, path_a, path_b, name_a, name_b, progress_callb
         if progress_callback:
             progress_callback(message)
 
-    def compute_trace(path, step_filter, slot, source_name=None):
+    def compute_trace(path, step_filter, label_filter, slot, source_name=None):
         trace_label = source_name or os.path.basename(path)
 
         def parse_progress(events_seen, records_seen):
@@ -5106,6 +5106,7 @@ def _run_sync_analysis(job, rdir, path_a, path_b, name_a, name_b, progress_callb
             keep_triton_code=keep_triton_code,
             progress_callback=parse_progress,
             source_name=source_name,
+            label_filter=label_filter,
         )
         steps = parse_step_filter(step_filter)
         if steps:
@@ -5119,9 +5120,12 @@ def _run_sync_analysis(job, rdir, path_a, path_b, name_a, name_b, progress_callb
     with contextlib.redirect_stdout(buf):
         if job["mode"] == "single":
             step_filter_a = (job.get("step_filter_a") or "").strip()
+            label_filter_a = (job.get("label_filter_a") or "").strip()
             if step_filter_a:
                 print(f"Step filter A: {step_filter_a}")
-            data = compute_trace(path_a, step_filter_a, "a", name_a)
+            if label_filter_a:
+                print(f"Label filter A: {label_filter_a}")
+            data = compute_trace(path_a, step_filter_a, label_filter_a, "a", name_a)
             fake_args = types.SimpleNamespace(
                 output_dir=rdir,
                 save_triton_csv=bool(job["save_triton_csv"]),
@@ -5136,12 +5140,18 @@ def _run_sync_analysis(job, rdir, path_a, path_b, name_a, name_b, progress_callb
         else:
             step_filter_a = (job.get("step_filter_a") or "").strip()
             step_filter_b = (job.get("step_filter_b") or "").strip()
+            label_filter_a = (job.get("label_filter_a") or "").strip()
+            label_filter_b = (job.get("label_filter_b") or "").strip()
             if step_filter_a:
                 print(f"Step filter A: {step_filter_a}")
             if step_filter_b:
                 print(f"Step filter B: {step_filter_b}")
-            data_a = compute_trace(path_a, step_filter_a, "a", name_a)
-            data_b = compute_trace(path_b, step_filter_b, "b", name_b)
+            if label_filter_a:
+                print(f"Label filter A: {label_filter_a}")
+            if label_filter_b:
+                print(f"Label filter B: {label_filter_b}")
+            data_a = compute_trace(path_a, step_filter_a, label_filter_a, "a", name_a)
+            data_b = compute_trace(path_b, step_filter_b, label_filter_b, "b", name_b)
             fake_args = types.SimpleNamespace(output_dir=rdir)
             label_a = name_a or os.path.basename(path_a)
             label_b = name_b or os.path.basename(path_b)
@@ -7657,9 +7667,10 @@ async def delete_project(request: Request, pid: str):
                 file_a_name, file_a_path, file_a_gzip_path, file_a_exists,
                 file_b_name, file_b_path, file_b_gzip_path, file_b_exists,
                 source_job_a, source_job_b, step_filter_a, step_filter_b,
+                label_filter_a, label_filter_b,
                 save_triton_csv, save_triton_code,
                 status, console_out, error_msg, result_dir, deleted_at)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         """, (job_dict["id"], job_dict.get("seq"), job_dict.get("project_id"), job_dict.get("user_token"),
               job_dict.get("created_at"), job_dict.get("label", ""), job_dict.get("mode"),
               job_dict.get("is_pinned", 0),
@@ -7667,6 +7678,7 @@ async def delete_project(request: Request, pid: str):
               job_dict.get("file_b_name"), job_dict.get("file_b_path"), job_dict.get("file_b_gzip_path"), job_dict.get("file_b_exists", 1),
               job_dict.get("source_job_a"), job_dict.get("source_job_b"),
               job_dict.get("step_filter_a", ""), job_dict.get("step_filter_b", ""),
+              job_dict.get("label_filter_a", ""), job_dict.get("label_filter_b", ""),
               job_dict.get("save_triton_csv", 0), job_dict.get("save_triton_code", 0),
               job_dict.get("status", "pending"), job_dict.get("console_out", ""), job_dict.get("error_msg", ""), job_dict.get("result_dir", "")))
 
@@ -7796,15 +7808,17 @@ async def restore_project(request: Request, pid: str):
                 file_a_name, file_a_path, file_a_gzip_path, file_a_exists,
                 file_b_name, file_b_path, file_b_gzip_path, file_b_exists,
                 source_job_a, source_job_b, step_filter_a, step_filter_b,
+                label_filter_a, label_filter_b,
                 save_triton_csv, save_triton_code,
                 status, console_out, error_msg, result_dir)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (job_dict["id"], job_dict.get("seq"), pid, job_dict.get("user_token"),
               job_dict.get("created_at"), job_dict.get("label", ""), job_dict.get("mode"),
               job_dict.get("is_pinned", 0),
               job_dict.get("file_a_name"), job_dict.get("file_a_path"), job_dict.get("file_a_gzip_path"), job_dict.get("file_a_exists", 1),
               job_dict.get("file_b_name"), job_dict.get("file_b_path"), job_dict.get("file_b_gzip_path"), job_dict.get("file_b_exists", 1),
               job_dict.get("step_filter_a", ""), job_dict.get("step_filter_b", ""),
+              job_dict.get("label_filter_a", ""), job_dict.get("label_filter_b", ""),
               job_dict.get("save_triton_csv", 0), job_dict.get("save_triton_code", 0),
               job_dict.get("status", "pending"), job_dict.get("console_out", ""), job_dict.get("error_msg", ""), job_dict.get("result_dir", "")))
         restored_source_links.append(
@@ -9644,10 +9658,30 @@ def _normalize_step_filter(value, label: str) -> str:
     return text
 
 
-def _step_reanalysis_suffix(mode: str, step_filter_a: str, step_filter_b: str = "") -> str:
+def _normalize_label_filter(value, slot: str) -> str:
+    text = str(value or "").strip()
+    if len(text) > 500:
+        raise HTTPException(400, f"{slot} 标签名称不能超过 500 个字符")
+    return text
+
+
+def _reanalysis_suffix(
+    mode: str,
+    step_filter_a: str,
+    step_filter_b: str = "",
+    label_filter_a: str = "",
+    label_filter_b: str = "",
+) -> str:
+    def describe(step_filter: str, label_filter: str) -> str:
+        if label_filter:
+            return f"标签 {label_filter}"
+        if step_filter:
+            return f"step {step_filter}"
+        return "全部"
+
     if mode == "single":
-        return f"step {step_filter_a}"
-    return f"A step {step_filter_a or '全部'} / B step {step_filter_b or '全部'}"
+        return describe(step_filter_a, label_filter_a)
+    return f"A {describe(step_filter_a, label_filter_a)} / B {describe(step_filter_b, label_filter_b)}"
 
 
 async def _resolve_reanalysis_trace(db, request: Request, job: dict, slot: str) -> tuple[str, str, Optional[str]]:
@@ -9750,6 +9784,7 @@ async def analyze_compare_trace_slot(request: Request, jid: str, body: dict):
 
 
 @app.post("/api/jobs/{jid}/reanalyze-steps", status_code=201)
+@app.post("/api/jobs/{jid}/reanalyze-region", status_code=201)
 async def reanalyze_job_steps(request: Request, jid: str, body: dict):
     db = await get_db()
     new_jid = str(uuid.uuid4())
@@ -9767,10 +9802,16 @@ async def reanalyze_job_steps(request: Request, jid: str, body: dict):
         mode = job.get("mode")
         step_filter_a = _normalize_step_filter(body.get("step_filter_a"), "A")
         step_filter_b = _normalize_step_filter(body.get("step_filter_b"), "B") if mode == "compare" else ""
-        if mode == "single" and not step_filter_a:
-            raise HTTPException(400, "单 trace 重分析需要指定 A step")
-        if mode == "compare" and not (step_filter_a or step_filter_b):
-            raise HTTPException(400, "对比重分析需要至少指定 A 或 B 的 step")
+        label_filter_a = _normalize_label_filter(body.get("label_filter_a"), "A")
+        label_filter_b = _normalize_label_filter(body.get("label_filter_b"), "B") if mode == "compare" else ""
+        if step_filter_a and label_filter_a:
+            raise HTTPException(400, "A Trace 不能同时指定 step 和标签")
+        if step_filter_b and label_filter_b:
+            raise HTTPException(400, "B Trace 不能同时指定 step 和标签")
+        if mode == "single" and not (step_filter_a or label_filter_a):
+            raise HTTPException(400, "单 trace 重分析需要指定 step 或标签")
+        if mode == "compare" and not (step_filter_a or step_filter_b or label_filter_a or label_filter_b):
+            raise HTTPException(400, "对比重分析需要至少指定 A 或 B 的 step 或标签")
 
         project_id = body.get("project_id") if "project_id" in body else job.get("project_id")
         await validate_project_access(db, request, project_id or None)
@@ -9791,7 +9832,13 @@ async def reanalyze_job_steps(request: Request, jid: str, body: dict):
                 shutil.rmtree(new_dir)
             raise HTTPException(500, f"Failed to copy trace files: {e}") from e
 
-        suffix = _step_reanalysis_suffix(mode, step_filter_a, step_filter_b)
+        suffix = _reanalysis_suffix(
+            mode,
+            step_filter_a,
+            step_filter_b,
+            label_filter_a,
+            label_filter_b,
+        )
         label = str(body.get("label") or "").strip() or f"{job.get('label') or jid[:8]} · {suffix}"
         await db.execute(
             """INSERT INTO jobs(id, project_id, user_token, label, mode,
@@ -9799,14 +9846,16 @@ async def reanalyze_job_steps(request: Request, jid: str, body: dict):
                    file_b_name, file_b_path, file_b_gzip_path,
                    source_job_a, source_job_b,
                    step_filter_a, step_filter_b,
+                   label_filter_a, label_filter_b,
                    save_triton_csv, save_triton_code)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 new_jid, project_id or None, user_token, label, mode,
                 name_a, new_a_path, new_a_gzip_path,
                 name_b, new_b_path, new_b_gzip_path,
                 source_a, source_b,
                 step_filter_a, step_filter_b,
+                label_filter_a, label_filter_b,
                 1,
                 int(job.get("save_triton_code", 0) or 0),
             ),
@@ -9821,6 +9870,8 @@ async def reanalyze_job_steps(request: Request, jid: str, body: dict):
                 "project_id": project_id,
                 "step_filter_a": step_filter_a,
                 "step_filter_b": step_filter_b,
+                "label_filter_a": label_filter_a,
+                "label_filter_b": label_filter_b,
                 "label": label,
             },
         )
@@ -10309,6 +10360,10 @@ async def download_job_report(request: Request, jid: str):
         lines.append(f"- Step 过滤 A: `{job.get('step_filter_a') or '全部'}`")
         if job.get("mode") == "compare":
             lines.append(f"- Step 过滤 B: `{job.get('step_filter_b') or '全部'}`")
+    if job.get("label_filter_a") or job.get("label_filter_b"):
+        lines.append(f"- 标签过滤 A: `{job.get('label_filter_a') or '全部'}`")
+        if job.get("mode") == "compare":
+            lines.append(f"- 标签过滤 B: `{job.get('label_filter_b') or '全部'}`")
     lines.extend([
         "",
         "## Trace 文件",

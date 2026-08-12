@@ -828,17 +828,43 @@ def _detect_trace_format(trace_file, sample_limit=100000, source_name=None):
     return "tensorflow" if tf_score > torch_score else "pytorch"
 
 
-def parse_trace(trace_file, *, keep_triton_code=False, progress_callback=None, source_name=None):
+def parse_trace(
+    trace_file,
+    *,
+    keep_triton_code=False,
+    progress_callback=None,
+    source_name=None,
+    label_filter="",
+):
     """Parse a Chrome trace with framework-specific parsers."""
     if _detect_trace_format(trace_file, source_name=source_name) == "tensorflow":
-        return _parse_tensorflow_trace(trace_file, keep_triton_code=keep_triton_code, progress_callback=progress_callback)
-    return _parse_pytorch_trace(trace_file, keep_triton_code=keep_triton_code, progress_callback=progress_callback)
+        return _parse_tensorflow_trace(
+            trace_file,
+            keep_triton_code=keep_triton_code,
+            progress_callback=progress_callback,
+            label_filter=label_filter,
+        )
+    return _parse_pytorch_trace(
+        trace_file,
+        keep_triton_code=keep_triton_code,
+        progress_callback=progress_callback,
+        label_filter=label_filter,
+    )
 
 
-def _parse_tensorflow_trace(trace_file, *, keep_triton_code=False, progress_callback=None):
+def _parse_tensorflow_trace(
+    trace_file,
+    *,
+    keep_triton_code=False,
+    progress_callback=None,
+    label_filter="",
+):
     """Parse TensorFlow Chrome traces without reusing PyTorch event rules."""
+    label_filter = str(label_filter or "").strip()
     step_ranges = {}
     step_durations = {}
+    label_ranges = []
+    label_range_set = set()
     step_cache_dirty = True
     cached_step_starts = []
     cached_step_ends = []
@@ -1042,7 +1068,13 @@ def _parse_tensorflow_trace(trace_file, *, keep_triton_code=False, progress_call
         args = e.get("args", {}) or {}
         if not isinstance(args, dict):
             args = {}
-        if _is_tensorflow_step_event(name, cat, args):
+        if label_filter and name == label_filter and cat != "kernel":
+            interval = event_interval(e)
+            if interval is not None and interval[1] > interval[0] and interval not in label_range_set:
+                label_range_set.add(interval)
+                label_ranges.append(interval)
+            return False
+        if not label_filter and _is_tensorflow_step_event(name, cat, args):
             interval = event_interval(e)
             if interval is not None:
                 add_step_range(_tensorflow_group_step(args), interval[0], interval[1] - interval[0])
@@ -1096,11 +1128,20 @@ def _parse_tensorflow_trace(trace_file, *, keep_triton_code=False, progress_call
             def record_to_spool(record):
                 _spool_record(spool, spool_batch, record)
 
-            scan_events_with_progress(_iter_trace_events(trace_file), record_to_spool, allow_direct=True)
+            scan_events_with_progress(
+                _iter_trace_events(trace_file),
+                record_to_spool,
+                allow_direct=not label_filter,
+            )
             _flush_spool_batch(spool, spool_batch)
         maybe_report_parse_progress(force=True)
 
-        if not step_ranges and analyzable_intervals:
+        if label_filter:
+            for index, (start, end) in enumerate(sorted(label_ranges)):
+                add_step_range(index, start, end - start)
+            if not step_ranges:
+                raise ValueError(f"Analysis label not found: {label_filter}")
+        elif not step_ranges and analyzable_intervals:
             start = min(interval[0] for interval in analyzable_intervals)
             end = max(interval[1] for interval in analyzable_intervals)
             add_step_range(0, start, max(end - start, 0.0))
@@ -1217,13 +1258,20 @@ def _parse_tensorflow_trace(trace_file, *, keep_triton_code=False, progress_call
             "step_durations": step_durations,
             "step_ranges": step_ranges,
             "kernel_families": kernel_families,
+            "analysis_label": label_filter,
         }
     finally:
         if spool is not None:
             spool.close()
 
 
-def _parse_pytorch_trace(trace_file, *, keep_triton_code=False, progress_callback=None):
+def _parse_pytorch_trace(
+    trace_file,
+    *,
+    keep_triton_code=False,
+    progress_callback=None,
+    label_filter="",
+):
     """Parse a PyTorch profiler trace JSON.
 
     Returns:
@@ -1239,9 +1287,12 @@ def _parse_pytorch_trace(trace_file, *, keep_triton_code=False, progress_callbac
     non-numbered run_step wrappers, then to one synthetic step spanning all
     analyzable events.  This keeps valid traces from producing empty results.
     """
+    label_filter = str(label_filter or "").strip()
     # step_num -> (start_ts, end_ts)
     step_ranges    = {}
     step_durations = {}   # step_num -> ms
+    label_ranges = []
+    label_range_set = set()
     kernel_families   = {}
     analyzable_intervals = []
     fallback_intervals = []
@@ -1464,13 +1515,19 @@ def _parse_pytorch_trace(trace_file, *, keep_triton_code=False, progress_callbac
                 operator_details_by_external_id.setdefault(external_id, detail)
             if name.startswith("aten::"):
                 aten_operators_by_external_id.setdefault(external_id, name)
+        if label_filter and name == label_filter and cat != "kernel":
+            interval = event_interval(e)
+            if interval is not None and interval[1] > interval[0] and interval not in label_range_set:
+                label_range_set.add(interval)
+                label_ranges.append(interval)
+            return False
         step_num = extract_step_number(name)
-        if step_num is not None and cat != "kernel":
+        if not label_filter and step_num is not None and cat != "kernel":
             interval = event_interval(e)
             if interval is not None:
                 add_step_range(step_num, interval[0], interval[1] - interval[0])
             return
-        if cat != "kernel" and is_fallback_step_marker(name):
+        if not label_filter and cat != "kernel" and is_fallback_step_marker(name):
             interval = event_interval(e)
             if interval and interval[1] > interval[0] and not step_ranges:
                 fallback_intervals.append(interval)
@@ -1525,7 +1582,11 @@ def _parse_pytorch_trace(trace_file, *, keep_triton_code=False, progress_callbac
             def record_to_spool(record):
                 _spool_record(spool, spool_batch, record)
 
-            scan_events_with_progress(_iter_trace_events(trace_file), record_to_spool, allow_direct=True)
+            scan_events_with_progress(
+                _iter_trace_events(trace_file),
+                record_to_spool,
+                allow_direct=not label_filter,
+            )
             _flush_spool_batch(spool, spool_batch)
         maybe_report_parse_progress(force=True)
 
@@ -1554,7 +1615,12 @@ def _parse_pytorch_trace(trace_file, *, keep_triton_code=False, progress_callbac
                 end = max(interval[1] for interval in analyzable_intervals)
                 add_step_range(0, start, max(end - start, 0.0))
 
-        if not step_ranges:
+        if label_filter:
+            for index, (start, end) in enumerate(sorted(label_ranges)):
+                add_step_range(index, start, end - start)
+            if not step_ranges:
+                raise ValueError(f"Analysis label not found: {label_filter}")
+        elif not step_ranges:
             add_fallback_step_ranges()
 
         sorted_steps = sorted(step_ranges.items(), key=lambda x: x[1][0])
@@ -1679,6 +1745,7 @@ def _parse_pytorch_trace(trace_file, *, keep_triton_code=False, progress_callbac
             "step_durations":       step_durations,
             "step_ranges":          step_ranges,
             "kernel_families":      kernel_families,
+            "analysis_label":       label_filter,
         }
     finally:
         if spool is not None:
@@ -1850,6 +1917,7 @@ def compute_avgs(parsed):
         step_durations       = parsed["step_durations"]
         step_ranges          = parsed.get("step_ranges", {})
         kernel_families      = parsed.get("kernel_families", {})
+        analysis_label       = parsed.get("analysis_label", "")
     else:
         framework = "pytorch"
         if len(parsed) == 6:
@@ -1861,6 +1929,7 @@ def compute_avgs(parsed):
         step_to_non_triton_kernel_efficiency = defaultdict(list)
         step_ranges = {}
         kernel_families = {}
+        analysis_label = ""
     all_steps = sorted(
         set(step_durations)
         | set(step_to_kernels)
@@ -2171,6 +2240,7 @@ def compute_avgs(parsed):
         "step_to_triton": step_to_triton,
         "step_ranges":    step_ranges,
         "kernel_families": kernel_families,
+        "analysis_label": analysis_label,
     }
 
 

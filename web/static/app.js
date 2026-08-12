@@ -7,7 +7,7 @@ const { createRouter, createWebHashHistory } = VueRouter;
 
 let appInitialized = false;
 const DEFAULT_RESULT_TAB = "chart";
-const CLIENT_APP_VERSION = "0.5.36";
+const CLIENT_APP_VERSION = "0.5.37";
 const APP_VERSION_CHECK_INTERVAL_MS = 60_000;
 const APP_VERSION_QUERY_PARAM = "_app_version";
 let appVersionCheckTimer = null;
@@ -270,6 +270,10 @@ const stepReanalysisLoading = ref(false);
 const stepReanalysisLabel = ref("");
 const stepReanalysisFilterA = ref("");
 const stepReanalysisFilterB = ref("");
+const stepReanalysisLabelFilterA = ref("");
+const stepReanalysisLabelFilterB = ref("");
+const stepReanalysisTypeA = ref("step");
+const stepReanalysisTypeB = ref("step");
 const aiAnalysisLoading = ref(false);
 const aiAnalysisStarting = ref(false);
 const aiAnalysisError = ref("");
@@ -743,6 +747,16 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.37",
+    date: "2026-08-12",
+    title: "支持按标签指定区域重分析",
+    items: [
+      "除 step 外，可按时间轴上的 optimizer、module 等区间标签精确重分析。",
+      "同名标签的多个区间作为独立样本求平均，避免累计值混入单次口径。",
+      "对比任务的 A/B 可分别选择 step 或标签，留空的一侧使用完整 trace。",
+    ],
+  },
   {
     version: "0.5.36",
     date: "2026-08-09",
@@ -1754,11 +1768,15 @@ const availableTabs = computed(() => {
 const jobStepFilterLabel = computed(() => {
   const job = selectedJob.value;
   if (!job) return "";
-  const a = (job.step_filter_a || "").trim();
-  const b = (job.step_filter_b || "").trim();
+  const a = (job.label_filter_a || "").trim() || (job.step_filter_a || "").trim();
+  const b = (job.label_filter_b || "").trim() || (job.step_filter_b || "").trim();
   if (!a && !b) return "";
-  if (job.mode === "compare") return `Step A: ${a || "全部"} / B: ${b || "全部"}`;
-  return `Step: ${a}`;
+  const typeA = job.label_filter_a ? "标签" : "Step";
+  const typeB = job.label_filter_b ? "标签" : "Step";
+  if (job.mode === "compare") {
+    return `A ${a ? `${typeA}: ${a}` : "全部"} / B ${b ? `${typeB}: ${b}` : "全部"}`;
+  }
+  return `${typeA}: ${a}`;
 });
 
 const CHART_SOURCE_CONFIGS = [
@@ -9368,12 +9386,16 @@ const openStepReanalysisModal = () => {
     return;
   }
   if (["pending", "running"].includes(selectedJob.value.status)) {
-    showToast("任务仍在分析中，完成后再指定 Step 重分析", "error");
+    showToast("任务仍在分析中，完成后再指定区域重分析", "error");
     return;
   }
   stepReanalysisLabel.value = "";
   stepReanalysisFilterA.value = selectedJob.value.step_filter_a || "";
   stepReanalysisFilterB.value = selectedJob.value.mode === "compare" ? (selectedJob.value.step_filter_b || "") : "";
+  stepReanalysisLabelFilterA.value = selectedJob.value.label_filter_a || "";
+  stepReanalysisLabelFilterB.value = selectedJob.value.mode === "compare" ? (selectedJob.value.label_filter_b || "") : "";
+  stepReanalysisTypeA.value = stepReanalysisLabelFilterA.value ? "label" : "step";
+  stepReanalysisTypeB.value = stepReanalysisLabelFilterB.value ? "label" : "step";
   showStepReanalysisModal.value = true;
 };
 
@@ -9384,20 +9406,26 @@ const closeStepReanalysisModal = () => {
 
 const confirmStepReanalysis = async () => {
   if (!selectedJobId.value || !selectedJob.value || stepReanalysisLoading.value) return;
-  const filterA = stepReanalysisFilterA.value.trim();
-  const filterB = selectedJob.value.mode === "compare" ? stepReanalysisFilterB.value.trim() : "";
-  if (selectedJob.value.mode === "single" && !filterA) {
-    showToast("请指定要分析的 step", "error");
+  const filterA = stepReanalysisTypeA.value === "step" ? stepReanalysisFilterA.value.trim() : "";
+  const filterB = selectedJob.value.mode === "compare" && stepReanalysisTypeB.value === "step"
+    ? stepReanalysisFilterB.value.trim()
+    : "";
+  const labelFilterA = stepReanalysisTypeA.value === "label" ? stepReanalysisLabelFilterA.value.trim() : "";
+  const labelFilterB = selectedJob.value.mode === "compare" && stepReanalysisTypeB.value === "label"
+    ? stepReanalysisLabelFilterB.value.trim()
+    : "";
+  if (selectedJob.value.mode === "single" && !filterA && !labelFilterA) {
+    showToast("请指定要分析的 step 或标签", "error");
     return;
   }
-  if (selectedJob.value.mode === "compare" && !filterA && !filterB) {
-    showToast("请至少指定 A 或 B 的 step；留空的一侧会使用全部 step", "error");
+  if (selectedJob.value.mode === "compare" && !filterA && !filterB && !labelFilterA && !labelFilterB) {
+    showToast("请至少指定 A 或 B 的 step 或标签；留空的一侧会使用完整 trace", "error");
     return;
   }
 
   stepReanalysisLoading.value = true;
   try {
-    const r = await fetch(`/api/jobs/${selectedJobId.value}/reanalyze-steps`, {
+    const r = await fetch(`/api/jobs/${selectedJobId.value}/reanalyze-region`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
@@ -9405,19 +9433,21 @@ const confirmStepReanalysis = async () => {
         label: stepReanalysisLabel.value.trim(),
         step_filter_a: filterA,
         step_filter_b: filterB,
+        label_filter_a: labelFilterA,
+        label_filter_b: labelFilterB,
       }),
     });
     const payload = await r.json().catch(() => ({}));
     if (!r.ok) {
-      showToast("指定 Step 重分析失败: " + (payload.detail || "服务器错误"), "error");
+      showToast("指定区域重分析失败: " + (payload.detail || "服务器错误"), "error");
       return;
     }
     showStepReanalysisModal.value = false;
-    showToast("已创建指定 Step 重分析任务", "success");
+    showToast("已创建指定区域重分析任务", "success");
     await refreshSidebarData();
     router.push({ path: jobRoutePath(payload) });
   } catch (e) {
-    showToast("指定 Step 重分析失败: 网络错误", "error");
+    showToast("指定区域重分析失败: 网络错误", "error");
   } finally {
     stepReanalysisLoading.value = false;
   }
@@ -10083,7 +10113,7 @@ const JobDetail = {
             </button>
             <button v-if="selectedJob.is_owner !== false" type="button" @click="editLabel(); closeActionMenu()">重命名</button>
             <button v-if="selectedJob.is_owner !== false" type="button" @click="moveProject(); closeActionMenu()">移动项目</button>
-            <button type="button" @click="openStepReanalysisModal(); closeActionMenu()">指定 Step 重分析</button>
+            <button type="button" @click="openStepReanalysisModal(); closeActionMenu()">指定区域重分析</button>
             <button v-if="selectedJob.is_owner !== false" type="button" class="danger" @click="deleteJob(); closeActionMenu()">删除任务</button>
           </div>
         </div>
@@ -14859,6 +14889,8 @@ const App = {
       openAiPromptModal, closeAiPromptModal, confirmAiPromptModal,
       showStepReanalysisModal, stepReanalysisLoading, stepReanalysisLabel,
       stepReanalysisFilterA, stepReanalysisFilterB,
+      stepReanalysisLabelFilterA, stepReanalysisLabelFilterB,
+      stepReanalysisTypeA, stepReanalysisTypeB,
       openStepReanalysisModal, closeStepReanalysisModal, confirmStepReanalysis,
       toasts, showConfirmModal, confirmModal, resolveConfirm,
       openActionMenu, toggleActionMenu, closeActionMenu,

@@ -116,6 +116,8 @@ async def init_db():
 
                 step_filter_a    TEXT DEFAULT '',
                 step_filter_b    TEXT DEFAULT '',
+                label_filter_a   TEXT DEFAULT '',
+                label_filter_b   TEXT DEFAULT '',
 
                 save_triton_csv  INTEGER DEFAULT 0,
                 save_triton_code INTEGER DEFAULT 0,
@@ -260,6 +262,8 @@ async def init_db():
         await add_column_if_missing(db, "jobs", "is_pinned", "INTEGER DEFAULT 0")
         await add_column_if_missing(db, "jobs", "step_filter_a", "TEXT DEFAULT ''")
         await add_column_if_missing(db, "jobs", "step_filter_b", "TEXT DEFAULT ''")
+        await add_column_if_missing(db, "jobs", "label_filter_a", "TEXT DEFAULT ''")
+        await add_column_if_missing(db, "jobs", "label_filter_b", "TEXT DEFAULT ''")
         await add_column_if_missing(db, "jobs", "seq", "INTEGER")
         await add_column_if_missing(db, "folders", "password_hash", "TEXT DEFAULT NULL")
         await add_column_if_missing(db, "feedback_messages", "edited_at", "DATETIME DEFAULT NULL")
@@ -325,6 +329,8 @@ async def init_db():
 
                 step_filter_a    TEXT DEFAULT '',
                 step_filter_b    TEXT DEFAULT '',
+                label_filter_a   TEXT DEFAULT '',
+                label_filter_b   TEXT DEFAULT '',
 
                 save_triton_csv  INTEGER DEFAULT 0,
                 save_triton_code INTEGER DEFAULT 0,
@@ -375,6 +381,8 @@ async def init_db():
         await add_column_if_missing(db, "deleted_jobs", "seq", "INTEGER")
         await add_column_if_missing(db, "deleted_jobs", "step_filter_a", "TEXT DEFAULT ''")
         await add_column_if_missing(db, "deleted_jobs", "step_filter_b", "TEXT DEFAULT ''")
+        await add_column_if_missing(db, "deleted_jobs", "label_filter_a", "TEXT DEFAULT ''")
+        await add_column_if_missing(db, "deleted_jobs", "label_filter_b", "TEXT DEFAULT ''")
         await add_column_if_missing(db, "deleted_projects", "experiment_edges_json", "TEXT DEFAULT '[]'")
         await add_column_if_missing(db, "deleted_projects", "experiment_node_layout_json", "TEXT DEFAULT '[]'")
         await db.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(1)")

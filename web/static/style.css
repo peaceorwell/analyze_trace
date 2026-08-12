@@ -5551,6 +5551,30 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
 .step-reanalysis-input {
   width: 100%;
 }
+.step-reanalysis-type {
+  display: flex;
+  gap: 4px;
+  margin: -2px 0 8px;
+  padding: 3px;
+  border-radius: 8px;
+  background: var(--card2);
+}
+.step-reanalysis-type button {
+  flex: 1;
+  border: 0;
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: transparent;
+  color: var(--text2);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+.step-reanalysis-type button.active {
+  background: var(--bg);
+  color: var(--purple-l);
+  box-shadow: 0 1px 3px rgba(15,23,42,.12);
+}
 .step-reanalysis-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
