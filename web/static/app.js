@@ -7,7 +7,7 @@ const { createRouter, createWebHashHistory } = VueRouter;
 
 let appInitialized = false;
 const DEFAULT_RESULT_TAB = "chart";
-const CLIENT_APP_VERSION = "0.5.37";
+const CLIENT_APP_VERSION = "0.5.38";
 const APP_VERSION_CHECK_INTERVAL_MS = 60_000;
 const APP_VERSION_QUERY_PARAM = "_app_version";
 let appVersionCheckTimer = null;
@@ -748,7 +748,7 @@ const profileForm = reactive({
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
   {
-    version: "0.5.37",
+    version: "0.5.38",
     date: "2026-08-12",
     title: "支持按标签指定区域重分析",
     items: [
