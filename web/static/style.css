@@ -5205,18 +5205,17 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
   flex: 1;
   flex-direction: column;
   align-items: center;
-  justify-content: flex-start;
-  gap: 12px;
+  justify-content: center;
   color: var(--text3);
   font-size: 13px;
   text-align: center;
 }
 .user-group-qr-wrap img {
-  width: min(230px, 100%);
-  aspect-ratio: 1;
-  padding: 8px;
+  width: min(310px, 100%);
+  max-height: 380px;
   border-radius: 8px;
   background: #fff;
+  object-fit: contain;
 }
 .user-group-action {
   width: 100%;

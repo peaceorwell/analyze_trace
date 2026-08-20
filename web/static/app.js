@@ -10,7 +10,7 @@ const DEFAULT_RESULT_TAB = "chart";
 const CLIENT_APP_VERSION = "0.5.41";
 const APP_VERSION_CHECK_INTERVAL_MS = 60_000;
 const APP_VERSION_QUERY_PARAM = "_app_version";
-const USER_GROUP_LINK = "https://ims.cambricon.com/woa/invite/Qtk2LO1bnk?channel=hwj-v7";
+const USER_GROUP_LINK = "https://ims.cambricon.com/woa/invite/PPtk2dW22h5?channel=hwj-v7";
 const NEW_TRIAL_URL = "http://10.100.146.137:33512/";
 let appVersionCheckTimer = null;
 
