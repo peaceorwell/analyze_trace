@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>torch profiler analyzer</title>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.5.41" />
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.5.42" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.css" />
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
@@ -12,7 +12,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js"></script>
-  <link rel="stylesheet" href="/static/style.css?v=0.5.41" />
+  <link rel="stylesheet" href="/static/style.css?v=0.5.42" />
   <script>
     // Apply saved theme or system preference before page paint to avoid flash
     (function() {
@@ -133,7 +133,7 @@
     <!-- ── Header ── -->
     <header v-if="authChecked && (!authRequired || currentUser)" class="header">
       <button class="header-brand" type="button" @click="$router.push('/')" title="返回上传页面" aria-label="返回上传与工作台首页">
-        <img class="header-logo" src="/static/favicon.svg?v=0.5.41" alt="" />
+        <img class="header-logo" src="/static/favicon.svg?v=0.5.42" alt="" />
         <span class="header-title">Torch Profiler Analyzer</span>
         <span class="header-version">v{{ appVersion }}</span>
       </button>
@@ -695,6 +695,44 @@
       </div>
     </div>
 
+    <!-- ── First-entry notice modal ── -->
+    <div v-if="showEntryNotice" class="modal-mask" @click.self="closeEntryNotice">
+      <div class="modal entry-notice-modal" role="dialog" aria-modal="true" aria-labelledby="entry-notice-title">
+        <div class="modal-title entry-notice-title" id="entry-notice-title">
+          <span>新入口上线</span>
+          <button class="action-icon-btn" type="button" title="关闭" aria-label="关闭" @click="closeEntryNotice">×</button>
+        </div>
+        <p class="entry-notice-lead">欢迎使用新版 Torch Profiler Analyzer，两个新入口已经准备好。</p>
+        <div class="entry-notice-grid">
+          <section class="entry-notice-card">
+            <span class="entry-notice-icon" aria-hidden="true">群</span>
+            <div>
+              <small>交流与反馈</small>
+              <h3>加入 tpa 用户群</h3>
+              <p>获取使用帮助，与团队交流性能分析经验和改进建议。</p>
+            </div>
+            <button class="btn btn-outline" type="button" @click="openUserGroupFromEntryNotice">查看入群方式</button>
+          </section>
+          <section class="entry-notice-card entry-notice-card-trial">
+            <span class="entry-notice-icon" aria-hidden="true">新</span>
+            <div>
+              <small>抢先体验</small>
+              <h3>试用新版分析服务</h3>
+              <p>前往新版应用，体验新的分析流程和功能。</p>
+            </div>
+            <a class="btn btn-primary" :href="newTrialUrl" target="_blank" rel="noopener noreferrer" @click="closeEntryNotice">立即试用新版</a>
+          </section>
+        </div>
+        <div class="entry-notice-footer">
+          <label class="check-row entry-notice-check">
+            <input type="checkbox" v-model="entryNoticeNeverShow" />
+            <span>不再显示</span>
+          </label>
+          <button class="btn btn-primary" type="button" data-modal-autofocus @click="closeEntryNotice">知道了</button>
+        </div>
+      </div>
+    </div>
+
     <!-- ── User group modal ── -->
     <div v-if="showUserGroup" class="modal-mask" @click.self="showUserGroup=false">
       <div class="modal user-group-modal" role="dialog" aria-modal="true" aria-labelledby="user-group-title">
@@ -718,9 +756,9 @@
           </section>
           <section class="user-group-card">
             <div class="user-group-qr-wrap">
-              <img src="/static/tpa-user-group.jpeg?v=0.5.41" alt="tpa用户群入群图片" />
+              <img src="/static/tpa-user-group.jpeg?v=0.5.42" alt="tpa用户群入群图片" />
             </div>
-            <a class="btn btn-primary user-group-action" href="/static/tpa-user-group.jpeg?v=0.5.41" download="tpa用户群入群图片.jpeg">保存图片</a>
+            <a class="btn btn-primary user-group-action" href="/static/tpa-user-group.jpeg?v=0.5.42" download="tpa用户群入群图片.jpeg">保存图片</a>
           </section>
         </div>
       </div>
@@ -1851,6 +1889,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=0.5.41"></script>
+  <script src="/static/app.js?v=0.5.42"></script>
 </body>
 </html>

@@ -7,11 +7,12 @@ const { createRouter, createWebHashHistory } = VueRouter;
 
 let appInitialized = false;
 const DEFAULT_RESULT_TAB = "chart";
-const CLIENT_APP_VERSION = "0.5.41";
+const CLIENT_APP_VERSION = "0.5.42";
 const APP_VERSION_CHECK_INTERVAL_MS = 60_000;
 const APP_VERSION_QUERY_PARAM = "_app_version";
 const USER_GROUP_LINK = "https://ims.cambricon.com/woa/invite/PPtk2dW22h5?channel=hwj-v7";
 const NEW_TRIAL_URL = "http://10.100.146.137:33512/";
+const ENTRY_NOTICE_STORAGE_PREFIX = "tpa-entry-notice-v1";
 let appVersionCheckTimer = null;
 
 const clearAppVersionQueryParam = () => {
@@ -731,6 +732,9 @@ const currentTritonCodePath = ref("");
 // ── Guide ───────────────────────────────────────────────────────────────
 const showGuide = ref(false);
 const showUserGroup = ref(false);
+const showEntryNotice = ref(false);
+const entryNoticeNeverShow = ref(true);
+const entryNoticeShownUsers = new Set();
 const showSettings = ref(false);
 const profileForm = reactive({
   username: "",
@@ -748,6 +752,15 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.42",
+    date: "2026-08-20",
+    title: "新增首次访问入口提醒",
+    items: [
+      "首次打开时提醒用户加入 tpa 用户群并试用新版分析服务。",
+      "通知默认勾选不再显示，并按当前用户保存选择。",
+    ],
+  },
   {
     version: "0.5.41",
     date: "2026-08-20",
@@ -9149,6 +9162,34 @@ const copyUserGroupLink = async () => {
   showToast("群链接已复制", "success");
 };
 
+const entryNoticeStorageKey = () =>
+  `${ENTRY_NOTICE_STORAGE_PREFIX}:${projectExpansionUserKey()}`;
+
+const maybeShowEntryNotice = () => {
+  if (!authChecked.value || authInitError.value) return;
+  if (authRequired.value && !currentUser.value) return;
+  const userKey = projectExpansionUserKey();
+  if (entryNoticeShownUsers.has(userKey)) return;
+  entryNoticeShownUsers.add(userKey);
+  if (localStorage.getItem(entryNoticeStorageKey()) === "true") return;
+  entryNoticeNeverShow.value = true;
+  showEntryNotice.value = true;
+};
+
+const closeEntryNotice = () => {
+  if (entryNoticeNeverShow.value) {
+    localStorage.setItem(entryNoticeStorageKey(), "true");
+  } else {
+    localStorage.removeItem(entryNoticeStorageKey());
+  }
+  showEntryNotice.value = false;
+};
+
+const openUserGroupFromEntryNotice = () => {
+  closeEntryNotice();
+  showUserGroup.value = true;
+};
+
 // ══════════════════════════════════════════════════════════════════════════════
 // Compare
 // ══════════════════════════════════════════════════════════════════════════════
@@ -14376,6 +14417,7 @@ const handleGlobalEscape = event => {
   else if (showStorageManager.value) showStorageManager.value = false;
   else if (showAdminUsage.value) showAdminUsage.value = false;
   else if (showTritonCode.value) showTritonCode.value = false;
+  else if (showEntryNotice.value) closeEntryNotice();
   else if (showUserGroup.value) showUserGroup.value = false;
   else if (showGuide.value) showGuide.value = false;
   else if (showReleaseNotes.value) showReleaseNotes.value = false;
@@ -14640,7 +14682,7 @@ const App = {
       showRenameJob, showNewProject, showRenameProject, showDeletedProjects,
       showFeedbackComposer, showAdminUsage, showStorageManager, showTritonCode,
       showAiCodeViewer, showErrorModal, showAiPromptModal, showStepReanalysisModal,
-      showConfirmModal, showSettings, showUserGroup, showGuide, showReleaseNotes,
+      showConfirmModal, showSettings, showEntryNotice, showUserGroup, showGuide, showReleaseNotes,
     ];
     watch(modalVisibilitySources, (values, previousValues) => {
       const hasOpenModal = values.some(Boolean);
@@ -14661,6 +14703,8 @@ const App = {
     });
 
     // Watchers that need to live at the root level
+    watch([authChecked, authRequired, currentUser], maybeShowEntryNotice, { immediate: true });
+
     watch(resultTab, (v, previousTab) => {
       if (v !== "all_kernels_avg.csv" && kernelHostOpDetail.value.kernelName) {
         closeKernelHostOpDetail();
@@ -14913,6 +14957,7 @@ const App = {
       aiCodeViewerPath, aiCodeViewerFilename, aiCodeViewerContent,
       aiCodeViewerSize, aiCodeViewerTruncated,
       closeAiCodeViewer, copyAiCodeViewer, downloadAiCodeViewer,
+      showEntryNotice, entryNoticeNeverShow, closeEntryNotice, openUserGroupFromEntryNotice,
       showUserGroup, userGroupLink: USER_GROUP_LINK, newTrialUrl: NEW_TRIAL_URL, copyUserGroupLink,
       showGuide, showSettings, profileForm, openSettings, closeSettings, saveProfile,
       showReleaseNotes, releaseNotes, openReleaseNotes,
