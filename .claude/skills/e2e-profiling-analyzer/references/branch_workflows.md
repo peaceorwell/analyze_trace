@@ -2,10 +2,11 @@
 
 Load this reference before executing any Phase 2 branch. The main skill owns mode selection, branch selection, artifacts, and final synthesis; this file owns branch-specific methods, guardrails, and output contracts.
 
+Set `BRANCH_DIR` to the assigned exclusive directory under `TEAM_DIR` before running a command. Never write branch artifacts into another agent's directory.
+
 ## Contents
 
 - effective-compute-breakdown
-- communication-root-cause
 - ordinary-non-compute-root-cause
 - compute-gap-root-cause
 - host-window-subphase
@@ -25,98 +26,25 @@ Workflow:
 
    ```bash
    python3 "$SKILL_DIR/scripts/compute_breakdown.py" <cnperf_db> [<cnperf_db> ...] \
-     --format json > "$ANALYSIS_DIR/compute_breakdown.json"
+     --format json > "$BRANCH_DIR/compute_breakdown.json"
    python3 "$SKILL_DIR/scripts/compute_breakdown.py" <cnperf_db> [<cnperf_db> ...] \
-     --format text > "$ANALYSIS_DIR/compute_breakdown.md"
+     --format text > "$BRANCH_DIR/compute_breakdown.md"
    ```
 
 2. Aggregate `device_task_kernel_data` rows where `isComputation=1`.
 3. Report observed top compute kernel names by count, total time, average, and max duration.
-4. If multiple DBs are involved, compare per-rank compute totals and top compute kernel counts/time.
-5. If optional cluster computation CSV exists, compare profiler categories, FLOPs, and achieved throughput.
-6. Separate "more work" from "slower hardware" by comparing count/FLOPs versus average duration/FLOPS.
-7. Report whether compute optimization is likely worthwhile or whether non-effective time remains the bigger target.
+4. When comparable captures exist, separate "more work" from "slower execution" using launch count, matching-kernel duration, and optional FLOPs.
+5. Report whether compute optimization is likely worthwhile or whether non-effective time remains the bigger target.
 
 Output contract:
 
-- `Scope`: DB files, process/device coverage, optional cluster computation CSV usage.
+- `Scope`: DB files and process/device coverage.
 - `Compute Summary`: total compute time, kernel count, unique compute kernel names, time share versus Phase 1 device time when available.
-- `Top Compute Kernels`: `rank`, `kernel_name`, `count`, `total_ms`, `share_of_compute`, `avg_ms`, `max_ms`.
-- `Per-Rank Compute`: `db/rank`, `process_id`, `device_id`, `compute_total_ms`, `kernel_count`, `top_kernel`, `top_kernel_total_ms`, skew versus fastest or median rank.
-- `Candidate Causes`: more work, slower execution, rank skew, or balanced compute with evidence and confidence.
+- `Top Compute Kernels`: `kernel_name`, `count`, `total_ms`, `share_of_compute`, `avg_ms`, `max_ms`.
+- `Candidate Causes`: more work, slower execution, long-tail behavior, or balanced compute with evidence and confidence.
 - `Interpretation` and `Next Step`.
 
 Do not assume compute kernels are GEMM, FA, Conv, or elementwise.
-
-### Branch: `communication-root-cause`
-
-Question: why is uncovered communication exposed instead of hidden by compute?
-
-Apply communication concepts from `references/profiling_concepts.md` before interpreting exposed communication.
-
-Precondition: this branch requires multiple rank/card DBs. If only one card/rank is available (one DB, or one process+device, including a single-card torch trace captured with stack enabled), do not run this branch unless the user explicitly asked for communication analysis. Single-card communication is not analyzable: exposed communication is dominated by waiting for absent peers, so any single-card "communication cost" conclusion would be misleading. When blocked this way, record the branch as skipped, name the missing sibling rank/card DBs, and redirect to compute-gap, ordinary-non-compute, or compute-breakdown branches.
-
-Guardrails (apply before drawing any conclusion):
-
-- Do not conclude "intrinsic communication cost" from high exposed receive time alone.
-- Do not rule out a rank as the slow-arriver because its own uncovered communication is low.
-- Do not use shorter local device span or similar final device span as proof that a rank is not the bottleneck.
-- Do not use PP/EP/Global labels as proof that ranks cannot affect each other.
-- Do not rank suspects only by communication total; compare compute time, host-blocking time, launch progress, and overlap with other ranks' exposed communication.
-
-Workflow:
-
-1. Confirm uncovered communication is material from Phase 1.
-2. Check input completeness.
-   - If only one DB/device is available, this branch is blocked per the precondition above: report that cross-rank attribution is unsupported and stop unless the user explicitly asked to proceed with a single-card local breakdown.
-   - Ask for sibling `cnperf_data_*.db` files, a directory containing all rank DBs, or optional `cluster_aggregation/step` CSVs before making cross-rank fast/slow card or slow-arriver conclusions.
-3. Build communication breakdown from DB kernel rows by observed communication/non-compute kernel name: count, total/exposed time, average, max, top long events.
-   Use `comm_breakdown.py`:
-
-   ```bash
-   python3 "$SKILL_DIR/scripts/comm_breakdown.py" <cnperf_db> [<cnperf_db> ...] \
-     --format json > "$ANALYSIS_DIR/comm_breakdown.json"
-   python3 "$SKILL_DIR/scripts/comm_breakdown.py" <cnperf_db> [<cnperf_db> ...] \
-     --format text > "$ANALYSIS_DIR/comm_breakdown.md"
-   ```
-
-4. Must perform fast/slow card analysis.
-   - For multiple DBs/devices, compare per-rank or per-card compute time, uncovered communication time, compute gap time, host-blocking/gap indicators, device span, launch progress, and top kernels.
-   - Use `rank_compare.py` when multiple DBs/devices are available:
-
-     ```bash
-     python3 "$SKILL_DIR/scripts/rank_compare.py" <cnperf_db> [<cnperf_db> ...] \
-       --format json > "$ANALYSIS_DIR/rank_compare.json"
-     python3 "$SKILL_DIR/scripts/rank_compare.py" <cnperf_db> [<cnperf_db> ...] \
-       --format text > "$ANALYSIS_DIR/rank_compare.md"
-     ```
-
-   - Identify fast cards/ranks and slow cards/ranks by progress and blocking evidence, not by communication total alone.
-   - Report whether high-communication ranks are waiting ranks, slow ranks, or both.
-   - If only one DB/device is available, explicitly mark fast/slow card analysis as blocked and list the missing sibling rank/card DBs or aligned cluster CSVs needed.
-5. If a slow card/rank is possible, further locate the slow-card cause.
-   - Compare suspected slow cards against fast cards by compute kernel totals/top kernels, kernel count, avg/max duration, compute gaps, host-blocking indicators, ordinary non-compute work, communication wait/exposure, launch progress, and device span.
-   - Always test load imbalance explicitly: a card/rank may be slow because it has more compute work, more kernel launches, heavier top-kernel mix, larger sequence/batch/token work, or otherwise uneven assigned workload.
-   - Distinguish "more work" from "same work but slower execution" by comparing compute total, kernel count, top-kernel time/count distribution, average/max duration of matching kernels, and optional cluster FLOPs/throughput when available.
-   - Classify the slow-card cause as one or more candidates: load imbalance/more compute work, slower compute execution, host-side blocker, compute gap/notifier dependency, ordinary non-compute work, communication dependency/backpressure, delayed launch/progress, or unresolved.
-   - For each candidate, include supporting evidence, counter-evidence, affected ranks/cards, estimated impact, confidence, and missing evidence.
-6. Distinguish direct communication participants from E2E dependency suspects using direct operation, timeline, and boundary/backpressure evidence.
-7. Test the slow-arriver hypothesis when communication is high on some ranks.
-8. Separate intrinsic communication cost evidence from waiting evidence.
-9. Use optional cluster communication CSVs as labels and magnitudes only; do not let group names replace timeline evidence.
-
-Output contract:
-
-- `Input Completeness`.
-- `Communication Breakdown`.
-- `Fast/Slow Card Analysis`: fast and slow rank/card classification, comparison metrics, waiting rank versus slow rank distinction, and blocked status if cross-rank inputs are missing.
-- `Slow Card Cause Analysis`: required when a slow card/rank is possible; include candidate causes, evidence, counter-evidence, impact, confidence, and missing evidence.
-- `Compute/Progress Comparison`.
-- `E2E Dependency Check`.
-- `Slow-Arriver Test`.
-- `Intrinsic Communication Test`.
-- `Candidate Causes`.
-- `Interpretation` and `Next Step`.
 
 ### Branch: `ordinary-non-compute-root-cause`
 
@@ -128,8 +56,7 @@ Workflow:
 2. Aggregate relevant device tables by type, size if available, queue, count, total, average, and max duration.
 3. Separate bulk H2D/D2H/D2D copies from host synchronization behavior when host API context is available.
 4. Inspect host ranges around material copies or ordinary tasks: `pin_memory`, `copy_`, `to`, `_copy_from`, `__next__`.
-5. If multiple DBs are involved, compare per-rank ordinary non-compute totals and skew.
-6. Report whether ordinary non-compute work is dominant, hidden by compute, or a symptom of host sync/data pipeline behavior.
+5. Report whether ordinary non-compute work is dominant, hidden by compute, or a symptom of host sync/data pipeline behavior.
 
 Output contract:
 
@@ -137,7 +64,6 @@ Output contract:
 - `Ordinary Non-Compute Breakdown`: `task_type`, `count`, `total_ms`, `share_of_device`, `avg_ms`, `max_ms` aggregated from device tables.
 - `Top Ordinary Tasks`: largest individual memcpy/memset/atomic rows by duration with `correlationId` and queue.
 - `Host Context`: host ranges and APIs temporally overlapping major ordinary tasks.
-- `Per-Rank Ordinary Work`: `db/rank`, `process_id`, `device_id`, `ordinary_total_ms`, skew versus fastest or median rank (when multiple DBs available).
 - `Candidate Causes`: bulk data transfer, host sync artifact, data pipeline bottleneck, or other.
 - `Interpretation` and `Next Step`.
 
@@ -155,7 +81,7 @@ Workflow:
    db_stem=$(basename "<cnperf_db>" .db)
    python3 "$SKILL_DIR/scripts/gap_detail.py" <cnperf_db> \
      --prev-corr <prev> --next-corr <next> --invoke-threshold 100 --format text \
-     > "$ANALYSIS_DIR/${db_stem}.gap_detail.<prev>.<next>.log" 2>&1
+     > "$BRANCH_DIR/${db_stem}.gap_detail.<prev>.<next>.log" 2>&1
    ```
 
 4. Interpret the dependency chain from the next compute kernel backward.
@@ -167,9 +93,8 @@ Workflow:
    - use `Internal_op_range_relations` when a framework range has `extraId`
    - classify from actual observed framework ops and runtime APIs
 6. For notifier waits, verify same-queue predecessor before matched notifier place. A wait/place match uses `processId + deviceId + notifierId + extra.unique_val`; `queueId` is not part of notifier identity.
-7. If multiple DBs are involved and gap patterns differ by rank, check whether rank progress imbalance explains the gaps.
-8. Report the dominant subtype: host-side blocker, notifier dependency, previous kernel, memcpy/atomic, communication source task, out-of-range, or unknown.
-9. If the host-side blocker is per-kernel launch overhead (not a queue-sync wait), confirm it with the device-stream gap ratio from `device_timeline.py` (high main compute stream gap %). When the workload also uses torch.compile, hand off to the `compile-segmentation` cpp_wrapper check and apply its recommendation rule: enable `cpp_wrapper` when the trace signal says it is off, verify it when unconfirmed, and look elsewhere when it is already on; do not recommend graph capture alone.
+7. Report the dominant subtype: host-side blocker, notifier dependency, previous kernel, memcpy/atomic, fragmented codegen launch, opaque non-compute source task, out-of-range, or unknown.
+8. If the host-side blocker is per-kernel launch overhead (not a queue-sync wait), confirm it with the device-stream gap ratio from `device_timeline.py` (high main compute stream gap %). When the workload also uses torch.compile, hand off to the `compile-segmentation` cpp_wrapper check and apply its recommendation rule: enable `cpp_wrapper` when the trace signal says it is off, verify it when unconfirmed, and look elsewhere when it is already on; do not recommend graph capture alone.
 
 Only attribute a host gap to framework-triggered host synchronization if the DB shows a concrete framework op triggering a synchronization API, such as:
 
@@ -195,7 +120,7 @@ Workflow:
 
 ### torch.compile / triton branches
 
-The next three branches target torch.compile/inductor workloads, mainly converted torch profiler traces. They read only DB inputs and write distinct output files, so they are parallel-safe with each other and with other branches. Their evidence comes from kernel names in `string_table`, compiled-region ranges in `Internal_operation_range_data`, and the per-kernel `args`/metadata preserved in `device_task_kernel_data.extra` (JSON). Always resolve names through this DB's `string_table`, and report observed names/metadata keys first instead of assuming fixed inductor naming.
+The next three branches target torch.compile/inductor workloads, mainly converted torch profiler traces. They read only DB inputs and write distinct output files, so they are parallel-safe with each other and with other branches. Their evidence comes from the baseline `kernel_codegen_analysis.json`, kernel names in `string_table`, compiled-region ranges in `Internal_operation_range_data`, and the per-kernel `args`/metadata preserved in `device_task_kernel_data.extra` (JSON). Always resolve names through this DB's `string_table`, and report observed names/metadata keys first instead of assuming fixed inductor naming.
 
 Shared preconditions:
 
@@ -212,22 +137,23 @@ Workflow:
 
    ```bash
    python3 "$SKILL_DIR/scripts/compile_segmentation.py" <cnperf_db> [<cnperf_db> ...] \
-     --format json > "$ANALYSIS_DIR/compile_segmentation.json"
+     --format json > "$BRANCH_DIR/compile_segmentation.json"
    python3 "$SKILL_DIR/scripts/compile_segmentation.py" <cnperf_db> [<cnperf_db> ...] \
-     --format text > "$ANALYSIS_DIR/compile_segmentation.md"
+     --format text > "$BRANCH_DIR/compile_segmentation.md"
    ```
 
    The script reports the observed compiled-region inventory (names decoded through `string_table`), inside vs outside-region (eager) compute split, recompilation indicators, custom-op ranges that contain many simple `aten::` ops, the per-queue device-stream gap ratio, and the host-launch-overhead metrics. Report the observed region-name inventory first.
 2. Read segmentation: device compute time and kernel count inside compiled regions vs outside (eager/graph-break), and whether work is fragmented across many small regions. The script attributes each kernel by temporal containment of its `function_data` launch within compiled-region ranges.
-3. Read recompilation indicators (`TorchDynamo Cache Lookup`/guard ranges) as a sign of re-tracing on dynamic shapes.
-4. cpp_wrapper check (trace signal first, device-stream gap second): read `host_launch_overhead.cpp_wrapper_signal` / `cpp_wrapper_signal` before making any inference.
+3. Cross-check baseline `kernel_codegen_analysis.json` for operator-to-kernel mapping coverage, tiny-kernel share, launch density, and repeated adjacent kernel pairs. Treat low mapping coverage as a limitation.
+4. Read recompilation indicators (`TorchDynamo Cache Lookup`/guard ranges) as a sign of re-tracing on dynamic shapes.
+5. cpp_wrapper check (trace signal first, device-stream gap second): read `host_launch_overhead.cpp_wrapper_signal` / `cpp_wrapper_signal` before making any inference.
    - `state=off` means the trace indicates Python wrapper / `cpp_wrapper` disabled. This can come from an explicit trace key or from Inductor `kernel_file` evidence such as generated `.py` files.
    - `state=on` means the trace indicates `cpp_wrapper` enabled. This can come from an explicit trace key or generated C++/shared-library style `kernel_file` evidence.
    - `state=unknown` means the trace did not carry a direct signal; only then infer wrapper mode from high main-stream gap ratio, small kernels, high `avg_launch_self_us`, and high `launch_self_to_compute_ratio`.
    - Always report the signal source and confidence. Do not write "无法从 trace 确认 cpp_wrapper" when `cpp_wrapper_signal.source` is `explicit_trace_metadata` or `kernel_file_extension`.
-5. Identify the largest outside-region (eager) kernels from `top_outside_region_kernels`.
-6. Read `custom_op_simple_aten`. If `has_issue=true`, promote it as an optimization candidate: a custom/user op is present but still executes many simple `aten::` pointwise/view/reduce/copy/allocation ops inside the wrapper, so those ops should be moved into the custom backend kernel or restructured to let Inductor fuse them. If `must_report=true` or the top row has `report_priority=high`, this is a final-report finding, not just branch detail. Cite the concrete `custom_op_name`, call count, nested simple aten count, average nested ops per call, and top nested `aten::` names.
-7. Report whether segmentation is material: large compute time or many kernels outside compiled regions, frequent recompilation, custom-op simple-aten nesting, or many small fragmented regions.
+6. Identify the largest outside-region (eager) kernels from `top_outside_region_kernels`.
+7. Read `custom_op_simple_aten`. If `has_issue=true`, promote it as an optimization candidate: a custom/user op is present but still executes many simple `aten::` pointwise/view/reduce/copy/allocation ops inside the wrapper, so those ops should be moved into the custom backend kernel or restructured to let Inductor fuse them. If `must_report=true` or the top row has `report_priority=high`, this is a final-report finding, not just branch detail. Cite the concrete `custom_op_name`, call count, nested simple aten count, average nested ops per call, and top nested `aten::` names.
+8. Report whether segmentation is material: large compute time or many kernels outside compiled regions, frequent recompilation, custom-op simple-aten nesting, or many small fragmented regions.
 
 Output contract:
 
@@ -253,16 +179,16 @@ Workflow:
 
    ```bash
    python3 "$SKILL_DIR/scripts/triton_fusion_coverage.py" <cnperf_db> [<cnperf_db> ...] \
-     --format json > "$ANALYSIS_DIR/triton_fusion_coverage.json"
+     --format json > "$BRANCH_DIR/triton_fusion_coverage.json"
    python3 "$SKILL_DIR/scripts/triton_fusion_coverage.py" <cnperf_db> [<cnperf_db> ...] \
-     --format text > "$ANALYSIS_DIR/triton_fusion_coverage.md"
+     --format text > "$BRANCH_DIR/triton_fusion_coverage.md"
    ```
 
    It classifies compute kernels (`isComputation=1`) by name from `string_table` into triton-fused (`triton_*fused*`), other triton (rare), and non-triton/library/eager. It also groups kernels into Inductor fusion families (`pointwise`, `reduce`, `library_or_gemm`, `communication`, `triton_other`, `other`) and reports fused/unfused time for each family, highlighted unfused pointwise/reduce candidates, top non-fused kernels, and per-process/device fusion coverage.
 2. Read the fusion-coverage ratio (triton-fused compute time / total compute time) and the top non-fused kernels as fusion-miss / fallback candidates.
 3. Inspect `Inductor Fusion Granularity` first. If `pointwise` has non-zero unfused time, highlight it as the strongest missed-fusion signal; if `reduce` has non-zero unfused time, highlight it as a secondary fusion/reduction candidate. Treat library/GEMM/conv families as likely intended fast paths unless other evidence says otherwise.
 4. Cross-reference with `compile-segmentation` when available: are highlighted non-fused pointwise/reduce kernels concentrated in eager/graph-break segments?
-5. If multiple DBs are involved, compare the fusion-coverage ratio and pointwise/reduce unfused time across ranks (the script emits `per_process_device`).
+5. Cross-check baseline `kernel_codegen_analysis.json` for tiny/repeated launches and operator mapping that support or weaken the fusion hypothesis.
 6. Report whether raising fusion coverage is a worthwhile target versus other exposed time.
 
 Guardrail: do not assume every non-triton kernel is a fusion defect. Vendor GEMM/conv/library compute primitives are often the intended fast path. Flag fusion misses primarily for elementwise/pointwise/reduction kernels left unfused, not for library compute primitives.
@@ -275,7 +201,6 @@ Output contract:
 - `Highlighted Unfused Pointwise/Reduce Candidates`: top kernels whose names look pointwise/reduce-like but did not appear as triton-fused, with impact and the script's reason.
 - `Top Non-Fused Kernels`: `kernel_name`, `count`, `total_ms`, `share_of_compute`, `avg_ms`, `max_ms`.
 - `Segment Correlation`: whether non-fused kernels cluster in eager/graph-break segments (link to `compile-segmentation` if run).
-- `Per-Rank Fusion Coverage`: fusion ratio per `db/rank` and skew (when multiple DBs available).
 - `Candidate Causes`: unsupported op/fallback, intentional library primitive, graph break, small-op fusion miss, or already well-fused; with evidence, counter-evidence, impact, confidence, and missing evidence.
 - `Interpretation` and `Next Step`.
 
@@ -293,11 +218,11 @@ Workflow:
 
    ```bash
    python3 "$SKILL_DIR/scripts/triton_kernel_efficiency.py" <cnperf_db> [<cnperf_db> ...] \
-     --dump-dir "$ANALYSIS_DIR/triton_output_code" --format json \
-     > "$ANALYSIS_DIR/triton_kernel_efficiency.json"
+     --dump-dir "$BRANCH_DIR/triton_output_code" --format json \
+     > "$BRANCH_DIR/triton_kernel_efficiency.json"
    python3 "$SKILL_DIR/scripts/triton_kernel_efficiency.py" <cnperf_db> [<cnperf_db> ...] \
-     --dump-dir "$ANALYSIS_DIR/triton_output_code" --format text \
-     > "$ANALYSIS_DIR/triton_kernel_efficiency.md"
+     --dump-dir "$BRANCH_DIR/triton_output_code" --format text \
+     > "$BRANCH_DIR/triton_kernel_efficiency.md"
    ```
 
    If the script reports `has_io_metadata=false`, skip this branch and record it under `Skipped Branches` with the missing-metadata reason. The script reports the observed metadata keys first, treats `io_efficiency` as folded bandwidth, and uses the MLU-model **theoretical (peak) bandwidth** — MLU590 → 2000, MLU580 → 1200 (GB/s) — falling back to `meta_information` `deviceInfo.m_dev_basic_info.max_bandwidth` only when the model is unknown. It computes `bandwidth_utilization = io_efficiency / peak_bandwidth` when comparable, and ranks by `improvement_target = total_ms * (1 - bandwidth_utilization)` (falling back to lowest folded bandwidth weighted by `total_ms` when utilization is unavailable). Check `peak_bandwidth_source`; if utilization looks impossible (e.g. > 1), treat units as mismatched and rely on the fallback ranking.
@@ -307,22 +232,21 @@ Workflow:
    TRITON_OPT_SKILL_DIR="$(dirname "$SKILL_DIR")/mlu-triton-optimize"
    if [ -f "$TRITON_OPT_SKILL_DIR/scripts/analyze_triton_code.py" ]; then
      python3 "$TRITON_OPT_SKILL_DIR/scripts/analyze_triton_code.py" \
-       --input-dir "$ANALYSIS_DIR/triton_output_code" \
-       --efficiency-json "$ANALYSIS_DIR/triton_kernel_efficiency.json" \
+       --input-dir "$BRANCH_DIR/triton_output_code" \
+       --efficiency-json "$BRANCH_DIR/triton_kernel_efficiency.json" \
        --format json \
-       > "$ANALYSIS_DIR/triton_code_optimization.json"
+       > "$BRANCH_DIR/triton_code_optimization.json"
      python3 "$TRITON_OPT_SKILL_DIR/scripts/analyze_triton_code.py" \
-       --input-dir "$ANALYSIS_DIR/triton_output_code" \
-       --efficiency-json "$ANALYSIS_DIR/triton_kernel_efficiency.json" \
+       --input-dir "$BRANCH_DIR/triton_output_code" \
+       --efficiency-json "$BRANCH_DIR/triton_kernel_efficiency.json" \
        --format text \
-       > "$ANALYSIS_DIR/triton_code_optimization.md"
+       > "$BRANCH_DIR/triton_code_optimization.md"
    fi
    ```
 
    Read `triton_code_optimization.json` when present. Use it as code-level evidence for MLU Triton optimization candidates, not as proof that a rewrite will improve performance.
-3. For the top low-bandwidth kernels, combine IO-efficiency metrics with `triton_code_optimization` findings. Characterize access pattern, masking, non-contiguous or gather/scatter access, reduction shape, grid/block configuration, load/store counts, static IO/compute throughput estimates, libdevice/division candidates, and dtype conversion chains. Do not paste full generated source into the main report; cite the output-code file and the analyzer artifact.
+3. For the top low-bandwidth kernels, combine IO-efficiency metrics, baseline launch-configuration/long-tail data, and `triton_code_optimization` findings. Characterize access pattern, masking, non-contiguous or gather/scatter access, reduction shape, grid/block configuration, load/store counts, static IO/compute throughput estimates, libdevice/division candidates, and dtype conversion chains. Do not paste full generated source into the main report; cite the output-code file and the analyzer artifact.
 4. Classify the low-bandwidth cause per kernel: memory-bound small kernel, non-coalesced/strided access, redundant recompute, poor tiling/grid, register spill, expensive math/division, fragmented pseudo-discrete IO, reduce layout/tiling, or already efficient (folded bandwidth near peak).
-5. If multiple DBs are involved, compare per-rank folded bandwidth for the same kernel names.
 
 Output contract:
 

@@ -1,6 +1,6 @@
 ---
 name: e2e-profiling-analyzer
-description: Analyze cnperf SQLite databases and torch profiler Chrome trace JSON/JSON.GZ files for end-to-end training or inference bottlenecks on MLU workloads. Use when the user asks to inspect `cnperf_data*.db`, torch profiler `.pt.trace.json`/`.json.gz` traces, identify why effective compute kernels are not dominating device time, or root-cause exposed communication, ordinary non-compute work, compute gaps, host/device synchronization, memcpy, rank imbalance, torch.compile graph segmentation, triton kernel fusion coverage, or triton kernel output-code/IO efficiency.
+description: Analyze single-rank cnperf SQLite databases and torch profiler Chrome trace JSON/JSON.GZ files with a Claude Code Agent Team for end-to-end MLU training or inference bottlenecks. Use when the user asks to inspect `cnperf_data*.db` or `.pt.trace.json`/`.json.gz` traces, diagnose effective compute, Triton kernels, torch.compile graph segmentation and fusion granularity, compute gaps, host/device synchronization, memcpy or ordinary non-compute work, unconstrained hypotheses, adversarial evidence review, and one auditable final report.
 ---
 
 # E2E Profiling Analyzer
@@ -23,31 +23,57 @@ If the prompt is an environment diagnostic or smoke test and asks to reply only 
 
 Mode meanings:
 
-- `automatic-final`: use Phase 1 evidence to choose branch analyses automatically, run independent branches in parallel when possible, and produce stage reports plus the final synthesis.
+- `automatic-final`: build one Phase 1 evidence baseline, run independent specialist agents in parallel when possible, audit their findings, and produce stage reports plus the final synthesis.
 - `interactive-phased`: write a report after each stage, stop after Phase 1 for branch selection, then run the branch or branches selected by the user.
 
 Default to `automatic-final` when the user has not specified a mode or a branch. Only use `interactive-phased` when the user explicitly requested step-by-step branch selection, or already named a specific branch or branches to run after Phase 1.
 
-Do not assume the bottleneck is communication, a specific kernel family, TCDP, or a known synchronization pattern. `cluster_aggregation/step` CSV files are optional enrichment only.
+Do not assume the bottleneck is Triton, fusion, a specific kernel family, TCDP, or a known synchronization pattern.
+
+## Agent Team Execution
+
+Treat an explicit request for this Agent Team skill as approval to create the team. If the skill was selected automatically from a generic profiling question, request Agent Team approval once. Use the same roles sequentially when team tools are unavailable.
+
+The lead owns input normalization, task creation, common scope, synthesis, shutdown, and cleanup. Read `references/team_workflow.md` before creating tasks. Use these project agents:
+
+1. `e2e-evidence-builder`
+2. `e2e-compute-analyst`
+3. `e2e-triton-kernel-analyst`
+4. `e2e-compile-fusion-analyst`
+5. `e2e-gap-host-analyst`
+6. `e2e-noncompute-analyst`
+7. `e2e-freeform-analyst`
+8. `e2e-evidence-auditor`
+
+Create `TEAM_DIR="$ANALYSIS_DIR/agent_team"` with numbered role directories from `01_baseline` through `08_audit`. Spawn the evidence builder first. After its immutable baseline is complete, start material specialists and always start the freeform analyst. Start the auditor only after branch artifacts exist. The lead alone writes final `report.md` and `report.json`.
+
+```bash
+mkdir -p "$TEAM_DIR"/{01_baseline,02_compute,03_triton_kernel,04_compile_fusion,05_gap_host,06_noncompute,07_freeform,08_audit}
+```
+
+Require every teammate to validate `findings.json` against `references/evidence_contract.md` with `scripts/validate_findings.py`. Do not accept prose without source artifacts, units, scope, counter-evidence, confidence, an overlap group, and a follow-up test.
 
 ## Resources
 
 - `scripts/basic_info.py`: host/device time ranges, device model, device count, per-device kernel usage.
+- `scripts/preflight.py`: read-only integrity, schema, identity, timestamp-range, and optional-table checks. Supports `--format json`.
 - `scripts/device_timeline.py`: device projection into compute, uncovered communication, projection gap, and per-queue (device stream) gap ratio. The main compute stream gap ratio is the key host-overhead indicator. Supports `--format json` and `--process-id`/`--device-id`.
 - `scripts/gap_summary.py`: merged compute-coverage gap summary and non-mini exposed gap list with `prev_corr` / `next_corr`.
 - `scripts/gap_detail.py`: dependency chain for one compute gap from `--prev-corr` and `--next-corr`.
-- `scripts/compute_breakdown.py`: top compute kernels and per-process/device compute skew.
-- `scripts/comm_breakdown.py`: communication kernel total/uncovered time, per-process/device exposure, and top long events.
-- `scripts/rank_compare.py`: cross-DB process/device span, compute, uncovered communication, and compute-gap skew.
+- `scripts/compute_breakdown.py`: top compute kernels and per-process/device compute concentration.
+- `scripts/kernel_codegen_analysis.py`: Triton attribution signals, duration distributions, launch configurations, tiny kernels, adjacent launch pairs, and operator-to-kernel mapping coverage. Supports `--format json`.
 - `scripts/compile_segmentation.py`: torch.compile compiled-region inventory, inside/outside-region (eager) kernel split, recompilation indicators, custom-op ranges that contain many simple `aten::` ops, and the host-launch-overhead / cpp_wrapper check driven by device-stream gap ratio plus trace metadata (`cpp_wrapper` config keys or `kernel_file` evidence). Supports `--format json`.
-- `scripts/triton_fusion_coverage.py`: classifies compute kernels into triton-fused / other-triton / non-triton, fusion coverage ratio, Inductor fusion granularity by kernel family (pointwise/reduce/library/etc.), highlighted unfused pointwise/reduce candidates, top non-fused kernels, and per-rank coverage. Supports `--format json` and `--top`.
+- `scripts/triton_fusion_coverage.py`: classifies compute kernels into triton-fused / other-triton / non-triton, fusion coverage ratio, Inductor fusion granularity by kernel family (pointwise/reduce/library/etc.), highlighted unfused pointwise/reduce candidates, and top non-fused kernels. Supports `--format json` and `--top`.
 - `scripts/triton_kernel_efficiency.py`: triton kernel IO efficiency from `device_task_kernel_data.extra`, treating `io_efficiency` as a folded-bandwidth value (not a 0–1 ratio) compared against device peak bandwidth, plus `output_code` dump (`--dump-dir`). Supports `--format json` and `--top`.
 - `../mlu-triton-optimize/scripts/analyze_triton_code.py`: static analysis of dumped Triton `output_code` for MLU optimization candidates such as libdevice math replacement, division lowering, fragmented IO, reduce layout/tiling, grid flattening, and dtype conversion cleanup. Supports `--format json|text`.
 - `scripts/query_common.py`: shared helpers and `--host-stack=<function_corr_id>` CLI.
+- `scripts/validate_findings.py`: validates teammate and final machine-readable findings.
 - `scripts/torch_trace_to_cnperf_db.py`: self-contained torch profiler Chrome trace converter. Requires Python module `simdjson` from package `pysimdjson`.
 - `references/profiling_concepts.md`: required concepts and causal models. Always load this before starting analysis.
 - `references/pytorch_performance_playbook.md`: measurement validity, evidence hierarchy, PyTorch/Inductor diagnosis, and validation rules. Always load this before Phase 1.
 - `references/branch_workflows.md`: Phase 2 branch methods, guardrails, commands, and output contracts. Load before executing any selected branch.
+- `references/evidence_contract.md`: required structured finding schema, status, confidence, counter-evidence, and benefit-overlap rules.
+- `references/team_workflow.md`: Agent Team lifecycle, task graph, file ownership, quality gates, and final synthesis rules.
 - `references/db_schema.md`: DB tables, field semantics, notifier wait/place matching, and SQL examples. Load this when writing direct SQL, comparing multiple DBs, or interpreting table fields.
 
 ## Core Rules
@@ -60,11 +86,12 @@ Do not assume the bottleneck is communication, a specific kernel family, TCDP, o
 - Load `string_table` per DB. Do not mix `nameId` mappings across DBs.
 - Report observed kernel names first. Name-based grouping is heuristic.
 - Do not infer root cause from one high-level percentage.
-- High communication time on one rank does not prove that rank is slow; it may be waiting for another rank.
-- Single-card communication is not analyzable. When only one card/rank is available (one DB, or one process+device, including a single-card torch trace captured with stack enabled), exposed communication is dominated by waiting for absent peers, not by real communication cost. Treat single-card communication kernels as opaque exposed time. Unless the user explicitly asks for communication analysis, do not run the `communication-root-cause` branch, do not select it in Phase 1, and do not state communication conclusions for single-card input; route the investigation to compute-gap, ordinary-non-compute, or compute-breakdown branches instead.
+- This workflow is single-rank. Keep communication kernels as opaque timeline categories so they are not misclassified as effective compute, but do not start a communication branch or make peer/rank conclusions.
 - `host_blocking` does not explain itself; trace the host-side blocker before naming a cause.
 - Whether host overhead is large is judged primarily by the device-stream (queue) gap ratio — the fraction of the main compute stream's span spent idle between device tasks, from `device_timeline.py`. A high main-stream gap ratio means the host is not keeping the device fed. Do not judge host overhead by host-side wall time alone; a busy host with a well-fed device (low stream gap) is not host-bound.
 - Keep different `threadId` timelines separate. Do not merge overlapping threads into one call tree.
+- Separate compilation, autotuning, initialization, and cache warm-up from steady-state execution before judging Triton or fusion quality.
+- Treat Triton/fusion name matching as a signal. Require metadata, generated artifacts, source linkage, or a controlled experiment for stronger attribution.
 
 ## Measurement Validity Gate
 
@@ -86,8 +113,9 @@ user-facing final report:
 
 - Write the final user-visible report to `$TRACE_AI_REPORT_PATH` when that environment variable is set.
 - Also write the same final report to `report.md` in the current working directory.
+- Write `report.json` beside `report.md` using `references/evidence_contract.md`, preserving source finding IDs and overlap groups.
 - Print the same final report to stdout. Do not print tool logs, raw command output, prompt text, or progress narration to stdout.
-- Save supporting evidence as separate files in the analysis directory, such as `phase1_report.md`, `phase2_<branch>_report.md`, `evidence_summary.md`, and script logs.
+- Save supporting evidence under `TEAM_DIR`, including baseline/branch reports, validated findings, the adversarial audit, `evidence_summary.md`, and script logs.
 - If analysis cannot proceed because a trace file, DB table, Python dependency, or tool permission is missing, write a concise failure report instead of a partial or fabricated performance report.
 - Prefer Chinese report text when the request is Chinese.
 
@@ -149,6 +177,7 @@ For Web/server-side automatic analysis, use the existing working directory:
 SKILL_DIR=<absolute-path-to-this-skill>
 ANALYSIS_DIR="${TRACE_AI_ANALYSIS_DIR:-$PWD}"
 REPORT_MD="${TRACE_AI_REPORT_PATH:-$ANALYSIS_DIR/report.md}"
+TEAM_DIR="$ANALYSIS_DIR/agent_team"
 ```
 
 For interactive local analysis, create a temporary analysis directory in the current working directory:
@@ -158,9 +187,10 @@ SKILL_DIR=<absolute-path-to-this-skill>
 ANALYSIS_DIR="e2e_profiling_analysis_$(date +%Y%m%d_%H%M%S)"
 mkdir "$ANALYSIS_DIR"
 REPORT_MD="$ANALYSIS_DIR/report.md"
+TEAM_DIR="$ANALYSIS_DIR/agent_team"
 ```
 
-For interactive local analysis, use the exact directory name format `e2e_profiling_analysis_YYYYMMDD_HHMMSS`; if it collides, append `_NN`. Put generated DBs, conversion reports, script logs, ad hoc query outputs, stage reports, and final reports directly in this directory. If trace conversion needs a venv, create it as `<analysis_dir>/.venv-trace-convert`; this is a dependency environment, not an analysis artifact.
+For interactive local analysis, use the exact directory name format `e2e_profiling_analysis_YYYYMMDD_HHMMSS`; if it collides, append `_NN`. Put normalized inputs and final reports in this directory and teammate artifacts under `TEAM_DIR`. If trace conversion needs a venv, create it as `<analysis_dir>/.venv-trace-convert`; this is a dependency environment, not an analysis artifact.
 
 Resolve `SKILL_DIR` to this skill directory's absolute path before running any command. This `SKILL.md` lives at `<SKILL_DIR>/SKILL.md`, so derive it from the path you loaded this skill from rather than guessing. If that path is not directly available, locate it once and reuse the result:
 
@@ -175,6 +205,7 @@ Input normalization:
 - Native `*.db`: analyze directly. Do not copy large native DBs into the analysis directory unless the user asks for a self-contained bundle.
 - Torch profiler Chrome trace `*.json`, `*.json.gz`, or `*.pt.trace.json.gz`: convert first, then analyze the generated DB.
 - Directory input: recursively find native DBs and torch trace JSON/JSON.GZ files. Convert trace files into the analysis directory, then include generated DBs in the analysis set.
+- Multiple DBs may represent repeated captures or alternatives, but never infer that they are peer ranks without explicit topology evidence. This single-rank workflow analyzes each DB independently.
 - Do not mix raw trace JSON with DB analysis scripts; all later scripts consume SQLite DB paths only.
 
 Dependency setup for trace conversion:
@@ -219,9 +250,11 @@ After conversion, run `basic_info.py` on every generated DB to verify each one o
 
 Write these Markdown reports in both modes:
 
-- `phase1_report.md`: Phase 1 baseline analysis and branch recommendation/selection.
-- `phase2_<branch>_report.md`: detailed report for each completed branch.
+- `TEAM_DIR/01_baseline/phase1_report.md`: Phase 1 baseline analysis and branch recommendation/selection.
+- `TEAM_DIR/<branch>/report.md`: detailed report for each completed specialist.
+- `TEAM_DIR/08_audit/report.md`: adversarial review and contradiction resolution.
 - `report.md`: final synthesis report after automatic branch execution completes, or after the user asks to conclude/declines more branches in `interactive-phased` mode.
+- `report.json`: final structured findings and artifact index.
 
 Do not duplicate full per-branch detailed reports inside `report.md`; reference their filenames from `产物`. Keep raw table excerpts in stage reports or `evidence_summary.md`, and cite those artifacts from the final report.
 
@@ -239,66 +272,66 @@ Workflow:
 2. Inventory inputs.
    - One DB: analyze it as one process/device first.
    - One torch trace JSON/JSON.GZ: convert it to DB first and analyze the generated DB.
-   - Directory: find `cnperf_data_*.db`, analyze each DB independently, then compare ranks/devices.
-   - Optional `cluster_aggregation/step`: note it if present, but keep DB-derived facts primary.
+   - Directory: find `cnperf_data_*.db` and analyze each DB independently without cross-rank inference.
 3. Run baseline scripts for every analysis DB.
 
    ```bash
    db_stem=$(basename "<cnperf_db>" .db)
+   python3 "$SKILL_DIR/scripts/preflight.py" <cnperf_db> --format json \
+     > "$TEAM_DIR/01_baseline/${db_stem}.preflight.json" 2>&1
    python3 "$SKILL_DIR/scripts/basic_info.py" <cnperf_db> \
-     > "$ANALYSIS_DIR/${db_stem}.basic_info.log" 2>&1
-   python3 "$SKILL_DIR/scripts/device_timeline.py" <cnperf_db> \
-     > "$ANALYSIS_DIR/${db_stem}.device_timeline.log" 2>&1
-   python3 "$SKILL_DIR/scripts/gap_summary.py" <cnperf_db> --invoke-threshold 100 \
-     > "$ANALYSIS_DIR/${db_stem}.gap_summary.log" 2>&1
+     > "$TEAM_DIR/01_baseline/${db_stem}.basic_info.log" 2>&1
+   python3 "$SKILL_DIR/scripts/device_timeline.py" <cnperf_db> --format json \
+     > "$TEAM_DIR/01_baseline/${db_stem}.device_timeline.json" 2>&1
+   python3 "$SKILL_DIR/scripts/gap_summary.py" <cnperf_db> --invoke-threshold 100 --format json \
+     > "$TEAM_DIR/01_baseline/${db_stem}.gap_summary.json" 2>&1
+   python3 "$SKILL_DIR/scripts/kernel_codegen_analysis.py" <cnperf_db> --format json \
+     > "$TEAM_DIR/01_baseline/${db_stem}.kernel_codegen.json" 2>&1
    ```
 
-4. If optional cluster CSVs are present, use them only to enrich labels and rank/category comparisons.
-5. Classify the initial situation from the effective-compute perspective.
-6. Recommend or select Phase 2 branches with the rules below.
-7. Write `phase1_report.md`.
+4. Classify the initial situation from the effective-compute perspective.
+5. Recommend or select specialist tasks with the rules below.
+6. Write `phase1_report.md` and validated `findings.json` under `TEAM_DIR/01_baseline`.
 8. In `interactive-phased`, show the Phase 1 key findings and ask which branch or branches to run next.
 9. In `automatic-final`, run the selected Phase 2 branch set.
 
 Initial situation categories:
 
 - `effective-compute-high`: compute kernel time dominates, exposed non-compute time is low, and compute gaps are low.
-- `exposed-communication-high`: uncovered communication from `device_timeline.py` is material.
 - `exposed-ordinary-non-compute-high`: uncovered memcpy, memset, atomic, or other ordinary non-compute work is material.
 - `compute-gap-high`: `gap_summary.py` reports material compute-kernel gaps or large top gaps.
-
-Rank/workload imbalance is not a first-level category. Consider it inside `communication-root-cause` or `compute-gap-root-cause` when multiple DBs show skew.
+- `triton-kernel-material`: Triton-attributed kernels have material compute time, long tails, weak IO efficiency, or meaningful codegen metadata.
+- `compile-fusion-granularity-material`: compiled-region fragmentation, unfused pointwise/reduce work, custom-op/simple-aten nesting, or tiny/repeated launches are material.
 
 Branch selection:
 
-- Run or recommend `communication-root-cause` only when multiple rank/card DBs are available and uncovered communication is material, top compute gaps are communication-related, or multi-rank evidence suggests waiting/slow-arriver behavior. For single-card input, skip this branch and record it under `Skipped Branches` with the reason that single-card communication is not analyzable, unless the user explicitly asked for communication analysis.
 - Run or recommend `ordinary-non-compute-root-cause` when uncovered memcpy, memset, atomic, or other ordinary non-compute time is material, or top gaps point to memcpy/ordinary device work.
 - Run or recommend `compute-gap-root-cause` when `gap_summary.py` shows material total gap time, large individual gaps, or host/notifier/previous-task gap reasons.
-- Run or recommend `effective-compute-breakdown` when effective compute dominates total device time or Phase 1 suggests compute imbalance across ranks/devices.
+- Run or recommend `effective-compute-breakdown` when effective compute dominates total device time or top kernel families are material.
 - Run `host-window-subphase` only when the user provided a host time window or explicitly asked for host-window subphase analysis.
 - Run or recommend `compile-segmentation` when the workload uses torch.compile/inductor and the DB carries compiled-region annotations (`Torch-Compiled Region`, `CompiledFunction`, `CompiledFunctionBackward`, `TorchDynamo Cache Lookup`, `inductor`, or similar) in `Internal_operation_range_data`, especially when compute gaps or ordinary non-compute work cluster at region boundaries, many kernels run outside compiled regions, or custom/user operators wrap many simple `aten::` pointwise/view/reduce/copy ops.
 - Run or recommend `triton-fusion-coverage` when compute is material and a non-trivial share of compute-kernel time comes from non-`triton`/non-fused kernels, indicating ops that fell back to library/eager execution instead of inductor fusion.
 - Run or recommend `triton-kernel-efficiency` only when triton kernels carry `output_code` and IO-efficiency metadata in their `extra` JSON. If that metadata is absent, skip this branch and record it under `Skipped Branches` with the missing-metadata reason.
 
-The last three branches are torch.compile/inductor-specific and apply mainly to converted torch profiler traces. If the DB has no compiled-region annotations and no `triton_*` kernel names, the workload likely does not use torch.compile; skip all three and record them under `Skipped Branches`.
+The last three branches are torch.compile/inductor-specific and apply mainly to converted torch profiler traces. The compile/fusion agent owns `compile-segmentation` and `triton-fusion-coverage`; the Triton agent owns `triton-kernel-efficiency` and optional static output-code analysis. If the DB has no compiled-region annotations and no `triton_*` kernel names, record both specialists as unsupported unless the user requested every angle.
 
 In `automatic-final`, limit Phase 2 to branches that can change the final recommendation. If many categories are material, prioritize the largest exposed category first, then add other branches whose measured impact is close enough to affect ranking or whose evidence may explain the largest category. Do not run speculative branches just because they exist.
 
 `phase1_report.md` must include:
 
 - `Measurement Quality`: semantic scope, warm state, workload identity, profiler perturbation, repeatability, and correctness status.
-- `Scope`: input DBs, process/device/rank coverage, host/device time range.
+- `Scope`: input DBs, process/device coverage, host/device time range.
 - `Effective Compute`: compute kernel time and ratio.
-- `Exposed Non-Effective Time`: uncovered communication, ordinary non-compute categories, and projection gap.
+- `Exposed Non-Effective Time`: opaque communication category, ordinary non-compute categories, and projection gap. Do not interpret peer behavior.
 - `Device Stream Gap Ratio`: main compute stream gap ratio and device-level gap ratio from `device_timeline.py`. This is the key host-overhead indicator; flag a host-bound situation when the main-stream gap ratio is high.
 - `Compute Gap Summary`: total compute-kernel gap, dominant coarse reasons, top relevant gaps.
 - `Initial Situation`: one or more categories above, with evidence.
-- `Recommended Or Selected Phase 2 Branches`: branches with evidence and priority.
+- `Recommended Or Selected Phase 2 Branches`: specialist tasks with evidence and priority.
 - `Skipped Branches`: branches not run/recommended, with reasons.
 - `Raw Tables`: baseline script output filenames and compact excerpts.
 - `Artifacts`: analysis directory, generated DBs, logs, and report paths.
 
-Do not run `gap_detail.py`, host-blocking trace, rank overlap checks, or host-window subphase analysis inside Phase 1 itself. Run those only inside Phase 2 branches.
+Do not run `gap_detail.py`, host-blocking trace, or host-window subphase analysis inside Phase 1 itself. Run those only inside specialist branches.
 
 ## Phase 2: Branch Analysis
 
@@ -307,11 +340,11 @@ Goal: run selected branch analyses, write one detailed `phase2_<branch>_report.m
 Mode behavior:
 
 - `interactive-phased`: run exactly the branch or branches selected by the user, then ask whether to run more branches or proceed to Phase 3.
-- `automatic-final`: run the automatically selected branch set, then proceed to Phase 3.
+- `automatic-final`: assign the automatically selected branch set to the matching project agents, always run freeform analysis, then run the evidence auditor before Phase 3.
 
 Parallel execution:
 
-- Run independent branches in parallel when their inputs and outputs do not conflict.
+- Run independent specialist agents in parallel when their inputs and outputs do not conflict.
 - Branches are parallel-safe when they only read DB inputs and write distinct output files such as `phase2_<branch>_report.md` and branch-specific logs/query outputs.
 - Use Phase 1 priority to schedule work, but do not serialize independent branches unnecessarily.
 - Do not run `host-window-subphase` in parallel unless the host window is already known and its outputs are isolated.
@@ -322,7 +355,7 @@ Every branch result must include:
 - `Branch`: selected branch and why it was selected.
 - `Method`: scripts and DB tables used.
 - `Findings`: branch-specific metrics and dependency evidence.
-- `Candidate Causes`: plausible causes with supporting evidence, counter-evidence, affected ranks/devices, estimated impact, confidence, and missing evidence.
+- `Candidate Causes`: plausible causes with supporting evidence, counter-evidence, affected process/device scope, estimated impact, confidence, overlap group, and missing evidence.
 - `Interpretation`: what the evidence explains and what remains uncertain.
 - `Follow-up Suggestions`: optional extra branches or inputs that could reduce uncertainty.
 - `Raw Tables`: script logs, JSON/text outputs, or query result files produced for the branch.
@@ -340,7 +373,6 @@ Cause handling:
 Load `references/branch_workflows.md` before executing any selected Phase 2 branch. It contains the normative workflow, guardrails, commands, and output contract for:
 
 - `effective-compute-breakdown`
-- `communication-root-cause`
 - `ordinary-non-compute-root-cause`
 - `compute-gap-root-cause`
 - `host-window-subphase`
@@ -348,7 +380,7 @@ Load `references/branch_workflows.md` before executing any selected Phase 2 bran
 - `triton-fusion-coverage`
 - `triton-kernel-efficiency`
 
-Load only this one branch reference; all branch details are kept there to prevent the main workflow from hiding mode selection, evidence quality, and final synthesis rules.
+Agent ownership is fixed: compute owns `effective-compute-breakdown`; compile/fusion owns `compile-segmentation` and `triton-fusion-coverage`; Triton owns `triton-kernel-efficiency`; gap/host owns `compute-gap-root-cause` and optional `host-window-subphase`; noncompute owns `ordinary-non-compute-root-cause`. Load only the assigned branch sections.
 
 ## Phase 3: Final Synthesis
 
@@ -361,17 +393,18 @@ Enter Phase 3:
 
 Workflow:
 
-1. List completed inputs: Phase 1 baseline plus each completed branch.
-2. Merge evidence by causal path, not by script output.
-3. Separate confirmed findings from hypotheses.
+1. List completed inputs: Phase 1 baseline, each validated branch finding file, freeform findings, and the adversarial audit.
+2. Reject findings that fail `validate_findings.py` or the auditor's evidence gate.
+3. Merge evidence by causal path, not by agent or script output, and separate confirmed findings from hypotheses.
 4. Before pruning to the final 2-4 findings, scan `compile_segmentation.json` for `custom_op_simple_aten.must_report=true`. When present, reserve one finding and one action row for the custom-op/simple-aten issue; this is a structural missed-fusion signal and should not be buried because its host-range duration is smaller than other exposed-time metrics.
 5. Also scan `triton_code_optimization.json` when present. If `has_findings=true`, read `final_report_guidance` first and include a dedicated top-level `## Triton Kernel 代码优化` section using `final_report_guidance.required_table_md` or an equivalent table. The table must include all candidates from `triton_code_optimization.json`, and name concrete kernels, measured time, BW utilization when available, static estimated throughput, and merged strategy/recommendation. Do not add a separate `证据` column. Place this section after `## 优先行动` and before `## 不确定性与下一步`. Still include a `关键指标` row with scanned file count, candidate kernel count, top strategies, and source file. Keep wording as a validation target unless runtime evidence confirms a speedup.
-6. Estimate potential benefit using measured exposed time or skew. If benefits overlap, state that they are not additive.
+6. Estimate potential benefit using measured exposed or excess time. If benefits share an overlap group, state that they are not additive.
 7. Prioritize recommendations by expected impact, confidence, and implementation scope.
 8. Apply the recommendation contract from `references/pytorch_performance_playbook.md`: include mechanism, correctness guardrail, one controlled experiment, end-to-end success metric, and rollback condition.
 9. If custom-op/simple-aten is reserved, phrase the action as moving repeated simple `aten::` pointwise/view/reduce/copy/allocation work into the custom backend kernel, or restructuring the wrapper so Inductor can see and fuse it.
 10. Call out missing evidence and which branch or input would close it.
-11. Do not append raw table dumps to `report.md`. Keep audit details in stage reports or `evidence_summary.md`, and reference full output filenames.
+11. Write final `report.json` from the audited evidence contract, preserving source finding IDs and artifact paths.
+12. Do not append raw table dumps to `report.md`. Keep audit details in stage reports or `evidence_summary.md`, and reference full output filenames.
 
 Final report writing:
 
@@ -386,5 +419,5 @@ Final report writing:
 - If a table is missing, state what is unavailable and continue with remaining evidence.
 - If `string_table` is missing, report `nameId=...`.
 - If multiple processes/devices are present in one DB, call that out and filter when needed.
-- If cluster CSVs are absent, continue from DB tables and mention that rank-level profiler categories are unavailable.
+- Treat all communication events as opaque local timeline categories; never infer missing peer behavior.
 - Keep thresholds as triage aids, not hard truth. Prefer measured ratios and dependency evidence.

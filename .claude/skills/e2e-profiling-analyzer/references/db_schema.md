@@ -2,6 +2,13 @@
 
 Use this reference when a task needs direct SQLite queries or when script output is insufficient.
 
+## Contents
+
+- Core tables
+- Key semantics
+- torch.compile / Triton metadata
+- Common SQL queries
+
 ## Core Tables
 
 - `string_table`
@@ -10,9 +17,10 @@ Use this reference when a task needs direct SQLite queries or when script output
   - Rule: load per DB. Do not reuse one DB's `nameId` mapping for another DB.
 
 - `device_task_kernel_data`
-  - Common fields: `processId`, `deviceId`, `queueId`, `correlationId`, `nameId`, `start`, `end`, `isComputation`, `extra`
+  - Common fields: `processId`, `deviceId`, `queueId`, `correlationId`, `nameId`, `start`, `end`, `isComputation`, `class`, `dimX`, `dimY`, `dimZ`, `extra`
   - Use: device kernel timeline and kernel summaries.
   - Rule: `isComputation=1` marks compute kernels. Other kernel rows may be communication or non-compute work.
+  - Codegen rule: names, dimensions, class, and `extra` are signals. Do not infer hardware utilization or source-level fusion from them alone.
 
 - `device_task_notifier_data`
   - Common fields: `processId`, `deviceId`, `queueId`, `correlationId`, `notifierId`, `type`, `start`, `end`, `extra`

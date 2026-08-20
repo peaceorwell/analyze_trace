@@ -1,6 +1,16 @@
 # Profiling Concepts And Causal Models
 
-Use this reference before interpreting script output, DB queries, rank imbalance, compute gaps, communication exposure, or final root cause. The goal is to give new profiling users a stable mental model before doing causal analysis.
+Use this reference before interpreting script output, DB queries, Triton/codegen signals, fusion granularity, compute gaps, or final root cause. The goal is to give profiling users a stable mental model before doing causal analysis.
+
+## Contents
+
+- Basic concepts
+- Host-device synchronization
+- Device-side synchronization
+- Triton kernel analysis
+- Compilation and fusion granularity
+- Single-rank critical-path interpretation
+- Evidence and benefit rules
 
 ## Basic Concepts
 
@@ -15,8 +25,8 @@ These terms define profiler entities and time scopes. They do not imply root cau
 
 - Host time: CPU-side elapsed time.
 - Device time: MLU-side elapsed time.
-- E2E time: one training or inference iteration across all participating ranks, governed by the cross-rank critical path.
-- Critical path: the chain of host, device, communication, and synchronization work that determines E2E time.
+- E2E time: one training or inference iteration in the captured single-rank process.
+- Critical path: the local chain of host, device, launch, synchronization, and data movement work that determines the captured E2E time.
 
 Host time, device time, and E2E time are related but not interchangeable. For example, host launch duration is not device kernel duration.
 
@@ -85,55 +95,24 @@ Rules:
 - A notifier place can itself be delayed by earlier work in its own queue.
 - Do not stop at the first synchronization primitive name. Trace backward until reaching the task or host operation that consumes the relevant time.
 
-## Communication Analysis Concepts
+## Triton Kernel Analysis
 
-Communication analysis must separate data movement cost from synchronization wait. Exposed communication and communication group labels are symptoms, not final causes.
+Treat kernel attribution as evidence with levels:
 
-Concept primitives are marked in bold. Treat bolded terms as stable domain concepts and reuse the exact term when referencing them.
+- Generated Triton source/IR or explicit compiler metadata is strong attribution.
+- An observed name containing a stable explicit Triton marker is a probable signal.
+- A generic `fused` or codegen-looking name does not prove Triton.
 
-### How Communication Waits Happen
+Analyze observed count, total, average, p90, maximum, tiny-launch share, configuration variants, and long tails. Preserve names and metadata before grouping. Kernel names alone cannot establish occupancy, memory bandwidth, register pressure, cache behavior, or generated-code quality; those require counters, artifacts, or controlled experiments.
 
-Communication involves multiple ranks. A rank can enter a communication kernel before its peer, upstream pipeline stage, or collective participants are ready.
+## Compilation And Fusion Granularity
 
-Communication time can therefore include:
+Compile time and compiled execution time are different scopes. Exclude compilation and warmup before judging steady-state fusion.
 
-- Synchronization wait: time spent waiting for another rank, stage, or dependency to arrive.
-- Data movement cost: real transfer/reduction work.
+Fusion granularity is not equivalent to the number of words in a kernel name. Useful signals include kernels per compiled region or mapped framework operation, tiny-kernel share, repeated launch sequences, launch density, host launch overhead, gaps, and generated graph/IR/code artifacts.
 
-The rank showing high exposed communication is often the **waiting rank**. The rank causing the wait may show low exposed communication because it is busy doing compute or host-side work before reaching the communication point.
+Multiple kernels for one operation can reflect under-fusion, but can also be required by reductions, mutation, aliasing, dynamic shapes, resource limits, or scheduling. A single fused kernel can be slower through recomputation, resource pressure, or reduced parallelism. Prefer matched before/after measurements and bound benefits by exposed critical-path time.
 
-**Fast/slow rank** describes a possible wait relationship: an early rank waits at a communication boundary for a late or blocking **slow-arriver rank**. It is not a communication-time ranking, and the relationship may be absent.
+## Single-Rank Critical Path
 
-Communication groups such as PP, EP, DP, TP, or Global are labels for grouping communication. They are not proof of causality or independence.
-
-Direct communication participation is narrower than E2E dependency. A rank may not appear in the same communication kernel or group, but it can still affect that communication through pipeline progress, step boundary synchronization, backpressure, or another upstream/downstream dependency.
-
-### How To Identify Communication Relationship
-
-Use multiple evidence levels. Do not rely on only one kernel name or one communication group label.
-
-- Direct operation evidence: ranks have matching or aligned communication kernels from the same operation, collective, send/recv pair, or profiler communication group.
-- Timeline evidence: one rank's exposed communication interval overlaps another rank's compute, host-blocking, queue dependency, or late progress.
-- Boundary evidence: communication occurs near a pipeline boundary, collective boundary, step boundary, or backpressure point where ranks can affect each other indirectly.
-- Optional cluster evidence: `communication_statistic.csv` or related cluster files can label PP/EP/DP/TP/Global groups, but labels need timeline validation.
-
-If direct operation evidence is absent, still test timeline and boundary evidence before ruling out a rank.
-
-### Common Situations And Possible Causes
-
-- Single DB or one rank only: cross-rank attribution is not supported. Provide local communication breakdown and ask for other rank DBs or cluster CSVs if the workload is multi-rank.
-- High exposed receive/wait on rank A, while rank B has high compute, host-blocking, or late progress: rank A may be waiting for rank B.
-- Low exposed communication on rank B does not rule out B as the cause. It may be busy doing useful work while other ranks wait.
-- Rank B is not in rank A's communication kernel/group: this only rules out direct participation in that operation. It does not rule out E2E dependency through pipeline or step-level progress.
-- Similar high communication exposure on all participating ranks, with no late peer evidence: intrinsic data movement or communication algorithm cost is plausible.
-- Few long communication outliers: imbalance, host sync, queue dependency, queue backpressure, or occasional late peer arrival is plausible.
-- `100% exposed` all-to-all or receive: the operation was not hidden by compute. It can be intrinsic cost, but it can also be boundary synchronization.
-- Similar final device span across ranks: not enough to rule out slow-arriver behavior, because synchronization can align rank completion time.
-
-### Evidence To Prefer
-
-- Cross-rank timeline alignment: waiting interval on one rank versus compute, host-blocking, or queue dependency on another rank.
-- Per-rank compute and communication comparison: high communication on one rank plus high compute or late progress on another is waiting evidence.
-- E2E dependency check: distinguish direct communication participants from ranks that can indirectly delay the boundary through pipeline, backpressure, or step-level synchronization.
-- Operation-level evidence: if no peer-arrival delay is found and all participants show similar long communication, intrinsic communication becomes more plausible.
-- Multiple candidates are acceptable. Report plausible causes with confidence and missing evidence instead of forcing one conclusion.
+This workflow explains the captured local rank only. It may report local communication events as timeline categories so they are not misclassified as compute, but it does not infer peer behavior or cross-rank causality.

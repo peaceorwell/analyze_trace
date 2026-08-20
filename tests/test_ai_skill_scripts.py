@@ -12,13 +12,20 @@ TRITON_EFFICIENCY_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts
 TRITON_CODE_OPT_SCRIPT = ROOT / ".claude/skills/mlu-triton-optimize/scripts/analyze_triton_code.py"
 TRACE_CONVERTER_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts/torch_trace_to_cnperf_db.py"
 COMPILE_SEGMENTATION_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts/compile_segmentation.py"
+KERNEL_CODEGEN_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts/kernel_codegen_analysis.py"
+PREFLIGHT_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts/preflight.py"
+VALIDATE_FINDINGS_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts/validate_findings.py"
 COLLECT_SCRIPT = ROOT / ".claude/skills/e2e-profiling-comparator/scripts/collect_profile_tables.py"
 COMPARE_SCRIPT = ROOT / ".claude/skills/e2e-profiling-comparator/scripts/compare_profile_tables.py"
 E2E_ANALYZER_SKILL = ROOT / ".claude/skills/e2e-profiling-analyzer/SKILL.md"
 E2E_COMPARATOR_SKILL = ROOT / ".claude/skills/e2e-profiling-comparator/SKILL.md"
 ANALYZER_BRANCH_WORKFLOWS = ROOT / ".claude/skills/e2e-profiling-analyzer/references/branch_workflows.md"
 ANALYZER_PERFORMANCE_PLAYBOOK = ROOT / ".claude/skills/e2e-profiling-analyzer/references/pytorch_performance_playbook.md"
+ANALYZER_EVIDENCE_CONTRACT = ROOT / ".claude/skills/e2e-profiling-analyzer/references/evidence_contract.md"
+ANALYZER_TEAM_WORKFLOW = ROOT / ".claude/skills/e2e-profiling-analyzer/references/team_workflow.md"
 COMPARATOR_PERFORMANCE_PLAYBOOK = ROOT / ".claude/skills/e2e-profiling-comparator/references/pytorch_performance_playbook.md"
+PROJECT_AGENTS = ROOT / ".claude/agents"
+PROJECT_CLAUDE_SETTINGS = ROOT / ".claude/settings.json"
 
 
 def load_module(name, path):
@@ -125,6 +132,74 @@ def make_custom_op_simple_aten_db(path):
         VALUES(?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (1, 0, 0, 1, 8, 0, 500_000, 1),
+    )
+    conn.commit()
+    conn.close()
+
+
+def make_codegen_db(path):
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE string_table(ID INTEGER PRIMARY KEY, string TEXT)")
+    conn.execute(
+        """
+        CREATE TABLE device_task_kernel_data(
+            processId INTEGER, deviceId INTEGER, queueId INTEGER,
+            correlationId INTEGER, nameId INTEGER, start INTEGER, end INTEGER,
+            isComputation INTEGER, class INTEGER, dimX INTEGER, dimY INTEGER,
+            dimZ INTEGER, extra TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE function_data(
+            processId INTEGER, threadId INTEGER, correlationId INTEGER,
+            nameId INTEGER, start INTEGER, end INTEGER
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE Internal_operation_range_data(
+            processId INTEGER, threadId INTEGER, start INTEGER, end INTEGER,
+            extraId INTEGER, nameId INTEGER
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE Internal_op_range_relations(
+            externalCorrelationId INTEGER, correlationId INTEGER
+        )
+        """
+    )
+    conn.executemany(
+        "INSERT INTO string_table VALUES(?, ?)",
+        [
+            (1, "triton_poi_fused_relu_add"),
+            (2, "native_conv_kernel"),
+            (3, "cnInvokeKernel"),
+            (4, "Torch-Compiled Region"),
+        ],
+    )
+    conn.executemany(
+        "INSERT INTO device_task_kernel_data VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [
+            (1, 0, 0, 101, 1, 0, 100_000, 1, 4, 128, 1, 1, "{}"),
+            (1, 0, 0, 102, 2, 120_000, 320_000, 1, 4, 256, 1, 1, "{}"),
+        ],
+    )
+    conn.executemany(
+        "INSERT INTO function_data VALUES(?,?,?,?,?,?)",
+        [(1, 7, 101, 3, -10_000, 0), (1, 7, 102, 3, 110_000, 120_000)],
+    )
+    conn.execute(
+        "INSERT INTO Internal_operation_range_data VALUES(?,?,?,?,?,?)",
+        (1, 7, -20_000, 130_000, 1001, 4),
+    )
+    conn.executemany(
+        "INSERT INTO Internal_op_range_relations VALUES(?,?)",
+        [(1001, 101), (1001, 102)],
     )
     conn.commit()
     conn.close()
@@ -713,6 +788,104 @@ def test_compare_profile_tables_reports_unfused_pointwise_delta():
     assert custom_rows[0]["status"] == "regression"
 
 
+def test_single_rank_codegen_baseline_emits_triton_and_fusion_signals(tmp_path):
+    module = load_module("kernel_codegen_analysis", KERNEL_CODEGEN_SCRIPT)
+    db_path = tmp_path / "single_rank.db"
+    make_codegen_db(db_path)
+
+    payload = module.analyze_codegen(str(db_path), process_id=1, device_id=0, tiny_threshold_us=150)
+
+    assert payload["totals"]["compute_kernel_count"] == 2
+    assert payload["totals"]["triton_signal_count"] == 1
+    assert payload["totals"]["fusion_signal_count"] == 1
+    assert payload["totals"]["tiny_kernel_count"] == 1
+    assert payload["triton_kernels"][0]["name"] == "triton_poi_fused_relu_add"
+    assert payload["operator_kernel_mapping"]["coverage_pct"] == pytest.approx(100.0)
+    assert payload["operator_kernel_mapping"]["compiled_region_operators"][0]["mapped_kernel_launches"] == 2
+
+
+def test_preflight_and_findings_contract(tmp_path):
+    preflight = load_module("e2e_preflight", PREFLIGHT_SCRIPT)
+    validator = load_module("e2e_validate_findings", VALIDATE_FINDINGS_SCRIPT)
+    db_path = tmp_path / "single_rank.db"
+    make_codegen_db(db_path)
+
+    inspected = preflight.inspect_db(str(db_path))
+    assert inspected["compatible"] is True
+    payload = {
+        "schema_version": "1.0",
+        "agent": "e2e-triton-kernel-analyst",
+        "scope": {
+            "dbs": [str(db_path)],
+            "process_ids": [1],
+            "device_ids": [0],
+            "window": {"start_ns": 0, "end_ns": 320_000, "basis": "stable"},
+            "limitations": [],
+        },
+        "findings": [
+            {
+                "id": "triton-001",
+                "status": "possible",
+                "cause": "tiny Triton launch",
+                "summary": "One explicitly named Triton kernel is below the selected threshold.",
+                "metrics": [
+                    {
+                        "name": "duration",
+                        "value": 0.1,
+                        "unit": "ms",
+                        "scope": "device=0",
+                        "source": "kernel_codegen.json#/triton_kernels/0",
+                    }
+                ],
+                "evidence": ["kernel_codegen.json#/triton_kernels/0"],
+                "counter_evidence": ["no matched before/after capture"],
+                "affected_scope": ["device=0"],
+                "estimated_impact_ms": 0.1,
+                "confidence": 0.5,
+                "overlap_group": "compile-fusion",
+                "follow_up": ["repeat with a steady-state window"],
+            }
+        ],
+        "artifacts": ["kernel_codegen.json"],
+    }
+    assert validator.validate(payload) == []
+
+
+def test_project_agent_team_layout_is_single_rank():
+    expected = {
+        "e2e-evidence-builder",
+        "e2e-compute-analyst",
+        "e2e-triton-kernel-analyst",
+        "e2e-compile-fusion-analyst",
+        "e2e-gap-host-analyst",
+        "e2e-noncompute-analyst",
+        "e2e-freeform-analyst",
+        "e2e-evidence-auditor",
+    }
+    actual = {path.stem for path in PROJECT_AGENTS.glob("e2e-*.md")}
+    analyzer_text = E2E_ANALYZER_SKILL.read_text(encoding="utf-8")
+
+    assert actual == expected
+    assert "e2e-communication-rank-analyst" not in actual
+    assert "communication-root-cause" not in analyzer_text
+    assert not (E2E_ANALYZER_SKILL.parent / "scripts/comm_breakdown.py").exists()
+    assert not (E2E_ANALYZER_SKILL.parent / "scripts/rank_compare.py").exists()
+    assert ANALYZER_EVIDENCE_CONTRACT.is_file()
+    assert ANALYZER_TEAM_WORKFLOW.is_file()
+    settings = json.loads(PROJECT_CLAUDE_SETTINGS.read_text(encoding="utf-8"))
+    assert settings["env"]["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] == "1"
+    for path in PROJECT_AGENTS.glob("e2e-*.md"):
+        text = path.read_text(encoding="utf-8")
+        assert text.startswith("---\n")
+        assert f"name: {path.stem}\n" in text
+
+
+def test_analyzer_and_comparator_share_the_same_trace_converter():
+    assert TRACE_CONVERTER_SCRIPT.read_bytes() == (
+        E2E_COMPARATOR_SKILL.parent / "scripts/torch_trace_to_cnperf_db.py"
+    ).read_bytes()
+
+
 def test_e2e_analyzer_skill_keeps_one_final_report_contract():
     text = E2E_ANALYZER_SKILL.read_text(encoding="utf-8")
 
@@ -732,6 +905,8 @@ def test_profiling_skills_keep_progressive_disclosure_and_validity_gates():
     assert len(comparator.splitlines()) < 500
     assert "references/branch_workflows.md" in analyzer
     assert "references/pytorch_performance_playbook.md" in analyzer
+    assert "references/evidence_contract.md" in analyzer
+    assert "references/team_workflow.md" in analyzer
     assert "Comparison Validity Gate" in comparator
     assert "references/pytorch_performance_playbook.md" in comparator
     assert ANALYZER_BRANCH_WORKFLOWS.is_file()

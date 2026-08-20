@@ -10,7 +10,6 @@ Use this playbook to decide whether a profile is trustworthy, turn trace symptom
 - Kernel and operator interpretation
 - torch.compile and Inductor
 - Input pipeline and memory
-- Distributed execution
 - Recommendation and validation contract
 - Primary sources
 
@@ -47,10 +46,10 @@ When metadata is absent, say `unknown`; do not invent configuration values.
 Prefer evidence in this order:
 
 1. Aligned end-to-end or step duration on equivalent work.
-2. Critical-path device/host/communication intervals and overlap.
-3. Category totals: compute, exposed communication, copies, synchronization, and idle gaps.
+2. Local critical-path device/host intervals and overlap.
+3. Category totals: compute, opaque communication, copies, synchronization, and idle gaps.
 4. Operator or kernel aggregate total, count, typical duration, and tail duration.
-5. Correlation links, same-thread host context, queue dependencies, compiled-region boundaries, and per-rank alignment.
+5. Correlation links, same-thread host context, queue dependencies, compiled-region boundaries, and aligned profile windows.
 6. Names, static source patterns, configuration guesses, or generic tuning advice.
 
 Do not promote a lower-level clue over contradictory higher-level evidence. High utilization can coexist with poor throughput when the device performs extra work; low utilization is a symptom until the gap owner is identified.
@@ -61,7 +60,7 @@ Use the following order:
 
 1. Establish the target metric: latency, throughput, time per token/sample, compile latency, memory limit, or scaling efficiency.
 2. Establish stable scope and the critical path.
-3. Partition time into effective compute, exposed communication, ordinary device work, and gaps.
+3. Partition time into effective compute, opaque communication, ordinary device work, and gaps.
 4. Attribute the dominant exposed interval through queues and host/device correlations.
 5. Drill into the largest actionable operator or kernel family.
 6. Form at most a few causal hypotheses and define an experiment that can falsify each one.
@@ -107,22 +106,13 @@ Only diagnose a data pipeline problem when device gaps align with host-side inpu
 
 CUDA-specific APIs in the primary sources illustrate mechanisms. On MLU, recommend only the corresponding supported runtime/profiler experiment.
 
-## Distributed Execution
-
-- Use all relevant ranks for causal attribution. One rank's long communication interval often means it arrived early and waited.
-- Separate total communication duration from uncovered/exposed duration and from non-overlapped critical-path cost.
-- Compare rank progress, compute work, kernel mix, gaps, and arrival time before naming a straggler.
-- DDP bucketization exists to overlap gradient reduction with backward compute; graph partitioning or bucket changes can improve or reduce that overlap.
-- Do not double count a host annotation and its device communication kernel as two independent costs.
-- Compare same world size, parallelism layout, batch/token allocation, and rank role. Otherwise report the comparison as confounded.
-
 ## Recommendation And Validation Contract
 
 Every priority recommendation must contain:
 
-1. **Evidence**: measured interval, delta, kernel/operator, rank, or dependency chain.
+1. **Evidence**: measured interval, delta, kernel/operator, process/device, or dependency chain.
 2. **Mechanism**: why the proposed change should reduce the target metric.
-3. **Scope**: affected shapes, steps, ranks, or kernels.
+3. **Scope**: affected shapes, steps, process/devices, or kernels.
 4. **Expected bound**: use measured exposed/critical-path time; state when benefits overlap.
 5. **Correctness guardrail**: outputs/loss/gradients, tolerances, NaN/Inf behavior, or work-count parity.
 6. **Experiment**: one controlled change, warm-up, repeated stable measurements, and identical profiler settings.
@@ -143,7 +133,6 @@ Label conclusions as:
 - Profiling torch.compile, compiled regions, graph breaks, compile warm-up, and launch gaps: https://docs.pytorch.org/docs/main/user_guide/torch_compiler/torch.compiler_profiling_torch_compile.html
 - torch.compile programming model, guards, recompilations, and diagnostics: https://docs.pytorch.org/docs/main/user_guide/torch_compiler/compile/programming_model.html
 - Dynamic-shape behavior and targeted annotations: https://docs.pytorch.org/docs/main/user_guide/torch_compiler/torch.compiler_dynamic_shapes.html
-- DDP buckets and compute/communication overlap: https://docs.pytorch.org/docs/stable/notes/ddp.html
 - Data transfer, pinned memory, and overlap conditions: https://docs.pytorch.org/tutorials/intermediate/pinmem_nonblock.html
 - PyTorch allocator snapshots and visibility limits: https://docs.pytorch.org/docs/stable/torch_cuda_memory.html
 - Triton fusion and DRAM-traffic reasoning: https://triton-lang.org/main/getting-started/tutorials/02-fused-softmax.html
