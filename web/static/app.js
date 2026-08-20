@@ -7,7 +7,7 @@ const { createRouter, createWebHashHistory } = VueRouter;
 
 let appInitialized = false;
 const DEFAULT_RESULT_TAB = "chart";
-const CLIENT_APP_VERSION = "0.5.42";
+const CLIENT_APP_VERSION = "0.5.43";
 const APP_VERSION_CHECK_INTERVAL_MS = 60_000;
 const APP_VERSION_QUERY_PARAM = "_app_version";
 const USER_GROUP_LINK = "https://ims.cambricon.com/woa/invite/PPtk2dW22h5?channel=hwj-v7";
@@ -733,7 +733,7 @@ const currentTritonCodePath = ref("");
 const showGuide = ref(false);
 const showUserGroup = ref(false);
 const showEntryNotice = ref(false);
-const entryNoticeNeverShow = ref(true);
+const entryNoticeNeverShow = ref(false);
 const entryNoticeShownUsers = new Set();
 const showSettings = ref(false);
 const profileForm = reactive({
@@ -752,6 +752,15 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.43",
+    date: "2026-08-20",
+    title: "调整首次访问提醒默认行为",
+    items: [
+      "不再显示选项改为默认不勾选，需要用户手动选择。",
+      "未勾选时下次打开仍会提醒，勾选后按当前用户保存选择。",
+    ],
+  },
   {
     version: "0.5.42",
     date: "2026-08-20",
@@ -9172,7 +9181,7 @@ const maybeShowEntryNotice = () => {
   if (entryNoticeShownUsers.has(userKey)) return;
   entryNoticeShownUsers.add(userKey);
   if (localStorage.getItem(entryNoticeStorageKey()) === "true") return;
-  entryNoticeNeverShow.value = true;
+  entryNoticeNeverShow.value = false;
   showEntryNotice.value = true;
 };
 

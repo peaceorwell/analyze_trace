@@ -94,7 +94,7 @@ def test_kernel_host_op_details_are_nested_under_all_kernels():
 
 
 def test_frontend_recovers_from_a_stale_version():
-    assert 'const CLIENT_APP_VERSION = "0.5.42";' in APP_JS
+    assert 'const CLIENT_APP_VERSION = "0.5.43";' in APP_JS
     assert 'const APP_VERSION_CHECK_INTERVAL_MS = 60_000;' in APP_JS
     assert 'const APP_VERSION_QUERY_PARAM = "_app_version";' in APP_JS
     assert 'cache: "no-store"' in APP_JS
@@ -196,16 +196,17 @@ def test_header_exposes_user_group_and_new_trial_entry_points():
     assert 'aria-labelledby="user-group-title"' in INDEX_HTML
     assert 'const USER_GROUP_LINK = "https://ims.cambricon.com/woa/invite/PPtk2dW22h5?channel=hwj-v7";' in APP_JS
     assert "copyUserGroupLink" in APP_JS
-    assert 'src="/static/tpa-user-group.jpeg?v=0.5.42"' in INDEX_HTML
+    assert 'src="/static/tpa-user-group.jpeg?v=0.5.43"' in INDEX_HTML
     assert 'download="tpa用户群入群图片.jpeg"' in INDEX_HTML
 
 
-def test_first_entry_notice_defaults_to_one_time_per_user():
+def test_first_entry_notice_requires_user_opt_out():
     assert 'v-if="showEntryNotice"' in INDEX_HTML
     assert 'v-model="entryNoticeNeverShow"' in INDEX_HTML
     assert '<span>不再显示</span>' in INDEX_HTML
     assert 'const ENTRY_NOTICE_STORAGE_PREFIX = "tpa-entry-notice-v1";' in APP_JS
-    assert 'const entryNoticeNeverShow = ref(true);' in APP_JS
+    assert 'const entryNoticeNeverShow = ref(false);' in APP_JS
+    assert 'entryNoticeNeverShow.value = false;' in APP_JS
     assert '`${ENTRY_NOTICE_STORAGE_PREFIX}:${projectExpansionUserKey()}`' in APP_JS
     assert 'localStorage.setItem(entryNoticeStorageKey(), "true");' in APP_JS
     assert 'watch([authChecked, authRequired, currentUser], maybeShowEntryNotice, { immediate: true });' in APP_JS
