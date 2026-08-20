@@ -94,7 +94,7 @@ def test_kernel_host_op_details_are_nested_under_all_kernels():
 
 
 def test_frontend_recovers_from_a_stale_version():
-    assert 'const CLIENT_APP_VERSION = "0.5.40";' in APP_JS
+    assert 'const CLIENT_APP_VERSION = "0.5.41";' in APP_JS
     assert 'const APP_VERSION_CHECK_INTERVAL_MS = 60_000;' in APP_JS
     assert 'const APP_VERSION_QUERY_PARAM = "_app_version";' in APP_JS
     assert 'cache: "no-store"' in APP_JS
@@ -187,6 +187,17 @@ def test_header_task_center_tracks_active_and_failed_jobs_globally():
     assert "taskCenterPollTimer = setInterval(refreshTaskCenterWhenVisible, 5000)" in APP_JS
     assert "taskCenterActiveJobs" in APP_JS
     assert "copyTaskCenterError" in APP_JS
+
+
+def test_header_exposes_user_group_and_new_trial_entry_points():
+    assert '>加入用户群</button>' in INDEX_HTML
+    assert ':href="newTrialUrl" target="_blank" rel="noopener noreferrer">新版试用</a>' in INDEX_HTML
+    assert 'const NEW_TRIAL_URL = "http://10.100.146.137:33512/";' in APP_JS
+    assert 'aria-labelledby="user-group-title"' in INDEX_HTML
+    assert 'const USER_GROUP_LINK = "https://ims.cambricon.com/woa/invite/Qtk2LO1bnk?channel=hwj-v7";' in APP_JS
+    assert "copyUserGroupLink" in APP_JS
+    assert 'src="/static/tpa-user-group-qr.png?v=0.5.41"' in INDEX_HTML
+    assert 'download="tpa用户群二维码.png"' in INDEX_HTML
 
 
 def test_background_refreshes_do_not_count_as_user_activity():

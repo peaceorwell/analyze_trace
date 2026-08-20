@@ -7,9 +7,11 @@ const { createRouter, createWebHashHistory } = VueRouter;
 
 let appInitialized = false;
 const DEFAULT_RESULT_TAB = "chart";
-const CLIENT_APP_VERSION = "0.5.40";
+const CLIENT_APP_VERSION = "0.5.41";
 const APP_VERSION_CHECK_INTERVAL_MS = 60_000;
 const APP_VERSION_QUERY_PARAM = "_app_version";
+const USER_GROUP_LINK = "https://ims.cambricon.com/woa/invite/Qtk2LO1bnk?channel=hwj-v7";
+const NEW_TRIAL_URL = "http://10.100.146.137:33512/";
 let appVersionCheckTimer = null;
 
 const clearAppVersionQueryParam = () => {
@@ -728,6 +730,7 @@ const currentTritonCodePath = ref("");
 
 // ── Guide ───────────────────────────────────────────────────────────────
 const showGuide = ref(false);
+const showUserGroup = ref(false);
 const showSettings = ref(false);
 const profileForm = reactive({
   username: "",
@@ -745,6 +748,15 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.41",
+    date: "2026-08-20",
+    title: "新增用户群与新版试用入口",
+    items: [
+      "首页标题栏新增用户群入口，可复制邀请链接或保存二维码。",
+      "新增新版试用入口，可直接打开新版分析服务。",
+    ],
+  },
   {
     version: "0.5.40",
     date: "2026-08-12",
@@ -9132,6 +9144,11 @@ const copyErrorModal = async () => {
   showToast("已复制到剪贴板", "success");
 };
 
+const copyUserGroupLink = async () => {
+  await copyTextToClipboard(USER_GROUP_LINK);
+  showToast("群链接已复制", "success");
+};
+
 // ══════════════════════════════════════════════════════════════════════════════
 // Compare
 // ══════════════════════════════════════════════════════════════════════════════
@@ -14359,6 +14376,7 @@ const handleGlobalEscape = event => {
   else if (showStorageManager.value) showStorageManager.value = false;
   else if (showAdminUsage.value) showAdminUsage.value = false;
   else if (showTritonCode.value) showTritonCode.value = false;
+  else if (showUserGroup.value) showUserGroup.value = false;
   else if (showGuide.value) showGuide.value = false;
   else if (showReleaseNotes.value) showReleaseNotes.value = false;
   else if (showTaskCenter.value) closeTaskCenter();
@@ -14622,7 +14640,7 @@ const App = {
       showRenameJob, showNewProject, showRenameProject, showDeletedProjects,
       showFeedbackComposer, showAdminUsage, showStorageManager, showTritonCode,
       showAiCodeViewer, showErrorModal, showAiPromptModal, showStepReanalysisModal,
-      showConfirmModal, showSettings, showGuide, showReleaseNotes,
+      showConfirmModal, showSettings, showUserGroup, showGuide, showReleaseNotes,
     ];
     watch(modalVisibilitySources, (values, previousValues) => {
       const hasOpenModal = values.some(Boolean);
@@ -14895,6 +14913,7 @@ const App = {
       aiCodeViewerPath, aiCodeViewerFilename, aiCodeViewerContent,
       aiCodeViewerSize, aiCodeViewerTruncated,
       closeAiCodeViewer, copyAiCodeViewer, downloadAiCodeViewer,
+      showUserGroup, userGroupLink: USER_GROUP_LINK, newTrialUrl: NEW_TRIAL_URL, copyUserGroupLink,
       showGuide, showSettings, profileForm, openSettings, closeSettings, saveProfile,
       showReleaseNotes, releaseNotes, openReleaseNotes,
       showErrorModal, errorModalMsg, errorModalTitle,
