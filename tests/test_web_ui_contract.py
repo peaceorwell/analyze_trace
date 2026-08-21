@@ -131,6 +131,9 @@ def test_ai_report_supports_typora_style_themes_with_github_default():
     assert "max-width: 1180px;" in STYLE_CSS
     assert ".ai-report-theme-picker:focus-within" in STYLE_CSS
     assert ".ai-analysis-report.markdown-body .ai-artifact-inline-link code" in STYLE_CSS
+    assert '--ai-report-font: "Inter", "PingFang SC"' in STYLE_CSS
+    assert '--ai-report-mono: "SFMono-Regular"' in STYLE_CSS
+    assert "-webkit-font-smoothing: antialiased;" in STYLE_CSS
 
 
 def test_performance_overview_explains_compute_time_scope():

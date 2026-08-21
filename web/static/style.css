@@ -4460,15 +4460,16 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
 /* AI report reading themes. Keep these scoped so feedback Markdown keeps the app theme. */
 .ai-report-theme-github {
   --ai-report-bg: #ffffff;
-  --ai-report-text: #1f2328;
-  --ai-report-muted: #59636e;
+  --ai-report-text: #394550;
+  --ai-report-muted: #56626e;
   --ai-report-border: #d0d7de;
   --ai-report-soft: #f6f8fa;
   --ai-report-row-alt: #fbfcfd;
-  --ai-report-link: #0969da;
-  --ai-report-code: #0550ae;
+  --ai-report-link: #218bff;
+  --ai-report-code: #218bff;
   --ai-report-accent: #0969da;
-  --ai-report-font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif;
+  --ai-report-font: "Inter", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --ai-report-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
 }
 .ai-report-theme-newsprint {
   --ai-report-bg: #fdfbf7;
@@ -4499,9 +4500,12 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
   background: var(--ai-report-bg);
   color: var(--ai-report-text);
   font-family: var(--ai-report-font);
-  font-size: 14px;
-  line-height: 1.78;
+  font-size: 14.5px;
+  font-weight: 400;
+  line-height: 1.72;
   letter-spacing: 0;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 .ai-analysis-report.markdown-body > * {
   max-width: 1000px;
@@ -4516,14 +4520,15 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
 .ai-analysis-report.markdown-body h6 {
   color: var(--ai-report-text);
   font-family: var(--ai-report-font);
-  letter-spacing: -.012em;
+  letter-spacing: 0;
 }
 .ai-analysis-report.markdown-body h1 {
   margin-top: 0;
   margin-bottom: 26px;
   padding-bottom: 15px;
   border-bottom: 1px solid var(--ai-report-border);
-  font-size: 28px;
+  font-size: 27px;
+  font-weight: 700;
   line-height: 1.25;
 }
 .ai-analysis-report.markdown-body h2 {
@@ -4532,6 +4537,7 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
   padding: 0;
   border-bottom: 0;
   font-size: 20px;
+  font-weight: 650;
   line-height: 1.35;
 }
 .ai-analysis-report.markdown-body h2::after {
@@ -4548,6 +4554,7 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
   margin-top: 24px;
   margin-bottom: 10px;
   font-size: 16px;
+  font-weight: 650;
 }
 .ai-analysis-report.markdown-body p,
 .ai-analysis-report.markdown-body ul,
@@ -4564,7 +4571,10 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
 }
 .ai-analysis-report.markdown-body li { margin-top: 9px; margin-bottom: 9px; }
 .ai-analysis-report.markdown-body li::marker { color: var(--ai-report-accent); }
-.ai-analysis-report.markdown-body strong { color: var(--ai-report-text); }
+.ai-analysis-report.markdown-body strong {
+  color: var(--ai-report-text);
+  font-weight: 650;
+}
 .ai-analysis-report.markdown-body a { color: var(--ai-report-link); }
 .ai-analysis-report.markdown-body code {
   padding: .1em .32em;
@@ -4572,8 +4582,9 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
   border-radius: 4px;
   background: var(--ai-report-soft);
   color: var(--ai-report-code);
+  font-family: var(--ai-report-mono, var(--mono));
   font-size: .9em;
-  font-weight: 550;
+  font-weight: 500;
 }
 .ai-analysis-report.markdown-body .ai-artifact-inline-link code {
   color: var(--ai-report-link);
