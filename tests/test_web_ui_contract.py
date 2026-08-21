@@ -94,7 +94,7 @@ def test_kernel_host_op_details_are_nested_under_all_kernels():
 
 
 def test_frontend_recovers_from_a_stale_version():
-    assert 'const CLIENT_APP_VERSION = "0.5.47";' in APP_JS
+    assert 'const CLIENT_APP_VERSION = "0.5.48";' in APP_JS
     assert 'const APP_VERSION_CHECK_INTERVAL_MS = 60_000;' in APP_JS
     assert 'const APP_VERSION_QUERY_PARAM = "_app_version";' in APP_JS
     assert 'cache: "no-store"' in APP_JS
@@ -228,8 +228,19 @@ def test_header_exposes_user_group_and_new_trial_entry_points():
     assert 'aria-labelledby="user-group-title"' in INDEX_HTML
     assert 'const USER_GROUP_LINK = "https://ims.cambricon.com/woa/invite/PPtk2dW22h5?channel=hwj-v7";' in APP_JS
     assert "copyUserGroupLink" in APP_JS
-    assert 'src="/static/tpa-user-group.jpeg?v=0.5.47"' in INDEX_HTML
+    assert 'src="/static/tpa-user-group.jpeg?v=0.5.48"' in INDEX_HTML
     assert 'download="tpa用户群入群图片.jpeg"' in INDEX_HTML
+
+
+def test_header_keeps_secondary_entries_out_of_the_primary_action_row():
+    assert 'class="header-brand-group"' in INDEX_HTML
+    assert 'class="header-brand-trial"' in INDEX_HTML
+    assert INDEX_HTML.index('class="header-version"') < INDEX_HTML.index('class="header-brand-trial"')
+    assert 'class="header-user-wrap"' not in INDEX_HTML
+    assert 'class="avatar header-avatar"' not in INDEX_HTML
+    assert '<button class="btn btn-sm btn-outline" @click="$router.push(\'/feedback\')">灵感社区</button>' not in INDEX_HTML
+    assert '<button type="button" @click="$router.push(\'/feedback\'); closeActionMenu()">灵感社区</button>' in INDEX_HTML
+    assert ".header-brand-trial" in STYLE_CSS
 
 
 def test_first_entry_notice_requires_user_opt_out():

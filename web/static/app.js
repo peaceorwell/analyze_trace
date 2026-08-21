@@ -7,7 +7,7 @@ const { createRouter, createWebHashHistory } = VueRouter;
 
 let appInitialized = false;
 const DEFAULT_RESULT_TAB = "chart";
-const CLIENT_APP_VERSION = "0.5.47";
+const CLIENT_APP_VERSION = "0.5.48";
 const APP_VERSION_CHECK_INTERVAL_MS = 60_000;
 const APP_VERSION_QUERY_PARAM = "_app_version";
 const USER_GROUP_LINK = "https://ims.cambricon.com/woa/invite/PPtk2dW22h5?channel=hwj-v7";
@@ -765,6 +765,15 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.48",
+    date: "2026-08-21",
+    title: "精简首页标题栏入口",
+    items: [
+      "隐藏标题栏用户名称，并将灵感社区入口移入更多菜单。",
+      "新版试用入口移动到左侧版本号之后，减少右侧操作区拥挤。",
+    ],
+  },
   {
     version: "0.5.47",
     date: "2026-08-21",

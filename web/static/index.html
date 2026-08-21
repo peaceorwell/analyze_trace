@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>torch profiler analyzer</title>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.5.47" />
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.5.48" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.css" />
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
@@ -12,7 +12,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js"></script>
-  <link rel="stylesheet" href="/static/style.css?v=0.5.47" />
+  <link rel="stylesheet" href="/static/style.css?v=0.5.48" />
   <script>
     // Apply saved theme or system preference before page paint to avoid flash
     (function() {
@@ -132,11 +132,14 @@
 
     <!-- ── Header ── -->
     <header v-if="authChecked && (!authRequired || currentUser)" class="header">
-      <button class="header-brand" type="button" @click="$router.push('/')" title="返回上传页面" aria-label="返回上传与工作台首页">
-        <img class="header-logo" src="/static/favicon.svg?v=0.5.47" alt="" />
-        <span class="header-title">Torch Profiler Analyzer</span>
-        <span class="header-version">v{{ appVersion }}</span>
-      </button>
+      <div class="header-brand-group">
+        <button class="header-brand" type="button" @click="$router.push('/')" title="返回上传页面" aria-label="返回上传与工作台首页">
+          <img class="header-logo" src="/static/favicon.svg?v=0.5.48" alt="" />
+          <span class="header-title">Torch Profiler Analyzer</span>
+          <span class="header-version">v{{ appVersion }}</span>
+        </button>
+        <a class="header-brand-trial" :href="newTrialUrl" target="_blank" rel="noopener noreferrer">新版试用</a>
+      </div>
       <div v-if="showHeaderMotto" class="header-motto" aria-hidden="true">
         <span class="motto-phrase">让<i class="motto-key motto-key-warm">热点</i>显形</span>
         <em class="motto-sep"></em>
@@ -144,7 +147,6 @@
       </div>
       <div class="header-actions">
         <button class="btn btn-sm header-community-btn" type="button" @click="showUserGroup=true">加入用户群</button>
-        <a class="btn btn-sm header-preview-btn" :href="newTrialUrl" target="_blank" rel="noopener noreferrer">新版试用</a>
         <div class="task-center-wrap" @click.stop>
           <button
             :class="['task-center-trigger', taskCenterActiveCount ? 'has-active' : '']"
@@ -217,19 +219,14 @@
             </div>
           </section>
         </div>
-        <span v-if="authRequired && currentUser"
-              class="header-user-wrap"
-              :title="currentUser.display_name || currentUser.username">
-          <span class="avatar header-avatar" :data-color="currentUserAvatarColor">{{ feedbackUserInitial(currentUser.display_name || currentUser.username) }}</span>
-        </span>
         <button class="btn btn-sm header-upload-btn" @click="$router.push('/')" title="进入文件上传页面">上传文件</button>
         <button class="btn btn-sm btn-primary" @click="showNewProject=true">+ 新建项目</button>
-        <button class="btn btn-sm btn-outline" @click="$router.push('/feedback')">灵感社区</button>
         <div class="action-menu-wrap header-more-menu" @click.stop>
           <button class="action-icon-btn action-text-btn" type="button" title="更多入口"
                   aria-label="更多入口"
                   @click="toggleActionMenu('header')">更多</button>
           <div v-if="openActionMenu==='header'" class="action-menu">
+            <button type="button" @click="$router.push('/feedback'); closeActionMenu()">灵感社区</button>
             <button v-if="isAdmin || !authRequired" type="button" @click="openAdminUsage(); closeActionMenu()">使用统计</button>
             <button type="button" @click="openStorageManager(); closeActionMenu()">存储</button>
             <button type="button" @click="openSettings">用户设置</button>
@@ -756,9 +753,9 @@
           </section>
           <section class="user-group-card">
             <div class="user-group-qr-wrap">
-              <img src="/static/tpa-user-group.jpeg?v=0.5.47" alt="tpa用户群入群图片" />
+              <img src="/static/tpa-user-group.jpeg?v=0.5.48" alt="tpa用户群入群图片" />
             </div>
-            <a class="btn btn-primary user-group-action" href="/static/tpa-user-group.jpeg?v=0.5.47" download="tpa用户群入群图片.jpeg">保存图片</a>
+            <a class="btn btn-primary user-group-action" href="/static/tpa-user-group.jpeg?v=0.5.48" download="tpa用户群入群图片.jpeg">保存图片</a>
           </section>
         </div>
       </div>
@@ -1889,6 +1886,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=0.5.47"></script>
+  <script src="/static/app.js?v=0.5.48"></script>
 </body>
 </html>
