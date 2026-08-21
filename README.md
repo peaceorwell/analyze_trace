@@ -306,6 +306,44 @@ curl -H "Authorization: Bearer <token>" https://host/api/jobs
 
 **安全说明**：服务端只保存令牌的 SHA-256 哈希，不存明文；令牌永久有效直到撤销，请妥善保管。可通过 `GET /api/me`（响应里的 `auth_via` 与 `token_scope`）确认当前请求的认证来源和令牌范围。
 
+### TPA MCP 接入
+
+analyze server 已内置一个 TPA MCP server（`web/tpa_mcp/`），把 TPA 的 `tpa.cambricon.com` 分析能力封装成 Model Context Protocol 工具，让 Claude Code / Claude Desktop 等 MCP 客户端可以直接查询/分析任务、读结果与 AI 报告、上传 trace 触发新分析。
+
+**启用**：MCP 端点与 analyze server **同一进程、同一端口**。设置环境变量 `TPA_API_KEY`（即上文 Access Token）后，analyze server 会自动挂载：
+
+```
+MCP endpoint = http://<host>:8181/mcp/
+```
+
+若运行环境未设置 `TPA_API_KEY`，analyze server 会**优雅跳过**不挂 `/mcp`，其余功能不受影响。
+
+**在 Claude Code 连接**：
+
+```bash
+# 1) 经 analyze server（推荐，单进程单端口）
+claude mcp add tpa --transport http --url http://127.0.0.1:8181/mcp/
+
+# 2) 本地 stdio 运行（不经 analyze server）
+claude mcp add tpa \
+  --env TPA_API_KEY=$TPA_API_KEY \
+  -- python3 </path/to>/web/tpa_mcp/server.py
+```
+
+**提供的工具**（`tpa_*` 前缀）：
+
+| 工具 | 说明 |
+|---|---|
+| `tpa_list_jobs` / `tpa_get_job` / `tpa_get_job_status` | 列出/查询任务、查询紧凑状态（上传后轮询） |
+| `tpa_upload_trace` | 上传 1~2 个 trace 文件触发分析，异步立即返回 seq |
+| `tpa_get_job_result` | 读任务结果表（all_kernels / aten_ops / kernel_types 等） |
+| `tpa_get_ai_report` / `tpa_get_ai_analysis_status` / `tpa_start_ai_analysis` | 读 AI 分析报告 / 查进度 / 触发 AI 分析 |
+| `tpa_get_job_report_md` / `tpa_list_projects` | 读任务 Markdown 摘要 / 列项目 |
+
+**异步分析流程**：`tpa_upload_trace` 上传后立即返回，配合 `tpa_get_job_status` 轮询到 `done`，再用 `tpa_get_job_result` / `tpa_get_ai_report` 取结果。任务可用其数字 **seq**（如 `10000679`）或 **UUID id** 引用。
+
+完整说明（含独立 HTTP 运行方式）见 `web/tpa_mcp/README.md`。
+
 ## 运维
 
 ### 目录和权限
