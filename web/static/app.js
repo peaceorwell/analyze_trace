@@ -7,7 +7,7 @@ const { createRouter, createWebHashHistory } = VueRouter;
 
 let appInitialized = false;
 const DEFAULT_RESULT_TAB = "chart";
-const CLIENT_APP_VERSION = "0.5.45";
+const CLIENT_APP_VERSION = "0.5.46";
 const APP_VERSION_CHECK_INTERVAL_MS = 60_000;
 const APP_VERSION_QUERY_PARAM = "_app_version";
 const USER_GROUP_LINK = "https://ims.cambricon.com/woa/invite/PPtk2dW22h5?channel=hwj-v7";
@@ -765,6 +765,15 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.46",
+    date: "2026-08-21",
+    title: "优化 AI 报告阅读排版",
+    items: [
+      "收窄报告正文版心并为表格保留更宽空间，改善宽屏阅读节奏。",
+      "降低来源标记视觉噪声，优化标题层级和主题选择器样式。",
+    ],
+  },
   {
     version: "0.5.45",
     date: "2026-08-21",
@@ -10559,7 +10568,7 @@ const JobDetail = {
             </div>
             <div class="ai-analysis-actions">
               <label v-if="aiAnalysisContent" class="ai-report-theme-picker">
-                <span>报告主题</span>
+                <span>主题</span>
                 <select class="input input-sm"
                         v-model="aiReportTheme"
                         @change="setAiReportTheme($event.target.value)">
