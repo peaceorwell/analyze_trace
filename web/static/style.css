@@ -3924,6 +3924,20 @@ body.result-reading-active { overflow: hidden; }
 .ai-analysis-actions {
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
 }
+.ai-report-theme-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text3);
+  font-size: 11px;
+  font-weight: 800;
+}
+.ai-report-theme-picker .input {
+  width: 108px;
+  height: 28px;
+  padding-right: 22px;
+  background: var(--card);
+}
 .ai-status-badge {
   display: inline-flex; align-items: center; height: 24px;
   padding: 0 9px; border-radius: 999px;
@@ -4412,6 +4426,174 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
 .markdown-body .md-collapsible-body {
   padding: 0 12px 12px;
   border-top: 1px solid var(--border);
+}
+
+/* AI report reading themes. Keep these scoped so feedback Markdown keeps the app theme. */
+.ai-report-theme-github {
+  --ai-report-bg: #ffffff;
+  --ai-report-text: #1f2328;
+  --ai-report-muted: #59636e;
+  --ai-report-border: #d0d7de;
+  --ai-report-soft: #f6f8fa;
+  --ai-report-row-alt: #fbfcfd;
+  --ai-report-link: #0969da;
+  --ai-report-code: #0550ae;
+  --ai-report-accent: #0969da;
+  --ai-report-font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif;
+}
+.ai-report-theme-newsprint {
+  --ai-report-bg: #fdfbf7;
+  --ai-report-text: #292724;
+  --ai-report-muted: #625d55;
+  --ai-report-border: #ddd5c9;
+  --ai-report-soft: #f4efe7;
+  --ai-report-row-alt: #faf7f1;
+  --ai-report-link: #8f3f32;
+  --ai-report-code: #7b372c;
+  --ai-report-accent: #b65f4b;
+  --ai-report-font: var(--serif);
+}
+.ai-report-theme-night {
+  --ai-report-bg: #0d1117;
+  --ai-report-text: #e6edf3;
+  --ai-report-muted: #9da7b3;
+  --ai-report-border: #30363d;
+  --ai-report-soft: #161b22;
+  --ai-report-row-alt: #11161d;
+  --ai-report-link: #58a6ff;
+  --ai-report-code: #79c0ff;
+  --ai-report-accent: #58a6ff;
+  --ai-report-font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif;
+}
+.ai-analysis-report.markdown-body {
+  padding: 32px clamp(24px, 5vw, 72px);
+  background: var(--ai-report-bg);
+  color: var(--ai-report-text);
+  font-family: var(--ai-report-font);
+  font-size: 14px;
+  line-height: 1.78;
+  letter-spacing: 0;
+}
+.ai-analysis-report.markdown-body > * {
+  max-width: 1280px;
+  margin-left: auto;
+  margin-right: auto;
+}
+.ai-analysis-report.markdown-body h1,
+.ai-analysis-report.markdown-body h2,
+.ai-analysis-report.markdown-body h3,
+.ai-analysis-report.markdown-body h4,
+.ai-analysis-report.markdown-body h5,
+.ai-analysis-report.markdown-body h6 {
+  color: var(--ai-report-text);
+  font-family: var(--ai-report-font);
+  letter-spacing: -.012em;
+}
+.ai-analysis-report.markdown-body h1 {
+  margin-top: 0;
+  margin-bottom: 26px;
+  padding-bottom: 15px;
+  border-bottom: 1px solid var(--ai-report-border);
+  font-size: 28px;
+  line-height: 1.25;
+}
+.ai-analysis-report.markdown-body h2 {
+  margin-top: 34px;
+  margin-bottom: 14px;
+  padding: 0 0 9px;
+  border-bottom: 1px solid var(--ai-report-border);
+  font-size: 20px;
+  line-height: 1.35;
+}
+.ai-analysis-report.markdown-body h3 {
+  margin-top: 24px;
+  margin-bottom: 10px;
+  font-size: 16px;
+}
+.ai-analysis-report.markdown-body p,
+.ai-analysis-report.markdown-body ul,
+.ai-analysis-report.markdown-body ol,
+.ai-analysis-report.markdown-body .md-cell-list {
+  color: var(--ai-report-muted);
+}
+.ai-analysis-report.markdown-body p { margin-top: 10px; margin-bottom: 10px; }
+.ai-analysis-report.markdown-body ul,
+.ai-analysis-report.markdown-body ol { margin-top: 10px; margin-bottom: 18px; }
+.ai-analysis-report.markdown-body li { margin-top: 7px; margin-bottom: 7px; }
+.ai-analysis-report.markdown-body li::marker { color: var(--ai-report-accent); }
+.ai-analysis-report.markdown-body strong { color: var(--ai-report-text); }
+.ai-analysis-report.markdown-body a { color: var(--ai-report-link); }
+.ai-analysis-report.markdown-body code {
+  padding: .12em .36em;
+  border: 1px solid color-mix(in srgb, var(--ai-report-border) 58%, transparent);
+  border-radius: 4px;
+  background: var(--ai-report-soft);
+  color: var(--ai-report-code);
+  font-size: .9em;
+  font-weight: 600;
+}
+.ai-analysis-report.markdown-body blockquote {
+  margin-top: 18px;
+  margin-bottom: 24px;
+  padding: 14px 17px;
+  border: 1px solid var(--ai-report-border);
+  border-left: 4px solid var(--ai-report-accent);
+  border-radius: 6px;
+  background: var(--ai-report-soft);
+}
+.ai-analysis-report.markdown-body blockquote p { color: var(--ai-report-muted); }
+.ai-analysis-report.markdown-body .md-table-wrap {
+  margin-top: 14px;
+  margin-bottom: 24px;
+  border-color: var(--ai-report-border);
+  border-radius: 7px;
+  background: var(--ai-report-bg);
+}
+.ai-analysis-report.markdown-body table {
+  color: var(--ai-report-text);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.ai-analysis-report.markdown-body th,
+.ai-analysis-report.markdown-body td {
+  padding: 10px 12px;
+  border-bottom-color: var(--ai-report-border);
+}
+.ai-analysis-report.markdown-body th {
+  background: var(--ai-report-soft);
+  color: var(--ai-report-text);
+}
+.ai-analysis-report.markdown-body tbody tr:nth-child(even) td {
+  background: var(--ai-report-row-alt);
+}
+.ai-analysis-report.markdown-body tbody td:first-child {
+  color: var(--ai-report-text);
+  font-weight: 700;
+}
+.ai-analysis-report.markdown-body .md-code {
+  border: 1px solid var(--ai-report-border);
+  background: #161b22;
+}
+.ai-analysis-report.markdown-body .md-collapsible-section {
+  border-color: var(--ai-report-border);
+  background: var(--ai-report-bg);
+}
+.ai-analysis-report.markdown-body .md-collapsible-section summary,
+.ai-analysis-report.markdown-body .md-collapsible-section summary small {
+  color: var(--ai-report-text);
+}
+.ai-analysis-report.markdown-body .md-collapsible-body {
+  border-top-color: var(--ai-report-border);
+}
+@media (max-width: 760px) {
+  .ai-report-theme-picker span { display: none; }
+  .ai-report-theme-picker .input { width: 96px; }
+  .ai-analysis-report.markdown-body {
+    padding: 22px 18px;
+    font-size: 13px;
+  }
+  .ai-analysis-report.markdown-body h1 { font-size: 23px; }
+  .ai-analysis-report.markdown-body h2 { margin-top: 28px; font-size: 18px; }
 }
 .ai-artifacts-panel {
   display: flex; flex-direction: column; gap: 8px;

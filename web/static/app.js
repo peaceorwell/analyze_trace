@@ -7,12 +7,18 @@ const { createRouter, createWebHashHistory } = VueRouter;
 
 let appInitialized = false;
 const DEFAULT_RESULT_TAB = "chart";
-const CLIENT_APP_VERSION = "0.5.44";
+const CLIENT_APP_VERSION = "0.5.45";
 const APP_VERSION_CHECK_INTERVAL_MS = 60_000;
 const APP_VERSION_QUERY_PARAM = "_app_version";
 const USER_GROUP_LINK = "https://ims.cambricon.com/woa/invite/PPtk2dW22h5?channel=hwj-v7";
 const NEW_TRIAL_URL = "http://10.100.146.137:33512/";
 const ENTRY_NOTICE_STORAGE_PREFIX = "tpa-entry-notice-v1";
+const AI_REPORT_THEME_STORAGE_KEY = "tpa-ai-report-theme";
+const AI_REPORT_THEMES = Object.freeze([
+  { id: "github", label: "GitHub" },
+  { id: "newsprint", label: "Newsprint" },
+  { id: "night", label: "Night" },
+]);
 let appVersionCheckTimer = null;
 
 const clearAppVersionQueryParam = () => {
@@ -282,6 +288,13 @@ const aiAnalysisContent = ref("");
 const aiAnalysisArtifacts = ref([]);
 const aiAnalysisVersions = ref([]);
 const aiAnalysisSelectedVersionId = ref("");
+const storedAiReportTheme = localStorage.getItem(AI_REPORT_THEME_STORAGE_KEY);
+const aiReportTheme = ref(AI_REPORT_THEMES.some(item => item.id === storedAiReportTheme) ? storedAiReportTheme : "github");
+const setAiReportTheme = value => {
+  const nextTheme = AI_REPORT_THEMES.some(item => item.id === value) ? value : "github";
+  aiReportTheme.value = nextTheme;
+  localStorage.setItem(AI_REPORT_THEME_STORAGE_KEY, nextTheme);
+};
 const showAiPromptModal = ref(false);
 const aiPromptForce = ref(false);
 const aiAnalysisPrompt = ref("");
@@ -752,6 +765,15 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.45",
+    date: "2026-08-21",
+    title: "新增 AI 报告阅读主题",
+    items: [
+      "AI 报告支持 GitHub、Newsprint 和 Night 三种主题，默认使用 GitHub。",
+      "优化长报告的阅读宽度、标题层级、表格、引用块和代码样式。",
+    ],
+  },
   {
     version: "0.5.44",
     date: "2026-08-21",
@@ -10536,6 +10558,16 @@ const JobDetail = {
               </div>
             </div>
             <div class="ai-analysis-actions">
+              <label v-if="aiAnalysisContent" class="ai-report-theme-picker">
+                <span>报告主题</span>
+                <select class="input input-sm"
+                        v-model="aiReportTheme"
+                        @change="setAiReportTheme($event.target.value)">
+                  <option v-for="theme in AI_REPORT_THEMES" :key="theme.id" :value="theme.id">
+                    {{ theme.label }}
+                  </option>
+                </select>
+              </label>
               <span :class="['ai-status-badge', 'status-' + (aiAnalysisMeta.status || 'not_started')]">
                 {{ aiAnalysisStatusText(aiAnalysisMeta.status) }}
               </span>
@@ -10632,7 +10664,7 @@ const JobDetail = {
               : 'Claude Code 正在分析 trace，完成后这里会自动刷新。' }}
           </div>
           <div v-if="aiAnalysisContent"
-               class="ai-analysis-report markdown-body"
+               :class="['ai-analysis-report', 'markdown-body', 'ai-report-theme-' + aiReportTheme]"
                @click="handleAiAnalysisReportClick"
                v-html="aiAnalysisHtml"></div>
           <div v-if="aiAnalysisVisibleArtifacts.length"
@@ -11025,6 +11057,7 @@ const JobDetail = {
       claudeAnalysisEnabled, aiAnalysisMeta, aiAnalysisLoading, aiAnalysisStarting,
       aiAnalysisError, aiAnalysisContent, aiAnalysisArtifacts, aiAnalysisVisibleArtifacts,
       aiAnalysisVersions, aiAnalysisSelectedVersionId, aiAnalysisSelectedVersion,
+      AI_REPORT_THEMES, aiReportTheme, setAiReportTheme,
       showAiPromptModal, aiAnalysisPrompt, aiPromptForce,
       aiAnalysisVersionTrigger, aiAnalysisVersionModel, aiAnalysisVersionLabel,
       aiArtifactsExpanded, aiArtifactSummary, aiAnalysisHtml, aiAnalysisStatusText,
