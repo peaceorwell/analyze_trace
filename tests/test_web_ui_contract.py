@@ -94,7 +94,7 @@ def test_kernel_host_op_details_are_nested_under_all_kernels():
 
 
 def test_frontend_recovers_from_a_stale_version():
-    assert 'const CLIENT_APP_VERSION = "0.5.46";' in APP_JS
+    assert 'const CLIENT_APP_VERSION = "0.5.47";' in APP_JS
     assert 'const APP_VERSION_CHECK_INTERVAL_MS = 60_000;' in APP_JS
     assert 'const APP_VERSION_QUERY_PARAM = "_app_version";' in APP_JS
     assert 'cache: "no-store"' in APP_JS
@@ -131,8 +131,9 @@ def test_ai_report_supports_typora_style_themes_with_github_default():
     assert "max-width: 1180px;" in STYLE_CSS
     assert ".ai-report-theme-picker:focus-within" in STYLE_CSS
     assert ".ai-analysis-report.markdown-body .ai-artifact-inline-link code" in STYLE_CSS
-    assert '--ai-report-font: "Inter", "PingFang SC"' in STYLE_CSS
-    assert '--ai-report-mono: "SFMono-Regular"' in STYLE_CSS
+    assert STYLE_CSS.count('--ai-report-font: "Inter", "PingFang SC"') == 2
+    assert '--ai-report-font: "Source Serif 4", "Noto Serif SC", "Songti SC"' in STYLE_CSS
+    assert STYLE_CSS.count('--ai-report-mono: "SFMono-Regular"') == 3
     assert "-webkit-font-smoothing: antialiased;" in STYLE_CSS
 
 
@@ -227,7 +228,7 @@ def test_header_exposes_user_group_and_new_trial_entry_points():
     assert 'aria-labelledby="user-group-title"' in INDEX_HTML
     assert 'const USER_GROUP_LINK = "https://ims.cambricon.com/woa/invite/PPtk2dW22h5?channel=hwj-v7";' in APP_JS
     assert "copyUserGroupLink" in APP_JS
-    assert 'src="/static/tpa-user-group.jpeg?v=0.5.46"' in INDEX_HTML
+    assert 'src="/static/tpa-user-group.jpeg?v=0.5.47"' in INDEX_HTML
     assert 'download="tpa用户群入群图片.jpeg"' in INDEX_HTML
 
 

@@ -7,7 +7,7 @@ const { createRouter, createWebHashHistory } = VueRouter;
 
 let appInitialized = false;
 const DEFAULT_RESULT_TAB = "chart";
-const CLIENT_APP_VERSION = "0.5.46";
+const CLIENT_APP_VERSION = "0.5.47";
 const APP_VERSION_CHECK_INTERVAL_MS = 60_000;
 const APP_VERSION_QUERY_PARAM = "_app_version";
 const USER_GROUP_LINK = "https://ims.cambricon.com/woa/invite/PPtk2dW22h5?channel=hwj-v7";
@@ -765,6 +765,15 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.47",
+    date: "2026-08-21",
+    title: "优化全部 AI 报告主题字体",
+    items: [
+      "分别优化 GitHub、Newsprint 和 Night 主题的中英文字体，提升长报告阅读体验。",
+      "统一优化三套主题的代码字体，减轻来源标记和指标名称的视觉重量。",
+    ],
+  },
   {
     version: "0.5.46",
     date: "2026-08-21",

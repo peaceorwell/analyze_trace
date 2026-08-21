@@ -4481,7 +4481,8 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
   --ai-report-link: #8f3f32;
   --ai-report-code: #7b372c;
   --ai-report-accent: #b65f4b;
-  --ai-report-font: var(--serif);
+  --ai-report-font: "Source Serif 4", "Noto Serif SC", "Songti SC", STSong, Georgia, serif;
+  --ai-report-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
 }
 .ai-report-theme-night {
   --ai-report-bg: #0d1117;
@@ -4493,7 +4494,8 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
   --ai-report-link: #58a6ff;
   --ai-report-code: #79c0ff;
   --ai-report-accent: #58a6ff;
-  --ai-report-font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif;
+  --ai-report-font: "Inter", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --ai-report-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
 }
 .ai-analysis-report.markdown-body {
   padding: 40px clamp(24px, 6vw, 96px) 52px;
