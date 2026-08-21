@@ -1036,7 +1036,40 @@ async def lifespan(app: FastAPI):
         await stop_ai_analysis_workers()
         await stop_analysis_workers()
 
-app = FastAPI(lifespan=lifespan)
+# 合并 TPA MCP 端点（http://host/mcp/）。仅当环境变量 TPA_API_KEY 存在且
+# fastmcp 依赖可用时挂载；否则优雅跳过，不影响 analyze server 主功能。
+_TPA_MCP_TARGET = None
+if os.environ.get("TPA_API_KEY"):
+    try:
+        from fastmcp.utilities.lifespan import combine_lifespans
+        from tpa_mcp.server import mcp as _tpa_mcp
+        _TPA_MCP_TARGET = _tpa_mcp.http_app(path="/")
+    except Exception:
+        # 依赖缺失或 TPA MCP 模块 import 失败时降级，不阻塞 analyze server。
+        _TPA_MCP_TARGET = None
+
+# FastMCP 的 StreamableHTTPSessionManager 是模块级单例、只能 run() 一次。
+# TestClient 等环境会在同一进程内多次进入 lifespan，需加幂等保护：MCP 部分
+# 只初始化一次，后续重复启动静默跳过（analyze 自身 lifespan 始终照常执行）。
+_MCP_LIFESPAN_STARTED = False
+
+
+@asynccontextmanager
+async def _mcp_lifespan(app):
+    global _MCP_LIFESPAN_STARTED
+    if _MCP_LIFESPAN_STARTED:
+        yield
+        return
+    _MCP_LIFESPAN_STARTED = True
+    async with _TPA_MCP_TARGET.lifespan(app):
+        yield
+
+
+if _TPA_MCP_TARGET is not None:
+    app = FastAPI(lifespan=combine_lifespans(lifespan, _mcp_lifespan))
+    app.mount("/mcp", _TPA_MCP_TARGET)
+else:
+    app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
 
 
