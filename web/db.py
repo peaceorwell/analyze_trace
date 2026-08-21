@@ -240,6 +240,19 @@ async def init_db():
                 version     INTEGER PRIMARY KEY,
                 applied_at  DATETIME DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE TABLE IF NOT EXISTS api_tokens (
+                token_hash   TEXT PRIMARY KEY,
+                user_token   TEXT NOT NULL REFERENCES users(user_token),
+                name         TEXT NOT NULL DEFAULT '',
+                scope        TEXT NOT NULL DEFAULT 'readonly',
+                created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+                revoked      INTEGER DEFAULT 0,
+                revoked_at   DATETIME DEFAULT NULL,
+                last_used_at TEXT DEFAULT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(user_token);
         """)
 
         # Column migrations for databases created by earlier versions.

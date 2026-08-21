@@ -8,6 +8,7 @@ import gzip
 import heapq
 import html
 import io
+import hashlib
 import json
 import logging
 import math
@@ -521,10 +522,33 @@ def current_user_token(request: Request) -> Optional[str]:
     return username
 
 
+def current_identity(request: Request) -> str:
+    """Current authenticated identity; falls back to 'local' when auth is off."""
+    token = current_user_token(request)
+    if token:
+        return token
+    return current_user(request).get("username") or "local"
+
+
 def _default_avatar_color(identity: str) -> str:
     key = identity or "local"
     total = sum(ord(c) for c in key)
     return AVATAR_COLORS[total % len(AVATAR_COLORS)]
+
+
+def _generate_api_token() -> str:
+    return secrets.token_urlsafe(32)
+
+
+def _hash_api_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _validate_token_scope(scope) -> str:
+    value = str(scope or "").strip().lower() or "readonly"
+    if value not in ("readonly", "full"):
+        raise HTTPException(422, "scope 必须为 readonly 或 full")
+    return value
 
 
 def _profile_identity(request: Request) -> str:
@@ -1010,6 +1034,43 @@ app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
 
 
+async def _resolve_bearer_token(request: Request) -> Optional[dict]:
+    header = request.headers.get("Authorization", "")
+    if not header.startswith("Bearer "):
+        return None
+    token = header[len("Bearer "):].strip()
+    if not token:
+        return None
+    token_hash = _hash_api_token(token)
+    db = await get_db()
+    try:
+        row = await (
+            await db.execute(
+                "SELECT user_token, name, scope, revoked FROM api_tokens WHERE token_hash=?",
+                (token_hash,),
+            )
+        ).fetchone()
+        if not row or row["revoked"]:
+            return None
+        await db.execute(
+            "UPDATE api_tokens SET last_used_at=? WHERE token_hash=?",
+            (datetime.now(timezone.utc).isoformat(), token_hash),
+        )
+        await db.commit()
+        overrides = await _load_user_overrides(db, row["user_token"])
+        username = row["user_token"]
+        return {
+            "username": username,
+            "display_name": overrides["display_name_override"] or username,
+            "display_name_ldap": username,
+            "email": "",
+            "avatar_color": overrides["avatar_color"] or _default_avatar_color(username),
+            "_token_scope": row["scope"],
+        }
+    finally:
+        await db.close()
+
+
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     try:
@@ -1017,8 +1078,21 @@ async def auth_middleware(request: Request, call_next):
     except AssertionError:
         request.state.user = None
 
+    bearer_user = await _resolve_bearer_token(request)
+    if bearer_user is not None:
+        request.state.user = bearer_user
+        request.state.auth_via = "token"
+        request.state.token_scope = bearer_user.pop("_token_scope", "readonly")
+
     if AUTH_ENABLED and not _auth_public_path(request.url.path) and not request.state.user:
         return JSONResponse({"detail": "Authentication required"}, status_code=401)
+
+    if (
+        getattr(request.state, "token_scope", None) == "readonly"
+        and request.method not in ("GET", "HEAD")
+    ):
+        return JSONResponse({"detail": "Read-only token"}, status_code=403)
+
     return await call_next(request)
 
 
@@ -5499,7 +5573,103 @@ async def get_me(request: Request):
         "auth_mode": AUTH_MODE,
         "user": user or None,
         "is_admin": request_is_admin(request),
+        "auth_via": getattr(request.state, "auth_via", "session" if user else None),
+        "token_scope": getattr(request.state, "token_scope", None),
     }
+
+
+@app.get("/api/tokens")
+async def list_api_tokens(request: Request):
+    current_user_token(request)
+    owner = current_identity(request)
+    db = await get_db()
+    try:
+        rows = await (
+            await db.execute(
+                "SELECT token_hash, name, scope, created_at, revoked, revoked_at, last_used_at "
+                "FROM api_tokens WHERE user_token=? AND revoked=0 ORDER BY created_at DESC",
+                (owner,),
+            )
+        ).fetchall()
+        return {
+            "tokens": [
+                {
+                    "id": row["token_hash"],
+                    "name": row["name"],
+                    "scope": row["scope"],
+                    "created_at": row["created_at"],
+                    "revoked": bool(row["revoked"]),
+                    "revoked_at": row["revoked_at"],
+                    "last_used_at": row["last_used_at"],
+                }
+                for row in rows
+            ]
+        }
+    finally:
+        await db.close()
+
+
+@app.post("/api/tokens")
+async def create_api_token(request: Request, body: dict):
+    current_user_token(request)
+    owner = current_identity(request)
+    name = str(body.get("name") or "").strip()[:64]
+    scope = _validate_token_scope(body.get("scope"))
+    plain = _generate_api_token()
+    token_hash = _hash_api_token(plain)
+    db = await get_db()
+    try:
+        await _ensure_profile_user_row(db, owner)
+        await db.execute(
+            "INSERT INTO api_tokens(token_hash, user_token, name, scope) VALUES(?,?,?,?)",
+            (token_hash, owner, name, scope),
+        )
+        await write_audit(
+            db, request, "api_token.create",
+            resource_type="user", resource_id=owner,
+            details={"name": name, "scope": scope},
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
+    finally:
+        await db.close()
+    return {
+        "token": plain,
+        "name": name,
+        "scope": scope,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.post("/api/tokens/{token_id}/revoke")
+async def revoke_api_token(request: Request, token_id: str):
+    current_user_token(request)
+    owner = current_identity(request)
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "UPDATE api_tokens SET revoked=1, revoked_at=? WHERE token_hash=? AND user_token=?",
+            (datetime.now(timezone.utc).isoformat(), token_id, owner),
+        )
+        if cur.rowcount == 0:
+            raise HTTPException(404, "令牌不存在")
+        await write_audit(
+            db, request, "api_token.revoke",
+            resource_type="user", resource_id=owner,
+            details={"token_id": token_id},
+        )
+        await db.commit()
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception:
+        await db.rollback()
+        raise
+    finally:
+        await db.close()
+    return {"revoked": True}
 
 
 @app.get("/api/user/profile")

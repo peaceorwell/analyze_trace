@@ -5456,6 +5456,73 @@ button.ai-artifact-inline-link.ai-code-preview-link:hover {
   padding: 8px 10px;
   font-size: 12px;
 }
+.settings-hint {
+  color: var(--text3);
+  font-size: 12px;
+  margin: 4px 0 10px;
+}
+.settings-token-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.settings-token-row .input {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+.settings-token-scope {
+  flex: 0 0 auto;
+  width: auto;
+}
+.settings-token-new {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  background: rgba(59,130,246,.08);
+  border: 1px solid rgba(59,130,246,.24);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+}
+.settings-token-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  word-break: break-all;
+  padding: 4px 6px;
+  background: rgba(0,0,0,.06);
+  border-radius: 4px;
+  max-width: 100%;
+}
+.settings-token-warn {
+  color: var(--danger);
+  font-size: 12px;
+}
+.settings-token-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.settings-token-table th,
+.settings-token-table td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.settings-token-table th {
+  color: var(--text3);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.settings-token-table td {
+  color: var(--text2);
+}
+.settings-token-table td:first-child {
+  color: var(--text1);
+}
 @media (max-width: 760px) {
   .settings-content { grid-template-columns: 1fr; }
   .settings-field { grid-template-columns: 1fr; align-items: stretch; }

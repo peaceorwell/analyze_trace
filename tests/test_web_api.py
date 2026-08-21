@@ -5507,3 +5507,134 @@ def test_storage_summary_uses_cached_sizes(client):
     assert payload["totals"]["result_bytes"] == 45
     assert payload["totals"]["original_trace_bytes"] == 78
     assert payload["jobs"][0]["id"] == "cached-job"
+
+
+# ── Access Token (Bearer) auth ────────────────────────────────────────────────
+
+def _ldap_env(monkeypatch):
+    def fake_authenticate(username, password):
+        if password != "ok":
+            raise web_server.ldap_auth.AuthError("bad credentials")
+        return {
+            "username": username,
+            "display_name": f"{username} User",
+            "email": f"{username}@example.com",
+            "dn": f"CN={username},DC=example,DC=com",
+        }
+
+    monkeypatch.setattr(web_server, "AUTH_MODE", "ldap")
+    monkeypatch.setattr(web_server, "AUTH_ENABLED", True)
+    monkeypatch.setattr(web_server.ldap_auth, "authenticate", fake_authenticate)
+
+
+def test_access_token_requires_login(isolated_server, monkeypatch):
+    _ldap_env(monkeypatch)
+    with TestClient(isolated_server.app) as test_client:
+        assert test_client.get("/api/tokens").status_code == 401
+        assert test_client.post("/api/tokens", json={"name": "x"}).status_code == 401
+
+
+def test_access_token_create_and_use(isolated_server, monkeypatch):
+    _ldap_env(monkeypatch)
+    with TestClient(isolated_server.app) as test_client:
+        assert test_client.post("/api/login", json={"username": "alice", "password": "ok"}).status_code == 200
+
+        created = test_client.post("/api/tokens", json={"name": "mcp", "scope": "full"})
+        assert created.status_code == 200
+        token = created.json()["token"]
+        assert token and created.json()["scope"] == "full"
+
+        # Plaintext must never be stored; only its sha256 hash is.
+        async def fetch_hash():
+            db = await web_db.get_db()
+            try:
+                row = await (
+                    await db.execute("SELECT token_hash FROM api_tokens WHERE name='mcp'")
+                ).fetchone()
+                return row["token_hash"] if row else None
+            finally:
+                await db.close()
+
+        stored_hash = asyncio.run(fetch_hash())
+        assert stored_hash and stored_hash != token
+        assert stored_hash == web_server._hash_api_token(token)
+
+        assert test_client.post("/api/logout").status_code == 200
+
+        # Bearer token authenticates without a session.
+        authed = test_client.get(
+            "/api/projects", headers={"Authorization": f"Bearer {token}"}
+        )
+        assert authed.status_code == 200
+
+        # Token-bound identity is used for ownership (user_token == alice).
+        project = test_client.post(
+            "/api/projects",
+            json={"name": "Alice Token Project"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert project.status_code == 201
+        assert project.json()["user_token"] == "alice"
+
+        assert test_client.get("/api/me", headers={"Authorization": f"Bearer {token}"}).json()[
+            "auth_via"
+        ] == "token"
+
+        # Wrong token rejected.
+        assert (
+            test_client.get(
+                "/api/projects", headers={"Authorization": "Bearer wrong-token"}
+            ).status_code
+            == 401
+        )
+
+
+def test_readonly_token_blocks_writes(isolated_server, monkeypatch):
+    _ldap_env(monkeypatch)
+    with TestClient(isolated_server.app) as test_client:
+        assert test_client.post("/api/login", json={"username": "alice", "password": "ok"}).status_code == 200
+        ro = test_client.post("/api/tokens", json={"name": "ro", "scope": "readonly"}).json()["token"]
+        full = test_client.post("/api/tokens", json={"name": "rw", "scope": "full"}).json()["token"]
+        assert test_client.post("/api/logout").status_code == 200
+
+        ro_headers = {"Authorization": f"Bearer {ro}"}
+        assert test_client.get("/api/projects", headers=ro_headers).status_code == 200
+        assert test_client.post("/api/projects", json={"name": "X"}, headers=ro_headers).status_code == 403
+
+        full_headers = {"Authorization": f"Bearer {full}"}
+        assert test_client.get("/api/projects", headers=full_headers).status_code == 200
+        assert test_client.post("/api/projects", json={"name": "Y"}, headers=full_headers).status_code == 201
+
+
+def test_revoked_and_invalid_token_rejected(isolated_server, monkeypatch):
+    _ldap_env(monkeypatch)
+    with TestClient(isolated_server.app) as test_client:
+        assert test_client.post("/api/login", json={"username": "alice", "password": "ok"}).status_code == 200
+        token = test_client.post("/api/tokens", json={"name": "t", "scope": "full"}).json()["token"]
+        token_id = test_client.get("/api/tokens").json()["tokens"][0]["id"]
+        assert test_client.post("/api/logout").status_code == 200
+
+        assert test_client.get("/api/projects", headers={"Authorization": f"Bearer {token}"}).status_code == 200
+
+        assert test_client.post("/api/login", json={"username": "alice", "password": "ok"}).status_code == 200
+        assert test_client.post(f"/api/tokens/{token_id}/revoke").status_code == 200
+        # Revoked tokens no longer appear in the list.
+        assert test_client.get("/api/tokens").json()["tokens"] == []
+        assert test_client.post("/api/logout").status_code == 200
+
+        assert test_client.get("/api/projects", headers={"Authorization": f"Bearer {token}"}).status_code == 401
+
+
+def test_token_cannot_revoke_others(isolated_server, monkeypatch):
+    _ldap_env(monkeypatch)
+    with TestClient(isolated_server.app) as test_client:
+        assert test_client.post("/api/login", json={"username": "bob", "password": "ok"}).status_code == 200
+        test_client.post("/api/tokens", json={"name": "bobtok"})
+        bob_tokens = test_client.get("/api/tokens").json()["tokens"]
+        assert len(bob_tokens) == 1
+        token_id = bob_tokens[0]["id"]
+        assert test_client.post("/api/logout").status_code == 200
+
+        assert test_client.post("/api/login", json={"username": "alice", "password": "ok"}).status_code == 200
+        # Alice cannot revoke Bob's token; returns 404 (existence hidden).
+        assert test_client.post(f"/api/tokens/{token_id}/revoke").status_code == 404

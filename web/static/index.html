@@ -1779,6 +1779,46 @@
               </div>
             </template>
           </section>
+
+          <section class="settings-section">
+            <h3>访问令牌 (Access Token)</h3>
+            <p class="settings-hint">用于 MCP / 脚本以 Bearer Token 访问 API。令牌只会创建时显示一次。</p>
+            <div class="settings-token-row">
+              <input class="input"
+                     v-model="tokenForm.name"
+                     placeholder="令牌名称（如 MCP CLI）"
+                     maxlength="64" />
+              <select class="input settings-token-scope" v-model="tokenForm.scope">
+                <option value="readonly">只读</option>
+                <option value="full">完全访问</option>
+              </select>
+              <button class="btn btn-primary" @click="createApiToken">创建</button>
+            </div>
+            <div v-if="newlyCreatedToken" class="settings-token-new">
+              <code class="settings-token-code">{{ newlyCreatedToken }}</code>
+              <button class="btn btn-outline" @click="copyCreatedToken">复制</button>
+              <span class="settings-token-warn">请立即保存，关闭后将不再显示。</span>
+            </div>
+            <div v-if="tokenList.error" class="settings-error">{{ tokenList.error }}</div>
+            <div v-if="tokenList.loading" class="empty-tip">加载中...</div>
+            <table v-else-if="tokenList.items.length" class="settings-token-table">
+              <thead>
+                <tr><th>名称</th><th>范围</th><th>创建时间</th><th>最后使用</th><th>操作</th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="t in tokenList.items" :key="t.id">
+                  <td>{{ t.name || '（未命名）' }}</td>
+                  <td>{{ t.scope === 'readonly' ? '只读' : '完全访问' }}</td>
+                  <td>{{ t.created_at }}</td>
+                  <td>{{ t.last_used_at || '—' }}</td>
+                  <td>
+                    <button class="btn btn-outline" @click="revokeApiToken(t)">撤销</button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            <div v-else class="empty-tip">暂无令牌</div>
+          </section>
         </div>
         <div class="modal-actions">
           <button class="btn btn-outline" @click="closeSettings" :disabled="profileForm.saving">关闭</button>

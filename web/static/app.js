@@ -750,6 +750,9 @@ const profileForm = reactive({
   saving: false,
   error: "",
 });
+const tokenForm = ref({ name: "", scope: "readonly" });
+const tokenList = reactive({ items: [], loading: false, error: "" });
+const newlyCreatedToken = ref("");
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
   {
@@ -3006,15 +3009,70 @@ const loadUserProfile = async () => {
   }
 };
 
+const loadApiTokens = async () => {
+  tokenList.loading = true;
+  tokenList.error = "";
+  try {
+    const r = await fetchJson("/api/tokens", { credentials: "include" }, "加载令牌失败");
+    tokenList.items = r.tokens || [];
+  } catch (e) {
+    tokenList.error = normalizeApiError(e, "加载令牌失败");
+  } finally {
+    tokenList.loading = false;
+  }
+};
+
+const createApiToken = async () => {
+  tokenList.error = "";
+  try {
+    const r = await fetchJson("/api/tokens", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: tokenForm.value.name, scope: tokenForm.value.scope }),
+    }, "创建令牌失败");
+    newlyCreatedToken.value = r.token;
+    tokenForm.value.name = "";
+    await loadApiTokens();
+  } catch (e) {
+    tokenList.error = normalizeApiError(e, "创建令牌失败");
+  }
+};
+
+const copyCreatedToken = async () => {
+  try {
+    await navigator.clipboard.writeText(newlyCreatedToken.value);
+    showToast("令牌已复制", "success");
+  } catch (e) {
+    showToast("复制失败，请手动选择复制", "error");
+  }
+};
+
+const revokeApiToken = async (item) => {
+  if (!confirm(`确定撤销令牌「${item.name || "未命名"}」？撤销后立即失效。`)) return;
+  tokenList.error = "";
+  try {
+    await fetchJson(`/api/tokens/${encodeURIComponent(item.id)}/revoke`, {
+      method: "POST",
+      credentials: "include",
+    }, "撤销令牌失败");
+    await loadApiTokens();
+    showToast("令牌已撤销", "success");
+  } catch (e) {
+    tokenList.error = normalizeApiError(e, "撤销令牌失败");
+  }
+};
+
 const openSettings = async () => {
   showSettings.value = true;
   closeActionMenu();
-  await loadUserProfile();
+  await Promise.all([loadUserProfile(), loadApiTokens()]);
 };
 
 const closeSettings = () => {
   showSettings.value = false;
   profileForm.error = "";
+  newlyCreatedToken.value = "";
 };
 
 const saveProfile = async () => {
@@ -14969,6 +15027,7 @@ const App = {
       showEntryNotice, entryNoticeNeverShow, closeEntryNotice, openUserGroupFromEntryNotice,
       showUserGroup, userGroupLink: USER_GROUP_LINK, newTrialUrl: NEW_TRIAL_URL, copyUserGroupLink,
       showGuide, showSettings, profileForm, openSettings, closeSettings, saveProfile,
+      tokenForm, tokenList, newlyCreatedToken, createApiToken, copyCreatedToken, revokeApiToken,
       showReleaseNotes, releaseNotes, openReleaseNotes,
       showErrorModal, errorModalMsg, errorModalTitle,
       copyTritonCode, copyErrorModal,
