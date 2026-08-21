@@ -277,6 +277,35 @@ LDAP_USER_DN_TEMPLATE="{username}@example.com"
 - 任务重命名、移动、删除和文件删除仍限制为任务创建者。
 - 管理员可进行全局管理操作，例如删除留言板内容，并在右上角 `...` 菜单打开 `使用统计` 查看今日日活、近 7 日活跃、逐日请求量、任务量、AI 分析次数和今日活跃用户。
 
+### Access Token（Bearer）认证（适合构建 MCP）
+
+除交互式 LDAP 登录外，还支持 **Access Token（Bearer Token）** 认证，供 MCP server、脚本、CI 等非浏览器程序调用 API。
+
+**创建方式**：登录后打开右上角 `...` 菜单 → `用户设置` → `访问令牌`，填写名称并选择范围（`只读` 仅允许 GET/HEAD，`完全访问` 允许全部方法）后创建。令牌为随机字符串，**只在创建时显示一次**，请立即保存。
+
+也可以直接调用 API 创建（需先用 LDAP 登录）：
+
+```bash
+curl -X POST -b cookies.txt https://host/api/tokens \
+  -H "Content-Type: application/json" \
+  -d '{"name":"mcp-cli","scope":"readonly"}'
+# 响应中的 token 只出现一次
+```
+
+**调用方式**：请求携带 `Authorization: Bearer <token>` 头即可，身份与创建该令牌的用户等价，数据同样按用户隔离：
+
+```bash
+curl -H "Authorization: Bearer <token>" https://host/api/projects
+curl -H "Authorization: Bearer <token>" https://host/api/jobs
+```
+
+**管理**：
+
+- 列出本人令牌：`GET /api/tokens`（只返回元信息，绝不返回令牌本身）。
+- 撤销令牌：`POST /api/tokens/{id}/revoke`（仅本人令牌；撤销后立即失效）。
+
+**安全说明**：服务端只保存令牌的 SHA-256 哈希，不存明文；令牌永久有效直到撤销，请妥善保管。可通过 `GET /api/me`（响应里的 `auth_via` 与 `token_scope`）确认当前请求的认证来源和令牌范围。
+
 ## 运维
 
 ### 目录和权限
