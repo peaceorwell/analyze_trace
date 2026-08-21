@@ -1,8 +1,8 @@
 # Torch Profiler Analyzer
 
-Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/内网性能分析工具，并兼容 TensorFlow Chrome Trace。它可以解析 `.json`、`.json.gz`、`.gz`、`.json.zip`、`.zip`、`.tar.gz` 和 `.tgz` trace 文件，统计 GPU kernel、Triton kernel、ATen Ops、TensorFlow Ops，并提供单 trace 分析、双 trace 对比、历史管理、AI 分析和 Web 可视化界面。
+Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/内网性能分析工具，并兼容 TensorFlow Chrome Trace。它可以解析 `.json`、`.json.gz`、`.gz`、`.json.zip`、`.zip`、`.tar.gz` 和 `.tgz` trace 文件，也支持上传日志/文本自动生成证据优先的 AI 说明性报告；trace 分析可统计 GPU kernel、Triton kernel、ATen Ops、TensorFlow Ops，并提供单 trace 分析、双 trace 对比、历史管理和 Web 可视化界面。
 
-当前版本：`0.5.43`
+当前版本：`0.5.44`
 
 ## 主要功能
 
@@ -11,7 +11,7 @@ Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/
 - **定位细节**：Kernel 类型、所有 Kernel、Triton、ATen Ops、TF Ops、Triton Step 等页签支持搜索、筛选、排序、列显隐、分页、列宽调整和下载。
 - **区域重分析**：完成任务后可按 step、时间轴区间标签（如 optimizer/module）或两者交集派生新分析，并保留 trace 中的真实 step ID；对比任务支持 A/B 分别指定不同区域。
 - **实验树**：按项目把多次实验连接成优化谱系，支持 Compute time 优先的节点/关系状态配色、边 delta 芯片、节点拖拽、关系标签拖拽缩放、自动避让、变量变更记录和 step 口径告警。
-- **AI 分析**：Claude Code + 自定义 skill 生成 Markdown 报告，支持补充 Prompt、环境诊断、进度/耗时、历史版本、下载和完成通知。
+- **AI 分析**：Claude Code + 自定义 skill 生成 Markdown 报告；日志/文本会自动路由到日志证据分析 skill，保留来源、区分事实与推断且不编造 profiler 指标，同时支持补充 Prompt、环境诊断、进度/耗时、历史版本、下载和完成通知。
 - **团队协作**：LDAP 用户隔离、个人/共享项目、管理员统计，以及独立的 **灵感社区**（Issue 风格帖子、回复、图片、@ 候选、邮件通知）。
 - **运维能力**：JSON 日志、审计日志、健康检查、Prometheus 指标、备份脚本和存储管理。
 
@@ -92,7 +92,7 @@ python web/server.py
 
 Web 首页有三种上传模式：
 
-- `单个`：拖拽或选择一个 trace 文件，生成单 trace 分析任务。
+- `单个`：拖拽或选择一个 trace 或日志/文本文件；trace 生成性能分析任务，日志/文本跳过 timeline 解析并自动触发 AI 分析。
 - `两个`：同时上传 A/B 两个 trace，直接生成对比任务。
 - `多个`：拖拽或选择多个 trace 文件，系统会逐个分析，每个文件生成一个独立任务。
 - 大 trace 分析期间，任务页会持续显示当前阶段和已用时间；如果正在解析 10GB+ trace，等待几十秒到数分钟是正常现象。
@@ -106,6 +106,8 @@ Web 首页有三种上传模式：
 - `.zip`
 - `.tar.gz`
 - `.tgz`
+
+日志/文本 AI 分析还支持 `.log`、`.txt`、`.text`、`.out`、`.err`、`.jsonl`、`.md`、`.csv`、`.tsv`、`.yaml`、`.yml` 和 `.py`。不包含 `traceEvents` 的普通 JSON 也会自动降级为日志/文本分析。日志报告只提取文件中真实存在的上下文、阶段、耗时、吞吐、告警和错误，并明确标注来源与能力边界；不会补造 kernel、Device-Gap、利用率、FLOPS 等 profiler 指标。
 
 上传时可以选择项目和填写别名。压缩包中会自动提取可用 JSON trace；服务端内部会统一保留压缩副本。普通体量 trace 会走快速 JSON 解析，超大 `.json.gz` 会保持压缩形态并单次流式读取 `traceEvents`，避免 10GB+ trace 解压落盘或一次性读入内存。下载原始 trace 时默认提供 `.json.gz`，便于保存大文件并保持工具兼容性。上传阶段不会裁剪 trace；如果只想分析某些 step 或 optimizer/module 标签区间，可以在任务完成后通过 `指定区域重分析` 创建新的派生任务。
 
@@ -176,7 +178,7 @@ Web 首页有三种上传模式：
 
 ## Claude Code AI 分析
 
-AI 分析默认关闭。开启后，已完成任务会出现 `AI 分析` 页签。点击开始/重新分析时会弹窗填写可选补充 Prompt；确认后流程如下：
+AI 分析默认关闭。开启后，已完成 trace 任务会出现 `AI 分析` 页签；日志/文本上传完成后会直接显示 `AI 日志分析` 并自动排队。手动点击开始/重新分析时会弹窗填写可选补充 Prompt；确认后流程如下：
 
 1. 服务端先运行 AI 环境诊断。
 2. 诊断检查 Claude 命令、skills 目录、单 trace skill、对比 skill、skills 挂载、基础 Claude 调用和工具权限探针。
@@ -204,6 +206,7 @@ AI 分析默认关闭。开启后，已完成任务会出现 `AI 分析` 页签�
 | `TRACE_CLAUDE_COMMAND_TEMPLATE` | 空 | 完整命令模板，可使用 `{prompt}`、`{trace_a}`、`{trace_b}`、`{skill}`、`{skills_dir}`、`{results_dir}`、`{analysis_dir}`、`{report_path}` |
 | `TRACE_CLAUDE_CUSTOM_HEADERS` | `x-project: torch_mlu` | 注入到 Claude Code 子进程的 `ANTHROPIC_CUSTOM_HEADERS`；用于网关侧项目标识 |
 | `TRACE_CLAUDE_SKILLS_DIR` | `.claude/skills` | Claude skills 目录 |
+| `TRACE_CLAUDE_LOG_SKILL` | `log-evidence-analyzer` | 日志/文本自动分析使用的 skill |
 | `TRACE_CLAUDE_SINGLE_SKILL` | `e2e-profiling-analyzer` | 单 trace skill 名称 |
 | `TRACE_CLAUDE_COMPARE_SKILL` | `e2e-profiling-comparator` | 对比 skill 名称 |
 | `TRACE_CLAUDE_MODEL` | `Claude Code default` | AI 报告版本元信息中记录的后端模型名；若网关通过 `ANTHROPIC_MODEL` 选择模型，也可不单独设置 |

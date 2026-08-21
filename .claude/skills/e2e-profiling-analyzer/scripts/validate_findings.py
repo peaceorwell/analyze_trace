@@ -15,6 +15,12 @@ FINDING_FIELDS = {
     "affected_scope", "estimated_impact_ms", "confidence", "overlap_group", "follow_up",
 }
 METRIC_FIELDS = {"name", "value", "unit", "scope", "source"}
+AUDIT_DISPOSITIONS = {
+    "supported_primary", "supported_contributor", "refuted", "insufficient", "duplicate",
+}
+IMPACT_FIELDS = {
+    "observed_cost_ms", "critical_path_contribution_ms", "recoverable_upper_bound_ms", "basis",
+}
 
 
 def validate(payload):
@@ -73,6 +79,25 @@ def validate(payload):
         impact = finding.get("estimated_impact_ms")
         if impact is not None and (not isinstance(impact, (int, float)) or impact < 0):
             errors.append(f"{label}.estimated_impact_ms must be null or a non-negative number")
+        impact_detail = finding.get("impact")
+        if impact_detail is not None:
+            if not isinstance(impact_detail, dict):
+                errors.append(f"{label}.impact must be an object")
+            else:
+                impact_missing = IMPACT_FIELDS - set(impact_detail)
+                if impact_missing:
+                    errors.append(f"{label}.impact missing fields: {sorted(impact_missing)}")
+                for field in IMPACT_FIELDS - {"basis"}:
+                    value = impact_detail.get(field)
+                    if value is not None and (not isinstance(value, (int, float)) or value < 0):
+                        errors.append(f"{label}.impact.{field} must be null or a non-negative number")
+                if not isinstance(impact_detail.get("basis"), str) or not impact_detail.get("basis"):
+                    errors.append(f"{label}.impact.basis must be a non-empty string")
+        audit_disposition = finding.get("audit_disposition")
+        if audit_disposition is not None and audit_disposition not in AUDIT_DISPOSITIONS:
+            errors.append(
+                f"{label}.audit_disposition must be one of {sorted(AUDIT_DISPOSITIONS)}"
+            )
         if not isinstance(finding.get("overlap_group"), str) or not finding.get("overlap_group"):
             errors.append(f"{label}.overlap_group must be a non-empty string")
         for field in ("evidence", "counter_evidence", "affected_scope", "follow_up", "metrics"):

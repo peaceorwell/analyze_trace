@@ -1,0 +1,4 @@
+interface:
+  display_name: "日志证据分析"
+  short_description: "从训练日志和普通文本中提取可追溯的性能证据、阶段信息与分析边界"
+  default_prompt: "Use $log-evidence-analyzer to analyze this log without inventing profiler metrics."

@@ -101,6 +101,7 @@ async def init_db():
                 label            TEXT DEFAULT '',
                 is_pinned        INTEGER DEFAULT 0,
                 mode             TEXT CHECK(mode IN ('single','compare')) NOT NULL,
+                input_kind       TEXT DEFAULT 'timeline',
 
                 file_a_name      TEXT,
                 file_a_path      TEXT,
@@ -265,6 +266,7 @@ async def init_db():
         await add_column_if_missing(db, "jobs", "label_filter_a", "TEXT DEFAULT ''")
         await add_column_if_missing(db, "jobs", "label_filter_b", "TEXT DEFAULT ''")
         await add_column_if_missing(db, "jobs", "seq", "INTEGER")
+        await add_column_if_missing(db, "jobs", "input_kind", "TEXT DEFAULT 'timeline'")
         await add_column_if_missing(db, "folders", "password_hash", "TEXT DEFAULT NULL")
         await add_column_if_missing(db, "feedback_messages", "edited_at", "DATETIME DEFAULT NULL")
         await add_column_if_missing(db, "feedback_messages", "edit_count", "INTEGER DEFAULT 0")
@@ -314,6 +316,7 @@ async def init_db():
                 label            TEXT DEFAULT '',
                 is_pinned        INTEGER DEFAULT 0,
                 mode             TEXT,
+                input_kind       TEXT DEFAULT 'timeline',
 
                 file_a_name      TEXT,
                 file_a_path      TEXT,
@@ -379,6 +382,7 @@ async def init_db():
         """)
         await add_column_if_missing(db, "deleted_jobs", "is_pinned", "INTEGER DEFAULT 0")
         await add_column_if_missing(db, "deleted_jobs", "seq", "INTEGER")
+        await add_column_if_missing(db, "deleted_jobs", "input_kind", "TEXT DEFAULT 'timeline'")
         await add_column_if_missing(db, "deleted_jobs", "step_filter_a", "TEXT DEFAULT ''")
         await add_column_if_missing(db, "deleted_jobs", "step_filter_b", "TEXT DEFAULT ''")
         await add_column_if_missing(db, "deleted_jobs", "label_filter_a", "TEXT DEFAULT ''")

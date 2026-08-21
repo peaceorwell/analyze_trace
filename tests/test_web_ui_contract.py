@@ -94,7 +94,7 @@ def test_kernel_host_op_details_are_nested_under_all_kernels():
 
 
 def test_frontend_recovers_from_a_stale_version():
-    assert 'const CLIENT_APP_VERSION = "0.5.43";' in APP_JS
+    assert 'const CLIENT_APP_VERSION = "0.5.44";' in APP_JS
     assert 'const APP_VERSION_CHECK_INTERVAL_MS = 60_000;' in APP_JS
     assert 'const APP_VERSION_QUERY_PARAM = "_app_version";' in APP_JS
     assert 'cache: "no-store"' in APP_JS
@@ -103,6 +103,17 @@ def test_frontend_recovers_from_a_stale_version():
     assert 'window.history.replaceState(window.history.state, "", url.toString());' in APP_JS
     assert "url.searchParams.set(APP_VERSION_QUERY_PARAM, normalized);" in APP_JS
     assert "window.location.replace(url.toString());" in APP_JS
+
+
+def test_log_uploads_route_directly_to_ai_analysis():
+    assert '.log,.txt,.text,.out,.err,.jsonl,.md,.csv,.tsv,.yaml,.yml,.py' in APP_JS
+    assert 'if (selectedJob.value?.input_kind === "log")' in APP_JS
+    assert '{ key: "ai", label: "AI 日志分析" }' in APP_JS
+    assert "日志将自动触发 AI 分析" in APP_JS
+    assert 'return logSuffix || "文件";' in APP_JS
+    assert "selectedJob.input_kind!=='log'" in APP_JS
+    assert "使用日志证据 skill 分析原始日志/文本" in APP_JS
+    assert "job.input_kind==='log' ? '日志'" in INDEX_HTML
 
 
 def test_performance_overview_explains_compute_time_scope():
@@ -196,7 +207,7 @@ def test_header_exposes_user_group_and_new_trial_entry_points():
     assert 'aria-labelledby="user-group-title"' in INDEX_HTML
     assert 'const USER_GROUP_LINK = "https://ims.cambricon.com/woa/invite/PPtk2dW22h5?channel=hwj-v7";' in APP_JS
     assert "copyUserGroupLink" in APP_JS
-    assert 'src="/static/tpa-user-group.jpeg?v=0.5.43"' in INDEX_HTML
+    assert 'src="/static/tpa-user-group.jpeg?v=0.5.44"' in INDEX_HTML
     assert 'download="tpa用户群入群图片.jpeg"' in INDEX_HTML
 
 

@@ -73,7 +73,7 @@ def test_config_reports_local_execution_flags(client):
     assert r.status_code == 200
     assert r.headers["cache-control"] == "no-store, max-age=0"
     assert r.json() == {
-        "version": "0.5.43",
+        "version": "0.5.44",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -293,6 +293,125 @@ def test_upload_limit_cleans_partial_job_directory(client, sample_trace_file, mo
     assert response.status_code == 413
     storage_dir = Path(web_server.STORAGE_DIR)
     assert not list(storage_dir.glob("*/trace_a.json"))
+
+
+def test_log_upload_skips_timeline_parser_and_preserves_original_file(client):
+    content = (
+        "2026-08-20 23:39:34 initialize model=demo rank=3\n"
+        "2026-08-20 23:40:12 warmup step duration=38s\n"
+    ).encode()
+
+    created = client.post(
+        "/api/jobs",
+        files={"file_a": ("train.log", content, "text/plain")},
+    )
+
+    assert created.status_code == 201
+    job = created.json()
+    assert job["input_kind"] == "log"
+    assert job["mode"] == "single"
+    assert job["status"] == "done"
+    assert "跳过 timeline 解析" in job["console_out"]
+    assert Path(job["file_a_path"]).read_bytes() == content
+    assert not Path(web_server.job_dir(job["id"]), "trace_a.json").exists()
+
+    detail = client.get(f"/api/jobs/{job['id']}")
+    assert detail.status_code == 200
+    assert detail.json()["input_kind"] == "log"
+    assert detail.json()["result_files"] == {}
+
+    downloaded = client.get(f"/api/jobs/{job['id']}/files/a")
+    assert downloaded.status_code == 200
+    assert downloaded.content == content
+    assert 'filename="train.log"' in downloaded.headers["content-disposition"]
+
+
+def test_non_timeline_json_is_routed_to_log_analysis(client):
+    payload = {"job": "demo", "duration_ms": 123, "status": "finished"}
+
+    created = client.post(
+        "/api/jobs",
+        files={"file_a": ("summary.json", json.dumps(payload).encode(), "application/json")},
+    )
+
+    assert created.status_code == 201
+    job = created.json()
+    assert job["input_kind"] == "log"
+    assert job["status"] == "done"
+    assert json.loads(Path(job["file_a_path"]).read_text()) == payload
+
+
+def test_log_upload_automatically_runs_evidence_ai_analysis(
+    client,
+    isolated_server,
+    tmp_path,
+    monkeypatch,
+):
+    skills_dir = tmp_path / "skills"
+    skill_dir = skills_dir / "log-evidence-analyzer"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: log-evidence-analyzer\n---\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_ENABLED", True)
+    monkeypatch.setattr(web_server, "CLAUDE_ANALYSIS_SKILLS_DIR", str(skills_dir))
+    monkeypatch.setattr(
+        web_server,
+        "CLAUDE_ANALYSIS_COMMAND_TEMPLATE",
+        _fake_claude_template(
+            tmp_path,
+            """
+            if os.environ.get('TRACE_AI_INPUT_KIND') == 'log' and '日志/文本输入:' in prompt:
+                assert os.environ['TRACE_AI_SKILL'] == 'log-evidence-analyzer'
+                assert '不得补造 profiler 指标' in prompt
+                assert '文件名:行号' in prompt
+                pathlib.Path('captured_prompt.txt').write_text(prompt, encoding='utf-8')
+                report = '# 日志 AI 分析报告\\n\\n## 重要前提\\n\\n仅基于日志证据。\\n'
+                pathlib.Path(os.environ['TRACE_AI_REPORT_PATH']).write_text(report, encoding='utf-8')
+                pathlib.Path('report.md').write_text(report, encoding='utf-8')
+                print(report)
+            else:
+                print('OK')
+            """,
+        ),
+    )
+
+    created = client.post(
+        "/api/jobs",
+        files={
+            "file_a": (
+                "train.log",
+                b"2026-08-20 23:39:34 init model=demo\n2026-08-20 23:40:12 warmup done\n",
+                "text/plain",
+            )
+        },
+    )
+
+    assert created.status_code == 201
+    job = created.json()
+    assert job["input_kind"] == "log"
+    assert job["status"] == "done"
+
+    result = {}
+    for _ in range(100):
+        result = client.get(f"/api/jobs/{job['id']}/ai-analysis").json()
+        if result["status"] not in {"queued", "running"}:
+            break
+        time.sleep(0.05)
+
+    assert result["status"] == "done"
+    assert result["skill"] == "log-evidence-analyzer"
+    assert result["input_kind"] == "log"
+    assert result["auto_triggered"] is True
+    checks = {item["name"]: item for item in result["diagnostics"]["checks"]}
+    assert checks["requested_skill"]["status"] == "ok"
+    assert "single_skill" not in checks
+    assert "compare_skill" not in checks
+    assert result["content"].startswith("# 日志 AI 分析报告")
+    prompt_artifact = next(item for item in result["artifacts"] if item["path"] == "captured_prompt.txt")
+    assert "不匹配 profiler skill 而停止" in prompt_artifact["content"]
+    assert "已观测事实" in prompt_artifact["content"]
 
 
 def test_ai_analysis_rejects_duplicate_and_delete_while_active(

@@ -69,6 +69,8 @@ promoting them to top findings or primary actions.
 - `references/db_schema.md`: load when writing direct DB queries or interpreting table fields.
 - `references/profiling_concepts.md`: load before turning observed differences into causal hypotheses.
 - `references/pytorch_performance_playbook.md`: workload-equivalence, warm-state, profiler-overhead, evidence, PyTorch/Inductor, and validation rules. Always load before choosing comparison windows.
+- `../e2e-profiling-analyzer/references/capability_degradation.md`: project-shared capability ledger, branch-scoped degradation, bounded raw-trace rules, and metric boundaries. Load before collecting A/B tables.
+- `../e2e-profiling-analyzer/references/hypothesis_verification.md`: project-shared candidate dispositions, impact semantics, and overlap rules. Load before final synthesis.
 
 ## Comparison Validity Gate
 
@@ -80,6 +82,7 @@ Apply the gate in `references/pytorch_performance_playbook.md` before computing 
 4. Profiler activities and expensive options such as stack, shape, memory, or Python tracing are equivalent.
 5. The windows contain enough repeated stable work to avoid treating one maximum event as a regression.
 6. External correctness and executed-work parity are available or explicitly marked unverified.
+7. Record a capability ledger for each side. Compare only a common metric basis; a capability missing on one side is `unavailable`, not zero.
 
 If semantic work or warm state fails, do not state a confirmed performance regression. Continue with a diagnostic comparison, label it `confounded`, and put the exact mismatch and required recapture under `## 不确定性与下一步`. If raw work differs but a valid unit is known, compare normalized time and report raw totals separately.
 
@@ -102,6 +105,7 @@ If semantic work or warm state fails, do not state a confirmed performance regre
    - After conversion, verify each generated DB opens and is readable (e.g. run `collect_profile_tables.py` once, or a quick range query). If a converted DB fails this check, record it as blocked and do not feed a silently corrupt DB into the comparison.
    - Determine raw, preparation, stable, or manually selected analysis windows.
    - Inspect basic information such as device model, card count, driver/cnperf version, host environment, and card usage.
+   - Build a per-side capability ledger from observed content. Optional capability failure blocks only that table/branch; retain comparable core evidence.
 4. Collect breakdown tables independently for each DB and selected time range.
    - Run `collect_profile_tables.py` once per DB/range.
    - Write each collection output to the temporary analysis directory. Prefer JSON for machine-readable comparison and keep text logs when useful for review.
@@ -119,6 +123,7 @@ If semantic work or warm state fails, do not state a confirmed performance regre
    - Always compare Compute Kernel Summary at name level, because device kernel cost is usually the primary investigation target.
    - Enter other name-level tables for additional regressed categories.
    - Use Host Function Summary and Host Internal Operation Summary as lightweight follow-up signals; inspect sync-like function names there when needed.
+   - Convert independent regression signals into falsifiable candidates. Self-review each as supported primary/contributor, refuted, insufficient, or duplicate before final inclusion.
 7. Generate the final Markdown analysis document.
    - Write the report to `$REPORT_MD` and, in Web/server-side automatic mode, also to `report.md` in the current working directory.
    - Use the exact structure from `Final Report Contract`.
@@ -279,6 +284,7 @@ Emitted only when the DB carries compiled-region annotations or `triton_*` kerne
 ## Analysis Guidance
 
 - Treat the chosen baseline/current meaning as part of the analysis contract before comparing tables.
+- Never turn a missing A/B row or truncated scan into a numeric zero. Compare only fields with a common definition, unit, window, and coverage.
 - Report the Comparison Validity Gate in `## 对比口径`; unresolved workload, warm-state, profiler, or correctness mismatches cap the conclusion at a supported hypothesis.
 - Separate more work from slower execution: compare kernel/operator count and shape mix before attributing a larger total to lower kernel efficiency.
 - Treat a lower total with missing kernel/operator work as a possible semantic mismatch, not an improvement.
@@ -304,4 +310,6 @@ Emitted only when the DB carries compiled-region annotations or `triton_*` kerne
 - For other activity differences, inspect notifier, atomic operation, memset, or related device task tables.
 - When both captures are single-card, treat communication-kernel deltas with caution: single-card communication exposure is dominated by waiting for absent peers, so a comm delta reflects timing/exposure noise more than real communication cost. Do not draw cross-rank communication conclusions from single-card captures unless multi-rank captures are provided.
 - End with suggested follow-up branches, not a forced root cause.
+- Keep observed cost/delta, exposed critical-path contribution, and recoverable upper bound separate; benefits sharing an overlap group are not additive.
+- Put only supported primary/contributor candidates in prioritized conclusions. Put insufficient candidates under uncertainty and keep refuted/duplicate candidates out of bottleneck claims.
 - For every priority action, include the causal mechanism, one controlled A/B experiment, warm-up and repeat policy, end-to-end success metric, correctness guardrail, and rollback condition.

@@ -71,6 +71,9 @@ Require every teammate to validate `findings.json` against `references/evidence_
 - `scripts/torch_trace_to_cnperf_db.py`: self-contained torch profiler Chrome trace converter. Requires Python module `simdjson` from package `pysimdjson`.
 - `references/profiling_concepts.md`: required concepts and causal models. Always load this before starting analysis.
 - `references/pytorch_performance_playbook.md`: measurement validity, evidence hierarchy, PyTorch/Inductor diagnosis, and validation rules. Always load this before Phase 1.
+- `references/capability_degradation.md`: content-based input probing, capability ledger, branch-scoped degradation, bounded raw-trace fallback, and metric boundaries. Always load this before Phase 1.
+- `references/distributed_context.md`: compact topology and local communication extraction, report fields, and single-rank interpretation boundaries. Load before Phase 1 baseline reporting.
+- `references/hypothesis_verification.md`: independent candidate discovery, audit dispositions, impact semantics, overlap handling, and final inclusion rules. Load after the baseline and before final synthesis.
 - `references/branch_workflows.md`: Phase 2 branch methods, guardrails, commands, and output contracts. Load before executing any selected branch.
 - `references/evidence_contract.md`: required structured finding schema, status, confidence, counter-evidence, and benefit-overlap rules.
 - `references/team_workflow.md`: Agent Team lifecycle, task graph, file ownership, quality gates, and final synthesis rules.
@@ -79,6 +82,8 @@ Require every teammate to validate `findings.json` against `references/evidence_
 ## Core Rules
 
 - Apply the Measurement Validity Gate before bottleneck classification. Unknown capture scope, warm state, workload metadata, profiler overhead, or repeatability lowers confidence; it must not be silently treated as valid steady-state evidence.
+- Build the capability ledger from `references/capability_degradation.md` before branch selection. Route from observed content and evidence availability, not filename alone.
+- Optional evidence failure is branch-scoped: keep valid baseline evidence and mark only the unsupported capability unavailable. Missing values are never measured zeros.
 - Start every analysis by loading `references/profiling_concepts.md`.
 - Primary evidence comes from DB tables. Cluster CSVs can validate or label DB-derived findings, but are never required.
 - `device_timeline.py` non-compute categories are uncovered/exposed non-effective time. Do not treat them as total task time.
@@ -87,11 +92,13 @@ Require every teammate to validate `findings.json` against `references/evidence_
 - Report observed kernel names first. Name-based grouping is heuristic.
 - Do not infer root cause from one high-level percentage.
 - This workflow is single-rank. Keep communication kernels as opaque timeline categories so they are not misclassified as effective compute, but do not start a communication branch or make peer/rank conclusions.
+- Extract available distributed topology and local communication exposure into the report using `references/distributed_context.md`. Keep it descriptive and outside prioritized bottleneck findings/actions by default.
 - `host_blocking` does not explain itself; trace the host-side blocker before naming a cause.
 - Whether host overhead is large is judged primarily by the device-stream (queue) gap ratio — the fraction of the main compute stream's span spent idle between device tasks, from `device_timeline.py`. A high main-stream gap ratio means the host is not keeping the device fed. Do not judge host overhead by host-side wall time alone; a busy host with a well-fed device (low stream gap) is not host-bound.
 - Keep different `threadId` timelines separate. Do not merge overlapping threads into one call tree.
 - Separate compilation, autotuning, initialization, and cache warm-up from steady-state execution before judging Triton or fusion quality.
 - Treat Triton/fusion name matching as a signal. Require metadata, generated artifacts, source linkage, or a controlled experiment for stronger attribution.
+- Keep observed cost, critical-path contribution, and recoverable upper bound separate. Never add benefit estimates in the same overlap group.
 
 ## Measurement Validity Gate
 
@@ -132,14 +139,18 @@ The final `report.md` must use this exact high-level structure:
    - Do not output sibling bullets like `- 结论` / `- 证据` / `- 建议`; that renders as a flat wall in the Web UI.
 3. `## 关键指标`
    - Compact Markdown table with metric, value, source file/log, and interpretation.
-4. `## 优先行动`
+4. `## 分布式与通信概况`
+   - Compact Markdown table with available rank/topology metadata, local communication total/uncovered time, observed collective names, source, and evidence boundary.
+   - Keep this section descriptive; it does not consume one of the 2-4 prioritized findings and does not introduce communication optimization actions by default.
+   - If the capture has no usable distributed/communication evidence, retain the section with one explicit `未捕获` row.
+5. `## 优先行动`
    - Prioritized actions with expected benefit, mechanism, implementation cost, risk, correctness guardrail, and validation method.
-5. `## Triton Kernel 代码优化` (only when `triton_code_optimization.json.has_findings=true`)
+6. `## Triton Kernel 代码优化` (only when `triton_code_optimization.json.has_findings=true`)
    - Compact table copied from or equivalent to `final_report_guidance.required_table_md`; include all candidates from `triton_code_optimization.json`, not just the top few.
    - Keep wording as static code-level candidates and validation targets unless runtime evidence confirms a speedup.
-6. `## 不确定性与下一步`
+7. `## 不确定性与下一步`
    - Missing evidence and the next check that would reduce uncertainty.
-7. `## 产物`
+8. `## 产物`
    - Generated DBs, stage reports, evidence logs, and analysis directory.
 
 Default to a concise Web report. Target no more than 1200 Chinese characters before the `产物`
@@ -269,7 +280,7 @@ Goal: classify why device time is not effective compute, produce branch selectio
 Workflow:
 
 1. Apply the Measurement Validity Gate and record capture-quality limitations.
-2. Inventory inputs.
+2. Inventory inputs and write a capability ledger using `references/capability_degradation.md`.
    - One DB: analyze it as one process/device first.
    - One torch trace JSON/JSON.GZ: convert it to DB first and analyze the generated DB.
    - Directory: find `cnperf_data_*.db` and analyze each DB independently without cross-rank inference.
@@ -290,8 +301,9 @@ Workflow:
    ```
 
 4. Classify the initial situation from the effective-compute perspective.
-5. Recommend or select specialist tasks with the rules below.
-6. Write `phase1_report.md` and validated `findings.json` under `TEAM_DIR/01_baseline`.
+5. Derive independent candidate signals with stable IDs, scope, observed cost, evidence path, and a falsifiable question; do not force one candidate per category.
+6. Recommend or select specialist tasks with the rules below.
+7. Write `phase1_report.md` and validated `findings.json` under `TEAM_DIR/01_baseline`.
 8. In `interactive-phased`, show the Phase 1 key findings and ask which branch or branches to run next.
 9. In `automatic-final`, run the selected Phase 2 branch set.
 
@@ -323,6 +335,7 @@ In `automatic-final`, limit Phase 2 to branches that can change the final recomm
 - `Scope`: input DBs, process/device coverage, host/device time range.
 - `Effective Compute`: compute kernel time and ratio.
 - `Exposed Non-Effective Time`: opaque communication category, ordinary non-compute categories, and projection gap. Do not interpret peer behavior.
+- `Distributed Context`: available rank/topology metadata plus local communication total/uncovered time and observed collective names from `references/distributed_context.md`; state missing peer/rank coverage.
 - `Device Stream Gap Ratio`: main compute stream gap ratio and device-level gap ratio from `device_timeline.py`. This is the key host-overhead indicator; flag a host-bound situation when the main-stream gap ratio is high.
 - `Compute Gap Summary`: total compute-kernel gap, dominant coarse reasons, top relevant gaps.
 - `Initial Situation`: one or more categories above, with evidence.
@@ -395,16 +408,17 @@ Workflow:
 
 1. List completed inputs: Phase 1 baseline, each validated branch finding file, freeform findings, and the adversarial audit.
 2. Reject findings that fail `validate_findings.py` or the auditor's evidence gate.
-3. Merge evidence by causal path, not by agent or script output, and separate confirmed findings from hypotheses.
-4. Before pruning to the final 2-4 findings, scan `compile_segmentation.json` for `custom_op_simple_aten.must_report=true`. When present, reserve one finding and one action row for the custom-op/simple-aten issue; this is a structural missed-fusion signal and should not be buried because its host-range duration is smaller than other exposed-time metrics.
-5. Also scan `triton_code_optimization.json` when present. If `has_findings=true`, read `final_report_guidance` first and include a dedicated top-level `## Triton Kernel 代码优化` section using `final_report_guidance.required_table_md` or an equivalent table. The table must include all candidates from `triton_code_optimization.json`, and name concrete kernels, measured time, BW utilization when available, static estimated throughput, and merged strategy/recommendation. Do not add a separate `证据` column. Place this section after `## 优先行动` and before `## 不确定性与下一步`. Still include a `关键指标` row with scanned file count, candidate kernel count, top strategies, and source file. Keep wording as a validation target unless runtime evidence confirms a speedup.
-6. Estimate potential benefit using measured exposed or excess time. If benefits share an overlap group, state that they are not additive.
-7. Prioritize recommendations by expected impact, confidence, and implementation scope.
-8. Apply the recommendation contract from `references/pytorch_performance_playbook.md`: include mechanism, correctness guardrail, one controlled experiment, end-to-end success metric, and rollback condition.
-9. If custom-op/simple-aten is reserved, phrase the action as moving repeated simple `aten::` pointwise/view/reduce/copy/allocation work into the custom backend kernel, or restructuring the wrapper so Inductor can see and fuse it.
-10. Call out missing evidence and which branch or input would close it.
-11. Write final `report.json` from the audited evidence contract, preserving source finding IDs and artifact paths.
-12. Do not append raw table dumps to `report.md`. Keep audit details in stage reports or `evidence_summary.md`, and reference full output filenames.
+3. Load `references/hypothesis_verification.md`; merge evidence by causal path, apply the auditor's disposition, and separate supported findings from refuted, duplicate, and insufficient candidates.
+4. Read the baseline distributed context and `device_timeline.json`; write the compact `## 分布式与通信概况` section using `references/distributed_context.md`, without promoting it to a bottleneck finding or action by default.
+5. Before pruning to the final 2-4 findings, scan `compile_segmentation.json` for `custom_op_simple_aten.must_report=true`. When present, reserve one finding and one action row for the custom-op/simple-aten issue; this is a structural missed-fusion signal and should not be buried because its host-range duration is smaller than other exposed-time metrics.
+6. Also scan `triton_code_optimization.json` when present. If `has_findings=true`, read `final_report_guidance` first and include a dedicated top-level `## Triton Kernel 代码优化` section using `final_report_guidance.required_table_md` or an equivalent table. The table must include all candidates from `triton_code_optimization.json`, and name concrete kernels, measured time, BW utilization when available, static estimated throughput, and merged strategy/recommendation. Do not add a separate `证据` column. Place this section after `## 优先行动` and before `## 不确定性与下一步`. Still include a `关键指标` row with scanned file count, candidate kernel count, top strategies, and source file. Keep wording as a validation target unless runtime evidence confirms a speedup.
+7. Record observed cost, critical-path contribution, and recoverable upper bound separately. If benefits share an overlap group, state that they are not additive.
+8. Prioritize recommendations by expected impact, confidence, and implementation scope.
+9. Apply the recommendation contract from `references/pytorch_performance_playbook.md`: include mechanism, correctness guardrail, one controlled experiment, end-to-end success metric, and rollback condition.
+10. If custom-op/simple-aten is reserved, phrase the action as moving repeated simple `aten::` pointwise/view/reduce/copy/allocation work into the custom backend kernel, or restructuring the wrapper so Inductor can see and fuse it.
+11. Call out missing evidence and which branch or input would close it.
+12. Write final `report.json` from the audited evidence contract, preserving source finding IDs, `audit_disposition`, impact fields, overlap groups, and artifact paths.
+13. Do not append raw table dumps to `report.md`. Keep audit details in stage reports or `evidence_summary.md`, and reference full output filenames.
 
 Final report writing:
 

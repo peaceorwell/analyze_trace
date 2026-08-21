@@ -19,10 +19,14 @@ COLLECT_SCRIPT = ROOT / ".claude/skills/e2e-profiling-comparator/scripts/collect
 COMPARE_SCRIPT = ROOT / ".claude/skills/e2e-profiling-comparator/scripts/compare_profile_tables.py"
 E2E_ANALYZER_SKILL = ROOT / ".claude/skills/e2e-profiling-analyzer/SKILL.md"
 E2E_COMPARATOR_SKILL = ROOT / ".claude/skills/e2e-profiling-comparator/SKILL.md"
+LOG_EVIDENCE_SKILL = ROOT / ".claude/skills/log-evidence-analyzer/SKILL.md"
 ANALYZER_BRANCH_WORKFLOWS = ROOT / ".claude/skills/e2e-profiling-analyzer/references/branch_workflows.md"
 ANALYZER_PERFORMANCE_PLAYBOOK = ROOT / ".claude/skills/e2e-profiling-analyzer/references/pytorch_performance_playbook.md"
 ANALYZER_EVIDENCE_CONTRACT = ROOT / ".claude/skills/e2e-profiling-analyzer/references/evidence_contract.md"
 ANALYZER_TEAM_WORKFLOW = ROOT / ".claude/skills/e2e-profiling-analyzer/references/team_workflow.md"
+ANALYZER_CAPABILITY_DEGRADATION = ROOT / ".claude/skills/e2e-profiling-analyzer/references/capability_degradation.md"
+ANALYZER_DISTRIBUTED_CONTEXT = ROOT / ".claude/skills/e2e-profiling-analyzer/references/distributed_context.md"
+ANALYZER_HYPOTHESIS_VERIFICATION = ROOT / ".claude/skills/e2e-profiling-analyzer/references/hypothesis_verification.md"
 COMPARATOR_PERFORMANCE_PLAYBOOK = ROOT / ".claude/skills/e2e-profiling-comparator/references/pytorch_performance_playbook.md"
 PROJECT_AGENTS = ROOT / ".claude/agents"
 PROJECT_CLAUDE_SETTINGS = ROOT / ".claude/settings.json"
@@ -841,6 +845,13 @@ def test_preflight_and_findings_contract(tmp_path):
                 "counter_evidence": ["no matched before/after capture"],
                 "affected_scope": ["device=0"],
                 "estimated_impact_ms": 0.1,
+                "impact": {
+                    "observed_cost_ms": 0.1,
+                    "critical_path_contribution_ms": None,
+                    "recoverable_upper_bound_ms": 0.1,
+                    "basis": "single stable device window",
+                },
+                "audit_disposition": "supported_contributor",
                 "confidence": 0.5,
                 "overlap_group": "compile-fusion",
                 "follow_up": ["repeat with a steady-state window"],
@@ -849,6 +860,13 @@ def test_preflight_and_findings_contract(tmp_path):
         "artifacts": ["kernel_codegen.json"],
     }
     assert validator.validate(payload) == []
+
+    payload["findings"][0]["audit_disposition"] = "upheld"
+    assert any("audit_disposition" in error for error in validator.validate(payload))
+
+    payload["findings"][0]["audit_disposition"] = "supported_contributor"
+    payload["findings"][0]["impact"]["basis"] = ""
+    assert any("impact.basis" in error for error in validator.validate(payload))
 
 
 def test_project_agent_team_layout_is_single_rank():
@@ -868,6 +886,8 @@ def test_project_agent_team_layout_is_single_rank():
     assert actual == expected
     assert "e2e-communication-rank-analyst" not in actual
     assert "communication-root-cause" not in analyzer_text
+    assert "## 分布式与通信概况" in analyzer_text
+    assert "references/distributed_context.md" in analyzer_text
     assert not (E2E_ANALYZER_SKILL.parent / "scripts/comm_breakdown.py").exists()
     assert not (E2E_ANALYZER_SKILL.parent / "scripts/rank_compare.py").exists()
     assert ANALYZER_EVIDENCE_CONTRACT.is_file()
@@ -907,8 +927,30 @@ def test_profiling_skills_keep_progressive_disclosure_and_validity_gates():
     assert "references/pytorch_performance_playbook.md" in analyzer
     assert "references/evidence_contract.md" in analyzer
     assert "references/team_workflow.md" in analyzer
+    assert "references/capability_degradation.md" in analyzer
+    assert "references/distributed_context.md" in analyzer
+    assert "references/hypothesis_verification.md" in analyzer
     assert "Comparison Validity Gate" in comparator
     assert "references/pytorch_performance_playbook.md" in comparator
+    assert "capability_degradation.md" in comparator
+    assert "hypothesis_verification.md" in comparator
     assert ANALYZER_BRANCH_WORKFLOWS.is_file()
     assert ANALYZER_PERFORMANCE_PLAYBOOK.is_file()
+    assert ANALYZER_CAPABILITY_DEGRADATION.is_file()
+    assert ANALYZER_DISTRIBUTED_CONTEXT.is_file()
+    assert ANALYZER_HYPOTHESIS_VERIFICATION.is_file()
     assert COMPARATOR_PERFORMANCE_PLAYBOOK.is_file()
+
+
+def test_log_evidence_skill_requires_source_backed_non_profiler_report():
+    text = LOG_EVIDENCE_SKILL.read_text(encoding="utf-8")
+
+    assert len(text.splitlines()) < 160
+    assert "Treat missing profiler capability as a limitation, not a reason to stop" in text
+    assert "filename:line" in text
+    assert "已观测事实" in text
+    assert "合理推断" in text
+    assert "无法确认" in text
+    assert "Never fabricate profiler metrics" in text
+    assert "## 作业与模型上下文" in text
+    assert "## 已观测性能信号" in text

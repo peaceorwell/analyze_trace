@@ -27,6 +27,7 @@ Treat these as immutable after baseline completion:
 - Process/device selection.
 - Common time windows and their basis.
 - Baseline JSON/log outputs.
+- Capability ledger and independent candidate inventory.
 
 If a branch needs a different window, record it as a separate scoped analysis; do not silently replace the common window.
 
@@ -57,7 +58,7 @@ Branch ownership:
 - Non-compute: `ordinary-non-compute-root-cause`.
 - Freeform: categories outside the predefined branches.
 
-There is no communication or multi-rank specialist in this workflow. Keep communication events as opaque baseline categories only.
+There is no communication or multi-rank specialist in this workflow. The evidence builder records the compact distributed/communication context defined in `distributed_context.md`; keep it descriptive and do not turn it into a communication root-cause task.
 
 ## Communication protocol
 
@@ -90,6 +91,7 @@ Before marking a branch complete:
 3. Run `validate_findings.py` successfully.
 4. State missing tables, codegen artifacts, stable windows, and conversion limitations.
 5. Keep benefit estimates non-additive by assigning overlap groups.
+6. Separate observed cost, critical-path contribution, and recoverable upper bound.
 
 The auditor checks:
 
@@ -103,9 +105,10 @@ The auditor checks:
 - Fusion granularity claims versus heuristic-only indicators.
 - Evidence versus narrative strength.
 - Benefit overlap.
+- Candidate disposition using `hypothesis_verification.md`: supported primary/contributor, refuted, insufficient, or duplicate.
 
 ## Final synthesis
 
-Use the audit as a gate, not as another vote. Prefer raw evidence over majority agreement. A repeated unsupported claim remains unsupported.
+Use the audit as a gate, not as another vote. Prefer raw evidence over majority agreement. A repeated unsupported claim remains unsupported. Only supported primary/contributor findings enter prioritized conclusions; insufficient findings become evidence requests, and refuted/duplicate findings stay in audit artifacts.
 
 Prioritize actions by measured impact, confidence, implementation scope, and validation cost. Include one first action and one confirming measurement for every high-priority recommendation. Follow the main skill's Final Report Contract; keep detailed branch evidence under `TEAM_DIR`.

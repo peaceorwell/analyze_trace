@@ -7,7 +7,7 @@ const { createRouter, createWebHashHistory } = VueRouter;
 
 let appInitialized = false;
 const DEFAULT_RESULT_TAB = "chart";
-const CLIENT_APP_VERSION = "0.5.43";
+const CLIENT_APP_VERSION = "0.5.44";
 const APP_VERSION_CHECK_INTERVAL_MS = 60_000;
 const APP_VERSION_QUERY_PARAM = "_app_version";
 const USER_GROUP_LINK = "https://ims.cambricon.com/woa/invite/PPtk2dW22h5?channel=hwj-v7";
@@ -752,6 +752,15 @@ const profileForm = reactive({
 });
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.44",
+    date: "2026-08-21",
+    title: "增强日志与性能 AI 分析",
+    items: [
+      "日志和普通文本文件可自动触发证据优先的 AI 分析。",
+      "性能分析增加能力降级、候选核验及分布式与通信概况展示。",
+    ],
+  },
   {
     version: "0.5.43",
     date: "2026-08-20",
@@ -1778,6 +1787,13 @@ const projectBulkLoadedAllSelected = computed(() => {
 const availableTabs = computed(() => {
   const res = selectedJob.value?.result_files || selectedJob.value?.results;
   if (!res) return [];
+  const aiMeta = selectedJob.value?.ai_analysis || {};
+  if (selectedJob.value?.input_kind === "log") {
+    return [
+      { key: "ai", label: "AI 日志分析" },
+      { key: "console", label: "处理信息" },
+    ];
+  }
   const tabs = [
     { key: "chart", label: "性能总览" },
     { key: "console", label: "控制台" },
@@ -1789,7 +1805,6 @@ const availableTabs = computed(() => {
   for (const [file, label] of Object.entries(primaryTypeTabs)) {
     if (res[file]) tabs.push({ key: file, label });
   }
-  const aiMeta = selectedJob.value?.ai_analysis || {};
   if (claudeAnalysisEnabled.value || aiMeta.report_exists || ["running", "done", "error"].includes(aiMeta.status)) {
     tabs.push({ key: "ai", label: "AI 分析" });
   }
@@ -2335,7 +2350,9 @@ const traceFormatLabel = filename => {
   if (name.endsWith(".zip")) return "zip";
   if (name.endsWith(".gz")) return "gz";
   if (name.endsWith(".json")) return "json";
-  return "trace";
+  const logSuffix = ["jsonl", "text", "yaml", "csv", "err", "log", "md", "out", "py", "tsv", "txt", "yml"]
+    .find(suffix => name.endsWith(`.${suffix}`));
+  return logSuffix || "文件";
 };
 
 const uploadFileMeta = file =>
@@ -5862,6 +5879,7 @@ const formatAiDiagnostics = payload => {
     `skills_dir: ${payload.skills_dir || "-"}`,
     `single_skill: ${payload.single_skill || "-"}`,
     `compare_skill: ${payload.compare_skill || "-"}`,
+    `log_skill: ${payload.log_skill || "-"}`,
     `duration_ms: ${payload.duration_ms ?? "-"}`,
     "",
   ];
@@ -9918,9 +9936,9 @@ const Home = {
 
       <div v-if="quickUploadMode==='single' || quickUploadMode==='multi'" class="submit-cols">
         <div class="upload-box upload-box-sm" @dragover.prevent @drop.prevent="onDrop">
-          <input type="file" ref="fileInputA" accept=".json,.json.gz,.gz,.zip,.tar.gz,.tgz" :multiple="quickUploadMode==='multi'" @change="onFileChange" hidden />
+          <input type="file" ref="fileInputA" accept=".json,.json.gz,.gz,.zip,.tar.gz,.tgz,.log,.txt,.text,.out,.err,.jsonl,.md,.csv,.tsv,.yaml,.yml,.py" :multiple="quickUploadMode==='multi'" @change="onFileChange" hidden />
           <button type="button" @click="$refs.fileInputA.click()" class="upload-inner"
-                  :aria-label="quickUploadMode==='multi' ? '选择多个 Trace 文件' : '选择单个 Trace 文件'">
+                  :aria-label="quickUploadMode==='multi' ? '选择多个 Trace 或日志文件' : '选择单个 Trace 或日志文件'">
             <div class="upload-icon">📂</div>
             <div class="upload-label">
               <span>{{ fileAName || (quickUploadMode==='multi' ? '选择多个文件' : '选择单个文件') }}</span>
@@ -10073,7 +10091,7 @@ const Home = {
                 <strong>{{ taskCenterJobLabel(job) }}</strong>
                 <small>{{ homeJobMeta(job) }}</small>
               </span>
-              <span :class="['job-mode-badge', 'mode-'+job.mode]">{{ job.mode==='compare' ? '对比' : '单文件' }}</span>
+              <span :class="['job-mode-badge', 'mode-'+job.mode]">{{ job.input_kind==='log' ? '日志' : (job.mode==='compare' ? '对比' : '单文件') }}</span>
             </button>
           </div>
           <div v-else-if="!homeDashboardLoading" class="home-panel-empty">
@@ -10116,8 +10134,8 @@ const Home = {
       </div>
 
       <section v-else class="home-welcome-panel">
-        <strong>从第一个 Trace 开始</strong>
-        <span>上传单个 trace 查看热点，或上传两个 trace 直接比较性能变化。</span>
+        <strong>从第一个文件开始</strong>
+        <span>上传 timeline 查看性能热点，或上传日志/文本自动生成 AI 证据分析。</span>
       </section>
 
       <div class="home-shortcuts">
@@ -10130,7 +10148,7 @@ const Home = {
           <span>提建议、看讨论，与同事一起完善分析方法</span>
         </button>
       </div>
-      <div class="home-format-tip">支持 .json.gz、.gz、.json.zip、.zip、.json、.tar.gz、.tgz</div>
+      <div class="home-format-tip">支持 timeline（.json/.gz/.zip）及日志文本（.log/.txt/.out/.md/.csv/.yaml 等）；日志将自动触发 AI 分析</div>
     </section>
   `,
   setup() {
@@ -10178,7 +10196,7 @@ const JobDetail = {
           <span class="result-label">{{ selectedJob.label }}</span>
           <span v-if="selectedJob.is_pinned" class="job-pin-badge">置顶</span>
           <span class="job-mode-badge" :class="'mode-'+selectedJob.mode">
-            {{ selectedJob.mode==='compare'?'对比':'单文件' }}
+            {{ selectedJob.input_kind==='log' ? '日志' : (selectedJob.mode==='compare'?'对比':'单文件') }}
           </span>
           <span v-if="jobStepFilterLabel" class="job-step-badge">{{ jobStepFilterLabel }}</span>
         </div>
@@ -10194,7 +10212,7 @@ const JobDetail = {
             </button>
             <button v-if="selectedJob.is_owner !== false" type="button" @click="editLabel(); closeActionMenu()">重命名</button>
             <button v-if="selectedJob.is_owner !== false" type="button" @click="moveProject(); closeActionMenu()">移动项目</button>
-            <button type="button" @click="openStepReanalysisModal(); closeActionMenu()">指定区域重分析</button>
+            <button v-if="selectedJob.input_kind!=='log'" type="button" @click="openStepReanalysisModal(); closeActionMenu()">指定区域重分析</button>
             <button v-if="selectedJob.is_owner !== false" type="button" class="danger" @click="deleteJob(); closeActionMenu()">删除任务</button>
           </div>
         </div>
@@ -10207,7 +10225,7 @@ const JobDetail = {
           <span class="trace-file-name" :title="selectedJob.file_a_name">📄 {{ selectedJob.file_a_name }}</span>
           <span v-if="!selectedJob.file_a_exists" class="tag-deleted">已删除</span>
           <div v-else class="trace-file-actions">
-            <button v-if="allowFileDownload" class="btn btn-xs btn-perfetto"
+            <button v-if="allowFileDownload && selectedJob.input_kind!=='log'" class="btn btn-xs btn-perfetto"
                     :disabled="perfettoOpening.a"
                     @click="openInPerfetto('a')">{{ perfettoButtonLabel('a') }}</button>
             <div v-if="allowFileDownload || selectedJob.is_owner !== false"
@@ -10514,7 +10532,7 @@ const JobDetail = {
             <div class="ai-analysis-title-block">
               <div class="ai-analysis-title">Claude Code AI 分析</div>
               <div class="ai-analysis-sub">
-                {{ selectedJob.mode === 'compare' ? '使用对比 skill 分析 A/B trace' : '使用单 trace skill 分析当前 trace' }}
+                {{ selectedJob.input_kind === 'log' ? '使用日志证据 skill 分析原始日志/文本' : (selectedJob.mode === 'compare' ? '使用对比 skill 分析 A/B trace' : '使用单 trace skill 分析当前 trace') }}
               </div>
             </div>
             <div class="ai-analysis-actions">
@@ -12509,7 +12527,7 @@ const ExperimentTree = {
     const candidateOptions = computed(() => {
       const map = new Map();
       [...candidateJobs.value, ...nodes.value, ...unconnected.value].forEach(job => {
-        if (job?.id && job.mode === "single") map.set(job.id, job);
+        if (job?.id && job.mode === "single" && job.input_kind !== "log") map.set(job.id, job);
       });
       return Array.from(map.values());
     });
@@ -12954,7 +12972,7 @@ const ExperimentTree = {
       nextTick().then(() => selectNode(node));
     };
     const nodeCompareTargetOptions = computed(() =>
-      candidateOptions.value.filter(job => job.id !== selectedNode.value?.id && job.mode === "single")
+      candidateOptions.value.filter(job => job.id !== selectedNode.value?.id && job.mode === "single" && job.input_kind !== "log")
     );
     const compareSelectedNode = async () => {
       if (!selectedNode.value?.id || !nodeCompareTargetId.value || nodeCompareSaving.value) return;
@@ -12992,7 +13010,7 @@ const ExperimentTree = {
           { credentials: "include" },
           "加载候选任务失败",
         );
-        candidateJobs.value = (payload.data || []).filter(job => job.mode === "single");
+        candidateJobs.value = (payload.data || []).filter(job => job.mode === "single" && job.input_kind !== "log");
       } catch (e) {
         candidateJobs.value = [...nodes.value, ...unconnected.value];
       }
