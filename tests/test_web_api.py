@@ -73,7 +73,7 @@ def test_config_reports_local_execution_flags(client):
     assert r.status_code == 200
     assert r.headers["cache-control"] == "no-store, max-age=0"
     assert r.json() == {
-        "version": "0.5.50",
+        "version": "0.5.51",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -150,6 +150,75 @@ def test_job_seq_backfills_existing_null_rows_in_created_order(client):
 
     assert rows == [("legacy-a", 10000001), ("legacy-b", 10000002)]
     assert counter == 10000002
+
+
+def test_init_db_migrates_access_requests_to_support_public_project_requests(isolated_server):
+    async def seed_and_migrate():
+        os.makedirs(Path(web_db.DB_PATH).parent, exist_ok=True)
+        db = await aiosqlite.connect(web_db.DB_PATH)
+        try:
+            await db.executescript("""
+                CREATE TABLE resource_access_requests (
+                    id TEXT PRIMARY KEY,
+                    resource_kind TEXT NOT NULL CHECK(resource_kind IN ('project','job')),
+                    resource_id TEXT NOT NULL,
+                    project_id TEXT,
+                    owner_user_token TEXT NOT NULL,
+                    requester_user_token TEXT NOT NULL,
+                    requester_display TEXT DEFAULT '',
+                    requester_email TEXT DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved')),
+                    notification_status TEXT DEFAULT '',
+                    notification_detail TEXT DEFAULT '',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    decided_at DATETIME DEFAULT NULL,
+                    decided_by TEXT DEFAULT '',
+                    UNIQUE(resource_kind, resource_id, requester_user_token)
+                );
+                CREATE INDEX idx_resource_access_requests_owner_status
+                    ON resource_access_requests(owner_user_token, status, created_at);
+                INSERT INTO resource_access_requests(
+                    id, resource_kind, resource_id, project_id,
+                    owner_user_token, requester_user_token
+                ) VALUES('old-request', 'project', 'project-1', 'project-1', 'alice', 'bob');
+            """)
+            await db.commit()
+        finally:
+            await db.close()
+
+        await web_db.init_db()
+        db = await web_db.get_db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO resource_access_requests(
+                    id, resource_kind, resource_id, project_id,
+                    owner_user_token, requester_user_token
+                ) VALUES(?,?,?,?,?,?)
+                """,
+                ("public-request", "project_public", "project-1", "project-1", "alice", "carol"),
+            )
+            await db.commit()
+            rows = await (
+                await db.execute(
+                    "SELECT id, resource_kind FROM resource_access_requests ORDER BY id"
+                )
+            ).fetchall()
+            index_row = await (
+                await db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='index' "
+                    "AND name='idx_resource_access_requests_owner_status'"
+                )
+            ).fetchone()
+            return [(row["id"], row["resource_kind"]) for row in rows], bool(index_row)
+        finally:
+            await db.close()
+
+    rows, owner_index_exists = asyncio.run(seed_and_migrate())
+
+    assert rows == [("old-request", "project"), ("public-request", "project_public")]
+    assert owner_index_exists is True
 
 
 def test_job_seq_is_not_reused_after_delete(client):
@@ -2436,13 +2505,33 @@ def test_task_and_project_owners_can_approve_scoped_access_requests(isolated_ser
 
         initial = test_client.get(f"/api/access-requests/project/{project['id']}")
         assert initial.status_code == 200
-        assert initial.json() == {
+        initial_payload = initial.json()
+        assert {key: initial_payload[key] for key in (
+            "accessible", "requestable", "requested", "request_status", "requested_at"
+        )} == {
             "accessible": False,
             "requestable": True,
             "requested": False,
             "request_status": "",
             "requested_at": "",
         }
+        assert [option["kind"] for option in initial_payload["request_options"]] == [
+            "project",
+            "project_public",
+        ]
+
+        job_initial = test_client.get(f"/api/access-requests/job/{job_handle}")
+        assert job_initial.status_code == 200
+        assert [option["kind"] for option in job_initial.json()["request_options"]] == [
+            "job",
+            "project",
+            "project_public",
+        ]
+        assert [option["label"] for option in job_initial.json()["request_options"]] == [
+            "申请当前任务的权限",
+            "申请整个项目的权限",
+            "申请变更为 Public",
+        ]
 
         created = test_client.post(f"/api/access-requests/job/{job_handle}")
         assert created.status_code == 200
@@ -2485,7 +2574,7 @@ def test_task_and_project_owners_can_approve_scoped_access_requests(isolated_ser
                 audits = await (
                     await db.execute(
                         "SELECT action, resource_type, resource_id FROM audit_logs "
-                        "WHERE action IN ('resource.access_request', 'resource.access_grant') "
+                        "WHERE action IN ('resource.access_request', 'resource.access_grant', 'project.public_approve') "
                         "ORDER BY created_at, rowid"
                     )
                 ).fetchall()
@@ -2602,6 +2691,53 @@ def test_task_and_project_owners_can_approve_scoped_access_requests(isolated_ser
         ]
         assert [row["action"] for row in audit_rows].count("resource.access_request") == 2
         assert [row["action"] for row in audit_rows].count("resource.access_grant") == 2
+
+        assert test_client.post("/api/logout").status_code == 200
+        assert test_client.post("/api/login", json={"username": "dave", "password": "ok"}).status_code == 200
+        assert test_client.get(f"/api/jobs/{job_handle}").status_code == 404
+        public_request_response = test_client.post(
+            f"/api/access-requests/job/{job_handle}",
+            json={"request_kind": "project_public"},
+        )
+        assert public_request_response.status_code == 200
+        assert public_request_response.json()["requested"] is True
+        assert len(sent) == 3
+        assert sent[2]["recipients"] == ["alice@example.com"]
+        assert "项目 Public 变更申请: Private Project" in sent[2]["subject"]
+        assert "申请将你的私有项目变更为 Public" in sent[2]["body"]
+        assert "项目将对所有已登录用户公开访问" in sent[2]["body"]
+
+        request_rows, grant_rows, audit_rows = asyncio.run(load_access_rows())
+        public_request = next(row for row in request_rows if row["resource_kind"] == "project_public")
+        assert public_request["owner_user_token"] == "alice"
+        assert public_request["requester_user_token"] == "dave"
+
+        assert test_client.post("/api/logout").status_code == 200
+        assert test_client.post("/api/login", json={"username": "carol", "password": "ok"}).status_code == 200
+        assert test_client.post(f"/api/access-request-reviews/{public_request['id']}/approve").status_code == 404
+
+        assert test_client.post("/api/logout").status_code == 200
+        assert test_client.post("/api/login", json={"username": "alice", "password": "ok"}).status_code == 200
+        public_review = test_client.get(f"/api/access-request-reviews/{public_request['id']}")
+        assert public_review.status_code == 200
+        assert public_review.json()["resource_kind"] == "project_public"
+        public_approved = test_client.post(f"/api/access-request-reviews/{public_request['id']}/approve")
+        assert public_approved.status_code == 200
+        assert public_approved.json()["status"] == "approved"
+
+        assert test_client.post("/api/logout").status_code == 200
+        assert test_client.post("/api/login", json={"username": "dave", "password": "ok"}).status_code == 200
+        assert test_client.get(f"/api/jobs/{job_handle}").status_code == 200
+        public_project = next(item for item in test_client.get("/api/projects").json() if item["id"] == project["id"])
+        assert public_project["is_public"] == 1
+        assert public_project["visibility"] == "shared"
+
+        request_rows, final_grant_rows, audit_rows = asyncio.run(load_access_rows())
+        assert next(row for row in request_rows if row["id"] == public_request["id"])["status"] == "approved"
+        assert final_grant_rows == grant_rows
+        assert [row["action"] for row in audit_rows].count("resource.access_request") == 3
+        assert [row["action"] for row in audit_rows].count("resource.access_grant") == 2
+        assert [row["action"] for row in audit_rows].count("project.public_approve") == 1
 
 
 @pytest.mark.parametrize(

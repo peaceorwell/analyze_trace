@@ -42,6 +42,51 @@ async def add_column_if_missing(db, table_name, column_name, column_def):
         await db.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_def}")
 
 
+async def migrate_resource_access_request_kinds(db):
+    row = await (
+        await db.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='resource_access_requests'"
+        )
+    ).fetchone()
+    if not row or "project_public" in (row[0] or ""):
+        return
+    await db.executescript("""
+        BEGIN IMMEDIATE;
+        ALTER TABLE resource_access_requests RENAME TO resource_access_requests_legacy;
+        CREATE TABLE resource_access_requests (
+            id                   TEXT PRIMARY KEY,
+            resource_kind        TEXT NOT NULL CHECK(resource_kind IN ('project','job','project_public')),
+            resource_id          TEXT NOT NULL,
+            project_id           TEXT,
+            owner_user_token     TEXT NOT NULL,
+            requester_user_token TEXT NOT NULL,
+            requester_display    TEXT DEFAULT '',
+            requester_email      TEXT DEFAULT '',
+            status               TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved')),
+            notification_status  TEXT DEFAULT '',
+            notification_detail  TEXT DEFAULT '',
+            created_at           DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at           DATETIME DEFAULT CURRENT_TIMESTAMP,
+            decided_at           DATETIME DEFAULT NULL,
+            decided_by           TEXT DEFAULT '',
+            UNIQUE(resource_kind, resource_id, requester_user_token)
+        );
+        INSERT INTO resource_access_requests(
+            id, resource_kind, resource_id, project_id, owner_user_token,
+            requester_user_token, requester_display, requester_email,
+            status, notification_status, notification_detail,
+            created_at, updated_at, decided_at, decided_by
+        )
+        SELECT id, resource_kind, resource_id, project_id, owner_user_token,
+               requester_user_token, requester_display, requester_email,
+               status, notification_status, notification_detail,
+               created_at, updated_at, decided_at, decided_by
+        FROM resource_access_requests_legacy;
+        DROP TABLE resource_access_requests_legacy;
+        COMMIT;
+    """)
+
+
 async def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     async with aiosqlite.connect(DB_PATH, timeout=DB_TIMEOUT_SECONDS) as db:
@@ -95,7 +140,7 @@ async def init_db():
 
             CREATE TABLE IF NOT EXISTS resource_access_requests (
                 id                   TEXT PRIMARY KEY,
-                resource_kind        TEXT NOT NULL CHECK(resource_kind IN ('project','job')),
+                resource_kind        TEXT NOT NULL CHECK(resource_kind IN ('project','job','project_public')),
                 resource_id          TEXT NOT NULL,
                 project_id           TEXT,
                 owner_user_token     TEXT NOT NULL,
@@ -322,6 +367,7 @@ async def init_db():
         await add_column_if_missing(db, "experiment_node_layout", "scale", "REAL DEFAULT 1.0")
         await add_column_if_missing(db, "experiment_node_layout", "width", "REAL")
         await add_column_if_missing(db, "experiment_node_layout", "height", "REAL")
+        await migrate_resource_access_request_kinds(db)
 
         await db.executescript("""
             CREATE TABLE IF NOT EXISTS job_seq_counter (

@@ -7,7 +7,7 @@ const { createRouter, createWebHashHistory } = VueRouter;
 
 let appInitialized = false;
 const DEFAULT_RESULT_TAB = "chart";
-const CLIENT_APP_VERSION = "0.5.50";
+const CLIENT_APP_VERSION = "0.5.51";
 const APP_VERSION_CHECK_INTERVAL_MS = 60_000;
 const APP_VERSION_QUERY_PARAM = "_app_version";
 const USER_GROUP_LINK = "https://ims.cambricon.com/woa/invite/PPtk2dW22h5?channel=hwj-v7";
@@ -769,7 +769,7 @@ const newlyCreatedToken = ref("");
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
   {
-    version: "0.5.50",
+    version: "0.5.51",
     date: "2026-08-24",
     title: "新增私有资源访问审批",
     items: [
@@ -10309,14 +10309,34 @@ const AccessRequestPanel = {
       <template v-else-if="state.requestable">
         <div class="empty-main-icon">🔒</div>
         <div class="empty-main-title">这是一个私有{{ resourceKindLabel }}</div>
-        <p class="access-request-copy">你当前没有访问权限，可以向{{ resourceKindLabel }}负责人提交申请。负责人会收到邮件通知并可单独授权给你。</p>
+        <p class="access-request-copy">你当前没有访问权限，请选择申请范围。负责人会收到邮件通知，并决定是否授权或将项目设为 Public。</p>
+        <div class="access-request-options" role="radiogroup" aria-label="申请权限范围">
+          <label
+            v-for="option in requestOptions"
+            :key="option.kind"
+            class="access-request-option"
+            :class="{ selected: selectedRequestKind === option.kind, requested: option.requested }"
+          >
+            <input
+              v-model="selectedRequestKind"
+              type="radio"
+              :name="'access-request-' + resourceType + '-' + resourceId"
+              :value="option.kind"
+            >
+            <span>
+              <strong>{{ option.label }}</strong>
+              <small>{{ option.description }}</small>
+            </span>
+            <em v-if="option.requested">已申请</em>
+          </label>
+        </div>
         <button
           class="btn btn-primary"
           type="button"
-          :disabled="submitting || state.requested"
+          :disabled="submitting || !selectedRequestOption || selectedRequestOption.requested"
           @click="submitRequest"
-        >{{ submitting ? '提交中...' : (state.requested ? '已申请权限' : '申请访问权限') }}</button>
-        <p v-if="state.requested" class="access-request-status" :class="notificationTone">
+        >{{ submitting ? '提交中...' : (selectedRequestOption && selectedRequestOption.requested ? '已申请' : '提交申请') }}</button>
+        <p v-if="selectedRequestOption && selectedRequestOption.requested" class="access-request-status" :class="notificationTone">
           {{ notificationText }}
         </p>
         <p v-if="error" class="access-request-status error">{{ error }}</p>
@@ -10338,20 +10358,30 @@ const AccessRequestPanel = {
     const submitting = ref(false);
     const error = ref("");
     const state = ref({ accessible: false, requestable: false, requested: false });
+    const selectedRequestKind = ref("");
     const resourceKindLabel = computed(() => props.resourceType === "job" ? "任务" : "项目");
     const endpoint = computed(() =>
       `/api/access-requests/${encodeURIComponent(props.resourceType)}/${encodeURIComponent(props.resourceId)}`
     );
+    const requestOptions = computed(() => state.value.request_options || []);
+    const selectedRequestOption = computed(() =>
+      requestOptions.value.find(option => option.kind === selectedRequestKind.value) || null
+    );
+    const selectedOwnerLabel = computed(() =>
+      selectedRequestKind.value === "job" ? "任务" : "项目"
+    );
     const notificationText = computed(() => {
-      const status = state.value.notification?.status || "";
-      if (status === "sent") return `申请已提交，${resourceKindLabel.value}负责人已收到邮件通知。`;
+      const status = selectedRequestOption.value?.notification?.status || "";
+      if (status === "sent") return `申请已提交，${selectedOwnerLabel.value}负责人已收到邮件通知。`;
       if (["failed", "missing_transport", "disabled", "no_recipients"].includes(status)) {
         return "申请已记录，但邮件通知未送达，请联系项目负责人或管理员。";
       }
-      return "申请已提交，请等待项目负责人开放权限。";
+      return "申请已提交，请等待负责人处理。";
     });
     const notificationTone = computed(() =>
-      ["failed", "missing_transport", "disabled", "no_recipients"].includes(state.value.notification?.status)
+      ["failed", "missing_transport", "disabled", "no_recipients"].includes(
+        selectedRequestOption.value?.notification?.status
+      )
         ? "warning"
         : "success"
     );
@@ -10360,11 +10390,16 @@ const AccessRequestPanel = {
       loading.value = true;
       error.value = "";
       try {
-        state.value = await fetchJson(
+        const nextState = await fetchJson(
           endpoint.value,
           { credentials: "include" },
           "检查访问权限失败",
         );
+        state.value = nextState;
+        const optionKinds = (nextState.request_options || []).map(option => option.kind);
+        if (!optionKinds.includes(selectedRequestKind.value)) {
+          selectedRequestKind.value = optionKinds[0] || "";
+        }
       } catch (e) {
         if (e?.authExpired) handleAuthExpired();
         else if (e?.status !== 404) error.value = normalizeApiError(e, "检查访问权限失败");
@@ -10374,15 +10409,21 @@ const AccessRequestPanel = {
       }
     };
     const submitRequest = async () => {
-      if (submitting.value || state.value.requested) return;
+      if (submitting.value || !selectedRequestOption.value || selectedRequestOption.value.requested) return;
       submitting.value = true;
       error.value = "";
       try {
-        state.value = await fetchJson(
+        await fetchJson(
           endpoint.value,
-          { method: "POST", credentials: "include" },
+          {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ request_kind: selectedRequestKind.value }),
+          },
           "提交访问申请失败",
         );
+        await loadStatus();
       } catch (e) {
         if (e?.authExpired) handleAuthExpired();
         else error.value = normalizeApiError(e, "提交访问申请失败");
@@ -10398,7 +10439,8 @@ const AccessRequestPanel = {
     );
     return {
       loading, submitting, error, state,
-      resourceKindLabel, notificationText, notificationTone,
+      resourceKindLabel, requestOptions, selectedRequestKind, selectedRequestOption,
+      notificationText, notificationTone,
       submitRequest, reloadPage,
     };
   },
@@ -10420,7 +10462,7 @@ const AccessRequestReview = {
       <article v-else class="access-review-card">
         <div class="access-review-icon">{{ review.status === 'approved' ? '✓' : '🔐' }}</div>
         <div class="access-review-heading">
-          <span>{{ review.resource_kind === 'job' ? '任务访问申请' : '项目访问申请' }}</span>
+          <span>{{ reviewTitle }}</span>
           <h1>{{ review.resource_label }}</h1>
         </div>
         <dl class="access-review-details">
@@ -10429,11 +10471,9 @@ const AccessRequestReview = {
           <div><dt>邮箱</dt><dd>{{ review.requester_email || '-' }}</dd></div>
           <div><dt>申请时间</dt><dd>{{ fmtDateTime(review.created_at) }}</dd></div>
         </dl>
-        <p class="access-review-note">
-          同意后只会给该用户增加此{{ review.resource_kind === 'job' ? '任务' : '项目' }}的访问权限，不会公开项目。
-        </p>
+        <p class="access-review-note">{{ reviewNote }}</p>
         <div v-if="review.status === 'approved'" class="access-request-status success">
-          已同意申请并完成授权{{ review.decided_at ? ' · ' + fmtDateTime(review.decided_at) : '' }}
+          {{ approvedText }}{{ review.decided_at ? ' · ' + fmtDateTime(review.decided_at) : '' }}
         </div>
         <p v-if="actionError" class="access-request-status error">{{ actionError }}</p>
         <div class="access-review-actions">
@@ -10444,7 +10484,7 @@ const AccessRequestReview = {
             type="button"
             :disabled="approving"
             @click="approve"
-          >{{ approving ? '授权中...' : '同意并授权' }}</button>
+          >{{ approving ? '处理中...' : approveButtonText }}</button>
         </div>
       </article>
     </section>
@@ -10458,6 +10498,20 @@ const AccessRequestReview = {
     const actionError = ref("");
     const review = ref(null);
     const requestId = computed(() => String(route.params.requestId || ""));
+    const isPublicReview = computed(() => review.value?.resource_kind === "project_public");
+    const reviewTitle = computed(() => {
+      if (isPublicReview.value) return "项目 Public 变更申请";
+      return review.value?.resource_kind === "job" ? "任务访问申请" : "项目访问申请";
+    });
+    const reviewNote = computed(() => isPublicReview.value
+      ? "同意后项目将对所有已登录用户公开访问。"
+      : `同意后只会给该用户增加此${review.value?.resource_kind === "job" ? "任务" : "项目"}的访问权限，不会公开项目。`
+    );
+    const approvedText = computed(() => isPublicReview.value
+      ? "已同意申请并将项目设为 Public"
+      : "已同意申请并完成授权"
+    );
+    const approveButtonText = computed(() => isPublicReview.value ? "同意并设为 Public" : "同意并授权");
     const loadReview = async () => {
       if (!requestId.value) return;
       loading.value = true;
@@ -10486,7 +10540,12 @@ const AccessRequestReview = {
           { method: "POST", credentials: "include" },
           "授权失败",
         );
-        showToast("已同意申请并增加访问权限", "success");
+        showToast(
+          review.value.resource_kind === "project_public"
+            ? "已同意申请并将项目设为 Public"
+            : "已同意申请并增加访问权限",
+          "success",
+        );
       } catch (e) {
         if (e?.authExpired) handleAuthExpired();
         else actionError.value = normalizeApiError(e, "授权失败");
@@ -10498,7 +10557,11 @@ const AccessRequestReview = {
       if (review.value?.resource_path) pageRouter.push({ path: review.value.resource_path });
     };
     watch(requestId, loadReview, { immediate: true });
-    return { loading, approving, error, actionError, review, approve, openResource, fmtDateTime };
+    return {
+      loading, approving, error, actionError, review,
+      reviewTitle, reviewNote, approvedText, approveButtonText,
+      approve, openResource, fmtDateTime,
+    };
   },
 };
 

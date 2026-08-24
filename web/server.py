@@ -63,7 +63,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.5.50"
+APP_VERSION = "0.5.51"
 NO_STORE_HEADERS = {"Cache-Control": "no-store, max-age=0"}
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
@@ -6851,15 +6851,29 @@ def _resource_access_request_subject(payload: dict) -> str:
     resource_label = " ".join(
         str(payload.get("resource_label") or payload.get("resource_id") or "私有资源").splitlines()
     ).strip()
-    kind = "任务" if payload.get("resource_kind") == "job" else "项目"
+    resource_kind = payload.get("resource_kind")
+    if resource_kind == "project_public":
+        return f"[Torch Profiler Analyzer] 项目 Public 变更申请: {resource_label}"
+    kind = "任务" if resource_kind == "job" else "项目"
     return f"[Torch Profiler Analyzer] {kind}访问申请: {resource_label}"
 
 
 def _resource_access_request_body(payload: dict) -> str:
     requester = payload.get("requester_display") or payload.get("requester_user_token") or "未知用户"
-    kind = "任务" if payload.get("resource_kind") == "job" else "项目"
+    resource_kind = payload.get("resource_kind")
+    kind = "任务" if resource_kind == "job" else "项目"
+    request_summary = (
+        "有人申请将你的私有项目变更为 Public。"
+        if resource_kind == "project_public"
+        else f"有人申请访问你的私有{kind}。"
+    )
+    approval_effect = (
+        "同意后项目将对所有已登录用户公开访问。"
+        if resource_kind == "project_public"
+        else f"同意后只会给该申请人增加此{kind}的访问权限，不会将项目公开。"
+    )
     lines = [
-        f"有人申请访问你的私有{kind}。",
+        request_summary,
         "",
         f"申请人: {requester}",
         f"账号: {payload.get('requester_user_token') or ''}",
@@ -6867,7 +6881,7 @@ def _resource_access_request_body(payload: dict) -> str:
         f"{kind}: {payload.get('resource_label') or payload.get('resource_id') or ''}",
         f"申请时间: {payload.get('created_at') or _utc_now_iso()}",
         "",
-        f"同意后只会给该申请人增加此{kind}的访问权限，不会将项目公开。",
+        approval_effect,
     ]
     url = _access_request_review_url(payload)
     if url:
@@ -7943,7 +7957,7 @@ async def get_feedback_image(request: Request, attachment_id: str):
 # ── Routes: projects ──────────────────────────────────────────────────────────
 
 async def _resolve_access_request_resource(db, resource_kind: str, resource_id: str) -> Optional[dict]:
-    if resource_kind == "project":
+    if resource_kind in {"project", "project_public"}:
         row = await (
             await db.execute(
                 """
@@ -7985,6 +7999,49 @@ async def _resolve_access_request_resource(db, resource_kind: str, resource_id: 
         ).fetchone()
         return dict(row) if row else None
     return None
+
+
+async def _access_request_targets(
+    db,
+    source_kind: str,
+    source_id: str,
+) -> tuple[Optional[dict], list[tuple[str, dict]]]:
+    source = await _resolve_access_request_resource(db, source_kind, source_id)
+    if not source:
+        return None, []
+    if source_kind == "project":
+        return source, [("project", source), ("project_public", source)]
+    if source_kind != "job":
+        return None, []
+    targets = [("job", source)]
+    project_id = source.get("project_id")
+    if project_id:
+        project = await _resolve_access_request_resource(db, "project", project_id)
+        if project:
+            targets.extend([("project", project), ("project_public", project)])
+    return source, targets
+
+
+def _access_request_option_meta(request_kind: str) -> tuple[str, str]:
+    if request_kind == "job":
+        return "申请当前任务的权限", "仅授权当前任务，不开放项目中的其他任务"
+    if request_kind == "project":
+        return "申请整个项目的权限", "仅向你授权整个项目，项目仍保持非公开"
+    return "申请变更为 Public", "项目所有人同意后，所有已登录用户均可访问"
+
+
+def _access_request_option_response(request_kind: str, row: Optional[dict]) -> dict:
+    label, description = _access_request_option_meta(request_kind)
+    status = _resource_access_request_response(row)
+    return {
+        "kind": request_kind,
+        "label": label,
+        "description": description,
+        "requested": status["requested"],
+        "request_status": status["request_status"],
+        "requested_at": status["requested_at"],
+        **({"notification": status["notification"]} if status.get("notification") else {}),
+    }
 
 
 async def _access_request_resource_is_accessible(
@@ -8046,10 +8103,10 @@ async def get_project_access_request(request: Request, resource_kind: str, resou
     requester_token = current_user_token(request)
     db = await get_db()
     try:
-        resource = await _resolve_access_request_resource(db, resource_kind, resource_id)
-        if not resource:
+        source, targets = await _access_request_targets(db, resource_kind, resource_id)
+        if not source:
             raise HTTPException(404, "资源不存在")
-        canonical_resource_id = resource["resource_id"]
+        canonical_resource_id = source["resource_id"]
         if await _access_request_resource_is_accessible(
             db,
             request,
@@ -8057,34 +8114,54 @@ async def get_project_access_request(request: Request, resource_kind: str, resou
             canonical_resource_id,
         ):
             return {"accessible": True, "requestable": False, "requested": False}
-        request_row = await _load_resource_access_request(
+        options = []
+        for request_kind, target in targets:
+            request_row = await _load_resource_access_request(
+                db,
+                request_kind,
+                target["resource_id"],
+                requester_token,
+            )
+            options.append(_access_request_option_response(request_kind, request_row))
+        default_row = await _load_resource_access_request(
             db,
             resource_kind,
             canonical_resource_id,
             requester_token,
         )
-        return _resource_access_request_response(request_row)
+        return _resource_access_request_response(default_row, request_options=options)
     finally:
         await db.close()
 
 
 @app.post("/api/access-requests/{resource_kind}/{resource_id}")
-async def create_project_access_request(request: Request, resource_kind: str, resource_id: str):
+async def create_project_access_request(
+    request: Request,
+    resource_kind: str,
+    resource_id: str,
+    body: Optional[dict] = None,
+):
     requester_token = current_user_token(request)
     requester = current_user(request)
     db = await get_db()
     try:
-        resource = await _resolve_access_request_resource(db, resource_kind, resource_id)
-        if not resource:
+        source, targets = await _access_request_targets(db, resource_kind, resource_id)
+        if not source:
             raise HTTPException(404, "资源不存在")
-        canonical_resource_id = resource["resource_id"]
+        source_resource_id = source["resource_id"]
         if await _access_request_resource_is_accessible(
             db,
             request,
             resource_kind,
-            canonical_resource_id,
+            source_resource_id,
         ):
             return {"accessible": True, "requestable": False, "requested": False}
+        request_kind = str((body or {}).get("request_kind") or resource_kind).strip()
+        target_by_kind = {kind: target for kind, target in targets}
+        resource = target_by_kind.get(request_kind)
+        if not resource:
+            raise HTTPException(400, "该链接不支持所选申请类型")
+        canonical_resource_id = resource["resource_id"]
         if not resource.get("owner_user_token"):
             raise HTTPException(409, "该资源没有可审批的负责人")
 
@@ -8103,7 +8180,7 @@ async def create_project_access_request(request: Request, resource_kind: str, re
             """,
             (
                 request_id,
-                resource_kind,
+                request_kind,
                 canonical_resource_id,
                 resource.get("project_id"),
                 resource["owner_user_token"],
@@ -8115,7 +8192,7 @@ async def create_project_access_request(request: Request, resource_kind: str, re
         created = insert.rowcount > 0
         request_row = await _load_resource_access_request(
             db,
-            resource_kind,
+            request_kind,
             canonical_resource_id,
             requester_token,
         )
@@ -8124,11 +8201,13 @@ async def create_project_access_request(request: Request, resource_kind: str, re
                 db,
                 request,
                 "resource.access_request",
-                resource_type=resource_kind,
+                resource_type=request_kind,
                 resource_id=canonical_resource_id,
                 details={
                     "requester": requester_token,
                     "project_id": resource.get("project_id"),
+                    "source_kind": resource_kind,
+                    "source_id": source_resource_id,
                 },
             )
         await db.commit()
@@ -8148,7 +8227,7 @@ async def create_project_access_request(request: Request, resource_kind: str, re
         **resource,
         "access_request_id": request_id,
         "review_base_url": _app_base_url(request),
-        "resource_kind": resource_kind,
+        "resource_kind": request_kind,
         "requester_user_token": requester_token,
         "requester_display": requester_display,
         "requester_email": requester_email,
@@ -8167,7 +8246,7 @@ async def create_project_access_request(request: Request, resource_kind: str, re
         await notification_db.commit()
         request_row = await _load_resource_access_request(
             notification_db,
-            resource_kind,
+            request_kind,
             canonical_resource_id,
             requester_token,
         )
@@ -8259,20 +8338,27 @@ async def approve_access_request(request: Request, request_id: str):
         resource = await _access_request_review_resource(db, request, request_row)
         if not resource:
             raise HTTPException(404, "访问申请不存在")
-        await db.execute(
-            """
-            INSERT OR IGNORE INTO resource_access_grants(
-                resource_kind, resource_id, user_token, granted_by
-            ) VALUES(?,?,?,?)
-            """,
-            (
-                request_row["resource_kind"],
-                request_row["resource_id"],
-                request_row["requester_user_token"],
-                reviewer_token,
-            ),
-        )
         if request_row.get("status") != "approved":
+            is_public_request = request_row["resource_kind"] == "project_public"
+            if is_public_request:
+                await db.execute(
+                    "UPDATE projects SET is_public=1 WHERE id=?",
+                    (request_row["resource_id"],),
+                )
+            else:
+                await db.execute(
+                    """
+                    INSERT OR IGNORE INTO resource_access_grants(
+                        resource_kind, resource_id, user_token, granted_by
+                    ) VALUES(?,?,?,?)
+                    """,
+                    (
+                        request_row["resource_kind"],
+                        request_row["resource_id"],
+                        request_row["requester_user_token"],
+                        reviewer_token,
+                    ),
+                )
             await db.execute(
                 """
                 UPDATE resource_access_requests
@@ -8282,15 +8368,23 @@ async def approve_access_request(request: Request, request_id: str):
                 """,
                 (reviewer_token, request_id),
             )
+            if is_public_request:
+                await db.execute(
+                    """
+                    DELETE FROM resource_access_requests
+                    WHERE project_id=? AND status='pending' AND id<>?
+                    """,
+                    (request_row.get("project_id"), request_id),
+                )
             await write_audit(
                 db,
                 request,
-                "resource.access_grant",
-                resource_type=request_row["resource_kind"],
+                "project.public_approve" if is_public_request else "resource.access_grant",
+                resource_type="project" if is_public_request else request_row["resource_kind"],
                 resource_id=request_row["resource_id"],
                 details={
                     "request_id": request_id,
-                    "grantee": request_row["requester_user_token"],
+                    "requester" if is_public_request else "grantee": request_row["requester_user_token"],
                     "project_id": request_row.get("project_id"),
                 },
             )

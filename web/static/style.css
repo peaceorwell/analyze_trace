@@ -2992,6 +2992,25 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   width: min(480px, 100%); margin: 0;
   color: var(--text2); font-size: 14px; line-height: 1.7;
 }
+.access-request-options {
+  display: grid; gap: 9px; width: min(560px, 100%); text-align: left;
+}
+.access-request-option {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 11px;
+  padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--card); cursor: pointer; transition: border-color .15s, background-color .15s;
+}
+.access-request-option:hover,
+.access-request-option.selected {
+  border-color: var(--purple-l); background: var(--purple-bg);
+}
+.access-request-option input { margin: 0; accent-color: var(--purple); }
+.access-request-option span { display: grid; gap: 3px; }
+.access-request-option strong { color: var(--text); font-size: 13px; }
+.access-request-option small { color: var(--text3); font-size: 12px; line-height: 1.45; }
+.access-request-option em {
+  color: var(--green, #059669); font-size: 11px; font-style: normal; font-weight: 800;
+}
 .access-request-status {
   width: min(520px, 100%); margin: 0; padding: 9px 12px;
   border: 1px solid rgba(16,185,129,.24); border-radius: 8px;
