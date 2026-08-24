@@ -4,40 +4,73 @@
 
 ## 已并入 analyze server
 
-本目录已合并进 analyze server（`web/server.py` 的 FastAPI app）：设置环境变量 `TPA_API_KEY` 后，analyze server 会在**同一进程、同一端口**暴露 MCP 端点：
+本目录已合并进 analyze server（`web/server.py` 的 FastAPI app），在**同一进程、同一端口**暴露 MCP 端点：
 
 ```
 MCP endpoint = http://<host>:8181/mcp/
 ```
 
 - 现有 REST `/api/*` 端点与 MCP `/mcp/` 共存于一个 uvicorn 进程，无需单独部署。
-- 若运行环境未设置 `TPA_API_KEY`，analyze server **优雅跳过**，不挂 `/mcp`，其余功能不受影响。
+- 鉴权按 per-user（每个客户端带自己的 analyze Bearer access token），**无需** `TPA_API_KEY`。
+- 若运行环境缺 `fastmcp` 依赖，analyze server **优雅跳过**，不挂 `/mcp`，其余功能不受影响。
 - 也可用 `web/tpa_mcp/http_app.py` 独立跑一个 MCP 服务（见下文「独立 HTTP 运行」）。
 
-## 鉴权
+## 架构与交互（用户 → /mcp → 回环 /api）
 
-需一个 TPA **access token**（大段随机字符串，仅创建时显示一次）。在 TPA 网页右上角 `...` → `用户设置` → `访问令牌` 创建，或用 `POST /api/tokens` 创建。
+```
+┌───────────────────────── analyze server (http://<host>:8181) ────────────────────────┐
+│                                                                                      │
+│   ┌──────────────┐      ┌──────────────────────────┐      ┌───────────────────────┐  │
+│   │ /api/* REST  │      │ /mcp (FastMCP 挂载)       │      │ 鉴权层 auth_middleware │  │
+│   │ (analyze 自身)│      │  · AnalyzeTokenVerifier  │      │  解析 Bearer →         │  │
+│   └──────▲───────┘      │  · 10 个 tpa_* 工具        │      │  查 api_tokens 表      │  │
+│          │              └──────────▲───────────────┘      └───────────▲───────────┘  │
+│          │  工具回调自身 /api       │                                 │              │
+│          └─────────────────────────┘                                 │              │
+└──────────────────────────────────────────────────────────────────────┘              │
+                                     ▲
+                Claude Code 带 Bearer token 连 /mcp/
+```
 
-- `TPA_API_KEY`：必填，访问令牌。
-- `TPA_BASE_URL`：可选，默认 `http://tpa.cambricon.com`。
+一次 MCP 工具调用（以 `tpa_list_jobs` 为例）经过：
 
-例：
+1. **Claude Code 发请求**到 `http://<host>:8181/mcp/`，头带 `Authorization: Bearer <用户 token>`。
+2. **父中间件 `auth_middleware`** 先过一遍；因路径是 `/mcp`，它**豁免 readonly-POST 检查**（MCP 工具调用全是 POST，readonly 拦截改由内层 `/api` 负责）。
+3. **FastMCP `AnalyzeTokenVerifier`** 独立校验 token（查 analyze 的 `api_tokens` 表，sha256 比对），识别出是该用户的哪个 token。
+4. **工具函数 `_client()`**：用 `get_http_request()` 取当前请求 host（即 analyze server 自己），用 `get_access_token()` 取该用户 token，拼 base_url = `http://<host>`、token = 用户 token。
+5. **TpaClient 回环调用 analyze 自己的 `/api/jobs`**，带用户 token → 父中间件完整鉴权 + 按用户隔离数据 → 返回结果。
+6. 结果经 MCP 返回给 Claude。
+
+> **为什么回环调 `/api` 而不是直连 DB**：MCP 工具不带用户 token 直接碰数据。复用 analyze 的 `/api`，数据隔离、readonly 权限天然一致——REST 和 MCP 共用同一套 token 与权限逻辑，不维护两套。
+
+## 鉴权（per-user，每个用户自己的 token）
+
+这个 MCP 是给**用户操作 analyze server** 的接口：每个 MCP 客户端用**自己**在 analyze server 上创建的 **access token**（Bearer）做鉴权，工具调用再以该用户身份打 analyze 自己的 `/api/*`，数据按用户隔离。token 在 analyze 网页 `...` → `用户设置` → `访问令牌` 创建，或用 `POST /api/tokens` 创建（与 REST `/api` 用的是同一套 token）。
+
+连接时把 token 通过请求头传进去：
 
 ```bash
-export TPA_API_KEY=your_access_token_here
+claude mcp add tpa --transport http --url http://127.0.0.1:8181/mcp/ \
+  --header "Authorization: Bearer <自己的 access token>"
 ```
+
+- **方式一（推荐，经 analyze server，单进程）**：如上，各个用户带各自的 token 连 `/mcp/`。analyze server 内嵌的 FastMCP 用 `AnalyzeTokenVerifier` 校验 token（查 `api_tokens` 表），并按该用户身份代理后续 `/api` 调用。
+- 环境变量 `TPA_API_KEY` 只在**独立运行**（下文方式二/三，不经 analyze server 鉴权）时作为 fallback，用于调试。
+
+`TPA_BASE_URL`：可选，默认 `http://tpa.cambricon.com`。
 
 ## 连接方式
 
 ### 1. 经 analyze server（推荐，单进程）
-起好 analyze server（含 `TPA_API_KEY`），Claude Code / 其它 MCP 客户端连 `http://<host>:8181/mcp/`。例如用 `claude mcp add` 指定远程端点：
+起好 analyze server，每个用户带各自的 token 连 `http://<host>:8181/mcp/`。例如用 `claude mcp add` 指定远程端点并传入自己的 access token：
 
 ```bash
-# 指向已合并进 analyze server 的 /mcp 端点（地址按实际部署改）
-claude mcp add tpa --transport http --url http://127.0.0.1:8181/mcp/
+# 地址按实际部署改；token 换成你自己的 access token（见上方「鉴权」）
+claude mcp add tpa --transport http --url http://127.0.0.1:8181/mcp/ \
+  --header "Authorization: Bearer <自己的 access token>"
 ```
 
-### 2. 本地 stdio 运行（无需 analyze server）
+### 2. 本地 stdio 运行（调试用，不经 analyze server 鉴权）
 ```bash
 claude mcp add tpa \
   --env TPA_API_KEY=$TPA_API_KEY \
@@ -53,8 +86,7 @@ cd /home/luohaizhao/workspace/analyze_trace/web && \
   --host 0.0.0.0 --port 8080
 # endpoint = http://<host>:8080/mcp
 ```
-
-`TPA_API_KEY` 已 export 到 shell 时可直接用 `$TPA_API_KEY`；否则把整段 token 写在命令行或环境里。启动的 shell 需已 export 该 key。
+方式二/三不经 analyze server 的每用户鉴权，属于调试/开发场景，直接以 `TPA_API_KEY` 身份访问。
 
 ## 工具
 
@@ -88,7 +120,9 @@ cd /home/luohaizhao/workspace/analyze_trace/web && \
 
 ## 快速验证
 
-用 `TPA_API_KEY` 直接调工具（不经握手，验证凭据与连通性）：
+**方式 A（推荐，走完整鉴权）**：起好合并后的 analyze server，用一个 per-user token 连 `/mcp/` 握手。协议级端到端验证见 `tests/`（若后续补充）。
+
+**方式 B（调试）**：不经握手、绕过每用户鉴权，直接以 `TPA_API_KEY` 身份调工具函数，验证凭据与连通性：
 
 ```bash
 cd /home/luohaizhao/workspace/analyze_trace/web

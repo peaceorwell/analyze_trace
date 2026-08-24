@@ -1,16 +1,20 @@
 """TPA MCP server.
 
-Exposes the TPA (trace performance analyzer) REST API at tpa.cambricon.com as
-Model Context Protocol tools so Claude can search jobs/projects, read analysis
+Exposes the analyze server's own trace-performance-analysis API as Model
+Context Protocol tools so Claude can search jobs/projects, read analysis
 results and AI reports, and push trace profiles to trigger new analysis.
 
-Auth: the ``TPA_API_KEY`` environment variable must hold a user access token
-(large random string, created in the TPA web UI under user settings).
-Optionally override the host with ``TPA_BASE_URL`` (default http://tpa.cambricon.com).
+Auth / per-user isolation: the MCP server is mounted inside the analyze
+FastAPI app and authenticates each client with an analyze-server Bearer
+access token (the same tokens managed under the web UI "access tokens" and
+the /api/tokens endpoints). Each final user connects with their own token and
+their MCP tool calls are attributed to that user, so data stays isolated per
+user.
 
-Run as an MCP stdio server and register with::
+Connection example (Claude Code):
 
-    claude mcp add tpa --env TPA_API_KEY=$TPA_API_KEY -- python3 <this file>
+    claude mcp add tpa --transport http --url http://host/mcp \
+        --header "Authorization: Bearer <user access token>"
 """
 from __future__ import annotations
 
@@ -19,22 +23,51 @@ from typing import Any, Optional
 
 from fastmcp import FastMCP
 
+from .auth import AnalyzeTokenVerifier
 from .tpa_api import DEFAULT_BASE_URL, TpaClient
 
 mcp = FastMCP(
     "tpa",
     instructions=(
-        "TPA (trace performance analyzer) at tpa.cambricon.com. Manage and inspect "
-        "PyTorch profiler analysis jobs: list/query jobs and projects, read kernel/op "
-        "result tables and AI analysis reports, and upload trace profiles to start "
-        "new single or compare analysis. Jobs can be referenced by their numeric seq "
-        "or their UUID id. Auth is via the TPA access token."
+        "TPA (trace performance analyzer). Manage and inspect PyTorch profiler "
+        "analysis jobs: list/query jobs and projects, read kernel/op result tables "
+        "and AI analysis reports, and upload trace profiles to start new single or "
+        "compare analysis. Jobs can be referenced by their numeric seq or UUID id. "
+        "Auth is per-user via an analyze-server Bearer access token."
     ),
+    auth=AnalyzeTokenVerifier(),
 )
 
 
 def _client() -> TpaClient:
-    return TpaClient(base_url=os.environ.get("TPA_BASE_URL", DEFAULT_BASE_URL))
+    """Build a TpaClient that calls the analyze server's own /api as the
+    current MCP user (their Bearer token), so data stays isolated per user.
+
+    When running under the merged server (/mcp), the base URL and token are
+    derived from the incoming request itself: the request's Host/Origin is the
+    analyze server, and the token is the client's access token resolved from
+    the Authorization header. When running standalone (stdio / independent
+    http_app) there is no request, so fall back to the TPA_API_KEY/TPA_BASE_URL
+    env vars (for debugging / development).
+    """
+    from fastmcp.server.dependencies import get_access_token, get_http_request
+
+    token = os.environ.get("TPA_API_KEY", "")
+    base_url = os.environ.get("TPA_BASE_URL", DEFAULT_BASE_URL)
+    try:
+        at = get_access_token()
+        if at is not None and at.token:
+            token = at.token
+        req = get_http_request()
+        if req is not None:
+            # Call this same analyze server's /api/* in the user's context.
+            host = req.headers.get("host") or req.headers.get("x-forwarded-host")
+            scheme = req.url.scheme
+            if host:
+                base_url = f"{scheme}://{host}"
+    except Exception:
+        pass  # no per-request token/base available (e.g. stdio) -> keep fallback
+    return TpaClient(base_url=base_url, token=token)
 
 
 # ---------------------------------------------------------------- jobs/projects

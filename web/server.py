@@ -1036,17 +1036,17 @@ async def lifespan(app: FastAPI):
         await stop_ai_analysis_workers()
         await stop_analysis_workers()
 
-# 合并 TPA MCP 端点（http://host/mcp/）。仅当环境变量 TPA_API_KEY 存在且
-# fastmcp 依赖可用时挂载；否则优雅跳过，不影响 analyze server 主功能。
+# 合并 TPA MCP 端点（http://host/mcp/）。鉴权按 per-user（每个客户端带自己的
+# analyze Bearer access token），不依赖 TPA_API_KEY。仅当 fastmcp 依赖可用时
+# 挂载；否则优雅跳过，不影响 analyze server 主功能。
 _TPA_MCP_TARGET = None
-if os.environ.get("TPA_API_KEY"):
-    try:
-        from fastmcp.utilities.lifespan import combine_lifespans
-        from tpa_mcp.server import mcp as _tpa_mcp
-        _TPA_MCP_TARGET = _tpa_mcp.http_app(path="/")
-    except Exception:
-        # 依赖缺失或 TPA MCP 模块 import 失败时降级，不阻塞 analyze server。
-        _TPA_MCP_TARGET = None
+try:
+    from fastmcp.utilities.lifespan import combine_lifespans
+    from tpa_mcp.server import mcp as _tpa_mcp
+    _TPA_MCP_TARGET = _tpa_mcp.http_app(path="/")
+except Exception:
+    # 依赖缺失或 TPA MCP 模块 import 失败时降级，不阻塞 analyze server。
+    _TPA_MCP_TARGET = None
 
 # FastMCP 的 StreamableHTTPSessionManager 是模块级单例、只能 run() 一次。
 # TestClient 等环境会在同一进程内多次进入 lifespan，需加幂等保护：MCP 部分
@@ -1126,8 +1126,12 @@ async def auth_middleware(request: Request, call_next):
     if AUTH_ENABLED and not _auth_public_path(request.url.path) and not request.state.user:
         return JSONResponse({"detail": "Authentication required"}, status_code=401)
 
+    # /mcp uses POST for every tool call and does its own per-user token auth
+    # (FastMCP AnalyzeTokenVerifier), so skip the readonly-POST block there.
+    is_mcp = request.url.path == "/mcp" or request.url.path.startswith("/mcp/")
     if (
-        getattr(request.state, "token_scope", None) == "readonly"
+        not is_mcp
+        and getattr(request.state, "token_scope", None) == "readonly"
         and request.method not in ("GET", "HEAD")
     ):
         return JSONResponse({"detail": "Read-only token"}, status_code=403)
