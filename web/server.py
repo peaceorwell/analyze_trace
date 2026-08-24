@@ -63,7 +63,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.5.51"
+APP_VERSION = "0.5.52"
 NO_STORE_HEADERS = {"Cache-Control": "no-store, max-age=0"}
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
@@ -6847,6 +6847,14 @@ def _access_request_review_url(payload: dict) -> str:
     return f"{base_url}/#/access-request/{request_id}" if request_id else base_url
 
 
+def _access_request_resource_url(payload: dict) -> str:
+    base_url = str(payload.get("review_base_url") or PUBLIC_BASE_URL or "").rstrip("/")
+    resource_path = str(payload.get("resource_path") or "").strip()
+    if not base_url or not resource_path:
+        return ""
+    return f"{base_url}/#{resource_path if resource_path.startswith('/') else '/' + resource_path}"
+
+
 def _resource_access_request_subject(payload: dict) -> str:
     resource_label = " ".join(
         str(payload.get("resource_label") or payload.get("resource_id") or "私有资源").splitlines()
@@ -6949,6 +6957,109 @@ async def _send_resource_access_request_notification(payload: dict) -> dict:
             **status,
             "status": "failed",
             "detail": f"申请已记录，但邮件通知发送失败: {error}",
+            "error": error,
+        }
+
+
+def _resource_access_approval_subject(payload: dict) -> str:
+    resource_label = " ".join(
+        str(payload.get("resource_label") or payload.get("resource_id") or "私有资源").splitlines()
+    ).strip()
+    resource_kind = payload.get("resource_kind")
+    if resource_kind == "project_public":
+        return f"[Torch Profiler Analyzer] 项目 Public 变更申请已通过: {resource_label}"
+    kind = "任务" if resource_kind == "job" else "项目"
+    return f"[Torch Profiler Analyzer] {kind}访问申请已通过: {resource_label}"
+
+
+def _resource_access_approval_body(payload: dict) -> str:
+    resource_kind = payload.get("resource_kind")
+    kind = "任务" if resource_kind == "job" else "项目"
+    summary = (
+        "你申请的项目 Public 变更已通过。"
+        if resource_kind == "project_public"
+        else f"你的{kind}访问申请已通过。"
+    )
+    effect = (
+        "项目现已变更为 Public，所有已登录用户均可访问。"
+        if resource_kind == "project_public"
+        else f"你现在可以访问该{kind}。"
+    )
+    lines = [
+        summary,
+        "",
+        f"{kind}: {payload.get('resource_label') or payload.get('resource_id') or ''}",
+        f"审批人: {payload.get('decided_by') or payload.get('owner_user_token') or ''}",
+        f"审批时间: {payload.get('decided_at') or _utc_now_iso()}",
+        "",
+        effect,
+    ]
+    url = _access_request_resource_url(payload)
+    if url:
+        lines.extend(["", f"打开{kind}: {url}"])
+    else:
+        lines.extend(["", f"请打开 Torch Profiler Analyzer 查看该{kind}。"])
+    return "\n".join(lines)
+
+
+async def _send_resource_access_approval_notification(payload: dict) -> dict:
+    recipients = _dedupe_emails([
+        payload.get("requester_email") or payload.get("requester_user_token") or "",
+    ])
+    status = _email_notification_status(recipients, "权限审核结果邮件通知已关闭")
+    if status["status"] != "ready":
+        logger.warning(
+            "resource_access_approval_email_not_sent",
+            extra={
+                "event": "resource_access_approval_email_not_sent",
+                "project_id": payload.get("project_id"),
+                "resource_kind": payload.get("resource_kind"),
+                "resource_id": payload.get("resource_id"),
+                **status,
+            },
+        )
+        return status
+    try:
+        await asyncio.to_thread(
+            _send_email_sync,
+            recipients,
+            _resource_access_approval_subject(payload),
+            _resource_access_approval_body(payload),
+        )
+        sent_status = {**status, "status": "sent", "detail": "申请人已收到审核结果邮件"}
+        logger.info(
+            "resource_access_approval_email_sent",
+            extra={
+                "event": "resource_access_approval_email_sent",
+                "project_id": payload.get("project_id"),
+                "resource_kind": payload.get("resource_kind"),
+                "resource_id": payload.get("resource_id"),
+                "requester": payload.get("requester_user_token"),
+                "recipients": recipients,
+                "transport": status.get("transport", ""),
+            },
+        )
+        return sent_status
+    except Exception as exc:
+        error = _email_error_message(exc)
+        logger.warning(
+            "resource_access_approval_email_failed",
+            extra={
+                "event": "resource_access_approval_email_failed",
+                "project_id": payload.get("project_id"),
+                "resource_kind": payload.get("resource_kind"),
+                "resource_id": payload.get("resource_id"),
+                "requester": payload.get("requester_user_token"),
+                "error": error,
+                "recipients": recipients,
+                "transport": status.get("transport", ""),
+            },
+            exc_info=True,
+        )
+        return {
+            **status,
+            "status": "failed",
+            "detail": f"审核已完成，但结果邮件发送失败: {error}",
             "error": error,
         }
 
@@ -8330,6 +8441,8 @@ async def get_access_request_review(request: Request, request_id: str):
 @app.post("/api/access-request-reviews/{request_id}/approve")
 async def approve_access_request(request: Request, request_id: str):
     reviewer_token = current_user_token(request)
+    approval_response = None
+    approval_notification = None
     db = await get_db()
     try:
         request_row = await _load_access_request_for_review(db, request_id)
@@ -8338,7 +8451,8 @@ async def approve_access_request(request: Request, request_id: str):
         resource = await _access_request_review_resource(db, request, request_row)
         if not resource:
             raise HTTPException(404, "访问申请不存在")
-        if request_row.get("status") != "approved":
+        newly_approved = request_row.get("status") != "approved"
+        if newly_approved:
             is_public_request = request_row["resource_kind"] == "project_public"
             if is_public_request:
                 await db.execute(
@@ -8390,7 +8504,14 @@ async def approve_access_request(request: Request, request_id: str):
             )
         await db.commit()
         request_row = await _load_access_request_for_review(db, request_id)
-        return _access_request_review_response(request_row, resource)
+        approval_response = _access_request_review_response(request_row, resource)
+        if newly_approved:
+            approval_notification = {
+                **request_row,
+                **resource,
+                **approval_response,
+                "review_base_url": _app_base_url(request),
+            }
     except HTTPException:
         await db.rollback()
         raise
@@ -8399,6 +8520,20 @@ async def approve_access_request(request: Request, request_id: str):
         raise
     finally:
         await db.close()
+
+    if approval_notification:
+        try:
+            await _send_resource_access_approval_notification(approval_notification)
+        except Exception:
+            logger.warning(
+                "resource_access_approval_notification_unexpected_error",
+                extra={
+                    "event": "resource_access_approval_notification_unexpected_error",
+                    "request_id": request_id,
+                },
+                exc_info=True,
+            )
+    return approval_response
 
 @app.get("/api/projects")
 async def list_projects(request: Request):

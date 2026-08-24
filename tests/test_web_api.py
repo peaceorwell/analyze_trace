@@ -73,7 +73,7 @@ def test_config_reports_local_execution_flags(client):
     assert r.status_code == 200
     assert r.headers["cache-control"] == "no-store, max-age=0"
     assert r.json() == {
-        "version": "0.5.51",
+        "version": "0.5.52",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -2620,7 +2620,13 @@ def test_task_and_project_owners_can_approve_scoped_access_requests(isolated_ser
         approved = test_client.post(f"/api/access-request-reviews/{task_request['id']}/approve")
         assert approved.status_code == 200
         assert approved.json()["status"] == "approved"
+        assert len(sent) == 2
+        assert sent[1]["recipients"] == ["bob@example.com"]
+        assert "任务访问申请已通过: private job" in sent[1]["subject"]
+        assert "你的任务访问申请已通过" in sent[1]["body"]
+        assert f"打开任务: http://trace.example/#/job/{job_handle}" in sent[1]["body"]
         assert test_client.post(f"/api/access-request-reviews/{task_request['id']}/approve").status_code == 200
+        assert len(sent) == 2
 
         assert test_client.post("/api/logout").status_code == 200
         assert test_client.post("/api/login", json={"username": "bob", "password": "ok"}).status_code == 200
@@ -2630,9 +2636,9 @@ def test_task_and_project_owners_can_approve_scoped_access_requests(isolated_ser
 
         project_request_response = test_client.post(f"/api/access-requests/project/{project['id']}")
         assert project_request_response.status_code == 200
-        assert len(sent) == 2
-        assert sent[1]["recipients"] == ["alice@example.com"]
-        assert "项目访问申请: Private Project" in sent[1]["subject"]
+        assert len(sent) == 3
+        assert sent[2]["recipients"] == ["alice@example.com"]
+        assert "项目访问申请: Private Project" in sent[2]["subject"]
 
         request_rows, grant_rows, audit_rows = asyncio.run(load_access_rows())
         project_request = next(row for row in request_rows if row["resource_kind"] == "project")
@@ -2647,6 +2653,11 @@ def test_task_and_project_owners_can_approve_scoped_access_requests(isolated_ser
         project_approved = test_client.post(f"/api/access-request-reviews/{project_request['id']}/approve")
         assert project_approved.status_code == 200
         assert project_approved.json()["status"] == "approved"
+        assert len(sent) == 4
+        assert sent[3]["recipients"] == ["bob@example.com"]
+        assert "项目访问申请已通过: Private Project" in sent[3]["subject"]
+        assert "你的项目访问申请已通过" in sent[3]["body"]
+        assert f"打开项目: http://trace.example/#/project/{project['id']}/tree" in sent[3]["body"]
 
         assert test_client.post("/api/logout").status_code == 200
         assert test_client.post("/api/login", json={"username": "bob", "password": "ok"}).status_code == 200
@@ -2701,11 +2712,11 @@ def test_task_and_project_owners_can_approve_scoped_access_requests(isolated_ser
         )
         assert public_request_response.status_code == 200
         assert public_request_response.json()["requested"] is True
-        assert len(sent) == 3
-        assert sent[2]["recipients"] == ["alice@example.com"]
-        assert "项目 Public 变更申请: Private Project" in sent[2]["subject"]
-        assert "申请将你的私有项目变更为 Public" in sent[2]["body"]
-        assert "项目将对所有已登录用户公开访问" in sent[2]["body"]
+        assert len(sent) == 5
+        assert sent[4]["recipients"] == ["alice@example.com"]
+        assert "项目 Public 变更申请: Private Project" in sent[4]["subject"]
+        assert "申请将你的私有项目变更为 Public" in sent[4]["body"]
+        assert "项目将对所有已登录用户公开访问" in sent[4]["body"]
 
         request_rows, grant_rows, audit_rows = asyncio.run(load_access_rows())
         public_request = next(row for row in request_rows if row["resource_kind"] == "project_public")
@@ -2724,6 +2735,11 @@ def test_task_and_project_owners_can_approve_scoped_access_requests(isolated_ser
         public_approved = test_client.post(f"/api/access-request-reviews/{public_request['id']}/approve")
         assert public_approved.status_code == 200
         assert public_approved.json()["status"] == "approved"
+        assert len(sent) == 6
+        assert sent[5]["recipients"] == ["dave@example.com"]
+        assert "项目 Public 变更申请已通过: Private Project" in sent[5]["subject"]
+        assert "你申请的项目 Public 变更已通过" in sent[5]["body"]
+        assert "项目现已变更为 Public" in sent[5]["body"]
 
         assert test_client.post("/api/logout").status_code == 200
         assert test_client.post("/api/login", json={"username": "dave", "password": "ok"}).status_code == 200
