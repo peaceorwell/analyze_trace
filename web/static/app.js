@@ -7,7 +7,7 @@ const { createRouter, createWebHashHistory } = VueRouter;
 
 let appInitialized = false;
 const DEFAULT_RESULT_TAB = "chart";
-const CLIENT_APP_VERSION = "0.5.49";
+const CLIENT_APP_VERSION = "0.5.50";
 const APP_VERSION_CHECK_INTERVAL_MS = 60_000;
 const APP_VERSION_QUERY_PARAM = "_app_version";
 const USER_GROUP_LINK = "https://ims.cambricon.com/woa/invite/PPtk2dW22h5?channel=hwj-v7";
@@ -768,6 +768,15 @@ const tokenList = reactive({ items: [], loading: false, error: "" });
 const newlyCreatedToken = ref("");
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.50",
+    date: "2026-08-24",
+    title: "新增私有资源访问审批",
+    items: [
+      "私有任务和项目链接支持申请访问，并通过邮件通知对应负责人处理。",
+      "负责人可在审批页单独授权任务或项目，项目保持非公开并防止非所有人扩大共享范围。",
+    ],
+  },
   {
     version: "0.5.49",
     date: "2026-08-24",
@@ -2862,9 +2871,9 @@ const homeJobMeta = job => {
 };
 
 const recentProjectSubtitle = project => {
-  const visibility = project.is_public
-    ? (project.is_owner ? "我创建 · 已共享" : "共享给我")
-    : "我创建";
+  const visibility = project.is_owner
+    ? (project.is_public ? "我创建 · 已共享" : "我创建")
+    : (project.is_public ? "共享给我" : "授权给我");
   const viewedAt = fmtDate(project.viewed_at);
   return viewedAt ? `${visibility} · ${viewedAt}` : visibility;
 };
@@ -10288,6 +10297,211 @@ const Home = {
   },
 };
 
+const AccessRequestPanel = {
+  props: {
+    resourceType: { type: String, required: true },
+    resourceId: { type: String, required: true },
+    fallbackTitle: { type: String, default: "资源未找到" },
+  },
+  template: `
+    <div class="empty-main access-request-panel">
+      <div v-if="loading" class="empty-main-icon">⟳</div>
+      <template v-else-if="state.requestable">
+        <div class="empty-main-icon">🔒</div>
+        <div class="empty-main-title">这是一个私有{{ resourceKindLabel }}</div>
+        <p class="access-request-copy">你当前没有访问权限，可以向{{ resourceKindLabel }}负责人提交申请。负责人会收到邮件通知并可单独授权给你。</p>
+        <button
+          class="btn btn-primary"
+          type="button"
+          :disabled="submitting || state.requested"
+          @click="submitRequest"
+        >{{ submitting ? '提交中...' : (state.requested ? '已申请权限' : '申请访问权限') }}</button>
+        <p v-if="state.requested" class="access-request-status" :class="notificationTone">
+          {{ notificationText }}
+        </p>
+        <p v-if="error" class="access-request-status error">{{ error }}</p>
+      </template>
+      <template v-else-if="state.accessible">
+        <div class="empty-main-icon">✓</div>
+        <div class="empty-main-title">访问权限已开放</div>
+        <button class="btn btn-primary" type="button" @click="reloadPage">重新加载</button>
+      </template>
+      <template v-else>
+        <div class="empty-main-icon">🔍</div>
+        <div class="empty-main-title">{{ fallbackTitle }}</div>
+        <p v-if="error" class="access-request-status error">{{ error }}</p>
+      </template>
+    </div>
+  `,
+  setup(props) {
+    const loading = ref(true);
+    const submitting = ref(false);
+    const error = ref("");
+    const state = ref({ accessible: false, requestable: false, requested: false });
+    const resourceKindLabel = computed(() => props.resourceType === "job" ? "任务" : "项目");
+    const endpoint = computed(() =>
+      `/api/access-requests/${encodeURIComponent(props.resourceType)}/${encodeURIComponent(props.resourceId)}`
+    );
+    const notificationText = computed(() => {
+      const status = state.value.notification?.status || "";
+      if (status === "sent") return `申请已提交，${resourceKindLabel.value}负责人已收到邮件通知。`;
+      if (["failed", "missing_transport", "disabled", "no_recipients"].includes(status)) {
+        return "申请已记录，但邮件通知未送达，请联系项目负责人或管理员。";
+      }
+      return "申请已提交，请等待项目负责人开放权限。";
+    });
+    const notificationTone = computed(() =>
+      ["failed", "missing_transport", "disabled", "no_recipients"].includes(state.value.notification?.status)
+        ? "warning"
+        : "success"
+    );
+    const loadStatus = async () => {
+      if (!props.resourceId) return;
+      loading.value = true;
+      error.value = "";
+      try {
+        state.value = await fetchJson(
+          endpoint.value,
+          { credentials: "include" },
+          "检查访问权限失败",
+        );
+      } catch (e) {
+        if (e?.authExpired) handleAuthExpired();
+        else if (e?.status !== 404) error.value = normalizeApiError(e, "检查访问权限失败");
+        state.value = { accessible: false, requestable: false, requested: false };
+      } finally {
+        loading.value = false;
+      }
+    };
+    const submitRequest = async () => {
+      if (submitting.value || state.value.requested) return;
+      submitting.value = true;
+      error.value = "";
+      try {
+        state.value = await fetchJson(
+          endpoint.value,
+          { method: "POST", credentials: "include" },
+          "提交访问申请失败",
+        );
+      } catch (e) {
+        if (e?.authExpired) handleAuthExpired();
+        else error.value = normalizeApiError(e, "提交访问申请失败");
+      } finally {
+        submitting.value = false;
+      }
+    };
+    const reloadPage = () => window.location.reload();
+    watch(
+      () => [props.resourceType, props.resourceId],
+      loadStatus,
+      { immediate: true },
+    );
+    return {
+      loading, submitting, error, state,
+      resourceKindLabel, notificationText, notificationTone,
+      submitRequest, reloadPage,
+    };
+  },
+};
+
+const AccessRequestReview = {
+  template: `
+    <section class="access-review-page">
+      <div v-if="loading" class="empty-main access-request-panel">
+        <div class="empty-main-icon">⟳</div>
+        <div class="empty-main-title">加载访问申请...</div>
+      </div>
+      <div v-else-if="error || !review" class="empty-main access-request-panel">
+        <div class="empty-main-icon">🔍</div>
+        <div class="empty-main-title">申请不存在或你没有审批权限</div>
+        <p v-if="error" class="access-request-status error">{{ error }}</p>
+        <button class="btn btn-outline" type="button" @click="$router.push('/')">返回首页</button>
+      </div>
+      <article v-else class="access-review-card">
+        <div class="access-review-icon">{{ review.status === 'approved' ? '✓' : '🔐' }}</div>
+        <div class="access-review-heading">
+          <span>{{ review.resource_kind === 'job' ? '任务访问申请' : '项目访问申请' }}</span>
+          <h1>{{ review.resource_label }}</h1>
+        </div>
+        <dl class="access-review-details">
+          <div><dt>申请人</dt><dd>{{ review.requester_display }}</dd></div>
+          <div><dt>账号</dt><dd>{{ review.requester_user_token }}</dd></div>
+          <div><dt>邮箱</dt><dd>{{ review.requester_email || '-' }}</dd></div>
+          <div><dt>申请时间</dt><dd>{{ fmtDateTime(review.created_at) }}</dd></div>
+        </dl>
+        <p class="access-review-note">
+          同意后只会给该用户增加此{{ review.resource_kind === 'job' ? '任务' : '项目' }}的访问权限，不会公开项目。
+        </p>
+        <div v-if="review.status === 'approved'" class="access-request-status success">
+          已同意申请并完成授权{{ review.decided_at ? ' · ' + fmtDateTime(review.decided_at) : '' }}
+        </div>
+        <p v-if="actionError" class="access-request-status error">{{ actionError }}</p>
+        <div class="access-review-actions">
+          <button class="btn btn-outline" type="button" @click="openResource">查看{{ review.resource_kind === 'job' ? '任务' : '项目' }}</button>
+          <button
+            v-if="review.status !== 'approved'"
+            class="btn btn-primary"
+            type="button"
+            :disabled="approving"
+            @click="approve"
+          >{{ approving ? '授权中...' : '同意并授权' }}</button>
+        </div>
+      </article>
+    </section>
+  `,
+  setup() {
+    const route = VueRouter.useRoute();
+    const pageRouter = VueRouter.useRouter();
+    const loading = ref(true);
+    const approving = ref(false);
+    const error = ref("");
+    const actionError = ref("");
+    const review = ref(null);
+    const requestId = computed(() => String(route.params.requestId || ""));
+    const loadReview = async () => {
+      if (!requestId.value) return;
+      loading.value = true;
+      error.value = "";
+      try {
+        review.value = await fetchJson(
+          `/api/access-request-reviews/${encodeURIComponent(requestId.value)}`,
+          { credentials: "include" },
+          "加载访问申请失败",
+        );
+      } catch (e) {
+        if (e?.authExpired) handleAuthExpired();
+        else if (e?.status !== 404) error.value = normalizeApiError(e, "加载访问申请失败");
+        review.value = null;
+      } finally {
+        loading.value = false;
+      }
+    };
+    const approve = async () => {
+      if (!review.value || approving.value || review.value.status === "approved") return;
+      approving.value = true;
+      actionError.value = "";
+      try {
+        review.value = await fetchJson(
+          `/api/access-request-reviews/${encodeURIComponent(requestId.value)}/approve`,
+          { method: "POST", credentials: "include" },
+          "授权失败",
+        );
+        showToast("已同意申请并增加访问权限", "success");
+      } catch (e) {
+        if (e?.authExpired) handleAuthExpired();
+        else actionError.value = normalizeApiError(e, "授权失败");
+      } finally {
+        approving.value = false;
+      }
+    };
+    const openResource = () => {
+      if (review.value?.resource_path) pageRouter.push({ path: review.value.resource_path });
+    };
+    watch(requestId, loadReview, { immediate: true });
+    return { loading, approving, error, actionError, review, approve, openResource, fmtDateTime };
+  },
+};
+
 const JobDetail = {
   template: `
     <!-- Loading state -->
@@ -10297,10 +10511,12 @@ const JobDetail = {
     </div>
 
     <!-- 404 state -->
-    <div v-else-if="!selectedJob && (selectedJobId || selectedJobHandle)" class="empty-main">
-      <div class="empty-main-icon">🔍</div>
-      <div class="empty-main-title">任务未找到</div>
-    </div>
+    <AccessRequestPanel
+      v-else-if="!selectedJob && (selectedJobId || selectedJobHandle)"
+      resource-type="job"
+      :resource-id="String(selectedJobHandle || selectedJobId || '')"
+      fallback-title="任务未找到"
+    />
 
     <!-- Result panel -->
     <section v-if="!jobLoading && selectedJob" class="card result-card">
@@ -11179,7 +11395,13 @@ const JobDetail = {
 
 const ExperimentTree = {
   template: `
-    <section class="exp-page">
+    <AccessRequestPanel
+      v-if="accessUnavailable"
+      resource-type="project"
+      :resource-id="projectId"
+      fallback-title="项目未找到"
+    />
+    <section v-else class="exp-page">
       <header class="exp-toolbar">
         <div class="exp-title-block">
           <button class="btn btn-sm btn-outline" type="button" @click="$router.push('/')">←</button>
@@ -11873,6 +12095,7 @@ const ExperimentTree = {
     const viewportRef = ref(null);
     const lineageChartCanvas = ref(null);
     const loading = ref(false);
+    const accessUnavailable = ref(false);
     const saving = ref(false);
     const nodes = ref([]);
     const unconnected = ref([]);
@@ -13152,6 +13375,7 @@ const ExperimentTree = {
           "加载实验树失败",
         );
         if (payload.project) {
+          accessUnavailable.value = false;
           projectMeta.value = payload.project;
           const projectIndex = projects.value.findIndex(project => project.id === payload.project.id);
           if (projectIndex >= 0) projects.value.splice(projectIndex, 1, { ...projects.value[projectIndex], ...payload.project });
@@ -13166,7 +13390,11 @@ const ExperimentTree = {
         await loadCandidates();
         await fitGraphAfterPaint();
       } catch (e) {
-        showToast(normalizeApiError(e, "加载实验树失败"), "error");
+        if (e?.status === 404) {
+          accessUnavailable.value = true;
+        } else {
+          showToast(normalizeApiError(e, "加载实验树失败"), "error");
+        }
       } finally {
         loading.value = false;
       }
@@ -14472,7 +14700,7 @@ const ExperimentTree = {
     }, { immediate: true });
 
     return {
-      viewportRef, lineageChartCanvas, loading, saving, nodes, unconnected, edges, selectedNodeId, selectedEdgeId,
+      viewportRef, lineageChartCanvas, loading, accessUnavailable, saving, nodes, unconnected, edges, selectedNodeId, selectedEdgeId,
       selectedNode, selectedEdge, selectedEdgePerfNote, hoverEdgeId, showAddEdge, panelCollapsed, addForm, edgeDraft,
       viewMode, lineageMetricKey, lineageMetricOptions, lineageChartEmptyText, lineageChartWarning,
       roiMetricKey, roiMetricOptions, roiGroupMode, roiBarMode, roiSort, currentRoiMetricLabel, roiSkippedEdgeCount, roiEmptyText,
@@ -14483,7 +14711,7 @@ const ExperimentTree = {
       edgeVariableQuick, addVariableQuick, variableNameOptions,
       draftVariableInsertItems, selectedNodeTopKernels, selectedNodeDetailRows, selectedNodeAttachments,
       nodePrimaryDeltaText,
-      view, projectName, displayNodes, edgePaths, canvasSize, bestNodeId,
+      view, projectId, projectName, displayNodes, edgePaths, canvasSize, bestNodeId,
       candidateOptions, hasSelection, sortedNodeMetricRows, nodeMetricSort,
       loadGraph, openAddEdge, closeAddEdge, submitAddEdge, selectNode, selectEdge, openJob,
       saveNodeName, resetNodeNameDraft, uploadNodeAttachment, downloadNodeAttachment, deleteNodeAttachment,
@@ -14591,6 +14819,7 @@ const router = createRouter({
   routes: [
     { path: "/", component: Home },
     { path: "/feedback/:postId?", name: "feedback", component: Home },
+    { path: "/access-request/:requestId", component: AccessRequestReview },
     { path: "/project/:pid/tree", component: ExperimentTree },
     { path: "/job/:id", component: JobDetail },
     { path: "/job/:id/:tab", component: JobDetail },
@@ -14649,10 +14878,9 @@ const loadJobRoute = async to => {
   }
   if (!loaded) {
     selectedJobId.value = null;
-    selectedJobHandle.value = null;
     clearAiDiagnostics();
     jobLoading.value = false;
-    return { path: "/" };
+    return true;
   }
 
   const canonicalJobId = selectedJobId.value;
@@ -15140,5 +15368,6 @@ const App = {
 // ══════════════════════════════════════════════════════════════════════════════
 
 const app = createApp(App);
+app.component("AccessRequestPanel", AccessRequestPanel);
 app.use(router);
 app.mount("#app");

@@ -2,7 +2,7 @@
 
 Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/内网性能分析工具，并兼容 TensorFlow Chrome Trace。它可以解析 `.json`、`.json.gz`、`.gz`、`.json.zip`、`.zip`、`.tar.gz` 和 `.tgz` trace 文件，也支持上传日志/文本自动生成证据优先的 AI 说明性报告；trace 分析可统计 GPU kernel、Triton kernel、ATen Ops、TensorFlow Ops，并提供单 trace 分析、双 trace 对比、历史管理和 Web 可视化界面。
 
-当前版本：`0.5.49`
+当前版本：`0.5.50`
 
 ## 主要功能
 
@@ -12,7 +12,7 @@ Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/
 - **区域重分析**：完成任务后可按 step、时间轴区间标签（如 optimizer/module）或两者交集派生新分析，并保留 trace 中的真实 step ID；对比任务支持 A/B 分别指定不同区域。
 - **实验树**：按项目把多次实验连接成优化谱系，支持 Compute time 优先的节点/关系状态配色、边 delta 芯片、节点拖拽、关系标签拖拽缩放、自动避让、变量变更记录和 step 口径告警。
 - **AI 分析**：Claude Code + 自定义 skill 生成 Markdown 报告；日志/文本会自动路由到日志证据分析 skill，保留来源、区分事实与推断且不编造 profiler 指标，同时支持补充 Prompt、环境诊断、进度/耗时、历史版本、下载和完成通知。
-- **团队协作**：LDAP 用户隔离、个人/共享项目、管理员统计，以及独立的 **灵感社区**（Issue 风格帖子、回复、图片、@ 候选、邮件通知）。
+- **团队协作**：LDAP 用户隔离、私有资源访问申请、任务/项目负责人审批与细粒度授权、管理员统计，以及独立的 **灵感社区**（Issue 风格帖子、回复、图片、@ 候选、邮件通知）。
 - **运维能力**：JSON 日志、审计日志、健康检查、Prometheus 指标、备份脚本和存储管理。
 
 ## 目录结构

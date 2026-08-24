@@ -2983,6 +2983,56 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   font-size: 13px; color: var(--text3); font-weight: 800;
   text-transform: uppercase; letter-spacing: .08em;
 }
+.access-request-panel {
+  justify-content: center;
+  min-height: min(520px, calc(100vh - 180px));
+  text-align: center;
+}
+.access-request-copy {
+  width: min(480px, 100%); margin: 0;
+  color: var(--text2); font-size: 14px; line-height: 1.7;
+}
+.access-request-status {
+  width: min(520px, 100%); margin: 0; padding: 9px 12px;
+  border: 1px solid rgba(16,185,129,.24); border-radius: 8px;
+  background: rgba(16,185,129,.08); color: var(--green, #059669);
+  font-size: 12px; line-height: 1.55;
+}
+.access-request-status.warning {
+  border-color: rgba(245,158,11,.28);
+  background: rgba(245,158,11,.09); color: var(--amber, #b45309);
+}
+.access-request-status.error {
+  border-color: rgba(239,68,68,.24);
+  background: rgba(239,68,68,.08); color: var(--red, #dc2626);
+}
+.access-review-page {
+  width: min(720px, 100%); margin: 0 auto; padding: 34px 18px;
+}
+.access-review-card {
+  display: flex; flex-direction: column; align-items: center; gap: 18px;
+  padding: 30px; border: 1px solid var(--border); border-radius: 16px;
+  background: var(--card); box-shadow: 0 18px 48px rgba(15,23,42,.08);
+}
+.access-review-icon { font-size: 38px; }
+.access-review-heading { text-align: center; }
+.access-review-heading span {
+  color: var(--purple-l); font-size: 12px; font-weight: 800;
+  letter-spacing: .08em;
+}
+.access-review-heading h1 { margin: 6px 0 0; font-size: 24px; color: var(--text); }
+.access-review-details {
+  width: min(520px, 100%); margin: 0; padding: 4px 0;
+  border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+}
+.access-review-details div {
+  display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 12px;
+  padding: 10px 4px;
+}
+.access-review-details dt { color: var(--text3); font-size: 12px; font-weight: 700; }
+.access-review-details dd { margin: 0; color: var(--text); font-size: 13px; overflow-wrap: anywhere; }
+.access-review-note { margin: 0; color: var(--text2); font-size: 13px; line-height: 1.65; text-align: center; }
+.access-review-actions { display: flex; justify-content: center; gap: 10px; }
 .link-btn {
   border: 0; background: transparent; color: var(--purple-l);
   font: inherit; font-size: 12px; font-weight: 800; cursor: pointer;

@@ -63,7 +63,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.5.49"
+APP_VERSION = "0.5.50"
 NO_STORE_HEADERS = {"Cache-Control": "no-store, max-age=0"}
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
@@ -624,7 +624,14 @@ def _project_access_clause(request: Request, alias: str = "") -> tuple[str, list
     if not token:
         return "", []
     prefix = f"{alias}." if alias else ""
-    return f"({prefix}user_token = ? OR {prefix}is_public = 1)", [token]
+    return (
+        f"({prefix}user_token = ? OR {prefix}is_public = 1 OR EXISTS ("
+        "SELECT 1 FROM resource_access_grants rag_project "
+        "WHERE rag_project.resource_kind = 'project' "
+        f"AND rag_project.resource_id = {prefix}id AND rag_project.user_token = ?"
+        "))",
+        [token, token],
+    )
 
 
 def _job_access_clause(request: Request, alias: str = "") -> tuple[str, list[str]]:
@@ -637,8 +644,16 @@ def _job_access_clause(request: Request, alias: str = "") -> tuple[str, list[str
         f"({prefix}user_token = ? OR EXISTS ("
         f"SELECT 1 FROM projects p_access "
         f"WHERE p_access.id = {project_id} AND p_access.is_public = 1"
-        f"))",
-        [token],
+        ") OR EXISTS ("
+        "SELECT 1 FROM resource_access_grants rag_project "
+        "WHERE rag_project.resource_kind = 'project' "
+        f"AND rag_project.resource_id = {project_id} AND rag_project.user_token = ?"
+        ") OR EXISTS ("
+        "SELECT 1 FROM resource_access_grants rag_job "
+        "WHERE rag_job.resource_kind = 'job' "
+        f"AND rag_job.resource_id = {prefix}id AND rag_job.user_token = ?"
+        "))",
+        [token, token, token],
     )
 
 
@@ -673,7 +688,14 @@ def _project_view_clause(request: Request, view: Optional[str], alias: str = "p"
         return f"{prefix}user_token = ?", [token]
     if view == "shared":
         if token:
-            return f"({prefix}is_public = 1 AND COALESCE({prefix}user_token, '') <> ?)", [token]
+            return (
+                f"(({prefix}is_public = 1 AND COALESCE({prefix}user_token, '') <> ?) OR EXISTS ("
+                "SELECT 1 FROM resource_access_grants rag_view "
+                "WHERE rag_view.resource_kind = 'project' "
+                f"AND rag_view.resource_id = {prefix}id AND rag_view.user_token = ?"
+                "))",
+                [token, token],
+            )
         return f"{prefix}is_public = 1", []
     return "", []
 
@@ -687,7 +709,7 @@ def _project_response(row: dict, request: Request) -> dict:
     data["compute_target_ms"] = metric_targets.get("compute_ms")
     token = current_user_token(request)
     data["is_owner"] = True if not token else data.get("user_token") == token
-    data["visibility"] = "shared" if data["is_public"] else "personal"
+    data["visibility"] = "shared" if data["is_public"] or not data["is_owner"] else "personal"
     return data
 
 
@@ -5994,13 +6016,19 @@ async def login(request: Request, body: dict):
     db = await get_db()
     try:
         await _ensure_profile_user_row(db, user["username"])
+        normalized_email = _normalize_email(user.get("email") or "", FEEDBACK_MENTION_DOMAIN)
+        if normalized_email:
+            await db.execute(
+                "UPDATE users SET email=? WHERE user_token=?",
+                (normalized_email, user["username"]),
+            )
         overrides = await _load_user_overrides(db, user["username"])
         ldap_name = user.get("display_name") or user["username"]
         request.session["user"] = {
             "username": user["username"],
             "display_name": overrides["display_name_override"] or ldap_name,
             "display_name_ldap": ldap_name,
-            "email": user.get("email") or "",
+            "email": normalized_email,
             "avatar_color": overrides["avatar_color"] or _default_avatar_color(ldap_name),
         }
         request.state.user = request.session["user"]
@@ -6809,6 +6837,106 @@ def _dedupe_emails(values: list[str]) -> list[str]:
             seen.add(email)
             result.append(email)
     return result
+
+
+def _access_request_review_url(payload: dict) -> str:
+    base_url = str(payload.get("review_base_url") or PUBLIC_BASE_URL or "").rstrip("/")
+    if not base_url:
+        return ""
+    request_id = quote(str(payload.get("access_request_id") or ""), safe="")
+    return f"{base_url}/#/access-request/{request_id}" if request_id else base_url
+
+
+def _resource_access_request_subject(payload: dict) -> str:
+    resource_label = " ".join(
+        str(payload.get("resource_label") or payload.get("resource_id") or "私有资源").splitlines()
+    ).strip()
+    kind = "任务" if payload.get("resource_kind") == "job" else "项目"
+    return f"[Torch Profiler Analyzer] {kind}访问申请: {resource_label}"
+
+
+def _resource_access_request_body(payload: dict) -> str:
+    requester = payload.get("requester_display") or payload.get("requester_user_token") or "未知用户"
+    kind = "任务" if payload.get("resource_kind") == "job" else "项目"
+    lines = [
+        f"有人申请访问你的私有{kind}。",
+        "",
+        f"申请人: {requester}",
+        f"账号: {payload.get('requester_user_token') or ''}",
+        f"邮箱: {payload.get('requester_email') or '-'}",
+        f"{kind}: {payload.get('resource_label') or payload.get('resource_id') or ''}",
+        f"申请时间: {payload.get('created_at') or _utc_now_iso()}",
+        "",
+        f"同意后只会给该申请人增加此{kind}的访问权限，不会将项目公开。",
+    ]
+    url = _access_request_review_url(payload)
+    if url:
+        lines.extend(["", f"处理申请: {url}"])
+    else:
+        lines.extend(["", "请打开 Torch Profiler Analyzer 处理访问申请。"])
+    return "\n".join(lines)
+
+
+async def _send_resource_access_request_notification(payload: dict) -> dict:
+    recipients = _dedupe_emails([
+        payload.get("owner_email") or payload.get("owner_user_token") or "",
+    ])
+    status = _email_notification_status(recipients, "项目访问申请邮件通知已关闭")
+    if status["status"] != "ready":
+        logger.warning(
+            "resource_access_request_email_not_sent",
+            extra={
+                "event": "resource_access_request_email_not_sent",
+                "project_id": payload.get("project_id"),
+                "resource_kind": payload.get("resource_kind"),
+                "resource_id": payload.get("resource_id"),
+                **status,
+            },
+        )
+        return status
+    try:
+        await asyncio.to_thread(
+            _send_email_sync,
+            recipients,
+            _resource_access_request_subject(payload),
+            _resource_access_request_body(payload),
+        )
+        sent_status = {**status, "status": "sent", "detail": "资源负责人已收到邮件通知"}
+        logger.info(
+            "resource_access_request_email_sent",
+            extra={
+                "event": "resource_access_request_email_sent",
+                "project_id": payload.get("project_id"),
+                "resource_kind": payload.get("resource_kind"),
+                "resource_id": payload.get("resource_id"),
+                "requester": payload.get("requester_user_token"),
+                "recipients": recipients,
+                "transport": status.get("transport", ""),
+            },
+        )
+        return sent_status
+    except Exception as exc:
+        error = _email_error_message(exc)
+        logger.warning(
+            "resource_access_request_email_failed",
+            extra={
+                "event": "resource_access_request_email_failed",
+                "project_id": payload.get("project_id"),
+                "resource_kind": payload.get("resource_kind"),
+                "resource_id": payload.get("resource_id"),
+                "requester": payload.get("requester_user_token"),
+                "error": error,
+                "recipients": recipients,
+                "transport": status.get("transport", ""),
+            },
+            exc_info=True,
+        )
+        return {
+            **status,
+            "status": "failed",
+            "detail": f"申请已记录，但邮件通知发送失败: {error}",
+            "error": error,
+        }
 
 
 def _dedupe_identity_values(values) -> list[str]:
@@ -7814,6 +7942,370 @@ async def get_feedback_image(request: Request, attachment_id: str):
 
 # ── Routes: projects ──────────────────────────────────────────────────────────
 
+async def _resolve_access_request_resource(db, resource_kind: str, resource_id: str) -> Optional[dict]:
+    if resource_kind == "project":
+        row = await (
+            await db.execute(
+                """
+                SELECT p.id AS resource_id,
+                       p.name AS resource_label,
+                       p.id AS project_id,
+                       p.user_token AS owner_user_token,
+                       p.is_public,
+                       u.email AS owner_email
+                FROM projects p
+                LEFT JOIN users u ON u.user_token = p.user_token
+                WHERE p.id=?
+                """,
+                (resource_id,),
+            )
+        ).fetchone()
+        return dict(row) if row else None
+    if resource_kind == "job":
+        job_id = await resolve_job_pk(db, resource_id)
+        if not job_id:
+            return None
+        row = await (
+            await db.execute(
+                """
+                SELECT j.id AS resource_id,
+                       COALESCE(NULLIF(j.label, ''), j.id) AS resource_label,
+                       j.seq AS resource_seq,
+                       j.project_id,
+                       COALESCE(j.user_token, p.user_token) AS owner_user_token,
+                       COALESCE(p.is_public, 0) AS is_public,
+                       u.email AS owner_email
+                FROM jobs j
+                LEFT JOIN projects p ON p.id = j.project_id
+                LEFT JOIN users u ON u.user_token = COALESCE(j.user_token, p.user_token)
+                WHERE j.id=?
+                """,
+                (job_id,),
+            )
+        ).fetchone()
+        return dict(row) if row else None
+    return None
+
+
+async def _access_request_resource_is_accessible(
+    db,
+    request: Request,
+    resource_kind: str,
+    resource_id: str,
+) -> bool:
+    if resource_kind == "project":
+        return bool(await load_accessible_project(db, request, resource_id))
+    if resource_kind == "job":
+        return bool(await load_accessible_job(db, request, resource_id, "id"))
+    return False
+
+
+async def _load_resource_access_request(
+    db,
+    resource_kind: str,
+    resource_id: str,
+    requester_token: str,
+) -> Optional[dict]:
+    row = await (
+        await db.execute(
+            """
+            SELECT id, resource_kind, resource_id, project_id, owner_user_token,
+                   requester_user_token, requester_display, requester_email,
+                   status, notification_status, notification_detail,
+                   created_at, updated_at, decided_at, decided_by
+            FROM resource_access_requests
+            WHERE resource_kind=? AND resource_id=? AND requester_user_token=?
+            """,
+            (resource_kind, resource_id, requester_token),
+        )
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def _resource_access_request_response(row: Optional[dict] = None, **extra) -> dict:
+    request_row = row or {}
+    notification_status = request_row.get("notification_status") or ""
+    payload = {
+        "accessible": False,
+        "requestable": True,
+        "requested": bool(row),
+        "request_status": request_row.get("status") or "",
+        "requested_at": request_row.get("created_at") or "",
+        **extra,
+    }
+    if notification_status:
+        payload["notification"] = {
+            "status": notification_status,
+            "detail": request_row.get("notification_detail") or "",
+        }
+    return payload
+
+
+@app.get("/api/access-requests/{resource_kind}/{resource_id}")
+async def get_project_access_request(request: Request, resource_kind: str, resource_id: str):
+    requester_token = current_user_token(request)
+    db = await get_db()
+    try:
+        resource = await _resolve_access_request_resource(db, resource_kind, resource_id)
+        if not resource:
+            raise HTTPException(404, "资源不存在")
+        canonical_resource_id = resource["resource_id"]
+        if await _access_request_resource_is_accessible(
+            db,
+            request,
+            resource_kind,
+            canonical_resource_id,
+        ):
+            return {"accessible": True, "requestable": False, "requested": False}
+        request_row = await _load_resource_access_request(
+            db,
+            resource_kind,
+            canonical_resource_id,
+            requester_token,
+        )
+        return _resource_access_request_response(request_row)
+    finally:
+        await db.close()
+
+
+@app.post("/api/access-requests/{resource_kind}/{resource_id}")
+async def create_project_access_request(request: Request, resource_kind: str, resource_id: str):
+    requester_token = current_user_token(request)
+    requester = current_user(request)
+    db = await get_db()
+    try:
+        resource = await _resolve_access_request_resource(db, resource_kind, resource_id)
+        if not resource:
+            raise HTTPException(404, "资源不存在")
+        canonical_resource_id = resource["resource_id"]
+        if await _access_request_resource_is_accessible(
+            db,
+            request,
+            resource_kind,
+            canonical_resource_id,
+        ):
+            return {"accessible": True, "requestable": False, "requested": False}
+        if not resource.get("owner_user_token"):
+            raise HTTPException(409, "该资源没有可审批的负责人")
+
+        request_id = str(uuid.uuid4())
+        requester_display = requester.get("display_name") or requester_token
+        requester_email = _normalize_email(
+            requester.get("email") or requester_token,
+            FEEDBACK_MENTION_DOMAIN,
+        )
+        insert = await db.execute(
+            """
+            INSERT OR IGNORE INTO resource_access_requests(
+                id, resource_kind, resource_id, project_id, owner_user_token,
+                requester_user_token, requester_display, requester_email
+            ) VALUES(?,?,?,?,?,?,?,?)
+            """,
+            (
+                request_id,
+                resource_kind,
+                canonical_resource_id,
+                resource.get("project_id"),
+                resource["owner_user_token"],
+                requester_token,
+                requester_display,
+                requester_email,
+            ),
+        )
+        created = insert.rowcount > 0
+        request_row = await _load_resource_access_request(
+            db,
+            resource_kind,
+            canonical_resource_id,
+            requester_token,
+        )
+        if created:
+            await write_audit(
+                db,
+                request,
+                "resource.access_request",
+                resource_type=resource_kind,
+                resource_id=canonical_resource_id,
+                details={
+                    "requester": requester_token,
+                    "project_id": resource.get("project_id"),
+                },
+            )
+        await db.commit()
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception:
+        await db.rollback()
+        raise
+    finally:
+        await db.close()
+
+    if not created:
+        return _resource_access_request_response(request_row, already_requested=True)
+
+    notification = await _send_resource_access_request_notification({
+        **resource,
+        "access_request_id": request_id,
+        "review_base_url": _app_base_url(request),
+        "resource_kind": resource_kind,
+        "requester_user_token": requester_token,
+        "requester_display": requester_display,
+        "requester_email": requester_email,
+        "created_at": request_row.get("created_at") if request_row else "",
+    })
+    notification_db = await get_db()
+    try:
+        await notification_db.execute(
+            """
+            UPDATE resource_access_requests
+            SET notification_status=?, notification_detail=?, updated_at=CURRENT_TIMESTAMP
+            WHERE id=?
+            """,
+            (notification.get("status", ""), notification.get("detail", ""), request_id),
+        )
+        await notification_db.commit()
+        request_row = await _load_resource_access_request(
+            notification_db,
+            resource_kind,
+            canonical_resource_id,
+            requester_token,
+        )
+    finally:
+        await notification_db.close()
+    return _resource_access_request_response(request_row, already_requested=False)
+
+
+async def _load_access_request_for_review(db, request_id: str) -> Optional[dict]:
+    row = await (
+        await db.execute(
+            """
+            SELECT id, resource_kind, resource_id, project_id, owner_user_token,
+                   requester_user_token, requester_display, requester_email,
+                   status, notification_status, created_at, decided_at, decided_by
+            FROM resource_access_requests
+            WHERE id=?
+            """,
+            (request_id,),
+        )
+    ).fetchone()
+    return dict(row) if row else None
+
+
+async def _access_request_review_resource(db, request: Request, request_row: dict) -> Optional[dict]:
+    resource = await _resolve_access_request_resource(
+        db,
+        request_row["resource_kind"],
+        request_row["resource_id"],
+    )
+    reviewer_token = current_user_token(request)
+    if not resource or resource.get("owner_user_token") != reviewer_token:
+        return None
+    return resource
+
+
+def _access_request_review_response(request_row: dict, resource: dict) -> dict:
+    resource_kind = request_row["resource_kind"]
+    resource_handle = (
+        str(resource.get("resource_seq"))
+        if resource_kind == "job" and resource.get("resource_seq") is not None
+        else resource["resource_id"]
+    )
+    resource_path = (
+        f"/job/{resource_handle}"
+        if resource_kind == "job"
+        else f"/project/{resource['resource_id']}/tree"
+    )
+    return {
+        "id": request_row["id"],
+        "resource_kind": resource_kind,
+        "resource_id": resource["resource_id"],
+        "resource_label": resource.get("resource_label") or resource["resource_id"],
+        "resource_path": resource_path,
+        "requester_user_token": request_row["requester_user_token"],
+        "requester_display": request_row.get("requester_display") or request_row["requester_user_token"],
+        "requester_email": request_row.get("requester_email") or "",
+        "status": request_row.get("status") or "pending",
+        "created_at": request_row.get("created_at") or "",
+        "decided_at": request_row.get("decided_at") or "",
+        "decided_by": request_row.get("decided_by") or "",
+    }
+
+
+@app.get("/api/access-request-reviews/{request_id}")
+async def get_access_request_review(request: Request, request_id: str):
+    current_user_token(request)
+    db = await get_db()
+    try:
+        request_row = await _load_access_request_for_review(db, request_id)
+        if not request_row:
+            raise HTTPException(404, "访问申请不存在")
+        resource = await _access_request_review_resource(db, request, request_row)
+        if not resource:
+            raise HTTPException(404, "访问申请不存在")
+        return _access_request_review_response(request_row, resource)
+    finally:
+        await db.close()
+
+
+@app.post("/api/access-request-reviews/{request_id}/approve")
+async def approve_access_request(request: Request, request_id: str):
+    reviewer_token = current_user_token(request)
+    db = await get_db()
+    try:
+        request_row = await _load_access_request_for_review(db, request_id)
+        if not request_row:
+            raise HTTPException(404, "访问申请不存在")
+        resource = await _access_request_review_resource(db, request, request_row)
+        if not resource:
+            raise HTTPException(404, "访问申请不存在")
+        await db.execute(
+            """
+            INSERT OR IGNORE INTO resource_access_grants(
+                resource_kind, resource_id, user_token, granted_by
+            ) VALUES(?,?,?,?)
+            """,
+            (
+                request_row["resource_kind"],
+                request_row["resource_id"],
+                request_row["requester_user_token"],
+                reviewer_token,
+            ),
+        )
+        if request_row.get("status") != "approved":
+            await db.execute(
+                """
+                UPDATE resource_access_requests
+                SET status='approved', decided_at=CURRENT_TIMESTAMP,
+                    decided_by=?, updated_at=CURRENT_TIMESTAMP
+                WHERE id=?
+                """,
+                (reviewer_token, request_id),
+            )
+            await write_audit(
+                db,
+                request,
+                "resource.access_grant",
+                resource_type=request_row["resource_kind"],
+                resource_id=request_row["resource_id"],
+                details={
+                    "request_id": request_id,
+                    "grantee": request_row["requester_user_token"],
+                    "project_id": request_row.get("project_id"),
+                },
+            )
+        await db.commit()
+        request_row = await _load_access_request_for_review(db, request_id)
+        return _access_request_review_response(request_row, resource)
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception:
+        await db.rollback()
+        raise
+    finally:
+        await db.close()
+
 @app.get("/api/projects")
 async def list_projects(request: Request):
     db = await get_db()
@@ -7901,6 +8393,11 @@ async def update_project(request: Request, pid: str, body: dict):
         "UPDATE projects SET name=?, description=?, is_public=?, compute_target_ms=?, metric_targets_json=? WHERE id=?",
         (next_name, next_description, next_is_public, next_compute_target_ms, next_metric_targets_json, pid),
     )
+    if not row.get("is_public") and next_is_public:
+        await db.execute(
+            "DELETE FROM resource_access_requests WHERE project_id=? AND status='pending'",
+            (pid,),
+        )
     await write_audit(
         db, request, "project.update",
         resource_type="project", resource_id=pid,
@@ -8300,6 +8797,19 @@ async def permanently_delete_project(request: Request, pid: str):
 
     # Delete jobs from deleted_jobs table
     await db.execute("DELETE FROM deleted_jobs WHERE project_id=?", (pid,))
+
+    # Remove access state only when the project can no longer be restored.
+    await db.execute("DELETE FROM resource_access_requests WHERE project_id=?", (pid,))
+    await db.execute(
+        "DELETE FROM resource_access_grants WHERE resource_kind='project' AND resource_id=?",
+        (pid,),
+    )
+    if job_ids:
+        placeholders = ",".join("?" * len(job_ids))
+        await db.execute(
+            f"DELETE FROM resource_access_grants WHERE resource_kind='job' AND resource_id IN ({placeholders})",
+            job_ids,
+        )
 
     # Delete from deleted_projects
     await db.execute("DELETE FROM deleted_projects WHERE id=?", (pid,))
@@ -8872,7 +9382,7 @@ async def list_job_groups(
                 "is_owner": True if not current_user_token(request) else row["user_token"] == current_user_token(request),
                 "is_favorite": 1 if row["is_favorite"] else 0,
                 "has_experiment_tree": 1 if row["has_experiment_tree"] else 0,
-                "visibility": "shared" if row["is_public"] else "personal",
+                "visibility": "shared" if row["is_public"] or row["user_token"] != current_user_token(request) else "personal",
             }
             for row in project_rows
         )
@@ -10457,9 +10967,13 @@ async def share_job(request: Request, jid: str):
                     raise HTTPException(404, "Project not found")
                 project_is_public = bool(project.get("is_public"))
                 if not project_is_public:
-                    if not job.get("is_owner"):
+                    if project.get("user_token") != current_user_token(request):
                         raise HTTPException(404)
                     await db.execute("UPDATE projects SET is_public=1 WHERE id=?", (project_id,))
+                    await db.execute(
+                        "DELETE FROM resource_access_requests WHERE project_id=? AND status='pending'",
+                        (project_id,),
+                    )
                     project_is_public = True
                     changed = True
             else:
@@ -10976,6 +11490,11 @@ async def patch_job(request: Request, jid: str, body: dict):
             await _clear_experiment_job_links(db, [jid])
         await db.execute("UPDATE jobs SET project_id=? WHERE id=?",
                          (next_project_id, jid))
+        await db.execute(
+            "UPDATE resource_access_requests SET project_id=?, updated_at=CURRENT_TIMESTAMP "
+            "WHERE resource_kind='job' AND resource_id=?",
+            (next_project_id, jid),
+        )
     if "is_pinned" in body:
         await db.execute("UPDATE jobs SET is_pinned=? WHERE id=?", (1 if body["is_pinned"] else 0, jid))
     await write_audit(
@@ -11014,6 +11533,14 @@ async def delete_job(request: Request, jid: str):
     _remove_job_dir(jid)
 
     await _clear_experiment_job_links(db, [jid])
+    await db.execute(
+        "DELETE FROM resource_access_requests WHERE resource_kind='job' AND resource_id=?",
+        (jid,),
+    )
+    await db.execute(
+        "DELETE FROM resource_access_grants WHERE resource_kind='job' AND resource_id=?",
+        (jid,),
+    )
     await db.execute("DELETE FROM jobs WHERE id=?", (jid,))
     await write_audit(
         db, request, "job.delete",

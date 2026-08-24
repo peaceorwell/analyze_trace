@@ -51,6 +51,7 @@ async def init_db():
         await db.executescript("""
             CREATE TABLE IF NOT EXISTS users (
                 user_token  TEXT PRIMARY KEY,
+                email       TEXT DEFAULT NULL,
                 display_name_override TEXT DEFAULT NULL,
                 avatar_color TEXT DEFAULT NULL,
                 created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -90,6 +91,34 @@ async def init_db():
                 sort_order   INTEGER NOT NULL,
                 updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY(project_id, user_token)
+            );
+
+            CREATE TABLE IF NOT EXISTS resource_access_requests (
+                id                   TEXT PRIMARY KEY,
+                resource_kind        TEXT NOT NULL CHECK(resource_kind IN ('project','job')),
+                resource_id          TEXT NOT NULL,
+                project_id           TEXT,
+                owner_user_token     TEXT NOT NULL,
+                requester_user_token TEXT NOT NULL,
+                requester_display    TEXT DEFAULT '',
+                requester_email      TEXT DEFAULT '',
+                status               TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved')),
+                notification_status  TEXT DEFAULT '',
+                notification_detail  TEXT DEFAULT '',
+                created_at           DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at           DATETIME DEFAULT CURRENT_TIMESTAMP,
+                decided_at           DATETIME DEFAULT NULL,
+                decided_by           TEXT DEFAULT '',
+                UNIQUE(resource_kind, resource_id, requester_user_token)
+            );
+
+            CREATE TABLE IF NOT EXISTS resource_access_grants (
+                resource_kind TEXT NOT NULL CHECK(resource_kind IN ('project','job')),
+                resource_id   TEXT NOT NULL,
+                user_token    TEXT NOT NULL,
+                granted_by    TEXT NOT NULL,
+                created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(resource_kind, resource_id, user_token)
             );
 
             CREATE TABLE IF NOT EXISTS jobs (
@@ -258,6 +287,7 @@ async def init_db():
 
         # Column migrations for databases created by earlier versions.
         await add_column_if_missing(db, "users", "created_at", "DATETIME")
+        await add_column_if_missing(db, "users", "email", "TEXT DEFAULT NULL")
         await add_column_if_missing(db, "users", "display_name_override", "TEXT DEFAULT NULL")
         await add_column_if_missing(db, "users", "avatar_color", "TEXT DEFAULT NULL")
         await add_column_if_missing(db, "projects", "user_token", "TEXT")
@@ -365,6 +395,14 @@ async def init_db():
             CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_token);
             CREATE INDEX IF NOT EXISTS idx_project_favorites_user ON project_favorites(user_token, created_at);
             CREATE INDEX IF NOT EXISTS idx_project_orders_user_order ON project_orders(user_token, sort_order);
+            CREATE INDEX IF NOT EXISTS idx_resource_access_requests_owner_status
+                ON resource_access_requests(owner_user_token, status, created_at);
+            CREATE INDEX IF NOT EXISTS idx_resource_access_requests_requester
+                ON resource_access_requests(requester_user_token, created_at);
+            CREATE INDEX IF NOT EXISTS idx_resource_access_requests_project
+                ON resource_access_requests(project_id, status, created_at);
+            CREATE INDEX IF NOT EXISTS idx_resource_access_grants_user
+                ON resource_access_grants(user_token, resource_kind, created_at);
             CREATE INDEX IF NOT EXISTS idx_jobs_user ON jobs(user_token);
             CREATE INDEX IF NOT EXISTS idx_jobs_project_created ON jobs(project_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_jobs_mode_status_created ON jobs(mode, status, created_at);

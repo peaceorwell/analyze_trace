@@ -19,6 +19,27 @@ def test_job_share_warns_before_publishing_private_project():
     assert share_job.index("await askConfirm") < share_job.index("fetch(`/api/jobs/${jobId}/share`")
 
 
+def test_private_project_links_offer_access_request_for_jobs_and_experiment_tree():
+    panel = _section(APP_JS, "const AccessRequestPanel = {", "const JobDetail = {")
+    review = _section(APP_JS, "const AccessRequestReview = {", "const JobDetail = {")
+    load_job_route = _section(APP_JS, "const loadJobRoute = async to => {", "const resumeCurrentRouteAfterLogin")
+    experiment_tree = _section(APP_JS, "const ExperimentTree = {", "// ══════════════════════════════════════════════════════════════════════════════\n// Router definition")
+
+    assert "申请访问权限" in panel
+    assert "/api/access-requests/${encodeURIComponent(props.resourceType)}" in panel
+    assert "负责人会收到邮件通知并可单独授权给你" in panel
+    assert 'resource-type="job"' in APP_JS
+    assert 'resource-type="project"' in experiment_tree
+    assert "accessUnavailable.value = true" in experiment_tree
+    assert 'return { path: "/" };' not in load_job_route
+    assert ".access-request-panel" in STYLE_CSS
+    assert "同意并授权" in review
+    assert "/api/access-request-reviews/${encodeURIComponent(requestId.value)}/approve" in review
+    assert '{ path: "/access-request/:requestId", component: AccessRequestReview }' in APP_JS
+    assert "不会公开项目" in review
+    assert ".access-review-card" in STYLE_CSS
+
+
 def test_destructive_job_actions_keep_the_original_job_id():
     delete_job = _section(APP_JS, "const deleteJob = async () => {", "const deleteFile")
     delete_file = _section(APP_JS, "const deleteFile = async slot => {", "const editLabel")
@@ -94,7 +115,7 @@ def test_kernel_host_op_details_are_nested_under_all_kernels():
 
 
 def test_frontend_recovers_from_a_stale_version():
-    assert 'const CLIENT_APP_VERSION = "0.5.49";' in APP_JS
+    assert 'const CLIENT_APP_VERSION = "0.5.50";' in APP_JS
     assert 'const APP_VERSION_CHECK_INTERVAL_MS = 60_000;' in APP_JS
     assert 'const APP_VERSION_QUERY_PARAM = "_app_version";' in APP_JS
     assert 'cache: "no-store"' in APP_JS
@@ -228,7 +249,7 @@ def test_header_exposes_user_group_and_new_trial_entry_points():
     assert 'aria-labelledby="user-group-title"' in INDEX_HTML
     assert 'const USER_GROUP_LINK = "https://ims.cambricon.com/woa/invite/PPtk2dW22h5?channel=hwj-v7";' in APP_JS
     assert "copyUserGroupLink" in APP_JS
-    assert 'src="/static/tpa-user-group.jpeg?v=0.5.49"' in INDEX_HTML
+    assert 'src="/static/tpa-user-group.jpeg?v=0.5.50"' in INDEX_HTML
     assert 'download="tpa用户群入群图片.jpeg"' in INDEX_HTML
 
 

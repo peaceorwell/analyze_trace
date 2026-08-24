@@ -73,7 +73,7 @@ def test_config_reports_local_execution_flags(client):
     assert r.status_code == 200
     assert r.headers["cache-control"] == "no-store, max-age=0"
     assert r.json() == {
-        "version": "0.5.49",
+        "version": "0.5.50",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -2373,6 +2373,235 @@ def test_ldap_auth_requires_login_and_isolates_user_data(isolated_server, monkey
         candidates = test_client.get(f"/api/compare-candidates?project_id={shared_project['id']}")
         assert candidates.status_code == 200
         assert [item["id"] for item in candidates.json()["data"]] == ["shared-job"]
+
+
+def test_task_and_project_owners_can_approve_scoped_access_requests(isolated_server, monkeypatch):
+    def fake_authenticate(username, password):
+        if password != "ok":
+            raise web_server.ldap_auth.AuthError("bad credentials")
+        return {
+            "username": username,
+            "display_name": f"{username.title()} User",
+            "email": f"{username}@example.com",
+            "dn": f"CN={username},DC=example,DC=com",
+        }
+
+    sent = []
+    monkeypatch.setattr(web_server, "AUTH_MODE", "ldap")
+    monkeypatch.setattr(web_server, "AUTH_ENABLED", True)
+    monkeypatch.setattr(web_server.ldap_auth, "authenticate", fake_authenticate)
+    monkeypatch.setattr(web_server, "PUBLIC_BASE_URL", "http://trace.example")
+    monkeypatch.setattr(web_server, "SMTP_HOST", "smtp.test")
+    monkeypatch.setattr(web_server, "SENDMAIL_COMMAND", "")
+    monkeypatch.setattr(web_server, "FEEDBACK_EMAIL_NOTIFICATIONS_ENABLED", True)
+    monkeypatch.setattr(
+        web_server,
+        "_send_email_sync",
+        lambda recipients, subject, body: sent.append({
+            "recipients": recipients,
+            "subject": subject,
+            "body": body,
+        }),
+    )
+
+    with TestClient(isolated_server.app) as test_client:
+        assert test_client.post("/api/login", json={"username": "alice", "password": "ok"}).status_code == 200
+        project = test_client.post("/api/projects", json={"name": "Private Project"}).json()
+
+        async def insert_job():
+            db = await web_db.get_db()
+            try:
+                await db.execute(
+                    "INSERT INTO jobs(id, project_id, user_token, label, mode, status) VALUES(?,?,?,?,?,?)",
+                    ("private-job", project["id"], "carol", "private job", "single", "done"),
+                )
+                await db.commit()
+                row = await (await db.execute("SELECT seq FROM jobs WHERE id=?", ("private-job",))).fetchone()
+                return row["seq"]
+            finally:
+                await db.close()
+
+        job_handle = str(asyncio.run(insert_job()))
+        assert test_client.post("/api/logout").status_code == 200
+        assert test_client.post("/api/login", json={"username": "carol", "password": "ok"}).status_code == 200
+        task_owner_status = test_client.get(f"/api/access-requests/job/{job_handle}")
+        assert task_owner_status.status_code == 200
+        assert task_owner_status.json()["accessible"] is True
+        assert test_client.get(f"/api/projects/{project['id']}/experiments").status_code == 404
+
+        assert test_client.post("/api/logout").status_code == 200
+        assert test_client.post("/api/login", json={"username": "bob", "password": "ok"}).status_code == 200
+        assert test_client.get(f"/api/projects/{project['id']}/experiments").status_code == 404
+        assert test_client.get(f"/api/jobs/{job_handle}").status_code == 404
+
+        initial = test_client.get(f"/api/access-requests/project/{project['id']}")
+        assert initial.status_code == 200
+        assert initial.json() == {
+            "accessible": False,
+            "requestable": True,
+            "requested": False,
+            "request_status": "",
+            "requested_at": "",
+        }
+
+        created = test_client.post(f"/api/access-requests/job/{job_handle}")
+        assert created.status_code == 200
+        assert created.json()["requested"] is True
+        assert created.json()["already_requested"] is False
+        assert created.json()["notification"]["status"] == "sent"
+        assert "recipients" not in created.json()["notification"]
+        assert len(sent) == 1
+        assert sent[0]["recipients"] == ["carol@example.com"]
+        assert "任务访问申请: private job" in sent[0]["subject"]
+        assert "申请人: Bob User" in sent[0]["body"]
+        assert "邮箱: bob@example.com" in sent[0]["body"]
+        assert "不会将项目公开" in sent[0]["body"]
+
+        duplicate = test_client.post("/api/access-requests/job/private-job")
+        assert duplicate.status_code == 200
+        assert duplicate.json()["already_requested"] is True
+        assert duplicate.json()["notification"]["status"] == "sent"
+        assert len(sent) == 1
+
+        assert test_client.get("/api/access-requests/project/missing-project").status_code == 404
+
+        async def load_access_rows():
+            db = await web_db.get_db()
+            try:
+                requests = await (
+                    await db.execute(
+                        "SELECT id, resource_kind, resource_id, owner_user_token, requester_user_token, "
+                        "requester_email, status, notification_status "
+                        "FROM resource_access_requests WHERE project_id=? ORDER BY created_at",
+                        (project["id"],),
+                    )
+                ).fetchall()
+                grants = await (
+                    await db.execute(
+                        "SELECT resource_kind, resource_id, user_token, granted_by "
+                        "FROM resource_access_grants ORDER BY resource_kind, resource_id, user_token"
+                    )
+                ).fetchall()
+                audits = await (
+                    await db.execute(
+                        "SELECT action, resource_type, resource_id FROM audit_logs "
+                        "WHERE action IN ('resource.access_request', 'resource.access_grant') "
+                        "ORDER BY created_at, rowid"
+                    )
+                ).fetchall()
+                return [dict(row) for row in requests], [dict(row) for row in grants], [dict(row) for row in audits]
+            finally:
+                await db.close()
+
+        request_rows, grant_rows, audit_rows = asyncio.run(load_access_rows())
+        assert len(request_rows) == 1
+        task_request = request_rows[0]
+        assert task_request | {"id": "ignored"} == {
+            "id": "ignored",
+            "resource_kind": "job",
+            "resource_id": "private-job",
+            "owner_user_token": "carol",
+            "requester_user_token": "bob",
+            "requester_email": "bob@example.com",
+            "status": "pending",
+            "notification_status": "sent",
+        }
+        assert f"处理申请: http://trace.example/#/access-request/{task_request['id']}" in sent[0]["body"]
+        assert grant_rows == []
+        assert audit_rows == [{
+            "action": "resource.access_request",
+            "resource_type": "job",
+            "resource_id": "private-job",
+        }]
+
+        assert test_client.get(f"/api/access-request-reviews/{task_request['id']}").status_code == 404
+
+        assert test_client.post("/api/logout").status_code == 200
+        assert test_client.post("/api/login", json={"username": "alice", "password": "ok"}).status_code == 200
+        assert test_client.get(f"/api/access-request-reviews/{task_request['id']}").status_code == 404
+        assert test_client.post(f"/api/access-request-reviews/{task_request['id']}/approve").status_code == 404
+
+        assert test_client.post("/api/logout").status_code == 200
+        assert test_client.post("/api/login", json={"username": "carol", "password": "ok"}).status_code == 200
+        review = test_client.get(f"/api/access-request-reviews/{task_request['id']}")
+        assert review.status_code == 200
+        assert review.json()["requester_user_token"] == "bob"
+        assert review.json()["resource_kind"] == "job"
+        assert review.json()["resource_path"] == f"/job/{job_handle}"
+        approved = test_client.post(f"/api/access-request-reviews/{task_request['id']}/approve")
+        assert approved.status_code == 200
+        assert approved.json()["status"] == "approved"
+        assert test_client.post(f"/api/access-request-reviews/{task_request['id']}/approve").status_code == 200
+
+        assert test_client.post("/api/logout").status_code == 200
+        assert test_client.post("/api/login", json={"username": "bob", "password": "ok"}).status_code == 200
+        assert test_client.get(f"/api/jobs/{job_handle}").status_code == 200
+        assert test_client.get(f"/api/projects/{project['id']}/experiments").status_code == 404
+        assert project["id"] not in {item["id"] for item in test_client.get("/api/projects").json()}
+
+        project_request_response = test_client.post(f"/api/access-requests/project/{project['id']}")
+        assert project_request_response.status_code == 200
+        assert len(sent) == 2
+        assert sent[1]["recipients"] == ["alice@example.com"]
+        assert "项目访问申请: Private Project" in sent[1]["subject"]
+
+        request_rows, grant_rows, audit_rows = asyncio.run(load_access_rows())
+        project_request = next(row for row in request_rows if row["resource_kind"] == "project")
+        assert project_request["owner_user_token"] == "alice"
+
+        assert test_client.post("/api/logout").status_code == 200
+        assert test_client.post("/api/login", json={"username": "carol", "password": "ok"}).status_code == 200
+        assert test_client.post(f"/api/access-request-reviews/{project_request['id']}/approve").status_code == 404
+
+        assert test_client.post("/api/logout").status_code == 200
+        assert test_client.post("/api/login", json={"username": "alice", "password": "ok"}).status_code == 200
+        project_approved = test_client.post(f"/api/access-request-reviews/{project_request['id']}/approve")
+        assert project_approved.status_code == 200
+        assert project_approved.json()["status"] == "approved"
+
+        assert test_client.post("/api/logout").status_code == 200
+        assert test_client.post("/api/login", json={"username": "bob", "password": "ok"}).status_code == 200
+        assert test_client.get(f"/api/projects/{project['id']}/experiments").status_code == 200
+        visible_project = next(item for item in test_client.get("/api/projects").json() if item["id"] == project["id"])
+        assert visible_project["is_public"] == 0
+        assert visible_project["is_owner"] is False
+        assert visible_project["visibility"] == "shared"
+        shared_groups = test_client.get("/api/job-groups?project_view=shared").json()["data"]
+        assert project["id"] in {item["id"] for item in shared_groups}
+
+        async def insert_grantee_job():
+            db = await web_db.get_db()
+            try:
+                await db.execute(
+                    "INSERT INTO jobs(id, project_id, user_token, label, mode, status) VALUES(?,?,?,?,?,?)",
+                    ("grantee-job", project["id"], "bob", "grantee job", "single", "done"),
+                )
+                await db.commit()
+            finally:
+                await db.close()
+
+        asyncio.run(insert_grantee_job())
+        assert test_client.post("/api/jobs/grantee-job/share").status_code == 404
+        still_private = next(item for item in test_client.get("/api/projects").json() if item["id"] == project["id"])
+        assert still_private["is_public"] == 0
+
+        request_rows, grant_rows, audit_rows = asyncio.run(load_access_rows())
+        assert grant_rows == [
+            {
+                "resource_kind": "job",
+                "resource_id": "private-job",
+                "user_token": "bob",
+                "granted_by": "carol",
+            },
+            {
+                "resource_kind": "project",
+                "resource_id": project["id"],
+                "user_token": "bob",
+                "granted_by": "alice",
+            },
+        ]
+        assert [row["action"] for row in audit_rows].count("resource.access_request") == 2
+        assert [row["action"] for row in audit_rows].count("resource.access_grant") == 2
 
 
 @pytest.mark.parametrize(
