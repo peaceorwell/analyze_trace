@@ -7,7 +7,7 @@ const { createRouter, createWebHashHistory } = VueRouter;
 
 let appInitialized = false;
 const DEFAULT_RESULT_TAB = "chart";
-const CLIENT_APP_VERSION = "0.5.48";
+const CLIENT_APP_VERSION = "0.5.49";
 const APP_VERSION_CHECK_INTERVAL_MS = 60_000;
 const APP_VERSION_QUERY_PARAM = "_app_version";
 const USER_GROUP_LINK = "https://ims.cambricon.com/woa/invite/PPtk2dW22h5?channel=hwj-v7";
@@ -768,6 +768,15 @@ const tokenList = reactive({ items: [], loading: false, error: "" });
 const newlyCreatedToken = ref("");
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
+  {
+    version: "0.5.49",
+    date: "2026-08-24",
+    title: "修复并加固 TPA MCP",
+    items: [
+      "MCP 内部 API 调用改用可信回环地址，修复 Host 注入和重复启动失败。",
+      "远程 MCP 禁止读取服务端文件路径，本地 stdio 上传改为分块流式传输。",
+    ],
+  },
   {
     version: "0.5.48",
     date: "2026-08-21",

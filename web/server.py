@@ -63,7 +63,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.5.48"
+APP_VERSION = "0.5.49"
 NO_STORE_HEADERS = {"Cache-Control": "no-store, max-age=0"}
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
@@ -1044,29 +1044,15 @@ try:
     from fastmcp.utilities.lifespan import combine_lifespans
     from tpa_mcp.server import mcp as _tpa_mcp
     _TPA_MCP_TARGET = _tpa_mcp.http_app(path="/")
-except Exception:
-    # 依赖缺失或 TPA MCP 模块 import 失败时降级，不阻塞 analyze server。
+except ImportError as exc:
+    logger.warning(
+        "tpa_mcp_unavailable",
+        extra={"event": "tpa_mcp_unavailable", "error": str(exc)},
+    )
     _TPA_MCP_TARGET = None
 
-# FastMCP 的 StreamableHTTPSessionManager 是模块级单例、只能 run() 一次。
-# TestClient 等环境会在同一进程内多次进入 lifespan，需加幂等保护：MCP 部分
-# 只初始化一次，后续重复启动静默跳过（analyze 自身 lifespan 始终照常执行）。
-_MCP_LIFESPAN_STARTED = False
-
-
-@asynccontextmanager
-async def _mcp_lifespan(app):
-    global _MCP_LIFESPAN_STARTED
-    if _MCP_LIFESPAN_STARTED:
-        yield
-        return
-    _MCP_LIFESPAN_STARTED = True
-    async with _TPA_MCP_TARGET.lifespan(app):
-        yield
-
-
 if _TPA_MCP_TARGET is not None:
-    app = FastAPI(lifespan=combine_lifespans(lifespan, _mcp_lifespan))
+    app = FastAPI(lifespan=combine_lifespans(lifespan, _TPA_MCP_TARGET.lifespan))
     app.mount("/mcp", _TPA_MCP_TARGET)
 else:
     app = FastAPI(lifespan=lifespan)

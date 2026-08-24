@@ -73,7 +73,7 @@ def test_config_reports_local_execution_flags(client):
     assert r.status_code == 200
     assert r.headers["cache-control"] == "no-store, max-age=0"
     assert r.json() == {
-        "version": "0.5.48",
+        "version": "0.5.49",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -5757,3 +5757,68 @@ def test_token_cannot_revoke_others(isolated_server, monkeypatch):
         assert test_client.post("/api/login", json={"username": "alice", "password": "ok"}).status_code == 200
         # Alice cannot revoke Bob's token; returns 404 (existence hidden).
         assert test_client.post(f"/api/tokens/{token_id}/revoke").status_code == 404
+
+
+def test_mcp_endpoint_survives_repeated_app_lifespans(isolated_server, monkeypatch):
+    _ldap_env(monkeypatch)
+    initialize = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "test-client", "version": "1"},
+        },
+    }
+    mcp_headers = {
+        "Accept": "application/json, text/event-stream",
+        "Content-Type": "application/json",
+    }
+
+    with TestClient(isolated_server.app) as test_client:
+        assert test_client.post(
+            "/api/login", json={"username": "alice", "password": "ok"}
+        ).status_code == 200
+        token = test_client.post(
+            "/api/tokens", json={"name": "mcp", "scope": "readonly"}
+        ).json()["token"]
+        first = test_client.post(
+            "/mcp/",
+            json=initialize,
+            headers={**mcp_headers, "Authorization": f"Bearer {token}"},
+        )
+        assert first.status_code == 200
+        assert "protocolVersion" in first.text
+        session_id = first.headers["Mcp-Session-Id"]
+        session_headers = {**mcp_headers, "Authorization": f"Bearer {token}", "Mcp-Session-Id": session_id}
+        initialized = test_client.post(
+            "/mcp/",
+            json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+            headers=session_headers,
+        )
+        assert initialized.status_code in {200, 202}
+        remote_upload = test_client.post(
+            "/mcp/",
+            json={
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "tpa_upload_trace",
+                    "arguments": {"file_a": "/srv/private/config.py"},
+                },
+            },
+            headers=session_headers,
+        )
+        assert remote_upload.status_code == 200
+        assert "disabled over remote HTTP MCP" in remote_upload.text
+
+    with TestClient(isolated_server.app) as test_client:
+        second = test_client.post(
+            "/mcp/",
+            json=initialize,
+            headers={**mcp_headers, "Authorization": f"Bearer {token}"},
+        )
+        assert second.status_code == 200
+        assert "protocolVersion" in second.text

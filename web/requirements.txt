@@ -7,4 +7,4 @@ ijson>=3.2.3
 werkzeug>=3.0.0
 ldap3>=2.9.1
 itsdangerous>=2.2.0
-fastmcp>=3.0.2
+fastmcp>=3.4.7,<4

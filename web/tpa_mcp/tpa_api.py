@@ -10,8 +10,10 @@ web UI). The token is passed in explicitly; callers normally pull it from the
 """
 from __future__ import annotations
 
+from contextlib import ExitStack
 import json
 import os
+import secrets
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -48,8 +50,9 @@ class TpaClient:
         *,
         params: Optional[dict[str, Any]] = None,
         body: Optional[dict[str, Any]] = None,
-        data: Optional[bytes] = None,
+        data: Optional[Any] = None,
         content_type: Optional[str] = None,
+        content_length: Optional[int] = None,
     ) -> tuple[int, Any]:
         url = self.base_url + path
         if params:
@@ -61,14 +64,16 @@ class TpaClient:
             headers = self._headers()
             if content_type:
                 headers["Content-Type"] = content_type
+            if content_length is not None:
+                headers["Content-Length"] = str(content_length)
 
-        req = urllib.request.Request(url, method=method, headers=headers)
-        payload: Optional[bytes] = data
+        payload = data
         if body is not None:
             payload = json.dumps(body).encode("utf-8")
+        req = urllib.request.Request(url, data=payload, method=method, headers=headers)
 
         try:
-            with urllib.request.urlopen(req, data=payload, timeout=60) as resp:
+            with urllib.request.urlopen(req, timeout=60) as resp:
                 raw = resp.read()
                 status = resp.status
         except urllib.error.HTTPError as e:
@@ -97,31 +102,46 @@ class TpaClient:
         self,
         path: str,
         fields: dict[str, Any],
-        files: dict[str, tuple[str, bytes, str]],
+        files: dict[str, tuple[str, str, str]],
     ) -> Any:
-        """POST a multipart/form-data request (used for trace uploads)."""
-        boundary = "----tpa-mcp-boundary"
-        parts: list[bytes] = []
+        """Stream a multipart/form-data request from local file paths."""
+        boundary = f"----tpa-mcp-{secrets.token_hex(16)}"
+        field_parts: list[bytes] = []
         for name, value in fields.items():
-            parts.append(
+            field_parts.append(
                 f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n"
                 f"{value}\r\n".encode("utf-8")
             )
-        for name, (filename, content, ctype) in files.items():
-            parts.append(
-                (
+        closing = f"--{boundary}--\r\n".encode("ascii")
+
+        with ExitStack() as stack:
+            file_parts = []
+            for name, (filename, file_path, ctype) in files.items():
+                safe_filename = filename.replace("\\", "\\\\").replace('"', '\\"')
+                header = (
                     f"--{boundary}\r\n"
-                    f"Content-Disposition: form-data; name=\"{name}\"; filename=\"{filename}\"\r\n"
+                    f"Content-Disposition: form-data; name=\"{name}\"; filename=\"{safe_filename}\"\r\n"
                     f"Content-Type: {ctype}\r\n\r\n"
                 ).encode("utf-8")
-                + content
-                + b"\r\n"
-            )
-        parts.append(f"--{boundary}--\r\n".encode("utf-8"))
-        body = b"".join(parts)
-        return self._request(
-            "POST",
-            path,
-            data=body,
-            content_type=f"multipart/form-data; boundary={boundary}",
-        )[1]
+                file_obj = stack.enter_context(open(file_path, "rb"))
+                file_parts.append((header, file_obj, os.fstat(file_obj.fileno()).st_size))
+
+            content_length = sum(len(part) for part in field_parts) + len(closing)
+            content_length += sum(len(header) + size + 2 for header, _, size in file_parts)
+
+            def body_chunks():
+                yield from field_parts
+                for header, file_obj, _ in file_parts:
+                    yield header
+                    while chunk := file_obj.read(1024 * 1024):
+                        yield chunk
+                    yield b"\r\n"
+                yield closing
+
+            return self._request(
+                "POST",
+                path,
+                data=body_chunks(),
+                content_type=f"multipart/form-data; boundary={boundary}",
+                content_length=content_length,
+            )[1]

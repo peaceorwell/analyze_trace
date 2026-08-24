@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "trace-analyzer"
-version = "0.5.48"
+version = "0.5.49"
 description = "Analyze PyTorch profiler Chrome Trace JSON files."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -30,6 +30,7 @@ web = [
     "aiofiles>=23.2.1",
     "ldap3>=2.9.1",
     "itsdangerous>=2.2.0",
+    "fastmcp>=3.4.7,<4",
 ]
 dev = [
     "httpx>=0.27.0",

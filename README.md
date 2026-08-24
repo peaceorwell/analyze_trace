@@ -2,7 +2,7 @@
 
 Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/内网性能分析工具，并兼容 TensorFlow Chrome Trace。它可以解析 `.json`、`.json.gz`、`.gz`、`.json.zip`、`.zip`、`.tar.gz` 和 `.tgz` trace 文件，也支持上传日志/文本自动生成证据优先的 AI 说明性报告；trace 分析可统计 GPU kernel、Triton kernel、ATen Ops、TensorFlow Ops，并提供单 trace 分析、双 trace 对比、历史管理和 Web 可视化界面。
 
-当前版本：`0.5.48`
+当前版本：`0.5.49`
 
 ## 主要功能
 
@@ -310,19 +310,20 @@ curl -H "Authorization: Bearer <token>" https://host/api/jobs
 
 analyze server 已内置一个 TPA MCP server（`web/tpa_mcp/`），把 TPA 的 `tpa.cambricon.com` 分析能力封装成 Model Context Protocol 工具，让 Claude Code / Claude Desktop 等 MCP 客户端可以直接查询/分析任务、读结果与 AI 报告、上传 trace 触发新分析。
 
-**启用**：MCP 端点与 analyze server **同一进程、同一端口**。设置环境变量 `TPA_API_KEY`（即上文 Access Token）后，analyze server 会自动挂载：
+**启用**：MCP 端点与 analyze server **同一进程、同一端口**。标准 Web 依赖已包含 FastMCP，启动 analyze server 后会自动挂载，无需设置 `TPA_API_KEY`：
 
 ```
 MCP endpoint = http://<host>:8181/mcp/
 ```
 
-若运行环境未设置 `TPA_API_KEY`，analyze server 会**优雅跳过**不挂 `/mcp`，其余功能不受影响。
+每个客户端都必须携带自己在网页中创建的 Access Token；MCP 工具回环调用 `/api/*` 时沿用该身份和访问范围。使用 Unix socket、进程内 TLS 等无法通过监听地址回环的部署，可显式设置 `TPA_INTERNAL_BASE_URL` 为可信的 analyze API 内部地址。
 
 **在 Claude Code 连接**：
 
 ```bash
 # 1) 经 analyze server（推荐，单进程单端口）
-claude mcp add tpa --transport http --url http://127.0.0.1:8181/mcp/
+claude mcp add tpa --transport http --url http://127.0.0.1:8181/mcp/ \
+  --header "Authorization: Bearer <自己的 access token>"
 
 # 2) 本地 stdio 运行（不经 analyze server）
 claude mcp add tpa \
@@ -335,12 +336,12 @@ claude mcp add tpa \
 | 工具 | 说明 |
 |---|---|
 | `tpa_list_jobs` / `tpa_get_job` / `tpa_get_job_status` | 列出/查询任务、查询紧凑状态（上传后轮询） |
-| `tpa_upload_trace` | 上传 1~2 个 trace 文件触发分析，异步立即返回 seq |
+| `tpa_upload_trace` | 本地 stdio 模式上传 1~2 个 trace；远程 HTTP MCP 请使用 REST 上传 |
 | `tpa_get_job_result` | 读任务结果表（all_kernels / aten_ops / kernel_types 等） |
 | `tpa_get_ai_report` / `tpa_get_ai_analysis_status` / `tpa_start_ai_analysis` | 读 AI 分析报告 / 查进度 / 触发 AI 分析 |
 | `tpa_get_job_report_md` / `tpa_list_projects` | 读任务 Markdown 摘要 / 列项目 |
 
-**异步分析流程**：`tpa_upload_trace` 上传后立即返回，配合 `tpa_get_job_status` 轮询到 `done`，再用 `tpa_get_job_result` / `tpa_get_ai_report` 取结果。任务可用其数字 **seq**（如 `10000679`）或 **UUID id** 引用。
+**异步分析流程**：本地 stdio 模式可调用 `tpa_upload_trace`；远程 HTTP MCP 无法安全访问客户端本地路径，请先用同一个 Bearer Token 调用 `POST /api/jobs` 上传文件，再用返回的任务 ID 调用 `tpa_get_job_status` 轮询。任务可用其数字 **seq**（如 `10000679`）或 **UUID id** 引用。
 
 完整说明（含独立 HTTP 运行方式）见 `web/tpa_mcp/README.md`。
 

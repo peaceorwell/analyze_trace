@@ -19,12 +19,18 @@ Connection example (Claude Code):
 from __future__ import annotations
 
 import os
+import sys
 from typing import Any, Optional
 
 from fastmcp import FastMCP
 
-from .auth import AnalyzeTokenVerifier
-from .tpa_api import DEFAULT_BASE_URL, TpaClient
+if __package__:
+    from .auth import AnalyzeTokenVerifier
+    from .tpa_api import DEFAULT_BASE_URL, TpaClient
+else:
+    sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+    from tpa_mcp.auth import AnalyzeTokenVerifier
+    from tpa_mcp.tpa_api import DEFAULT_BASE_URL, TpaClient
 
 mcp = FastMCP(
     "tpa",
@@ -39,34 +45,55 @@ mcp = FastMCP(
 )
 
 
+def _http_request_or_none():
+    from fastmcp.server.dependencies import get_http_request
+
+    try:
+        return get_http_request()
+    except RuntimeError:
+        return None
+
+
+def _internal_base_url(request) -> str:
+    configured = os.environ.get("TPA_INTERNAL_BASE_URL", "").strip()
+    if configured:
+        return configured.rstrip("/")
+
+    server = request.scope.get("server")
+    if not server or len(server) != 2 or server[1] is None:
+        raise RuntimeError(
+            "Cannot determine the analyze server's internal address; "
+            "set TPA_INTERNAL_BASE_URL"
+        )
+    host, port = server
+    if host in {"0.0.0.0", ""}:
+        host = "127.0.0.1"
+    elif host == "::":
+        host = "::1"
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return f"http://{host}:{port}"
+
+
 def _client() -> TpaClient:
     """Build a TpaClient that calls the analyze server's own /api as the
     current MCP user (their Bearer token), so data stays isolated per user.
 
-    When running under the merged server (/mcp), the base URL and token are
-    derived from the incoming request itself: the request's Host/Origin is the
-    analyze server, and the token is the client's access token resolved from
-    the Authorization header. When running standalone (stdio / independent
-    http_app) there is no request, so fall back to the TPA_API_KEY/TPA_BASE_URL
-    env vars (for debugging / development).
+    When running under the merged server (/mcp), the base URL is derived from
+    the ASGI server socket (or TPA_INTERNAL_BASE_URL), never the untrusted Host
+    header. The token is the client's verified access token. Stdio falls back
+    to TPA_API_KEY/TPA_BASE_URL for local debugging.
     """
-    from fastmcp.server.dependencies import get_access_token, get_http_request
+    from fastmcp.server.dependencies import get_access_token
 
     token = os.environ.get("TPA_API_KEY", "")
     base_url = os.environ.get("TPA_BASE_URL", DEFAULT_BASE_URL)
-    try:
-        at = get_access_token()
-        if at is not None and at.token:
-            token = at.token
-        req = get_http_request()
-        if req is not None:
-            # Call this same analyze server's /api/* in the user's context.
-            host = req.headers.get("host") or req.headers.get("x-forwarded-host")
-            scheme = req.url.scheme
-            if host:
-                base_url = f"{scheme}://{host}"
-    except Exception:
-        pass  # no per-request token/base available (e.g. stdio) -> keep fallback
+    at = get_access_token()
+    if at is not None and at.token:
+        token = at.token
+    request = _http_request_or_none()
+    if request is not None:
+        base_url = _internal_base_url(request)
     return TpaClient(base_url=base_url, token=token)
 
 
@@ -245,14 +272,12 @@ def _cg(filename: str) -> str:
     return "application/octet-stream"
 
 
-def _read_file_or_error(path: str) -> tuple[Optional[bytes], Optional[str]]:
+def _validate_local_file(path: str) -> Optional[str]:
     if not os.path.isfile(path):
-        return None, f"file not found: {path}"
-    try:
-        with open(path, "rb") as fh:
-            return fh.read(), None
-    except OSError as exc:
-        return None, f"cannot read {path}: {exc}"
+        return f"file not found: {path}"
+    if not os.access(path, os.R_OK):
+        return f"cannot read {path}"
+    return None
 
 
 @mcp.tool()
@@ -264,11 +289,10 @@ def tpa_upload_trace(
 ) -> Any:
     """Upload one or two trace profile files and start analysis (async).
 
-    Provide a single file for single analysis, or both file_a and file_b for a
-    compare analysis. The analysis runs asynchronously; this returns immediately
-    with the new job's seq/job_id/status. Poll with tpa_get_job_status until the
-    status is 'done', then use tpa_get_job / tpa_get_job_result to read results,
-    and tpa_start_ai_analysis to request the AI report.
+    This tool is available only when the MCP server runs locally over stdio,
+    where the paths belong to the same user and machine. Remote HTTP MCP cannot
+    safely access client-local paths; upload those files through POST /api/jobs.
+    The analysis runs asynchronously and this returns the new job immediately.
 
     Args:
         file_a: Local path to the first trace file (json / gz).
@@ -276,18 +300,24 @@ def tpa_upload_trace(
         label: Optional human-readable label for the job.
         project_id: Optional project UUID to attach the job to.
     """
-    client = _client()
-    data_a, err_a = _read_file_or_error(file_a)
+    if _http_request_or_none() is not None:
+        return {
+            "error": "tpa_upload_trace is disabled over remote HTTP MCP because "
+            "file paths would refer to the server. Upload with POST /api/jobs "
+            "using the same Bearer token, then query the returned job via MCP."
+        }
+
+    err_a = _validate_local_file(file_a)
     if err_a:
         return {"error": err_a}
-    files: dict[str, tuple[str, bytes, str]] = {
-        "file_a": (os.path.basename(file_a), data_a, _cg(file_a))
+    files: dict[str, tuple[str, str, str]] = {
+        "file_a": (os.path.basename(file_a), file_a, _cg(file_a))
     }
     if file_b:
-        data_b, err_b = _read_file_or_error(file_b)
+        err_b = _validate_local_file(file_b)
         if err_b:
             return {"error": err_b}
-        files["file_b"] = (os.path.basename(file_b), data_b, _cg(file_b))
+        files["file_b"] = (os.path.basename(file_b), file_b, _cg(file_b))
 
     fields: dict[str, Any] = {"save_triton_csv": "true"}
     if label:
