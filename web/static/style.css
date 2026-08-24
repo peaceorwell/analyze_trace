@@ -400,6 +400,23 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 .task-center-head div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .task-center-head strong { color: var(--text); font-size: 13px; }
 .task-center-head small { color: var(--text3); font-size: 10px; }
+.task-center-tabs {
+  padding: 7px 8px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px;
+  border-bottom: 1px solid var(--border); background: var(--card);
+}
+.task-center-tabs button {
+  min-width: 0; height: 30px; padding: 0 10px; border: 1px solid transparent; border-radius: 7px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  color: var(--text3); background: transparent; font-size: 11px; font-weight: 750; cursor: pointer;
+}
+.task-center-tabs button:hover { color: var(--text2); background: var(--menu-hover-bg); }
+.task-center-tabs button.active {
+  color: var(--purple-l); border-color: rgba(124,58,237,.22); background: var(--purple-bg);
+}
+.task-center-tabs button span {
+  min-width: 17px; padding: 1px 5px; border-radius: 999px;
+  color: inherit; background: rgba(148,163,184,.13); font-size: 9px;
+}
 .task-center-refresh,
 .task-center-copy,
 .task-center-error button {
@@ -421,6 +438,7 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
   color: var(--text3); font-size: 10px; font-weight: 800; letter-spacing: .04em;
 }
 .task-center-section-title.tone-error { color: var(--red); }
+.task-center-section-title.tone-success { color: var(--green); }
 .task-center-job {
   width: 100%; min-width: 0; min-height: 48px; padding: 7px 8px; border: 0; border-radius: 7px;
   display: flex; align-items: center; gap: 8px; text-align: left;
@@ -431,6 +449,7 @@ pre, code, kbd, .console-out, .console-out pre, textarea { letter-spacing: norma
 .task-center-status.status-running { color: var(--orange); animation: spin 1.5s linear infinite; }
 .task-center-status.status-pending { color: var(--yellow); }
 .task-center-status.status-error { color: var(--red); }
+.task-center-status.status-approved { color: var(--green); }
 .task-center-job-main { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; }
 .task-center-job-main strong,
 .task-center-job-main small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

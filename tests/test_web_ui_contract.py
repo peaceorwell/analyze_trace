@@ -119,7 +119,7 @@ def test_kernel_host_op_details_are_nested_under_all_kernels():
 
 
 def test_frontend_recovers_from_a_stale_version():
-    assert 'const CLIENT_APP_VERSION = "0.5.52";' in APP_JS
+    assert 'const CLIENT_APP_VERSION = "0.5.53";' in APP_JS
     assert 'const APP_VERSION_CHECK_INTERVAL_MS = 60_000;' in APP_JS
     assert 'const APP_VERSION_QUERY_PARAM = "_app_version";' in APP_JS
     assert 'cache: "no-store"' in APP_JS
@@ -238,11 +238,19 @@ def test_performance_overview_explains_compute_time_scope():
     assert "watch(selectedJob, v => {" not in APP_JS
 
 
-def test_header_task_center_tracks_active_and_failed_jobs_globally():
+def test_header_task_center_shows_my_jobs_and_access_requests():
     assert 'class="task-center-popover"' in INDEX_HTML
-    assert 'statuses: "pending,running,error"' in APP_JS
+    assert '>任务与申请</span>' in INDEX_HTML
+    assert '>我的任务 <span>{{ taskCenterJobsTotal }}</span>' in INDEX_HTML
+    assert '>我的申请 <span>{{ taskCenterRequestsTotal }}</span>' in INDEX_HTML
+    assert 'statuses: "pending,running,error,done"' in APP_JS
+    assert 'mine: "true"' in APP_JS
+    assert 'fetch("/api/access-requests?limit=50&offset=0"' in APP_JS
     assert "taskCenterPollTimer = setInterval(refreshTaskCenterWhenVisible, 5000)" in APP_JS
     assert "taskCenterActiveJobs" in APP_JS
+    assert "taskCenterCompletedJobs" in APP_JS
+    assert "taskCenterPendingRequests" in APP_JS
+    assert "taskCenterApprovedRequests" in APP_JS
     assert "copyTaskCenterError" in APP_JS
 
 
@@ -253,7 +261,7 @@ def test_header_exposes_user_group_and_new_trial_entry_points():
     assert 'aria-labelledby="user-group-title"' in INDEX_HTML
     assert 'const USER_GROUP_LINK = "https://ims.cambricon.com/woa/invite/PPtk2dW22h5?channel=hwj-v7";' in APP_JS
     assert "copyUserGroupLink" in APP_JS
-    assert 'src="/static/tpa-user-group.jpeg?v=0.5.52"' in INDEX_HTML
+    assert 'src="/static/tpa-user-group.jpeg?v=0.5.53"' in INDEX_HTML
     assert 'download="tpa用户群入群图片.jpeg"' in INDEX_HTML
 
 

@@ -63,7 +63,7 @@ PROJECT_ROOT = os.path.dirname(WEB_DIR)
 PROJECT_CLAUDE_SKILLS_DIR = os.path.join(PROJECT_ROOT, ".claude", "skills")
 DEFAULT_STORAGE_DIR = os.path.join(WEB_DIR, "storage")
 STORAGE_DIR = os.environ.get("TRACE_STORAGE_DIR", DEFAULT_STORAGE_DIR)
-APP_VERSION = "0.5.52"
+APP_VERSION = "0.5.53"
 NO_STORE_HEADERS = {"Cache-Control": "no-store, max-age=0"}
 INTERRUPTED_ANALYSIS_ERROR = "Server restarted before this analysis completed"
 BACKUP_DIR = os.environ.get("TRACE_BACKUP_DIR", os.path.join(WEB_DIR, "backups"))
@@ -8209,6 +8209,66 @@ def _resource_access_request_response(row: Optional[dict] = None, **extra) -> di
     return payload
 
 
+@app.get("/api/access-requests")
+async def list_my_access_requests(request: Request, limit: int = 50, offset: int = 0):
+    requester_token = current_user_token(request)
+    limit = min(max(limit, 1), 100)
+    offset = max(offset, 0)
+    if not requester_token:
+        return {"data": [], "total": 0, "limit": limit, "offset": offset}
+
+    db = await get_db()
+    try:
+        total_row = await (
+            await db.execute(
+                "SELECT COUNT(*) FROM resource_access_requests WHERE requester_user_token=?",
+                (requester_token,),
+            )
+        ).fetchone()
+        total = total_row[0]
+        rows = await (
+            await db.execute(
+                """
+                SELECT rar.id, rar.resource_kind, rar.resource_id, rar.project_id,
+                       rar.status, rar.notification_status, rar.created_at,
+                       rar.updated_at, rar.decided_at, rar.decided_by,
+                       j.seq AS resource_seq,
+                       CASE
+                           WHEN rar.resource_kind='job'
+                               THEN COALESCE(NULLIF(j.label, ''), NULLIF(j.file_a_name, ''), j.id, rar.resource_id)
+                           ELSE COALESCE(p.name, rar.resource_id)
+                       END AS resource_label,
+                       p.name AS project_name
+                FROM resource_access_requests rar
+                LEFT JOIN jobs j
+                    ON rar.resource_kind='job' AND j.id=rar.resource_id
+                LEFT JOIN projects p ON p.id=rar.project_id
+                WHERE rar.requester_user_token=?
+                ORDER BY CASE WHEN rar.status='pending' THEN 0 ELSE 1 END,
+                         rar.created_at DESC
+                LIMIT ? OFFSET ?
+                """,
+                (requester_token, limit, offset),
+            )
+        ).fetchall()
+    finally:
+        await db.close()
+
+    data = []
+    for row in rows:
+        item = dict(row)
+        request_label, _description = _access_request_option_meta(item["resource_kind"])
+        resource_handle = item.get("resource_seq") or item["resource_id"]
+        item["request_label"] = request_label
+        item["resource_path"] = (
+            f"/job/{resource_handle}"
+            if item["resource_kind"] == "job"
+            else f"/project/{item['resource_id']}/tree"
+        )
+        data.append(item)
+    return {"data": data, "total": total, "limit": limit, "offset": offset}
+
+
 @app.get("/api/access-requests/{resource_kind}/{resource_id}")
 async def get_project_access_request(request: Request, resource_kind: str, resource_id: str):
     requester_token = current_user_token(request)
@@ -9106,6 +9166,7 @@ async def list_jobs(
     request: Request,
     project_id: Optional[str] = None,
     project_view: Optional[str] = None,
+    mine: bool = False,
     q: Optional[str] = None,
     statuses: Optional[str] = None,
     limit: int = 50,
@@ -9119,6 +9180,10 @@ async def list_jobs(
     if access_sql:
         clauses.append(access_sql)
         params.extend(access_params)
+    owner_token = current_user_token(request)
+    if mine and owner_token:
+        clauses.append("COALESCE(NULLIF(j.user_token, ''), p.user_token) = ?")
+        params.append(owner_token)
     if project_id == "__none__":
         clauses.append("j.project_id IS NULL")
     elif project_id:

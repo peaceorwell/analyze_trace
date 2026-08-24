@@ -73,7 +73,7 @@ def test_config_reports_local_execution_flags(client):
     assert r.status_code == 200
     assert r.headers["cache-control"] == "no-store, max-age=0"
     assert r.json() == {
-        "version": "0.5.52",
+        "version": "0.5.53",
         "auth_mode": "none",
         "auth_required": False,
         "allow_file_download": True,
@@ -2546,6 +2546,13 @@ def test_task_and_project_owners_can_approve_scoped_access_requests(isolated_ser
         assert "邮箱: bob@example.com" in sent[0]["body"]
         assert "不会将项目公开" in sent[0]["body"]
 
+        my_requests = test_client.get("/api/access-requests")
+        assert my_requests.status_code == 200
+        assert my_requests.json()["total"] == 1
+        assert my_requests.json()["data"][0]["resource_kind"] == "job"
+        assert my_requests.json()["data"][0]["request_label"] == "申请当前任务的权限"
+        assert my_requests.json()["data"][0]["resource_path"] == f"/job/{job_handle}"
+
         duplicate = test_client.post("/api/access-requests/job/private-job")
         assert duplicate.status_code == 200
         assert duplicate.json()["already_requested"] is True
@@ -2639,6 +2646,10 @@ def test_task_and_project_owners_can_approve_scoped_access_requests(isolated_ser
         assert len(sent) == 3
         assert sent[2]["recipients"] == ["alice@example.com"]
         assert "项目访问申请: Private Project" in sent[2]["subject"]
+        my_requests = test_client.get("/api/access-requests")
+        assert my_requests.status_code == 200
+        assert my_requests.json()["total"] == 2
+        assert {item["resource_kind"] for item in my_requests.json()["data"]} == {"job", "project"}
 
         request_rows, grant_rows, audit_rows = asyncio.run(load_access_rows())
         project_request = next(row for row in request_rows if row["resource_kind"] == "project")
@@ -2684,6 +2695,9 @@ def test_task_and_project_owners_can_approve_scoped_access_requests(isolated_ser
         assert test_client.post("/api/jobs/grantee-job/share").status_code == 404
         still_private = next(item for item in test_client.get("/api/projects").json() if item["id"] == project["id"])
         assert still_private["is_public"] == 0
+        own_jobs = test_client.get("/api/jobs?mine=true&limit=100")
+        assert own_jobs.status_code == 200
+        assert [job["id"] for job in own_jobs.json()["data"]] == ["grantee-job"]
 
         request_rows, grant_rows, audit_rows = asyncio.run(load_access_rows())
         assert grant_rows == [
@@ -2717,6 +2731,10 @@ def test_task_and_project_owners_can_approve_scoped_access_requests(isolated_ser
         assert "项目 Public 变更申请: Private Project" in sent[4]["subject"]
         assert "申请将你的私有项目变更为 Public" in sent[4]["body"]
         assert "项目将对所有已登录用户公开访问" in sent[4]["body"]
+        my_requests = test_client.get("/api/access-requests")
+        assert my_requests.status_code == 200
+        assert my_requests.json()["total"] == 1
+        assert [item["resource_kind"] for item in my_requests.json()["data"]] == ["project_public"]
 
         request_rows, grant_rows, audit_rows = asyncio.run(load_access_rows())
         public_request = next(row for row in request_rows if row["resource_kind"] == "project_public")

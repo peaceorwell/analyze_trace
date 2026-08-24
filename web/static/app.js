@@ -7,7 +7,7 @@ const { createRouter, createWebHashHistory } = VueRouter;
 
 let appInitialized = false;
 const DEFAULT_RESULT_TAB = "chart";
-const CLIENT_APP_VERSION = "0.5.52";
+const CLIENT_APP_VERSION = "0.5.53";
 const APP_VERSION_CHECK_INTERVAL_MS = 60_000;
 const APP_VERSION_QUERY_PARAM = "_app_version";
 const USER_GROUP_LINK = "https://ims.cambricon.com/woa/invite/PPtk2dW22h5?channel=hwj-v7";
@@ -119,7 +119,11 @@ const historyJobsLimit = ref(100);
 const historyJobsOffset = ref(0);
 const historyJobsLoading = ref(false);
 const showTaskCenter = ref(false);
+const taskCenterTab = ref("jobs");
 const taskCenterJobs = ref([]);
+const taskCenterJobsTotal = ref(0);
+const taskCenterRequests = ref([]);
+const taskCenterRequestsTotal = ref(0);
 const taskCenterLoading = ref(false);
 const taskCenterError = ref("");
 const homeRecentJobs = ref([]);
@@ -769,7 +773,7 @@ const newlyCreatedToken = ref("");
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
   {
-    version: "0.5.52",
+    version: "0.5.53",
     date: "2026-08-24",
     title: "新增私有资源访问审批",
     items: [
@@ -3377,6 +3381,10 @@ const logout = async () => {
   historyGroups.value = [];
   historyJobs.value = [];
   taskCenterJobs.value = [];
+  taskCenterJobsTotal.value = 0;
+  taskCenterRequests.value = [];
+  taskCenterRequestsTotal.value = 0;
+  taskCenterTab.value = "jobs";
   homeRecentJobs.value = [];
   homeDashboardError.value = "";
   homeDashboardController?.abort();
@@ -5051,6 +5059,15 @@ const taskCenterActiveJobs = computed(() =>
 const taskCenterFailedJobs = computed(() =>
   taskCenterJobs.value.filter(job => job.status === "error").slice(0, 8)
 );
+const taskCenterCompletedJobs = computed(() =>
+  taskCenterJobs.value.filter(job => job.status === "done").slice(0, 8)
+);
+const taskCenterPendingRequests = computed(() =>
+  taskCenterRequests.value.filter(request => request.status === "pending")
+);
+const taskCenterApprovedRequests = computed(() =>
+  taskCenterRequests.value.filter(request => request.status === "approved")
+);
 const taskCenterActiveCount = computed(() => taskCenterActiveJobs.value.length);
 
 const taskCenterJobLabel = job => job?.label || job?.file_a_name || String(job?.id || "").slice(0, 8);
@@ -5060,6 +5077,13 @@ const taskCenterJobMeta = job => {
   if (job?.created_at) parts.push(fmtDate(job.created_at));
   return parts.join(" · ") || "未分组任务";
 };
+const taskCenterRequestMeta = request => {
+  const parts = [request?.request_label].filter(Boolean);
+  if (request?.project_name && request.resource_kind === "job") parts.push(request.project_name);
+  if (request?.created_at) parts.push(fmtDate(request.created_at));
+  return parts.join(" · ");
+};
+const taskCenterRequestStatusText = request => request?.status === "approved" ? "已通过" : "待审核";
 
 const loadTaskCenter = async ({ silent = false } = {}) => {
   if (taskCenterController) {
@@ -5072,26 +5096,43 @@ const loadTaskCenter = async ({ silent = false } = {}) => {
   const previousActive = new Map(taskCenterActiveJobs.value.map(job => [job.id, job]));
   try {
     const params = new URLSearchParams({
-      statuses: "pending,running,error",
+      statuses: "pending,running,error,done",
+      mine: "true",
       limit: "40",
       offset: "0",
     });
-    const r = await fetch(`/api/jobs?${params}`, {
+    const requestOptions = {
       credentials: "include",
       signal: controller.signal,
       headers: silent ? { "X-Usage-Intent": "background" } : undefined,
-    });
-    const data = await readJsonResponse(r, {});
-    if (!r.ok) {
-      throw new ApiRequestError(apiErrorMessage(r, data, "加载任务中心失败"), {
-        status: r.status,
-        authExpired: r.status === 401,
+    };
+    const [jobsResponse, requestsResponse] = await Promise.all([
+      fetch(`/api/jobs?${params}`, requestOptions),
+      fetch("/api/access-requests?limit=50&offset=0", requestOptions),
+    ]);
+    const [data, requestsData] = await Promise.all([
+      readJsonResponse(jobsResponse, {}),
+      readJsonResponse(requestsResponse, {}),
+    ]);
+    if (!jobsResponse.ok) {
+      throw new ApiRequestError(apiErrorMessage(jobsResponse, data, "加载我的任务失败"), {
+        status: jobsResponse.status,
+        authExpired: jobsResponse.status === 401,
+      });
+    }
+    if (!requestsResponse.ok) {
+      throw new ApiRequestError(apiErrorMessage(requestsResponse, requestsData, "加载我的申请失败"), {
+        status: requestsResponse.status,
+        authExpired: requestsResponse.status === 401,
       });
     }
     if (taskCenterController !== controller) return;
 
     const jobs = data.data || [];
     taskCenterJobs.value = jobs;
+    taskCenterJobsTotal.value = data.total || 0;
+    taskCenterRequests.value = requestsData.data || [];
+    taskCenterRequestsTotal.value = requestsData.total || 0;
     taskCenterError.value = "";
     if (taskCenterInitialized && previousActive.size) {
       const currentById = new Map(jobs.map(job => [job.id, job]));
@@ -5163,6 +5204,11 @@ const toggleTaskCenter = event => {
 const openTaskCenterJob = job => {
   closeTaskCenter();
   navigateToJob(job);
+};
+const openTaskCenterRequest = request => {
+  if (!request?.resource_path) return;
+  closeTaskCenter();
+  router.push({ path: request.resource_path });
 };
 const copyTaskCenterError = async job => {
   const message = String(job?.error_msg || "").trim();
@@ -15313,9 +15359,12 @@ const App = {
       loginCaptchaRequired, loginCaptchaImage,
       retryInitializeApp, submitLogin, refreshLoginCaptcha, logout,
       showTaskCenter, taskCenterLoading, taskCenterError,
-      taskCenterActiveJobs, taskCenterFailedJobs, taskCenterActiveCount,
+      taskCenterTab, taskCenterJobsTotal, taskCenterRequestsTotal,
+      taskCenterActiveJobs, taskCenterFailedJobs, taskCenterCompletedJobs, taskCenterActiveCount,
+      taskCenterPendingRequests, taskCenterApprovedRequests,
       toggleTaskCenter, closeTaskCenter, loadTaskCenter,
       openTaskCenterJob, copyTaskCenterError, taskCenterJobLabel, taskCenterJobMeta,
+      openTaskCenterRequest, taskCenterRequestMeta, taskCenterRequestStatusText,
 
       // Sidebar data
       projects,
