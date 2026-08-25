@@ -7,11 +7,11 @@ const { createRouter, createWebHashHistory } = VueRouter;
 
 let appInitialized = false;
 const DEFAULT_RESULT_TAB = "chart";
-const CLIENT_APP_VERSION = "0.5.53";
+const CLIENT_APP_VERSION = "0.5.54";
 const APP_VERSION_CHECK_INTERVAL_MS = 60_000;
 const APP_VERSION_QUERY_PARAM = "_app_version";
 const USER_GROUP_LINK = "https://ims.cambricon.com/woa/invite/PPtk2dW22h5?channel=hwj-v7";
-const NEW_TRIAL_URL = "http://10.100.146.137:33512/";
+const NEW_TRIAL_URL = "http://tpa.cambricon.com/new-tpa-web/";
 const ENTRY_NOTICE_STORAGE_PREFIX = "tpa-entry-notice-v1";
 const AI_REPORT_THEME_STORAGE_KEY = "tpa-ai-report-theme";
 const AI_REPORT_THEMES = Object.freeze([
@@ -773,7 +773,7 @@ const newlyCreatedToken = ref("");
 const showReleaseNotes = ref(false);
 const releaseNotes = Object.freeze([
   {
-    version: "0.5.53",
+    version: "0.5.54",
     date: "2026-08-24",
     title: "新增私有资源访问审批",
     items: [
