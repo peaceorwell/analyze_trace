@@ -4,6 +4,8 @@ Load this reference before executing any Phase 2 branch. The main skill owns mod
 
 Set `BRANCH_DIR` to the assigned exclusive directory under `TEAM_DIR` before running a command. Never write branch artifacts into another agent's directory.
 
+In `compute-gap-root-cause`, pair every gap-ratio claim with host attribution from `host_op_breakdown.py`: name the operators holding host self time, the launch-API count and average per-launch cost, and whether the cost sits in host-only operators or in launches. A gap ratio without a named host owner stays `insufficient`.
+
 Every branch runs inside the baseline steady window. Pass the lead-provided `--start-ns/--end-ns` to every script that accepts them, and state the window in the branch report `Scope`. A branch that must widen the window records it as a separate scoped analysis.
 
 ## Contents

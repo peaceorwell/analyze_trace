@@ -17,6 +17,7 @@ PREFLIGHT_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts/preflig
 VALIDATE_FINDINGS_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts/validate_findings.py"
 CHECK_REPORT_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts/check_report.py"
 STEP_WINDOW_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts/step_window.py"
+HOST_OP_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts/host_op_breakdown.py"
 QUERY_COMMON_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts/query_common.py"
 DEVICE_TIMELINE_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts/device_timeline.py"
 COMPUTE_BREAKDOWN_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts/compute_breakdown.py"
@@ -1321,3 +1322,144 @@ def test_analyzer_skill_requires_a_steady_window_before_measuring():
     assert "--start-ns/--end-ns" in text
     assert "`Steady Window`" in text
     assert len(text.splitlines()) < 500
+
+
+def _make_host_op_db(path):
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE string_table(ID INTEGER PRIMARY KEY, string TEXT)")
+    conn.execute(
+        """
+        CREATE TABLE Internal_operation_range_data(
+            processId INTEGER, threadId INTEGER, start INTEGER, end INTEGER,
+            extraId INTEGER, nameId INTEGER, extra TEXT, type INTEGER
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE function_data(
+            correlationId INTEGER PRIMARY KEY, nameId INTEGER, processId INTEGER,
+            threadId INTEGER, start INTEGER, end INTEGER, self INTEGER, extra TEXT
+        )
+        """
+    )
+    conn.execute(
+        "CREATE TABLE Internal_op_range_relations(externalCorrelationId INTEGER, correlationId INTEGER)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE device_task_kernel_data(
+            processId INTEGER, deviceId INTEGER, queueId INTEGER, correlationId INTEGER,
+            nameId INTEGER, start INTEGER, end INTEGER, isComputation INTEGER, extra TEXT
+        )
+        """
+    )
+    names = {}
+
+    def sid(name):
+        if name not in names:
+            names[name] = len(names) + 1
+            conn.execute("INSERT INTO string_table VALUES(?, ?)", (names[name], name))
+        return names[name]
+
+    cursor_ns = 0
+    corr = 1
+    extra = 1
+    for _ in range(4):
+        outer_start, outer_end = cursor_ns, cursor_ns + 10_000_000
+        conn.execute(
+            "INSERT INTO Internal_operation_range_data VALUES(?,?,?,?,?,?,?,?)",
+            (1, 7, outer_start, outer_end, extra, sid("custom_fused_block"), "{}", 0),
+        )
+        extra += 1
+        inner = outer_start + 1_000_000
+        for _ in range(2):
+            own = extra
+            extra += 1
+            conn.execute(
+                "INSERT INTO Internal_operation_range_data VALUES(?,?,?,?,?,?,?,?)",
+                (1, 7, inner, inner + 3_000_000, own, sid("aten::add"), "{}", 0),
+            )
+            conn.execute(
+                "INSERT INTO function_data VALUES(?,?,?,?,?,?,?,?)",
+                (corr, sid("cnInvokeKernel"), 1, 7, inner + 100, inner + 120_000, 119_900, "{}"),
+            )
+            conn.execute("INSERT INTO Internal_op_range_relations VALUES(?,?)", (own, corr))
+            conn.execute(
+                "INSERT INTO device_task_kernel_data VALUES(?,?,?,?,?,?,?,?,?)",
+                (
+                    1, 0, 1, corr, sid("triton_poi_fused_add_1"),
+                    inner + 500_000, inner + 2_000_000, 1, "{}",
+                ),
+            )
+            corr += 1
+            inner += 3_500_000
+        conn.execute(
+            "INSERT INTO Internal_operation_range_data VALUES(?,?,?,?,?,?,?,?)",
+            (1, 7, outer_end + 100_000, outer_end + 2_100_000, extra, sid("dataloader::__next__"), "{}", 0),
+        )
+        extra += 1
+        conn.execute(
+            "INSERT INTO function_data VALUES(?,?,?,?,?,?,?,?)",
+            (corr, sid("cnrtQueueSync"), 1, 7, outer_end + 200_000, outer_end + 900_000, 700_000, "{}"),
+        )
+        corr += 1
+        cursor_ns = outer_end + 3_000_000
+    conn.commit()
+    conn.close()
+
+
+def test_host_op_breakdown_uses_self_time_and_device_linkage(tmp_path):
+    db = tmp_path / "host.db"
+    _make_host_op_db(db)
+    host_ops = load_module("host_op_breakdown", HOST_OP_SCRIPT)
+
+    payload = host_ops.analyze_db(str(db))
+    by_op = {item["op"]: item for item in payload["top_operators"]}
+
+    # Nested ranges must not double count: the wrapper keeps only its own self time.
+    assert by_op["custom_fused_block"]["self_ms"] == 16.0
+    assert by_op["custom_fused_block"]["total_ms"] == 40.0
+    assert by_op["aten::add"]["self_ms"] == 24.0
+    # Operators that launch device work are separated from host-only work.
+    assert by_op["aten::add"]["device_work"] is True
+    assert by_op["aten::add"]["kernel_count"] == 8
+    assert by_op["dataloader::__next__"]["device_work"] is False
+    assert payload["host_only_self_ms"] == 24.0
+
+
+def test_host_op_breakdown_reports_launch_and_sync_api_cost(tmp_path):
+    db = tmp_path / "host.db"
+    _make_host_op_db(db)
+    host_ops = load_module("host_op_breakdown", HOST_OP_SCRIPT)
+
+    apis = host_ops.analyze_db(str(db))["runtime_apis"]
+
+    assert apis["available"] is True
+    assert apis["launch_calls"] == 8
+    assert apis["avg_launch_us"] > 0
+    assert apis["sync_self_ms"] == 2.8
+
+
+def test_host_op_breakdown_degrades_without_host_ranges(tmp_path):
+    db = tmp_path / "bare.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE string_table(ID INTEGER PRIMARY KEY, string TEXT)")
+    conn.commit()
+    conn.close()
+    host_ops = load_module("host_op_breakdown", HOST_OP_SCRIPT)
+
+    payload = host_ops.analyze_db(str(db))
+
+    assert "no host operator ranges" in payload["error"]
+    assert payload["runtime_apis"]["available"] is False
+
+
+def test_analyzer_skill_attributes_host_gaps_to_named_owners():
+    text = E2E_ANALYZER_SKILL.read_text(encoding="utf-8")
+    agent = (PROJECT_AGENTS / "e2e-gap-host-analyst.md").read_text(encoding="utf-8")
+
+    assert HOST_OP_SCRIPT.is_file()
+    assert "scripts/host_op_breakdown.py" in text
+    assert "host_op_breakdown.py" in agent
+    assert "host_op_breakdown.py" in ANALYZER_BRANCH_WORKFLOWS.read_text(encoding="utf-8")

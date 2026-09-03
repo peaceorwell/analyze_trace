@@ -76,6 +76,7 @@ Require every teammate to validate `findings.json` against `references/evidence_
 - `scripts/device_timeline.py`: device projection into compute, uncovered communication, projection gap, and per-queue (device stream) gap ratio. The main compute stream gap ratio is the key host-overhead indicator. Supports `--format json` and `--process-id`/`--device-id`.
 - `scripts/gap_summary.py`: merged compute-coverage gap summary and non-mini exposed gap list with `prev_corr` / `next_corr`.
 - `scripts/gap_detail.py`: dependency chain for one compute gap from `--prev-corr` and `--next-corr`.
+- `scripts/host_op_breakdown.py`: host operator self time from nested ranges, operators that launch device work versus host-only operators, and runtime launch/sync API cost with average per-launch overhead. Supports `--format json`, `--top`, `--min-self-ms`, and the window flags.
 - `scripts/compute_breakdown.py`: top compute kernels and per-process/device compute concentration.
 - `scripts/kernel_codegen_analysis.py`: Triton attribution signals, duration distributions, launch configurations, tiny kernels, adjacent launch pairs, and operator-to-kernel mapping coverage. Supports `--format json`.
 - `scripts/compile_segmentation.py`: torch.compile compiled-region inventory, inside/outside-region (eager) kernel split, recompilation indicators, custom-op ranges that contain many simple `aten::` ops, and the host-launch-overhead / cpp_wrapper check driven by device-stream gap ratio plus trace metadata (`cpp_wrapper` config keys or `kernel_file` evidence). Supports `--format json`.
@@ -112,7 +113,7 @@ Require every teammate to validate `findings.json` against `references/evidence_
 - Do not infer root cause from one high-level percentage.
 - This workflow is single-rank. Keep communication kernels as opaque timeline categories so they are not misclassified as effective compute, but do not start a communication branch or make peer/rank conclusions.
 - Extract available distributed topology and local communication exposure into the report using `references/distributed_context.md`. Keep it descriptive and outside prioritized bottleneck findings/actions by default.
-- `host_blocking` does not explain itself; trace the host-side blocker before naming a cause.
+- `host_blocking` does not explain itself; trace the host-side blocker before naming a cause. When the main-stream gap ratio is high, run `scripts/host_op_breakdown.py` and name the operators or runtime APIs that hold the host, instead of reporting the ratio alone.
 - Whether host overhead is large is judged primarily by the device-stream (queue) gap ratio — the fraction of the main compute stream's span spent idle between device tasks, from `device_timeline.py`. A high main-stream gap ratio means the host is not keeping the device fed. Do not judge host overhead by host-side wall time alone; a busy host with a well-fed device (low stream gap) is not host-bound.
 - Keep different `threadId` timelines separate. Do not merge overlapping threads into one call tree.
 - Separate compilation, autotuning, initialization, and cache warm-up from steady-state execution before judging Triton or fusion quality.
@@ -431,7 +432,7 @@ Load `references/branch_workflows.md` before executing any selected Phase 2 bran
 - `triton-fusion-coverage`
 - `triton-kernel-efficiency`
 
-Agent ownership is fixed: compute owns `effective-compute-breakdown`; compile/fusion owns `compile-segmentation` and `triton-fusion-coverage`; Triton owns `triton-kernel-efficiency`; gap/host owns `compute-gap-root-cause` and optional `host-window-subphase`; noncompute owns `ordinary-non-compute-root-cause`. Load only the assigned branch sections.
+Agent ownership is fixed: compute owns `effective-compute-breakdown`; compile/fusion owns `compile-segmentation` and `triton-fusion-coverage`; Triton owns `triton-kernel-efficiency`; gap/host owns `compute-gap-root-cause`, `host_op_breakdown.py` attribution, and optional `host-window-subphase`; noncompute owns `ordinary-non-compute-root-cause`. Load only the assigned branch sections.
 
 ## Phase 3: Final Synthesis
 

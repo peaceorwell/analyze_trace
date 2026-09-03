@@ -2,7 +2,7 @@
 
 Torch Profiler Analyzer 是一个面向 PyTorch Profiler Chrome Trace 的本地/内网性能分析工具，并兼容 TensorFlow Chrome Trace。它可以解析 `.json`、`.json.gz`、`.gz`、`.json.zip`、`.zip`、`.tar.gz` 和 `.tgz` trace 文件，也支持上传日志/文本自动生成证据优先的 AI 说明性报告；trace 分析可统计 GPU kernel、Triton kernel、ATen Ops、TensorFlow Ops，并提供单 trace 分析、双 trace 对比、历史管理和 Web 可视化界面。
 
-当前版本：`0.5.56`
+当前版本：`0.5.57`
 
 ## 主要功能
 
@@ -194,6 +194,8 @@ AI 分析默认关闭。开启后，已完成 trace 任务会出现 `AI 分析` 
 - 对比 skill：`.claude/skills/e2e-profiling-comparator`
 
 单 trace skill 会在 trace 携带 Triton `output_code` 和 IO efficiency 元数据时调用 `.claude/skills/mlu-triton-optimize` 做静态代码级候选分析，识别 libdevice 替换、除法降低、碎片化 IO、reduce/retiling、grid flatten 等 MLU Triton 优化方向，并追加静态 IO/计算吞吐估算，最后合并到 AI 报告的 `Triton Kernel 代码优化` 章节中。
+
+host 开销定位新增 `scripts/host_op_breakdown.py`：按线程嵌套还原 host 算子 self time（不重复计算父子区间），区分“会下发 device 任务的算子”和“纯 host 算子”，并汇总 launch/sync 运行时 API 的调用次数与单次平均开销；device stream gap ratio 偏高时会给出具体是哪些算子或 API 占住了 host，而不是只报一个比例。
 
 单 trace skill 在跑基线指标前会先用 `scripts/step_window.py` 定位稳态窗口：识别迭代边界、逐步统计 host/device 耗时、剔除 warmup 和被截断的尾步、给出可重复性判定，并输出统一的 `--start-ns/--end-ns`；device timeline、compute breakdown、triton 融合/效率、compile 分段和 gap 汇总都会在同一窗口内计算，避免把编译和 warmup 混进稳态结论。
 

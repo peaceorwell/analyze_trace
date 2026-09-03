@@ -2,6 +2,12 @@
 
 本文件记录 Torch Profiler Analyzer 的主要版本更新。
 
+## [0.5.57] - 2026-09-03
+
+- AI 分析 skill 新增 `host_op_breakdown.py`：按线程嵌套还原 host 算子 self time，避免父子区间重复计费；通过 `Internal_op_range_relations` + `function_data` 关联 device kernel，区分“会下发 device 任务的算子”和“纯 host 算子”，并汇总 launch/sync 运行时 API 的次数、总耗时与单次平均开销。
+- gap/host 分支和 agent 要求把高 device stream gap ratio 归因到具体 host 算子或运行时 API；只给比例不给归因的结论按 `insufficient` 处理。
+- 新脚本同样支持 `--start-ns/--end-ns`，与稳态窗口保持同一口径；缺少 host range 或关联表时按能力缺失降级输出。
+
 ## [0.5.56] - 2026-09-03
 
 - AI 分析 skill 新增 `step_window.py`：从 ProfilerStep 等迭代标注（或规律重复的 marker kernel）推导稳态窗口，逐步给出 host/device 耗时与 kernel 数，剔除 warmup 与被截断的尾步、标记离群步，并输出可重复性判定和可直接复用的 `--start-ns/--end-ns`。
