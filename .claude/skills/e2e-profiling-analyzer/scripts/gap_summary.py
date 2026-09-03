@@ -7,6 +7,8 @@ import sqlite3
 import sys
 
 from query_common import (
+    add_window_args,
+    table_exists,
     get_invoke_info,
     get_name,
     load_string_map,
@@ -28,28 +30,36 @@ def build_where_clause(process_id=None, device_id=None, start_time=None, end_tim
 
 
 def find_blocking_event(cursor, process_id, device_id, queue_id, gap_start, gap_end):
+    # Optional device tables are absent in some captures; degrade per table instead
+    # of failing the whole gap summary.
+    parts = []
+    if table_exists(cursor, "device_task_notifier_data"):
+        parts.append(
+            "SELECT 'notifier' AS sync_type, start, end, correlationId, notifierId, extra "
+            "FROM device_task_notifier_data "
+            "WHERE processId = :pid AND deviceId = :did AND queueId = :qid "
+            "AND type = 0 AND start >= :gap_start AND start <= :gap_end"
+        )
+    if table_exists(cursor, "device_task_atomic_operation_data"):
+        parts.append(
+            "SELECT 'atomic' AS sync_type, start, end, correlationId, NULL AS notifierId, extra "
+            "FROM device_task_atomic_operation_data "
+            "WHERE processId = :pid AND deviceId = :did AND queueId = :qid "
+            "AND start >= :gap_start AND start <= :gap_end"
+        )
+    if table_exists(cursor, "device_task_memcpy_data"):
+        parts.append(
+            "SELECT 'memcpy' AS sync_type, start, end, correlationId, NULL AS notifierId, extra "
+            "FROM device_task_memcpy_data "
+            "WHERE processId = :pid AND deviceId = :did AND queueId = :qid "
+            "AND isAsync = 1 AND start >= :gap_start AND start <= :gap_end"
+        )
+    if not parts:
+        return None
     cursor.execute(
-        """
-        SELECT sync_type, start, end, correlationId, notifierId, extra
-        FROM (
-            SELECT 'notifier' AS sync_type, start, end, correlationId, notifierId, extra
-            FROM device_task_notifier_data
-            WHERE processId = :pid AND deviceId = :did AND queueId = :qid
-              AND type = 0 AND start >= :gap_start AND start <= :gap_end
-            UNION ALL
-            SELECT 'atomic' AS sync_type, start, end, correlationId, NULL AS notifierId, extra
-            FROM device_task_atomic_operation_data
-            WHERE processId = :pid AND deviceId = :did AND queueId = :qid
-              AND start >= :gap_start AND start <= :gap_end
-            UNION ALL
-            SELECT 'memcpy' AS sync_type, start, end, correlationId, NULL AS notifierId, extra
-            FROM device_task_memcpy_data
-            WHERE processId = :pid AND deviceId = :did AND queueId = :qid
-              AND isAsync = 1 AND start >= :gap_start AND start <= :gap_end
-        ) combined
-        ORDER BY start DESC, end DESC
-        LIMIT 1
-        """,
+        "SELECT sync_type, start, end, correlationId, notifierId, extra FROM ("
+        + " UNION ALL ".join(parts)
+        + ") combined ORDER BY start DESC, end DESC LIMIT 1",
         {
             "pid": process_id,
             "did": device_id,
@@ -382,15 +392,21 @@ def main():
     parser.add_argument("db_path", help="数据库路径")
     parser.add_argument("--process-id", type=int, help="进程号过滤")
     parser.add_argument("--device-id", type=int, help="设备号过滤")
-    parser.add_argument("--start-time", type=float, help="开始时间(us)")
-    parser.add_argument("--end-time", type=float, help="结束时间(us)")
+    parser.add_argument("--start-time", type=float, help="开始时间(us)，等价于 --start-ns/1000")
+    parser.add_argument("--end-time", type=float, help="结束时间(us)，等价于 --end-ns/1000")
+    add_window_args(parser)
     parser.add_argument("--gap-threshold", type=float, default=100, help="gap阈值(us), 默认100")
     parser.add_argument("--invoke-threshold", type=float, default=100, help="下发不及时阈值(us), 默认100")
     parser.add_argument("--format", choices=("text", "json"), default="text", help="输出格式")
     args = parser.parse_args()
 
-    start_time_ns = int(args.start_time * 1000) if args.start_time else None
-    end_time_ns = int(args.end_time * 1000) if args.end_time else None
+    # --start-ns/--end-ns is the shared window contract; the older us flags stay as aliases.
+    start_time_ns = args.start_ns
+    end_time_ns = args.end_ns
+    if start_time_ns is None and args.start_time:
+        start_time_ns = int(args.start_time * 1000)
+    if end_time_ns is None and args.end_time:
+        end_time_ns = int(args.end_time * 1000)
     gap_threshold_ns = int(args.gap_threshold * 1000)
     invoke_threshold_ns = int(args.invoke_threshold * 1000)
 

@@ -15,12 +15,24 @@ import sqlite3
 import sys
 
 try:
-    from query_common import load_string_map
+    from query_common import (
+        add_window_args,
+        clip_interval,
+        load_string_map,
+        window_payload,
+        window_sql,
+    )
 except ImportError:  # allow running from another cwd
     import os
 
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from query_common import load_string_map
+    from query_common import (
+        add_window_args,
+        clip_interval,
+        load_string_map,
+        window_payload,
+        window_sql,
+    )
 
 
 CATEGORY_PRIORITY = (
@@ -84,8 +96,12 @@ def uncovered_total(target_intervals, covering_intervals):
     return uncovered
 
 
-def load_events(cursor, process_id=None, device_id=None):
-    """Return list of (process_id, device_id, queue_id, start, end, category)."""
+def load_events(cursor, process_id=None, device_id=None, start_ns=None, end_ns=None):
+    """Return list of (process_id, device_id, queue_id, start, end, category).
+
+    Intervals are clipped to the analysis window so coverage ratios describe the
+    window itself instead of the whole capture.
+    """
     where = []
     params = []
     if process_id is not None:
@@ -94,6 +110,9 @@ def load_events(cursor, process_id=None, device_id=None):
     if device_id is not None:
         where.append("deviceId = ?")
         params.append(device_id)
+    window_clauses, window_params = window_sql(start_ns, end_ns, mode="overlap")
+    where.extend(window_clauses)
+    params.extend(window_params)
     filt = (" WHERE " + " AND ".join(where)) if where else ""
 
     events = []
@@ -104,8 +123,11 @@ def load_events(cursor, process_id=None, device_id=None):
         params,
     )
     for pid, did, qid, start, end, is_comp in cursor.fetchall():
+        clipped = clip_interval(start, end, start_ns, end_ns)
+        if clipped is None:
+            continue
         cat = "compute_kernel" if is_comp == 1 else "comm_kernel"
-        events.append((pid, did, qid, start, end, cat))
+        events.append((pid, did, qid, clipped[0], clipped[1], cat))
 
     for table, cat in (
         ("device_task_memcpy_data", "memcpy"),
@@ -120,7 +142,10 @@ def load_events(cursor, process_id=None, device_id=None):
         except sqlite3.OperationalError:
             continue
         for pid, did, qid, start, end in cursor.fetchall():
-            events.append((pid, did, qid, start, end, cat))
+            clipped = clip_interval(start, end, start_ns, end_ns)
+            if clipped is None:
+                continue
+            events.append((pid, did, qid, clipped[0], clipped[1], cat))
 
     return events
 
@@ -222,7 +247,7 @@ def analyze_group(events):
     }
 
 
-def comm_by_name(cursor, process_id, device_id):
+def comm_by_name(cursor, process_id, device_id, start_ns=None, end_ns=None):
     where = []
     params = []
     if process_id is not None:
@@ -232,19 +257,30 @@ def comm_by_name(cursor, process_id, device_id):
         where.append("deviceId = ?")
         params.append(device_id)
     where.append("isComputation = 0")
+    window_clauses, window_params = window_sql(start_ns, end_ns, mode="overlap")
+    where.extend(window_clauses)
+    params = params + window_params
     filt = " WHERE " + " AND ".join(where)
 
     cursor.execute(
         f"SELECT start, end, nameId, processId, deviceId FROM device_task_kernel_data{filt}",
         params,
     )
-    rows = cursor.fetchall()
+    rows = []
+    for start, end, name_id, pid, did in cursor.fetchall():
+        clipped = clip_interval(start, end, start_ns, end_ns)
+        if clipped is not None:
+            rows.append((clipped[0], clipped[1], name_id, pid, did))
 
     compute_filt = filt.replace("isComputation = 0", "isComputation = 1")
     cursor.execute(
         f"SELECT start, end FROM device_task_kernel_data{compute_filt}", params
     )
-    compute_intervals = cursor.fetchall()
+    compute_intervals = []
+    for start, end in cursor.fetchall():
+        clipped = clip_interval(start, end, start_ns, end_ns)
+        if clipped is not None:
+            compute_intervals.append(clipped)
 
     string_map = load_string_map(cursor)
     by_name = {}
@@ -268,11 +304,11 @@ def comm_by_name(cursor, process_id, device_id):
     return results
 
 
-def analyze_db(db_path, process_id=None, device_id=None):
+def analyze_db(db_path, process_id=None, device_id=None, start_ns=None, end_ns=None):
     conn = sqlite3.connect(db_path)
     try:
         cursor = conn.cursor()
-        events = load_events(cursor, process_id, device_id)
+        events = load_events(cursor, process_id, device_id, start_ns, end_ns)
         if not events:
             return {"db": db_path, "error": "no device task events"}
 
@@ -285,10 +321,16 @@ def analyze_db(db_path, process_id=None, device_id=None):
             summary = analyze_group(group_events)
             summary["process_id"] = pid
             summary["device_id"] = did
-            summary["top_uncovered_comm"] = comm_by_name(cursor, pid, did)[:15]
+            summary["top_uncovered_comm"] = comm_by_name(
+                cursor, pid, did, start_ns, end_ns
+            )[:15]
             groups.append(summary)
 
-        return {"db": db_path, "groups": groups}
+        return {
+            "db": db_path,
+            "window": window_payload(start_ns, end_ns),
+            "groups": groups,
+        }
     finally:
         conn.close()
 
@@ -347,6 +389,7 @@ def parse_args():
     parser.add_argument("db", nargs="+", help="cnperf SQLite DB path(s)")
     parser.add_argument("--process-id", type=int, help="filter processId")
     parser.add_argument("--device-id", type=int, help="filter deviceId")
+    add_window_args(parser)
     parser.add_argument("--format", choices=("text", "json"), default="text")
     return parser.parse_args()
 
@@ -354,7 +397,8 @@ def parse_args():
 def main():
     args = parse_args()
     profiles = [
-        analyze_db(db_path, args.process_id, args.device_id) for db_path in args.db
+        analyze_db(db_path, args.process_id, args.device_id, args.start_ns, args.end_ns)
+        for db_path in args.db
     ]
     if args.format == "json":
         print(json.dumps({"profiles": profiles}, ensure_ascii=False, indent=2))

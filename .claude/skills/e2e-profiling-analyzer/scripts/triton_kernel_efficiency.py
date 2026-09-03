@@ -22,6 +22,15 @@ import re
 import sqlite3
 from pathlib import Path
 
+try:
+    from query_common import add_window_args, window_payload, window_sql
+except ImportError:  # allow importing this module from another sys.path
+    import os
+    import sys
+
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from query_common import add_window_args, window_payload, window_sql
+
 
 # Theoretical (peak) bandwidth per MLU model, in the same unit as io_efficiency
 # (folded bandwidth, GB/s). Used to compute bandwidth_utilization. Matched by
@@ -168,16 +177,19 @@ def resolve_peak_bandwidth(cur):
     return None, device_name, None
 
 
-def analyze_db(db_path, top, dump_dir):
+def analyze_db(db_path, top, dump_dir, start_ns=None, end_ns=None):
     with sqlite3.connect(db_path) as conn:
         cur = conn.cursor()
         strings = load_strings(cur)
         if not table_exists(cur, "device_task_kernel_data"):
             return {"db": db_path, "label": Path(db_path).stem, "error": "missing device_task_kernel_data"}
         peak_bandwidth, device_name, peak_source = resolve_peak_bandwidth(cur)
+        clauses, params = window_sql(start_ns, end_ns, mode="start")
+        where = " AND ".join(["isComputation = 1"] + clauses)
         rows = cur.execute(
             "SELECT nameId, start, end, extra "
-            "FROM device_task_kernel_data WHERE isComputation = 1"
+            f"FROM device_task_kernel_data WHERE {where}",
+            params,
         ).fetchall()
 
     observed_keys = set()
@@ -357,13 +369,20 @@ def parse_args():
     parser.add_argument("db", nargs="+", help="cnperf SQLite DB path(s)")
     parser.add_argument("--top", type=int, default=15)
     parser.add_argument("--dump-dir", help="directory to write full output_code per top kernel")
+    add_window_args(parser)
     parser.add_argument("--format", choices=("text", "json"), default="text")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
-    payload = {"profiles": [analyze_db(db_path, args.top, args.dump_dir) for db_path in args.db]}
+    payload = {
+        "window": window_payload(args.start_ns, args.end_ns),
+        "profiles": [
+            analyze_db(db_path, args.top, args.dump_dir, args.start_ns, args.end_ns)
+            for db_path in args.db
+        ],
+    }
     if args.format == "json":
         print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
     else:

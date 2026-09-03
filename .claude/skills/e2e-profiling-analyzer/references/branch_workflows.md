@@ -4,6 +4,8 @@ Load this reference before executing any Phase 2 branch. The main skill owns mod
 
 Set `BRANCH_DIR` to the assigned exclusive directory under `TEAM_DIR` before running a command. Never write branch artifacts into another agent's directory.
 
+Every branch runs inside the baseline steady window. Pass the lead-provided `--start-ns/--end-ns` to every script that accepts them, and state the window in the branch report `Scope`. A branch that must widen the window records it as a separate scoped analysis.
+
 ## Contents
 
 - effective-compute-breakdown

@@ -41,7 +41,19 @@ def simplify_task_name(name):
     return simplified or name
 
 
+def table_exists(cursor, table_name):
+    cursor.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    )
+    return cursor.fetchone() is not None
+
+
 def get_invoke_info(cursor, corr_id):
+    # A capture without host runtime rows still supports device-side analysis:
+    # report the launch as unavailable instead of aborting the whole script.
+    if not table_exists(cursor, "function_data"):
+        return None
     cursor.execute(
         """
         SELECT nameId, start, end, self, threadId, processId
@@ -107,12 +119,61 @@ def get_function_call_stack(cursor, invoke, max_depth=16):
     ]
 
 
-def table_exists(cursor, table_name):
-    cursor.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (table_name,),
+WINDOW_MODES = ("start", "overlap")
+
+
+def add_window_args(parser):
+    """Register the shared analysis-window flags used by every windowed script."""
+    parser.add_argument(
+        "--start-ns", type=int, help="analysis window start in ns (see step_window.py)"
     )
-    return cursor.fetchone() is not None
+    parser.add_argument(
+        "--end-ns", type=int, help="analysis window end in ns (see step_window.py)"
+    )
+
+
+def window_sql(start_ns=None, end_ns=None, mode="start", start_col="start", end_col="end"):
+    """Return (clauses, params) restricting rows to one analysis window.
+
+    mode="start": the event starts inside the window. Per-event durations stay intact,
+    so kernel counts, averages and percentiles remain comparable.
+    mode="overlap": the event intersects the window. Use it for coverage and timeline
+    math, and clip each interval to the window before summing.
+    """
+    if mode not in WINDOW_MODES:
+        raise ValueError(f"unknown window mode: {mode}")
+    clauses, params = [], []
+    if start_ns is None and end_ns is None:
+        return clauses, params
+    if mode == "start":
+        if start_ns is not None:
+            clauses.append(f"{start_col} >= ?")
+            params.append(start_ns)
+        if end_ns is not None:
+            clauses.append(f"{start_col} <= ?")
+            params.append(end_ns)
+        return clauses, params
+    if end_ns is not None:
+        clauses.append(f"{start_col} < ?")
+        params.append(end_ns)
+    if start_ns is not None:
+        clauses.append(f"{end_col} > ?")
+        params.append(start_ns)
+    return clauses, params
+
+
+def clip_interval(start, end, start_ns=None, end_ns=None):
+    """Clip one interval to the analysis window; return None when it falls outside."""
+    if start_ns is not None:
+        start = max(start, start_ns)
+    if end_ns is not None:
+        end = min(end, end_ns)
+    return (start, end) if end > start else None
+
+
+def window_payload(start_ns=None, end_ns=None, source="caller"):
+    """Compact window descriptor to embed in JSON output so scope is auditable."""
+    return {"start_ns": start_ns, "end_ns": end_ns, "applied": bool(start_ns or end_ns), "source": source}
 
 
 def get_host_context_stack(cursor, invoke, max_depth=32):

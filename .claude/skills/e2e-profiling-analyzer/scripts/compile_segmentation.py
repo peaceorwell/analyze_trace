@@ -19,6 +19,15 @@ import re
 import sqlite3
 from pathlib import Path
 
+try:
+    from query_common import add_window_args, window_payload, window_sql
+except ImportError:  # allow importing this module from another sys.path
+    import os
+    import sys
+
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from query_common import add_window_args, window_payload, window_sql
+
 
 COMPILE_REGION_REGEX = re.compile(
     r"Torch-Compiled Region|CompiledFunction|TorchDynamo|Inductor|"
@@ -466,7 +475,7 @@ def _custom_simple_aten_report_priority(group):
     return "normal"
 
 
-def analyze_db(db_path):
+def analyze_db(db_path, start_ns=None, end_ns=None):
     conn = sqlite3.connect(db_path)
     try:
         cur = conn.cursor()
@@ -485,7 +494,12 @@ def analyze_db(db_path):
             range_select = "processId, threadId, start, end, nameId"
             if "extra" in range_cols:
                 range_select += ", extra"
-            for row in cur.execute(f"SELECT {range_select} FROM Internal_operation_range_data"):
+            range_clauses, range_params = window_sql(start_ns, end_ns, mode="overlap")
+            range_where = (" WHERE " + " AND ".join(range_clauses)) if range_clauses else ""
+            for row in cur.execute(
+                f"SELECT {range_select} FROM Internal_operation_range_data{range_where}",
+                range_params,
+            ):
                 if "extra" in range_cols:
                     pid, tid, start, end, name_id, extra = row
                     if extra and ("kernel_file" in extra or "cpp" in extra.lower()):
@@ -572,8 +586,11 @@ def analyze_db(db_path):
         kernel_select = "correlationId, start, end, nameId"
         if "extra" in kernel_cols:
             kernel_select += ", extra"
+        kernel_clauses, kernel_params = window_sql(start_ns, end_ns, mode="start")
+        kernel_where = " AND ".join(["isComputation = 1"] + kernel_clauses)
         for row in cur.execute(
-            f"SELECT {kernel_select} FROM device_task_kernel_data WHERE isComputation = 1"
+            f"SELECT {kernel_select} FROM device_task_kernel_data WHERE {kernel_where}",
+            kernel_params,
         ):
             if "extra" in kernel_cols:
                 corr, start, end, name_id, extra = row
@@ -785,13 +802,17 @@ def print_markdown(payload):
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("db", nargs="+", help="cnperf SQLite DB path(s)")
+    add_window_args(parser)
     parser.add_argument("--format", choices=("text", "json"), default="text")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
-    payload = {"profiles": [analyze_db(db_path) for db_path in args.db]}
+    payload = {
+        "window": window_payload(args.start_ns, args.end_ns),
+        "profiles": [analyze_db(db_path, args.start_ns, args.end_ns) for db_path in args.db],
+    }
     if args.format == "json":
         print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
     else:

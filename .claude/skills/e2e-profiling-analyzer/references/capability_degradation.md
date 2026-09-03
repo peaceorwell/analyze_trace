@@ -9,7 +9,7 @@ Record every capability as `available`, `partial`, `unavailable`, or `invalid`, 
 | Capability | Minimum evidence | What it supports |
 |---|---|---|
 | `core_db` | readable SQLite core tables plus a local `string_table` | device task, kernel, copy, gap, and host-range analysis |
-| `stable_window` | explicit repeated steps/requests after initialization and warmup | steady-state latency and throughput claims |
+| `stable_window` | `step_window.py` returns a steady window with a `pass`/`partial` repeatability verdict | steady-state latency and throughput claims |
 | `workload_identity` | shapes/batch/tokens/dtype/mode/topology as applicable | workload equivalence and normalization |
 | `host_device_correlation` | correlation IDs, relations, notifier or queue identity | causal host/gap attribution |
 | `compile_regions` | compiled-region, graph-break, cache or recompilation annotations | compile/fusion segmentation |
@@ -33,6 +33,7 @@ For a bounded raw-trace check, require a known process/device or rank and a step
 ## Metric boundaries during degradation
 
 - Missing evidence is `unknown`/`unavailable`, never zero.
+- Whole-capture metrics are not steady-state metrics. When `step_window.py` finds no window, report numbers as whole-capture scope and mark steady-state speed claims blocked.
 - `Device-Gap` or `Device Idle` is device inactivity without a proven owner. It is not Host time, Memcpy time, or a root cause.
 - A device-stream gap ratio is a host-feeding signal, not sufficient proof of the responsible host operation. Follow queue/correlation evidence before naming a cause.
 - Total communication time and uncovered/non-overlapped communication are not additive. Only exposed communication can bound local E2E benefit.

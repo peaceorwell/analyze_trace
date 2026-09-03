@@ -15,6 +15,7 @@ step because the input looks small; record a step as skipped with its reason ins
 - [ ] Mode resolved (`automatic-final` or `interactive-phased`); inputs normalized to DB paths
 - [ ] `references/profiling_concepts.md` and `references/pytorch_performance_playbook.md` loaded
 - [ ] Measurement Validity Gate applied; capability ledger written from `references/capability_degradation.md`
+- [ ] Steady window resolved with `scripts/step_window.py` and reused as `--start-ns/--end-ns`
 - [ ] Phase 1 baseline scripts run; `phase1_report.md` and validated `findings.json` written
 - [ ] Phase 2 branches selected by measured impact and executed by their owning agents
 - [ ] Every teammate `findings.json` passed `scripts/validate_findings.py`
@@ -70,6 +71,7 @@ Require every teammate to validate `findings.json` against `references/evidence_
 ## Resources
 
 - `scripts/basic_info.py`: host/device time ranges, device model, device count, per-device kernel usage.
+- `scripts/step_window.py`: iteration boundaries, per-step host/device cost, warmup and truncated-step trimming, repeatability verdict, and the recommended steady-state `--start-ns/--end-ns` window. Supports `--format json`, `--step-regex`, `--max-steps`.
 - `scripts/preflight.py`: read-only integrity, schema, identity, timestamp-range, and optional-table checks. Supports `--format json`.
 - `scripts/device_timeline.py`: device projection into compute, uncovered communication, projection gap, and per-queue (device stream) gap ratio. The main compute stream gap ratio is the key host-overhead indicator. Supports `--format json` and `--process-id`/`--device-id`.
 - `scripts/gap_summary.py`: merged compute-coverage gap summary and non-mini exposed gap list with `prev_corr` / `next_corr`.
@@ -100,6 +102,8 @@ Require every teammate to validate `findings.json` against `references/evidence_
 - Build the capability ledger from `references/capability_degradation.md` before branch selection. Route from observed content and evidence availability, not filename alone.
 - Optional evidence failure is branch-scoped: keep valid baseline evidence and mark only the unsupported capability unavailable. Missing values are never measured zeros.
 - Start every analysis by loading `references/profiling_concepts.md`.
+- Select the steady-state window with `scripts/step_window.py` before measuring, then pass the same `--start-ns/--end-ns` to every windowed script. Whole-capture numbers mix compilation, warmup and steady state, so they must not carry steady-state speed claims. If the window is unavailable, mark steady-state claims blocked and say the numbers cover the whole capture.
+- `--start-ns/--end-ns` is the shared window contract: `device_timeline.py` and `compile_segmentation.py` clip intervals to the window, while per-kernel scripts keep events whose start falls inside it so durations and percentiles stay comparable.
 - Primary evidence comes from DB tables. Cluster CSVs can validate or label DB-derived findings, but are never required.
 - `device_timeline.py` non-compute categories are uncovered/exposed non-effective time. Do not treat them as total task time.
 - `gap_summary.py` accounts for exposed intervals after merging overlapping compute kernels per process/device. It is separate from `device_timeline.py`.
@@ -120,7 +124,7 @@ Require every teammate to validate `findings.json` against `references/evidence_
 Before Phase 1, apply the required gate in `references/pytorch_performance_playbook.md`:
 
 1. Identify semantic scope and selected steps/requests.
-2. Separate compilation, autotuning, initialization, and cache warm-up from steady state.
+2. Separate compilation, autotuning, initialization, and cache warm-up from steady state by running `scripts/step_window.py`; record its window, step classes, and repeatability verdict.
 3. Record available workload identity: shapes, batch/tokens, dtype, grad/model mode, and rank topology.
 4. Record profiler instrumentation that may perturb host timing.
 5. Check whether the window contains enough repeated stable work to distinguish typical behavior from outliers.
@@ -318,13 +322,18 @@ Workflow:
    db_stem=$(basename "<cnperf_db>" .db)
    python3 "$SKILL_DIR/scripts/preflight.py" <cnperf_db> --format json \
      > "$TEAM_DIR/01_baseline/${db_stem}.preflight.json" 2>&1
+   python3 "$SKILL_DIR/scripts/step_window.py" <cnperf_db> --format json \
+     > "$TEAM_DIR/01_baseline/${db_stem}.step_window.json" 2>&1
+   # Reuse the recommended window for every later script; leave WINDOW empty when
+   # step_window reports no steady window, and say so in the report.
+   WINDOW="--start-ns <steady_window.start_ns> --end-ns <steady_window.end_ns>"
    python3 "$SKILL_DIR/scripts/basic_info.py" <cnperf_db> \
      > "$TEAM_DIR/01_baseline/${db_stem}.basic_info.log" 2>&1
-   python3 "$SKILL_DIR/scripts/device_timeline.py" <cnperf_db> --format json \
+   python3 "$SKILL_DIR/scripts/device_timeline.py" <cnperf_db> $WINDOW --format json \
      > "$TEAM_DIR/01_baseline/${db_stem}.device_timeline.json" 2>&1
-   python3 "$SKILL_DIR/scripts/gap_summary.py" <cnperf_db> --invoke-threshold 100 --format json \
+   python3 "$SKILL_DIR/scripts/gap_summary.py" <cnperf_db> $WINDOW --invoke-threshold 100 --format json \
      > "$TEAM_DIR/01_baseline/${db_stem}.gap_summary.json" 2>&1
-   python3 "$SKILL_DIR/scripts/kernel_codegen_analysis.py" <cnperf_db> --format json \
+   python3 "$SKILL_DIR/scripts/kernel_codegen_analysis.py" <cnperf_db> $WINDOW --format json \
      > "$TEAM_DIR/01_baseline/${db_stem}.kernel_codegen.json" 2>&1
    ```
 
@@ -361,6 +370,7 @@ In `automatic-final`, limit Phase 2 to branches that can change the final recomm
 
 - `Measurement Quality`: semantic scope, warm state, workload identity, profiler perturbation, repeatability, and correctness status.
 - `Scope`: input DBs, process/device coverage, host/device time range.
+- `Steady Window`: step source, step count, warmup/truncated/outlier steps, recommended `--start-ns/--end-ns`, and the repeatability verdict from `step_window.py`.
 - `Effective Compute`: compute kernel time and ratio.
 - `Exposed Non-Effective Time`: opaque communication category, ordinary non-compute categories, and projection gap. Do not interpret peer behavior.
 - `Distributed Context`: available rank/topology metadata plus local communication total/uncovered time and observed collective names from `references/distributed_context.md`; state missing peer/rank coverage.

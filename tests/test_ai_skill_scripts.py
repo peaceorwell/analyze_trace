@@ -16,6 +16,10 @@ KERNEL_CODEGEN_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts/ke
 PREFLIGHT_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts/preflight.py"
 VALIDATE_FINDINGS_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts/validate_findings.py"
 CHECK_REPORT_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts/check_report.py"
+STEP_WINDOW_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts/step_window.py"
+QUERY_COMMON_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts/query_common.py"
+DEVICE_TIMELINE_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts/device_timeline.py"
+COMPUTE_BREAKDOWN_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts/compute_breakdown.py"
 COLLECT_SCRIPT = ROOT / ".claude/skills/e2e-profiling-comparator/scripts/collect_profile_tables.py"
 COMPARE_SCRIPT = ROOT / ".claude/skills/e2e-profiling-comparator/scripts/compare_profile_tables.py"
 E2E_ANALYZER_SKILL = ROOT / ".claude/skills/e2e-profiling-analyzer/SKILL.md"
@@ -1173,3 +1177,147 @@ def test_long_reference_files_have_a_contents_index():
         text = path.read_text(encoding="utf-8")
         assert len(text.splitlines()) > 100
         assert "## Contents" in text, path
+
+
+def _make_step_db(path, steps=10):
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE string_table(ID INTEGER PRIMARY KEY, string TEXT)")
+    conn.execute(
+        """
+        CREATE TABLE Internal_operation_range_data(
+            processId INTEGER, threadId INTEGER, start INTEGER, end INTEGER,
+            extraId INTEGER, nameId INTEGER, extra TEXT, type INTEGER
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE device_task_kernel_data(
+            processId INTEGER, deviceId INTEGER, queueId INTEGER, correlationId INTEGER,
+            nameId INTEGER, start INTEGER, end INTEGER, isComputation INTEGER, extra TEXT
+        )
+        """
+    )
+    names = {}
+
+    def sid(name):
+        if name not in names:
+            names[name] = len(names) + 1
+            conn.execute("INSERT INTO string_table VALUES(?, ?)", (names[name], name))
+        return names[name]
+
+    step_ns = 10_000_000
+    cursor_ns = 0
+    for index in range(steps):
+        duration = step_ns
+        if index == 0:
+            duration = step_ns * 3   # compilation / warmup
+        elif index == 1:
+            duration = step_ns * 2   # cache warm-up
+        elif index == steps - 1:
+            duration = int(step_ns * 0.3)  # truncated capture tail
+        conn.execute(
+            "INSERT INTO Internal_operation_range_data VALUES(?,?,?,?,?,?,?,?)",
+            (1, 7, cursor_ns, cursor_ns + duration, index, sid(f"ProfilerStep#{index}"), "{}", 0),
+        )
+        kernel_ns = cursor_ns + 1_000
+        for slot in range(4):
+            conn.execute(
+                "INSERT INTO device_task_kernel_data VALUES(?,?,?,?,?,?,?,?,?)",
+                (
+                    1, 0, 1, index * 100 + slot,
+                    sid("triton_poi_fused_add_1" if slot % 2 else "gemm_kernel"),
+                    kernel_ns, kernel_ns + int(duration * 0.15), 1, "{}",
+                ),
+            )
+            kernel_ns += int(duration * 0.2)
+        cursor_ns += duration + 200_000
+    conn.commit()
+    conn.close()
+
+
+def test_step_window_trims_warmup_and_truncated_steps(tmp_path):
+    db = tmp_path / "steps.db"
+    _make_step_db(db)
+    step_window = load_module("step_window", STEP_WINDOW_SCRIPT)
+
+    payload = step_window.analyze_db(str(db), step_window.DEFAULT_STEP_REGEX)
+
+    assert payload["source"] == "profiler_step_ranges"
+    assert payload["step_count"] == 10
+    assert payload["warmup_steps"] == [0, 1]
+    assert payload["truncated_steps"] == [9]
+    assert payload["steady_window"]["step_count"] == 7
+    assert payload["repeatability"]["verdict"] == "pass"
+    assert payload["command_hint"].startswith("--start-ns ")
+
+
+def test_step_window_reports_unavailable_window_instead_of_guessing(tmp_path):
+    db = tmp_path / "empty.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE string_table(ID INTEGER PRIMARY KEY, string TEXT)")
+    conn.commit()
+    conn.close()
+    step_window = load_module("step_window", STEP_WINDOW_SCRIPT)
+
+    payload = step_window.analyze_db(str(db), step_window.DEFAULT_STEP_REGEX)
+
+    assert payload["steady_window"] is None
+    assert payload["repeatability"]["verdict"] == "fail"
+    assert payload["limitations"]
+
+
+def test_window_sql_modes_keep_stats_and_coverage_separate():
+    query_common = load_module("query_common", QUERY_COMMON_SCRIPT)
+
+    start_clauses, start_params = query_common.window_sql(10, 20, mode="start")
+    overlap_clauses, overlap_params = query_common.window_sql(10, 20, mode="overlap")
+
+    assert start_clauses == ["start >= ?", "start <= ?"]
+    assert start_params == [10, 20]
+    assert overlap_clauses == ["start < ?", "end > ?"]
+    assert overlap_params == [20, 10]
+    assert query_common.window_sql(None, None) == ([], [])
+    assert query_common.clip_interval(5, 25, 10, 20) == (10, 20)
+    assert query_common.clip_interval(0, 5, 10, 20) is None
+
+
+def test_windowed_scripts_exclude_warmup_from_baseline_metrics(tmp_path):
+    db = tmp_path / "steps.db"
+    _make_step_db(db)
+    step_window = load_module("step_window", STEP_WINDOW_SCRIPT)
+    compute_breakdown = load_module("compute_breakdown", COMPUTE_BREAKDOWN_SCRIPT)
+    device_timeline = load_module("device_timeline", DEVICE_TIMELINE_SCRIPT)
+
+    window = step_window.analyze_db(str(db), step_window.DEFAULT_STEP_REGEX)["steady_window"]
+    full = compute_breakdown.analyze_db(str(db), 10)
+    scoped = compute_breakdown.analyze_db(str(db), 10, window["start_ns"], window["end_ns"])
+
+    assert scoped["compute_summary"]["count"] < full["compute_summary"]["count"]
+    assert scoped["compute_summary"]["max_ms"] < full["compute_summary"]["max_ms"]
+
+    timeline_full = device_timeline.analyze_db(str(db))
+    timeline_scoped = device_timeline.analyze_db(
+        str(db), None, None, window["start_ns"], window["end_ns"]
+    )
+    assert timeline_scoped["window"]["applied"] is True
+    assert timeline_scoped["groups"][0]["span_ms"] < timeline_full["groups"][0]["span_ms"]
+
+
+def test_baseline_scripts_expose_the_shared_window_flags():
+    for path in (DEVICE_TIMELINE_SCRIPT, COMPUTE_BREAKDOWN_SCRIPT, CHECK_REPORT_SCRIPT.parent / "gap_summary.py",
+                 CHECK_REPORT_SCRIPT.parent / "triton_fusion_coverage.py",
+                 CHECK_REPORT_SCRIPT.parent / "triton_kernel_efficiency.py",
+                 CHECK_REPORT_SCRIPT.parent / "compile_segmentation.py"):
+        text = path.read_text(encoding="utf-8")
+        assert "add_window_args(parser)" in text, path
+
+
+def test_analyzer_skill_requires_a_steady_window_before_measuring():
+    text = E2E_ANALYZER_SKILL.read_text(encoding="utf-8")
+
+    assert STEP_WINDOW_SCRIPT.is_file()
+    assert "scripts/step_window.py" in text
+    assert "--start-ns/--end-ns" in text
+    assert "`Steady Window`" in text
+    assert len(text.splitlines()) < 500

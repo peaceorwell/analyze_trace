@@ -2,6 +2,13 @@
 
 本文件记录 Torch Profiler Analyzer 的主要版本更新。
 
+## [0.5.56] - 2026-09-03
+
+- AI 分析 skill 新增 `step_window.py`：从 ProfilerStep 等迭代标注（或规律重复的 marker kernel）推导稳态窗口，逐步给出 host/device 耗时与 kernel 数，剔除 warmup 与被截断的尾步、标记离群步，并输出可重复性判定和可直接复用的 `--start-ns/--end-ns`。
+- 打通窗口贯通能力：`device_timeline`、`compute_breakdown`、`triton_fusion_coverage`、`triton_kernel_efficiency`、`compile_segmentation`、`gap_summary` 统一支持 `--start-ns/--end-ns`，时间线类脚本按窗口裁剪区间、逐 kernel 统计类脚本按起点归属，避免编译/warmup 数据污染稳态结论。
+- SKILL.md、能力降级与分支参考、evidence-builder agent 同步要求先定窗口再测量；窗口不可用时按整段采集口径报告并阻断稳态结论。
+- 健壮性修复：缺少 `function_data`、`device_task_memcpy_data` 等可选表时按能力缺失降级，不再直接抛栈中断整个 gap 分析。
+
 ## [0.5.55] - 2026-09-03
 
 - AI 分析 skill 新增 `check_report.py` 报告门禁：以确定性校验取代散文规则，检查章节集合与顺序、发现块结构、表格分隔行、原始输出残留、Triton 代码优化章节候选完整性、custom op / simple aten 必报项和正文长度预算。

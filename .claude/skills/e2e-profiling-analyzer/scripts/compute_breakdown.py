@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
 """Compute-kernel breakdown for one or more cnperf DBs."""
 
+try:
+    from query_common import add_window_args, window_payload, window_sql
+except ImportError:  # allow importing this module from another sys.path
+    import os
+    import sys
+
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from query_common import add_window_args, window_payload, window_sql
+
 import argparse
 import json
 import math
@@ -47,19 +56,22 @@ def summarize_durations(durations):
     }
 
 
-def analyze_db(db_path, top):
+def analyze_db(db_path, top, start_ns=None, end_ns=None):
     with sqlite3.connect(db_path) as conn:
         cur = conn.cursor()
         strings = load_strings(cur)
         if not table_exists(cur, "device_task_kernel_data"):
             return {"db": db_path, "error": "missing device_task_kernel_data"}
+        clauses, params = window_sql(start_ns, end_ns, mode="start")
+        where = " AND ".join(["isComputation = 1"] + clauses)
         rows = cur.execute(
-            """
+            f"""
             SELECT processId, deviceId, nameId, start, end
             FROM device_task_kernel_data
-            WHERE isComputation = 1
+            WHERE {where}
             ORDER BY processId, deviceId, start
-            """
+            """,
+            params,
         ).fetchall()
 
     groups = {}
@@ -154,13 +166,20 @@ def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("db", nargs="+", help="cnperf SQLite DB path(s)")
     parser.add_argument("--top", type=int, default=20)
+    add_window_args(parser)
     parser.add_argument("--format", choices=("text", "json"), default="text")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
-    payload = {"profiles": [analyze_db(db_path, args.top) for db_path in args.db]}
+    payload = {
+        "window": window_payload(args.start_ns, args.end_ns),
+        "profiles": [
+            analyze_db(db_path, args.top, args.start_ns, args.end_ns)
+            for db_path in args.db
+        ],
+    }
     if args.format == "json":
         print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
     else:

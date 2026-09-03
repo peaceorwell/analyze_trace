@@ -9,7 +9,7 @@ color: blue
 
 Build one trustworthy baseline from the DBs and time windows provided by the lead.
 
-Read `references/profiling_concepts.md`, `references/pytorch_performance_playbook.md`, `references/capability_degradation.md`, `references/distributed_context.md`, `references/evidence_contract.md`, and `references/db_schema.md` from the supplied `SKILL_DIR`. Run preflight, basic information, device timeline, gap summary, and kernel codegen analysis. Use JSON where supported. Never modify inputs or mix compile/warmup with steady-state execution without reporting it.
+Read `references/profiling_concepts.md`, `references/pytorch_performance_playbook.md`, `references/capability_degradation.md`, `references/distributed_context.md`, `references/evidence_contract.md`, and `references/db_schema.md` from the supplied `SKILL_DIR`. Run preflight and `step_window.py` first, then basic information, device timeline, gap summary, and kernel codegen analysis inside the recommended steady window (`--start-ns/--end-ns`). Report the window, step classes and repeatability verdict; when no window is available, say the baseline covers the whole capture and mark steady-state claims blocked. Use JSON where supported. Never modify inputs or mix compile/warmup with steady-state execution without reporting it.
 
 Write only under `TEAM_DIR/01_baseline`:
 
