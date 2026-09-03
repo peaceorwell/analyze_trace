@@ -7,6 +7,20 @@ description: Analyze single-rank cnperf SQLite databases and torch profiler Chro
 
 Analyze `cnperf` SQLite DBs from the viewpoint that compute kernels are effective device utilization. If the input is a torch profiler Chrome trace JSON/JSON.GZ file, first convert it to a cnperf-compatible SQLite DB, then analyze the converted DB exactly like native cnperf data.
 
+## Run Checklist
+
+Copy this checklist into the analysis directory as `checklist.md` and keep it updated. Do not drop a
+step because the input looks small; record a step as skipped with its reason instead.
+
+- [ ] Mode resolved (`automatic-final` or `interactive-phased`); inputs normalized to DB paths
+- [ ] `references/profiling_concepts.md` and `references/pytorch_performance_playbook.md` loaded
+- [ ] Measurement Validity Gate applied; capability ledger written from `references/capability_degradation.md`
+- [ ] Phase 1 baseline scripts run; `phase1_report.md` and validated `findings.json` written
+- [ ] Phase 2 branches selected by measured impact and executed by their owning agents
+- [ ] Every teammate `findings.json` passed `scripts/validate_findings.py`
+- [ ] Auditor assigned one `audit_disposition` to every candidate
+- [ ] `report.md` and `report.json` written, then `scripts/check_report.py` exits 0
+
 ## Mode Selection
 
 Use `automatic-final` immediately when any of these are true:
@@ -65,9 +79,10 @@ Require every teammate to validate `findings.json` against `references/evidence_
 - `scripts/compile_segmentation.py`: torch.compile compiled-region inventory, inside/outside-region (eager) kernel split, recompilation indicators, custom-op ranges that contain many simple `aten::` ops, and the host-launch-overhead / cpp_wrapper check driven by device-stream gap ratio plus trace metadata (`cpp_wrapper` config keys or `kernel_file` evidence). Supports `--format json`.
 - `scripts/triton_fusion_coverage.py`: classifies compute kernels into triton-fused / other-triton / non-triton, fusion coverage ratio, Inductor fusion granularity by kernel family (pointwise/reduce/library/etc.), highlighted unfused pointwise/reduce candidates, and top non-fused kernels. Supports `--format json` and `--top`.
 - `scripts/triton_kernel_efficiency.py`: triton kernel IO efficiency from `device_task_kernel_data.extra`, treating `io_efficiency` as a folded-bandwidth value (not a 0–1 ratio) compared against device peak bandwidth, plus `output_code` dump (`--dump-dir`). Supports `--format json` and `--top`.
-- `../mlu-triton-optimize/scripts/analyze_triton_code.py`: static analysis of dumped Triton `output_code` for MLU optimization candidates such as libdevice math replacement, division lowering, fragmented IO, reduce layout/tiling, grid flattening, and dtype conversion cleanup. Supports `--format json|text`.
+- `../mlu-triton-optimize/scripts/analyze_triton_code.py`: static analysis of dumped Triton `output_code` for MLU optimization candidates such as libdevice math replacement, division lowering, fragmented IO, reduce layout/tiling, grid flattening, and dtype conversion cleanup. Supports `--format json|text`. If that sibling skill is not mounted, record `triton_code_optimization` as unavailable instead of substituting another tool.
 - `scripts/query_common.py`: shared helpers and `--host-stack=<function_corr_id>` CLI.
 - `scripts/validate_findings.py`: validates teammate and final machine-readable findings.
+- `scripts/check_report.py`: deterministic Final Report Contract / Report Readability Gate check for `report.md`. Supports `--format json`, `--analysis-dir`, `--budget`, and `--strict`.
 - `scripts/torch_trace_to_cnperf_db.py`: self-contained torch profiler Chrome trace converter. Requires Python module `simdjson` from package `pysimdjson`.
 - `references/profiling_concepts.md`: required concepts and causal models. Always load this before starting analysis.
 - `references/pytorch_performance_playbook.md`: measurement validity, evidence hierarchy, PyTorch/Inductor diagnosis, and validation rules. Always load this before Phase 1.
@@ -161,22 +176,34 @@ If graph capture, multi-stream execution, or driver/runtime upgrades are only pl
 without direct trace evidence, keep them in `不确定性与下一步` instead of promoting them to top
 findings or primary actions.
 
-Before writing `report.md`, apply this Report Readability Gate:
+Before writing `report.md`, apply the Report Readability Gate. Run it as a check instead of
+recalling it, then fix every `error` and re-run until `ok` is true:
 
-- Use one report structure only: the high-level structure above. Do not invent `主要发现`,
-  `详细分析`, `执行摘要`, or other parallel top-level summaries.
-- Keep the optional metadata below the H1 compact: either a 2-4 row table or short bullets.
-  Do not write consecutive bold metadata lines without a blank line between them.
+```bash
+python3 "$SKILL_DIR/scripts/check_report.py" "$REPORT_MD" \
+  --analysis-dir "$ANALYSIS_DIR" --format json > "$TEAM_DIR/report_gate.json"
+```
+
+The script enforces one report structure (no `主要发现` / `详细分析` / `执行摘要` parallel summary),
+required section set and order, 2-4 `### 发现 N：` blocks each with its own `**结论：**` /
+`**证据：**` / `**建议：**` paragraph, no flat `- 结论` / `- 证据` / `- 建议` bullets, unique
+top-level headings, Markdown table separator rows, no raw stdout/stderr blocks, a non-empty `产物`
+list, the `## Triton Kernel 代码优化` section and its full candidate table when
+`triton_code_optimization.json` has findings, and a reserved custom-op/simple-aten finding when
+`compile_segmentation.json` sets `must_report`. A `warn` about the length budget or a metadata block
+is a rewrite prompt, not a pass.
+
+Keep these judgement rules, which the script cannot check:
+
 - Keep finding titles short and factual. Do not put the full metric, evidence chain, and root
   cause into the title. Use "主要瓶颈" / "证据指向" unless the direct evidence proves a root cause.
-- Each `**结论：**`, `**证据：**`, and `**建议：**` paragraph must be one paragraph and no more
-  than two clauses. Move long call chains, raw percentages, and long file lists to stage artifacts.
+- Keep each `**结论：**`, `**证据：**`, and `**建议：**` paragraph to no more than two clauses. Move
+  long call chains, raw percentages, and long file lists to stage artifacts.
 - Avoid repeating the same number in `结论概览`, `关键指标`, and `不确定性与下一步`; cite it once
   where it is most useful.
 - If Triton `output_code` or IO-efficiency metadata is missing, mention it only as a data gap in
   `不确定性与下一步`, not as a main bottleneck or primary action.
-- Check that every top-level heading appears at most once, Markdown tables have a header separator
-  row, and the report contains no raw stdout/stderr blocks unless it is a failure report.
+- Keep the optional metadata below the H1 compact: either a 2-4 row table or short bullets.
 
 ## Setup And Inputs
 
@@ -266,6 +293,7 @@ Write these Markdown reports in both modes:
 - `TEAM_DIR/08_audit/report.md`: adversarial review and contradiction resolution.
 - `report.md`: final synthesis report after automatic branch execution completes, or after the user asks to conclude/declines more branches in `interactive-phased` mode.
 - `report.json`: final structured findings and artifact index.
+- `TEAM_DIR/report_gate.json`: `check_report.py` result for the final report.
 
 Do not duplicate full per-branch detailed reports inside `report.md`; reference their filenames from `产物`. Keep raw table excerpts in stage reports or `evidence_summary.md`, and cite those artifacts from the final report.
 
@@ -424,7 +452,7 @@ Final report writing:
 
 - Follow only the `Final Report Contract` above. Do not restate, reinterpret, or duplicate the
   final structure in Phase 3.
-- Apply the Report Readability Gate before writing `report.md`.
+- Apply the Report Readability Gate before writing `report.md`, and run `scripts/check_report.py` on the written file before reporting completion.
 - If the draft violates the gate, rewrite the final report once instead of appending a correction.
 
 ## Validation And Failure Handling

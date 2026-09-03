@@ -2,6 +2,13 @@
 
 Use this reference before interpreting script output, DB queries, rank imbalance, compute gaps, communication exposure, or final root cause. The goal is to give new profiling users a stable mental model before doing causal analysis.
 
+## Contents
+
+- Basic concepts
+- Host-device synchronization
+- Device-side synchronization
+- Communication analysis concepts
+
 ## Basic Concepts
 
 These terms define profiler entities and time scopes. They do not imply root cause by themselves.

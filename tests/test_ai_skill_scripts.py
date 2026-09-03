@@ -15,6 +15,7 @@ COMPILE_SEGMENTATION_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scri
 KERNEL_CODEGEN_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts/kernel_codegen_analysis.py"
 PREFLIGHT_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts/preflight.py"
 VALIDATE_FINDINGS_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts/validate_findings.py"
+CHECK_REPORT_SCRIPT = ROOT / ".claude/skills/e2e-profiling-analyzer/scripts/check_report.py"
 COLLECT_SCRIPT = ROOT / ".claude/skills/e2e-profiling-comparator/scripts/collect_profile_tables.py"
 COMPARE_SCRIPT = ROOT / ".claude/skills/e2e-profiling-comparator/scripts/compare_profile_tables.py"
 E2E_ANALYZER_SKILL = ROOT / ".claude/skills/e2e-profiling-analyzer/SKILL.md"
@@ -28,6 +29,8 @@ ANALYZER_CAPABILITY_DEGRADATION = ROOT / ".claude/skills/e2e-profiling-analyzer/
 ANALYZER_DISTRIBUTED_CONTEXT = ROOT / ".claude/skills/e2e-profiling-analyzer/references/distributed_context.md"
 ANALYZER_HYPOTHESIS_VERIFICATION = ROOT / ".claude/skills/e2e-profiling-analyzer/references/hypothesis_verification.md"
 COMPARATOR_PERFORMANCE_PLAYBOOK = ROOT / ".claude/skills/e2e-profiling-comparator/references/pytorch_performance_playbook.md"
+COMPARATOR_DB_SCHEMA = ROOT / ".claude/skills/e2e-profiling-comparator/references/db_schema.md"
+COMPARATOR_PROFILING_CONCEPTS = ROOT / ".claude/skills/e2e-profiling-comparator/references/profiling_concepts.md"
 PROJECT_AGENTS = ROOT / ".claude/agents"
 PROJECT_CLAUDE_SETTINGS = ROOT / ".claude/settings.json"
 
@@ -954,3 +957,219 @@ def test_log_evidence_skill_requires_source_backed_non_profiler_report():
     assert "Never fabricate profiler metrics" in text
     assert "## 作业与模型上下文" in text
     assert "## 已观测性能信号" in text
+
+
+GOOD_REPORT = """# AI 性能分析报告
+
+| 项 | 值 |
+| --- | --- |
+| job | demo |
+
+## 结论概览
+
+### 发现 1：主机下发不足，主计算流空隙偏高
+
+**结论：** 主计算流 gap ratio 0.32，设备未被喂满。
+
+**证据：** `device_timeline.json` 主流 gap ratio 0.32。
+
+**建议：** 评估 cpp_wrapper 与批量下发。
+
+### 发现 2：custom op 包裹大量简单 aten 运算
+
+**结论：** 自定义算子内部存在重复的简单 aten 序列。
+
+**证据：** `compile_segmentation.json` custom_op_simple_aten。
+
+**建议：** 将重复的简单算子下沉到后端 kernel。
+
+### 发现 3：部分 Triton kernel 折算带宽偏低
+
+**结论：** 3 个 kernel 折算带宽低于峰值三成。
+
+**证据：** `triton_kernel_efficiency.json`。
+
+**建议：** 调整 tiling 与访存布局。
+
+## 关键指标
+
+| 指标 | 值 | 来源 | 解释 |
+| --- | --- | --- | --- |
+| 主流 gap ratio | 0.32 | device_timeline.json | 主机下发不足 |
+
+## 分布式与通信概况
+
+| 项 | 值 | 来源 | 边界 |
+| --- | --- | --- | --- |
+| rank 拓扑 | 未捕获 | meta_information | 单 rank 采集 |
+
+## 优先行动
+
+1. 评估 cpp_wrapper 下发路径。
+
+## Triton Kernel 代码优化
+
+| Kernel | 时间 | 策略 |
+| --- | --- | --- |
+| k1 | 1.2ms | libdevice |
+| k2 | 0.8ms | tiling |
+
+## 不确定性与下一步
+
+- 缺少 output_code 时无法确认静态收益。
+
+## 产物
+
+- report.md
+"""
+
+
+def _write_report_bundle(tmp_path, report_text, triton_findings=True):
+    report = tmp_path / "report.md"
+    report.write_text(report_text, encoding="utf-8")
+    (tmp_path / "triton_code_optimization.json").write_text(
+        json.dumps(
+            {
+                "has_findings": triton_findings,
+                "final_report_guidance": {"candidates": [{"kernel": "k1"}, {"kernel": "k2"}]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "compile_segmentation.json").write_text(
+        json.dumps({"custom_op_simple_aten": {"must_report": True}}), encoding="utf-8"
+    )
+    return report
+
+
+def test_check_report_accepts_a_contract_compliant_report(tmp_path):
+    checker = load_module("check_report", CHECK_REPORT_SCRIPT)
+    report = _write_report_bundle(tmp_path, GOOD_REPORT)
+
+    payload = checker.check_report(
+        report,
+        triton_json=tmp_path / "triton_code_optimization.json",
+        compile_json=tmp_path / "compile_segmentation.json",
+    )
+
+    assert payload["ok"] is True
+    assert payload["problems"] == []
+    assert payload["stats"]["findings"] == 3
+
+
+def test_check_report_rejects_parallel_summary_and_flat_bullets(tmp_path):
+    checker = load_module("check_report", CHECK_REPORT_SCRIPT)
+    broken = GOOD_REPORT.replace(
+        "## 关键指标", "## 主要发现\n\n- 结论：主机下发不足\n\n## 关键指标", 1
+    )
+    report = _write_report_bundle(tmp_path, broken)
+
+    payload = checker.check_report(
+        report,
+        triton_json=tmp_path / "triton_code_optimization.json",
+        compile_json=tmp_path / "compile_segmentation.json",
+    )
+    checks = {problem["check"] for problem in payload["problems"]}
+
+    assert payload["ok"] is False
+    assert "forbidden_section" in checks
+    assert "flat_bullets" in checks
+
+
+def test_check_report_requires_triton_section_and_all_candidates(tmp_path):
+    checker = load_module("check_report", CHECK_REPORT_SCRIPT)
+    without_section = GOOD_REPORT.replace(
+        "## Triton Kernel 代码优化\n\n| Kernel | 时间 | 策略 |\n| --- | --- | --- |\n| k1 | 1.2ms | libdevice |\n| k2 | 0.8ms | tiling |\n\n",
+        "",
+        1,
+    )
+    report = _write_report_bundle(tmp_path, without_section)
+    payload = checker.check_report(
+        report,
+        triton_json=tmp_path / "triton_code_optimization.json",
+        compile_json=tmp_path / "compile_segmentation.json",
+    )
+    assert payload["ok"] is False
+    assert any(problem["check"] == "triton_section" for problem in payload["problems"])
+
+    partial = GOOD_REPORT.replace("| k2 | 0.8ms | tiling |\n", "", 1)
+    report = _write_report_bundle(tmp_path, partial)
+    payload = checker.check_report(
+        report,
+        triton_json=tmp_path / "triton_code_optimization.json",
+        compile_json=tmp_path / "compile_segmentation.json",
+    )
+    assert payload["ok"] is False
+    assert any(problem["check"] == "triton_candidates" for problem in payload["problems"])
+
+
+def test_check_report_requires_reserved_custom_op_finding(tmp_path):
+    checker = load_module("check_report", CHECK_REPORT_SCRIPT)
+    without_custom_op = (
+        GOOD_REPORT.replace("### 发现 2：custom op 包裹大量简单 aten 运算", "### 发现 2：拷贝暴露偏高", 1)
+        .replace("**结论：** 自定义算子内部存在重复的简单 aten 序列。", "**结论：** 拷贝暴露 12ms。", 1)
+        .replace("**证据：** `compile_segmentation.json` custom_op_simple_aten。", "**证据：** `gap_summary.json`。", 1)
+        .replace("**建议：** 将重复的简单算子下沉到后端 kernel。", "**建议：** 减少同步拷贝。", 1)
+    )
+    report = _write_report_bundle(tmp_path, without_custom_op)
+
+    payload = checker.check_report(
+        report,
+        triton_json=tmp_path / "triton_code_optimization.json",
+        compile_json=tmp_path / "compile_segmentation.json",
+    )
+
+    assert payload["ok"] is False
+    assert any(problem["check"] == "custom_op_finding" for problem in payload["problems"])
+
+
+def test_check_report_warns_on_length_budget_without_failing(tmp_path):
+    checker = load_module("check_report", CHECK_REPORT_SCRIPT)
+    report = _write_report_bundle(tmp_path, GOOD_REPORT)
+
+    payload = checker.check_report(
+        report,
+        budget=50,
+        triton_json=tmp_path / "triton_code_optimization.json",
+        compile_json=tmp_path / "compile_segmentation.json",
+    )
+
+    assert payload["ok"] is True
+    assert any(
+        problem["check"] == "length_budget" and problem["level"] == "warn"
+        for problem in payload["problems"]
+    )
+
+
+def test_check_report_skips_findings_gate_for_failure_reports(tmp_path):
+    checker = load_module("check_report", CHECK_REPORT_SCRIPT)
+    report = tmp_path / "report.md"
+    report.write_text("# AI 分析失败\n\n- 错误: 缺少 device_task_kernel_data\n", encoding="utf-8")
+
+    payload = checker.check_report(report)
+
+    assert payload["is_failure_report"] is True
+    assert payload["ok"] is True
+
+
+def test_analyzer_skill_enforces_the_report_gate_with_a_script():
+    text = E2E_ANALYZER_SKILL.read_text(encoding="utf-8")
+
+    assert CHECK_REPORT_SCRIPT.is_file()
+    assert "scripts/check_report.py" in text
+    assert "## Run Checklist" in text
+    assert len(text.splitlines()) < 500
+
+
+def test_long_reference_files_have_a_contents_index():
+    long_references = [
+        ANALYZER_BRANCH_WORKFLOWS,
+        ANALYZER_PERFORMANCE_PLAYBOOK,
+        COMPARATOR_PERFORMANCE_PLAYBOOK,
+        COMPARATOR_DB_SCHEMA,
+        COMPARATOR_PROFILING_CONCEPTS,
+    ]
+    for path in long_references:
+        text = path.read_text(encoding="utf-8")
+        assert len(text.splitlines()) > 100
+        assert "## Contents" in text, path

@@ -2,6 +2,12 @@
 
 本文件记录 Torch Profiler Analyzer 的主要版本更新。
 
+## [0.5.55] - 2026-09-03
+
+- AI 分析 skill 新增 `check_report.py` 报告门禁：以确定性校验取代散文规则，检查章节集合与顺序、发现块结构、表格分隔行、原始输出残留、Triton 代码优化章节候选完整性、custom op / simple aten 必报项和正文长度预算。
+- `e2e-profiling-analyzer` SKILL.md 增加可勾选的 Run Checklist，并把 Report Readability Gate 收敛为“先跑脚本、再修报告”的反馈闭环，保留脚本无法判定的措辞类规则。
+- 对齐社区 skill 编写规范：为超过 100 行的对比 skill 参考文档补齐 Contents 索引，补充 `json_extract` 元数据提示，并说明 `mlu-triton-optimize` 未挂载时按能力缺失处理。
+
 ## [0.5.54] - 2026-08-25
 
 - 将页头“新版试用”入口更新为 `http://tpa.cambricon.com/new-tpa-web/`。
